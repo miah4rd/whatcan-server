@@ -347,7 +347,13 @@ export async function processFollowups(): Promise<void> {
       const REACH_KEYWORDS = ["1st follow up", "2nd follow up", "final follow up"];
       const isReachStage = REACH_KEYWORDS.some(kw => leadStage.toLowerCase().includes(kw));
 
-      if (!isReachStage) {
+      // Rental pipeline uses its own stage vocabulary (Qualified, New LEAD,
+      // Options sent, N foolow up) that doesn't overlap with the Unicorn-oriented
+      // push whitelist below — bypass that whitelist for Rental leads so they
+      // aren't silently skipped. shouldSuppressPush() above still filters dead stages.
+      const isRentalPipeline = (lead.pipeline ?? "").toLowerCase() === "rental";
+
+      if (!isReachStage && !isRentalPipeline) {
         // ── Push qualification filter ───────────────────────────────────────
         // Only generate push for stages in the dynamic whitelist.
         const pushWhitelist = await getPushStageWhitelist();
