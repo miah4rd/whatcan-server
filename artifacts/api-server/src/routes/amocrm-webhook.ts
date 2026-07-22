@@ -392,6 +392,13 @@ router.post("/amocrm/webhook", async (req, res) => {
     // Respond immediately — processing is async
     res.json({ ok: true, leadId });
 
+    // HoS is also responsible for leads outside the Rental pipeline (e.g. a
+    // separate hiring/HR track) — this bot only handles Rental for that account,
+    // so skip generation entirely rather than burning an AI call just to hide it later.
+    if (responsibleUser === "HoS" && (pipeline ?? "").toLowerCase() !== "rental") {
+      return;
+    }
+
     try {
       const eventType = (body["event"] as string | undefined) ?? "";
       req.log.info(
@@ -658,6 +665,17 @@ router.post("/amocrm/webhook", async (req, res) => {
 
     res.json({ ok: true, queued: 1, leadId, kind });
 
+    // HoS is also responsible for leads outside the Rental pipeline (e.g. a
+    // separate hiring/HR track) — this bot only handles Rental for that account.
+    if (responsibleUser === "HoS") {
+      const [syncRow] = await db
+        .select({ pipeline: leadsSyncTable.pipeline })
+        .from(leadsSyncTable)
+        .where(eq(leadsSyncTable.leadId, leadId))
+        .limit(1);
+      if ((syncRow?.pipeline ?? "").toLowerCase() !== "rental") return;
+    }
+
     const text = await generateSuggestion({
       leadId,
       responsibleUser,
@@ -691,6 +709,14 @@ router.post("/amocrm/webhook", async (req, res) => {
   for (const lead of amoBody.leads?.add ?? []) {
     if (!lead.id) continue;
     tasks.push(lead.id);
+    if (lead.responsible_user_name === "HoS") {
+      const [syncRow] = await db
+        .select({ pipeline: leadsSyncTable.pipeline })
+        .from(leadsSyncTable)
+        .where(eq(leadsSyncTable.leadId, String(lead.id)))
+        .limit(1);
+      if ((syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
+    }
     const text = await generateSuggestion({
       leadId: String(lead.id),
       responsibleUser: lead.responsible_user_name ?? null,
@@ -711,6 +737,14 @@ router.post("/amocrm/webhook", async (req, res) => {
   for (const lead of amoBody.leads?.update ?? []) {
     if (!lead.id) continue;
     tasks.push(lead.id);
+    if (lead.responsible_user_name === "HoS") {
+      const [syncRow] = await db
+        .select({ pipeline: leadsSyncTable.pipeline })
+        .from(leadsSyncTable)
+        .where(eq(leadsSyncTable.leadId, String(lead.id)))
+        .limit(1);
+      if ((syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
+    }
     const text = await generateSuggestion({
       leadId: String(lead.id),
       responsibleUser: lead.responsible_user_name ?? null,

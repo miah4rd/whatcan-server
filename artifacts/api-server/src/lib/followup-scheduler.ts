@@ -363,6 +363,16 @@ export async function processFollowups(): Promise<void> {
         continue;
       }
 
+      // HoS is also responsible for leads outside the Rental pipeline (e.g. a
+      // separate hiring/HR track) — this bot only handles Rental for that account.
+      if (lead.responsibleUser === "HoS" && (lead.pipeline ?? "").toLowerCase() !== "rental") {
+        await db
+          .update(leadsSyncTable)
+          .set({ nextFollowupAt: null })
+          .where(eq(leadsSyncTable.leadId, lead.leadId));
+        continue;
+      }
+
       // ── REACH stages: bypass whitelist guards, fall through to generation ──
       // "1st/2nd/Final Follow Up" stages appear in the REACH tab (extension
       // shows kind=push items whose stage matches follow-up keywords).
@@ -875,6 +885,10 @@ export async function processUnansweredLive(): Promise<void> {
     if (l.botExcluded) return false;
     const stage = (l.leadStage ?? "").toLowerCase();
     if (shouldSuppressPush(stage)) return false;
+    // HoS is also responsible for leads outside the Rental pipeline (e.g. a
+    // separate hiring/HR track) — this bot only handles Rental for that account,
+    // so skip generation entirely rather than burning an AI call just to hide it later.
+    if (l.responsibleUser === "HoS" && (l.pipeline ?? "").toLowerCase() !== "rental") return false;
     return true;
   });
   if (toProcess.length === 0) return;
