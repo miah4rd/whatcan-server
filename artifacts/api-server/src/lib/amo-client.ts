@@ -204,6 +204,25 @@ export async function getAmoLead(leadId: string): Promise<{ id: number; responsi
 }
 
 /**
+ * Fetch a lead's tags + utm_campaign custom field — used to tell apart ad
+ * campaign types (e.g. Rental's "brochure" vs "specific listing" vs "b2b").
+ */
+export async function getLeadTagsAndUtm(
+  leadId: string,
+): Promise<{ tags: string[]; utmCampaign: string | null }> {
+  const data = await amoFetch<{
+    custom_fields_values?: Array<{ field_code: string | null; values: Array<{ value: string }> }>;
+    _embedded?: { tags?: Array<{ name: string }> };
+  }>(`/api/v4/leads/${leadId}`);
+
+  const tags = data?._embedded?.tags?.map((t) => t.name) ?? [];
+  const utmField = data?.custom_fields_values?.find((f) => f.field_code === "UTM_CAMPAIGN");
+  const utmCampaign = utmField?.values?.[0]?.value ?? null;
+
+  return { tags, utmCampaign };
+}
+
+/**
  * Close a lead as "Closed Lost" in amoCRM.
  * status_id 143 = system-level Closed Lost (works across all pipelines).
  * lossReasonId = the AmoCRM loss reason to attach.

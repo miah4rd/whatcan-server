@@ -17,6 +17,10 @@ const FOLLOWUP_STAGE_ADVANCE: Record<number, number> = {
 // as Unicorn above, but Rental's qualification track is daily (1 day apart)
 // instead of Unicorn's 1/3/5-day spread. See FOLLOWUP_DELAY_DAYS_RENTAL below.
 const FOLLOWUP_STAGE_ADVANCE_RENTAL: Record<number, number> = {
+  // New LEAD → 1 foolow up: unlike Unicorn (where ARGO sends the brochure and
+  // handles this transition externally), Rental has no external system —
+  // our bot generates Touch 0 itself, so it must also advance this stage.
+  87301078: 87318450, // New LEAD → 1 foolow up
   87318450: 87318706, // 1 foolow up → 2 foolow up
   87318706: 87318710, // 2 foolow up → 3 foolow up
   // 3 foolow up (87318710) → auto-closes as Lost if client never replied

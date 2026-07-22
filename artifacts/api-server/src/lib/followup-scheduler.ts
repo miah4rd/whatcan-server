@@ -8,8 +8,9 @@ import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestio
 import { OBJECTION_PLAYBOOK, type PlaybookEntry } from "./objection-playbook";
 import { shouldSuppressPush, isStageWhitelisted } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
-import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
+import { buildTemplateMessage, buildFollowupTemplateByLevel, buildRentalTouch0Message, selectVariant } from "./followup-templates";
 import { generateSuggestion } from "./generate-suggestion";
+import { getLeadTagsAndUtm } from "./amo-client";
 
 async function classifyObjection(
   conversationSnippet: string,
@@ -228,8 +229,10 @@ When in doubt → return true. False positives (following up on a dead lead) are
 function qualScriptIndexForStage(stage: string | null): number {
   // Index into getFollowupSteps() — 3-entry array (0=1st, 1=2nd, 2=final)
   const s = (stage ?? "").toLowerCase();
-  if (s.includes("final")) return 2;
-  if (s.includes("2nd") || s.includes("second")) return 1;
+  // Rental pipeline's stage names have a "foolow" typo in amoCRM (e.g. "3 foolow up")
+  // and don't say "2nd"/"final" — match those forms too.
+  if (s.includes("final") || s.includes("3 foolow up") || s.includes("3rd foolow")) return 2;
+  if (s.includes("2nd") || s.includes("second") || s.includes("2 foolow up")) return 1;
   return 0; // 1st follow-up (default)
 }
 
@@ -478,6 +481,59 @@ export async function processFollowups(): Promise<void> {
       if (lead.followupLevel === -1 && lead.nextFollowupAt) {
         const tenMinFromNow = new Date(now.getTime() + 10 * 60 * 1000);
         if (lead.nextFollowupAt > tenMinFromNow) continue;
+      }
+
+      // ── Rental pipeline: Touch 0 (brand new lead, no external ARGO) ──────────
+      // Unicorn's brochure is sent by ARGO before the bot ever sees the lead;
+      // Rental has no such system, so the bot must generate the very first
+      // message itself — content depends on which ad campaign the lead came from.
+      if (lead.followupLevel === -1 && (lead.pipeline ?? "").toLowerCase() === "rental") {
+        const { tags, utmCampaign } = await getLeadTagsAndUtm(lead.leadId);
+        const touch0Text = buildRentalTouch0Message(tags, utmCampaign, leadFirstName, lead.responsibleUser ?? undefined);
+
+        const rentalBrokerId = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+
+        await db.insert(aiSuggestionsTable).values({
+          brokerId: rentalBrokerId,
+          leadId: lead.leadId,
+          leadName: `Lead #${lead.leadId}`,
+          promptMessages: [],
+          suggestionText: touch0Text,
+          rationale: `Rental Touch 0 — ${tags.join(", ") || "no tags"} / utm_campaign=${utmCampaign ?? "none"}.`,
+          model: "claude-sonnet-5",
+        });
+
+        const rentalExisting = await db
+          .select({ id: pendingSuggestionsTable.id })
+          .from(pendingSuggestionsTable)
+          .where(and(
+            eq(pendingSuggestionsTable.leadId, lead.leadId),
+            eq(pendingSuggestionsTable.status, "pending"),
+          ))
+          .limit(1);
+
+        if (rentalExisting.length === 0) {
+          await db.insert(pendingSuggestionsTable).values({
+            leadId: lead.leadId,
+            responsibleUser: lead.responsibleUser,
+            kind: "push",
+            // Level 0 — approve.ts schedules the next touch 1 day later and
+            // advances New LEAD -> 1 foolow up (FOLLOWUP_STAGE_ADVANCE_RENTAL).
+            followupLevel: 0,
+            suggestionText: touch0Text,
+            status: "pending",
+            objectionCategory: OBJECTION_PLAYBOOK[0]!.id,
+            attachments: [],
+          });
+        }
+
+        await db
+          .update(leadsSyncTable)
+          .set({ followupLevel: 0, nextFollowupAt: null })
+          .where(eq(leadsSyncTable.leadId, lead.leadId));
+
+        logger.info({ leadId: lead.leadId, tags, utmCampaign }, "rental: touch 0 queued");
+        continue;
       }
 
       // ── Warmup (followupLevel=-1): brand new lead, 15-min window passed ──────
