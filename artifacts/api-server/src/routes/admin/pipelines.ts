@@ -43,4 +43,25 @@ router.get("/admin/pipelines", async (_req, res) => {
   }
 });
 
+/**
+ * GET /api/admin/raw-lead/:id
+ * Read-only dump of a single amoCRM lead (tags, custom fields, embedded contact/company),
+ * for inspecting what data is available to distinguish ad campaigns / listing sources.
+ */
+router.get("/admin/raw-lead/:id", async (req, res) => {
+  try {
+    const data = await amoFetch(
+      `/api/v4/leads/${req.params.id}?with=contacts,companies,catalog_elements`,
+    );
+    if (!data) {
+      res.status(502).json({ error: "amoCRM fetch failed" });
+      return;
+    }
+    res.json(data);
+  } catch (err) {
+    logger.error({ err }, "admin/raw-lead error");
+    res.status(500).json({ error: "internal error" });
+  }
+});
+
 export default router;
