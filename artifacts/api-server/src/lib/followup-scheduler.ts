@@ -788,6 +788,7 @@ export async function processUnansweredLive(): Promise<void> {
       leadNotes: leadsSyncTable.leadNotes,
       leadStage: leadsSyncTable.leadStage,
       botExcluded: leadsSyncTable.botExcluded,
+      pipeline: leadsSyncTable.pipeline,
     })
     .from(leadsSyncTable)
     .where(eq(leadsSyncTable.lastMessageFrom, "lead"));
@@ -859,6 +860,57 @@ export async function processUnansweredLive(): Promise<void> {
 
   for (const lead of batch) {
     try {
+      // ── Rental pipeline: Touch 0 ──────────────────────────────────────────
+      // A brand new Rental lead's very first inbound message (form submission,
+      // WhatsApp opener, etc.) lands it here (lastMessageFrom="lead") rather
+      // than in the task-driven PUSH path. If it's still in "New LEAD" stage,
+      // this IS Touch 0 — use the deterministic campaign-based opener instead
+      // of a generic AI reply, and store it as kind="push" so approve.ts's
+      // Rental stage-advance/auto-close mechanism picks it up correctly.
+      if (
+        (lead.pipeline ?? "").toLowerCase() === "rental" &&
+        (lead.leadStage ?? "").toLowerCase() === "new lead"
+      ) {
+        const leadFirstName = (() => {
+          const parsedForName = parseDialogContent(lead.content ?? "");
+          const msg = parsedForName.messages.find((m) => m.from === "lead" && m.senderName?.trim());
+          if (!msg?.senderName) return "";
+          return msg.senderName.replace(/\s*\([^)]*\)\s*$/, "").trim().split(/\s+/)[0] ?? "";
+        })();
+        const { tags, utmCampaign } = await getLeadTagsAndUtm(lead.leadId);
+        const touch0Text = buildRentalTouch0Message(tags, utmCampaign, leadFirstName, lead.responsibleUser ?? undefined);
+
+        await db
+          .delete(pendingSuggestionsTable)
+          .where(
+            and(
+              eq(pendingSuggestionsTable.leadId, lead.leadId),
+              eq(pendingSuggestionsTable.status, "pending"),
+            ),
+          );
+
+        await db.insert(pendingSuggestionsTable).values({
+          leadId: lead.leadId,
+          responsibleUser: lead.responsibleUser,
+          kind: "push",
+          // Level 0 — approve.ts schedules Touch 1 one day later and advances
+          // New LEAD -> 1 foolow up (FOLLOWUP_STAGE_ADVANCE_RENTAL).
+          followupLevel: 0,
+          suggestionText: touch0Text,
+          status: "pending",
+          objectionCategory: OBJECTION_PLAYBOOK[0]!.id,
+          attachments: [],
+        });
+
+        await db
+          .update(leadsSyncTable)
+          .set({ followupLevel: 0 })
+          .where(eq(leadsSyncTable.leadId, lead.leadId));
+
+        logger.info({ leadId: lead.leadId, tags, utmCampaign }, "rental: touch 0 queued (from unanswered-live path)");
+        continue;
+      }
+
       const content = lead.content ?? "";
       if (!content) continue;
 
