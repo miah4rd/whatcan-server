@@ -23,7 +23,7 @@ router.post("/parse-task", async (req, res) => {
 
   try {
     const parsed = await chatCompletionJSON<{ taskDate?: string; taskText?: string }>({
-      model: "claude-3-5-haiku-20241022",
+      model: "claude-haiku-4-5-20251001",
       system: `Today's date is ${today}.
 You are a CRM assistant. Parse the broker's voice instruction into a structured follow-up task.
 

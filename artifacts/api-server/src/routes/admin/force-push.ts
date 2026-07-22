@@ -86,7 +86,7 @@ router.post("/admin/force-push", async (req, res) => {
       promptMessages: [],
       suggestionText: generated.text,
       rationale: `Warmup (manual) — first follow-up forced via admin. ${generated.entry.label}.`,
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-5",
     });
 
     await db.insert(pendingSuggestionsTable).values({

@@ -20,7 +20,7 @@ async function classifyObjection(
   ).join("\n");
 
   const completion = await chatCompletion({
-    model: "claude-3-5-haiku-20241022",
+    model: "claude-haiku-4-5-20251001",
     system: "You are a Bali real estate sales coach. Based on the conversation snippet, identify which hidden objection is most likely blocking the lead. Reply with ONLY the id from the list, nothing else.",
     messages: [
       {
@@ -69,7 +69,7 @@ export async function generateFollowup(opts: {
 
   // Write the follow-up from scratch, fully driven by conversation context.
   const completion = await chatCompletion({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-5",
     system: `You are ${brokerName}, a senior broker at Unicorn Property, Bali real estate. You are writing a WhatsApp follow-up to a lead who has not replied to your last message.
 
 RULES:
@@ -125,7 +125,7 @@ async function estimateContextualDelay(
 ): Promise<{ delayMs: number; reason: string; contextual: boolean }> {
   try {
     const parsed = await chatCompletionJSON<{ delayHours?: number | null; reason?: string }>({
-      model: "claude-3-5-haiku-20241022",
+      model: "claude-haiku-4-5-20251001",
       system: `You analyze a real estate sales conversation and decide the ideal timing for the next follow-up.
 
 Look for concrete signals:
@@ -181,7 +181,7 @@ async function isLeadActiveForFollowup(content: string, stage: string): Promise<
   try {
     const snippet = content.slice(-3000);
     const parsed = await chatCompletionJSON<{ active?: boolean; reason?: string }>({
-      model: "claude-3-5-haiku-20241022",
+      model: "claude-haiku-4-5-20251001",
       system: `You are a CRM analyst. Given a sales conversation, decide if the lead is still a viable prospect worth following up with.
 
 Return JSON: {"active": true/false, "reason": "one short line"}
@@ -531,7 +531,7 @@ export async function processFollowups(): Promise<void> {
           promptMessages: [],
           suggestionText: warmupText,
           rationale: warmupRationale,
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-5",
         });
 
         const warmupExisting = await db
@@ -660,7 +660,7 @@ export async function processFollowups(): Promise<void> {
         promptMessages: [],
         suggestionText: text,
         rationale,
-        model: "claude-3-5-haiku-20241022",
+        model: "claude-haiku-4-5-20251001",
       });
 
       const existing = await db

@@ -284,7 +284,7 @@ IMPORTANT: Do NOT include property links or listings in this follow-up. The brok
 Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   const completion = await chatCompletion({
-    model: "claude-3-5-haiku-20241022",
+    model: "claude-haiku-4-5-20251001",
     system: systemPrompt,
     messages: [{ role: "user", content: prompt }],
     max_tokens: 400,
@@ -312,7 +312,7 @@ export async function queueSuggestion(opts: {
       opts.kind === "live"
         ? `Lead replied. Respond now to keep the thread warm.`
         : `Follow-up #${opts.followupLevel ?? 1} — no reply yet.`,
-    model: "claude-3-5-haiku-20241022",
+    model: "claude-haiku-4-5-20251001",
   });
 
   if (opts.kind === "live") {

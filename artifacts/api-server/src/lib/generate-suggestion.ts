@@ -275,7 +275,7 @@ IMPORTANT: Do NOT include property links or listings in this follow-up. The brok
 Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   const completion = await chatCompletion({
-    model: "claude-3-5-haiku-20241022",
+    model: "claude-haiku-4-5-20251001",
     system: systemPrompt,
     messages: [{ role: "user", content: prompt }],
     max_tokens: 400,

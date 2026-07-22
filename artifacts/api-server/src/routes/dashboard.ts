@@ -334,7 +334,7 @@ Broker: ${row.responsibleUser ?? "Broker"}
 Task: Write a follow-up WhatsApp message. The lead went silent — re-engage from a fresh angle. Do NOT repeat what the broker already said. Under 80 words.${AVOID_PHRASES_REMINDER}`;
 
       const completion = await chatCompletion({
-        model: "claude-3-5-haiku-20241022",
+        model: "claude-haiku-4-5-20251001",
         system: systemPrompt,
         messages: [{ role: "user", content: userPrompt }],
         max_tokens: 220,
