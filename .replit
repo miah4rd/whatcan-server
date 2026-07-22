@@ -1,0 +1,46 @@
+modules = ["nodejs-24", "python-3.11", "postgresql-16"]
+
+[deployment]
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
+
+[[ports]]
+localPort = 8080
+externalPort = 80
+
+[[ports]]
+localPort = 8081
+externalPort = 8081
+
+[[ports]]
+localPort = 8082
+externalPort = 3000
+
+[[ports]]
+localPort = 18150
+externalPort = 3001
+
+[nix]
+channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+SUPABASE_URL = "https://yrtteclvrtqobjnpxqck.supabase.co"
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlydHRlY2x2cnRxb2JqbnB4cWNrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM2NjE0MzUsImV4cCI6MjA4OTIzNzQzNX0.yseZdw2qreN08qAfTTJku8IKQTnjsawcXhcDMa-Ky1I"
+AMOCRM_CLIENT_ID = "67084811-5ef4-4235-be86-6a24ad31fff3"

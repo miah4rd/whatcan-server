@@ -1,0 +1,17 @@
+# /etc/traefik/dynamic/whatcan.yml
+
+http:
+  routers:
+    whatcan:
+      rule: "Host(`copilot.globalapplab.ru`)"
+      service: whatcan
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    whatcan:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:5000"

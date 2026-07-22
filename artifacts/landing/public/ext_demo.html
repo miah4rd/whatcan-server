@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Copilot Extension — Preview</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0f1923; font-family: Roboto,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; min-height:100vh; }
+
+/* Fake AmoCRM background */
+.crm-bg { display:flex; min-height:100vh; }
+.crm-sidebar { width:56px; background:#1a2535; border-right:1px solid #2a3a50; display:flex; flex-direction:column; align-items:center; padding:12px 0; gap:8px; flex:none; }
+.crm-sidebar-icon { width:36px; height:36px; border-radius:8px; background:#253347; display:grid; place-items:center; color:#5e7a99; font-size:16px; cursor:pointer; }
+.crm-sidebar-icon.active { background:#2196f3; color:#fff; }
+.crm-main { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+.crm-topbar { height:44px; background:#1a2535; border-bottom:1px solid #2a3a50; display:flex; align-items:center; padding:0 16px; gap:12px; }
+.crm-topbar-title { font-size:13px; font-weight:700; color:#cfd5e3; letter-spacing:.04em; }
+.crm-topbar-tabs { display:flex; gap:2px; margin-left:8px; }
+.crm-tab { padding:4px 12px; border-radius:5px; font-size:12px; color:#8a96a8; cursor:pointer; }
+.crm-tab.active { background:#253347; color:#e6e8ee; }
+.crm-content { flex:1; display:flex; overflow:hidden; }
+.crm-list { width:280px; border-right:1px solid #2a3a50; overflow-y:auto; }
+.crm-lead-row { padding:10px 14px; border-bottom:1px solid #1e2d3e; cursor:pointer; }
+.crm-lead-row:hover { background:#1e2d3e; }
+.crm-lead-row.active { background:#1e2d3e; border-left:3px solid #2196f3; }
+.crm-lead-name { font-size:13px; font-weight:600; color:#cfd5e3; margin-bottom:3px; }
+.crm-lead-stage { font-size:11px; color:#8a96a8; }
+.crm-lead-detail { flex:1; padding:20px; overflow-y:auto; position:relative; }
+.crm-field-group { margin-bottom:16px; }
+.crm-field-label { font-size:11px; color:#5e7a99; margin-bottom:4px; text-transform:uppercase; letter-spacing:.08em; }
+.crm-field-value { font-size:13px; color:#cfd5e3; background:#1a2535; border:1px solid #2a3a50; border-radius:5px; padding:7px 10px; }
+
+/* Extension panel positioning */
+.ext-host { position:fixed; bottom:20px; right:20px; z-index:9999; display:flex; flex-direction:column; align-items:flex-end; gap:10px; }
+.wrap { color:#e6e8ee; }
+
+/* State tabs for demo */
+.demo-tabs { display:flex; gap:6px; justify-content:center; padding:8px; background:#1a2535; border-bottom:1px solid #2a3a50; }
+.demo-tab { padding:4px 12px; border-radius:20px; font-size:11px; font-weight:700; cursor:pointer; border:1px solid #3a4a5e; color:#8a96a8; background:transparent; letter-spacing:.04em; }
+.demo-tab.active { background:#2196f3; border-color:#2196f3; color:#fff; }
+
+/* Panels hidden by default */
+.state-panel { display:none; }
+.state-panel.active { display:block; }
+
+
+    :host, * { box-sizing: border-box; }
+    .wrap { font-family: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; color: #e6e8ee; }
+    .panel { width: 520px; max-width: calc(100vw - 24px); max-height: min(640px, calc(100vh - 72px)); display:flex; flex-direction:column; background: #273444; border: 1px solid #3a4a5e; border-radius: 8px; box-shadow: 0 18px 48px rgba(0,0,0,.55); overflow: hidden; animation: in .25s ease-out; }
+    .panel > .hd, .panel > .reason, .panel > .actions { flex: 0 0 auto; }
+    .panel > .body { flex: 1 1 auto; overflow-y: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: #3a4a5e transparent; }
+    .panel > .body::-webkit-scrollbar { width: 6px; }
+    .panel > .body::-webkit-scrollbar-thumb { background: #3a4a5e; border-radius: 3px; }
+    @keyframes in { from { transform: translateY(8px); opacity: 0 } to { transform: none; opacity: 1 } }
+    .hd { padding: 9px 12px; border-bottom: 1px solid #3a4a5e; background: #2c3e50; }
+    .hdtop { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .badge { display:flex; align-items:center; gap: 8px; min-width: 0; flex:1; }
+    .spark { width:26px; height:26px; border-radius:5px; background:#2196f3; display:grid; place-items:center; color:#fff; font-weight:900; font-size:14px; flex:none; }
+    .who { font-size: 11.5px; font-weight: 800; color: #ffffff; line-height: 1.2; text-transform: uppercase; letter-spacing: .12em; }
+    .who .arr { color: #5e6680; font-weight: 400; margin-left: 4px; font-size: 11px; }
+    .sub { font-size: 12px; color: #8a96a8; margin-top: 3px; white-space: nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px; }
+    .icons { display:flex; gap:1px; }
+    .ib { width:26px; height:26px; border-radius:4px; background:transparent; border:0; color:#8a96a8; cursor:pointer; display:grid; place-items:center; font-size:15px; }
+    .ib:hover { background:rgba(255,255,255,.08); color:#fff; }
+    .leadbtn { width:100%; margin-top:8px; height:28px; border-radius:5px; border:1px solid #3a4a5e; background:transparent; color:#90caf9; cursor:pointer; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; gap:6px; }
+    .leadbtn:hover { background:rgba(33,150,243,.1); border-color:#2196f3; color:#bbdefb; }
+    .reason { padding: 9px 12px; background: rgba(33,150,243,.08); border-bottom: 1px solid #3a4a5e; border-left: 3px solid #2196f3; display:flex; gap:8px; align-items:flex-start; }
+    .reason .icon { color:#64b5f6; font-size:15px; flex:none; margin-top:1px; }
+    .reason .txt { font-size: 13px; line-height: 1.5; color:#e6e8ee; font-weight:500; }
+    .reason .lbl { display:block; font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; color:#64b5f6; margin-bottom: 5px; }
+    .body { padding: 10px 12px 8px; background:#273444; }
+    .label { font-size: 10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:#8a96a8; margin-bottom:6px; }
+    .msg { font-size: 13.5px; line-height: 1.55; color:#e6e8ee; white-space: pre-wrap; min-height: 60px; }
+    .skel { display:flex; flex-direction:column; gap:6px; padding: 3px 0 6px; }
+    .skel div { height:9px; background:rgba(255,255,255,.07); border-radius:4px; animation: p 1.2s ease-in-out infinite; }
+    @keyframes p { 0%,100% {opacity:.5} 50% {opacity:1} }
+    .err { color: #fca5a5; font-size: 12px; padding: 5px 0; }
+    .ta { width:100%; background:#1a2535; color:#e6e8ee; border:1px solid rgba(255,255,255,.1); border-radius:14px; padding:12px 14px; font-size:14px; font-family:inherit; resize:none; min-height:90px; line-height:1.65; outline:none; cursor:text; box-sizing:border-box; transition:border-color .2s; }
+    .ta:focus { border-color:rgba(33,150,243,.4); }
+    .voice-bar { display:flex; align-items:center; gap:8px; margin:6px 0 2px; }
+    .voice-ed-btn { border:1px solid #3a4a5e; background:transparent; color:#8a96a8; border-radius:6px; padding:4px 12px; font-size:12px; cursor:pointer; transition:all .2s; white-space:nowrap; }
+    .voice-ed-btn:hover { border-color:#2196f3; color:#cfd5e3; }
+    .voice-ed-btn.recording { background:#ef4444; border-color:#ef4444; color:#fff; animation:pulse-rec 1.2s ease-in-out infinite; }
+    @keyframes pulse-rec { 0%,100%{opacity:1} 50%{opacity:.6} }
+    .voice-hint { font-size:11px; color:#ef4444; }
+    .hint { font-size: 11px; color:#8a96a8; margin-top: 6px; }
+    
+    .aiinput { width:100%; background:transparent; color:#e6e8ee; border:none; border-bottom:1px solid #2a3a50; outline:none; padding:0 0 8px; font-size:13.5px; font-family:inherit; line-height:1.55; resize:none; max-height:120px; overflow-y:auto; }
+    .ai-input-wrap { display:flex; flex-direction:column; width:100%; background:transparent; padding:0; gap:8px; box-sizing:border-box; }
+    .ai-input-wrap:focus-within { background:rgba(33,150,243,.04); }
+    .ai-mic-btn { width:32px; height:32px; border-radius:50%; border:none; background:transparent; color:#8a96a8; cursor:pointer; font-size:17px; display:grid; place-items:center; flex:none; transition:background .15s,color .15s; }
+    .ai-mic-btn:hover { background:rgba(255,255,255,.1); color:#cfd5e3; }
+    .ai-mic-btn.recording { background:#ef4444; color:#fff; animation:pulse-rec 1.2s ease-in-out infinite; }
+    .ai-send-btn { width:36px; height:36px; border-radius:50%; border:none; background:#2196f3; color:#fff; cursor:pointer; font-size:18px; font-weight:700; display:grid; place-items:center; flex:none; transition:background .15s; }
+    .ai-send-btn:hover:not(:disabled) { background:#1e88e5; }
+    .ai-send-btn:disabled { opacity:.35; cursor:default; }
+    .ai-btn-row { display:flex; align-items:center; justify-content:flex-end; gap:6px; }
+    .ai-btn-row .ai-mic-btn { width:auto; border-radius:6px; padding:0 10px; font-size:12.5px; font-weight:600; color:#8a96a8; background:transparent; border:1px solid #3a4a5e; height:30px; }
+    .ai-btn-row .ai-mic-btn:hover { background:rgba(255,255,255,.08); color:#cfd5e3; }
+    .ai-btn-row .ai-mic-btn.recording { background:#ef4444; border-color:#ef4444; color:#fff; }
+    .ai-btn-row .ai-send-btn { width:auto; border-radius:6px; padding:0 14px; font-size:12.5px; font-weight:700; height:30px; letter-spacing:.04em; }
+    .edittools { margin-top:8px; padding:0 10px; }    .mini { height:32px; border-radius:5px; border:1px solid #3a4a5e; background:transparent; color:#cfd5e3; cursor:pointer; padding:0 10px; font-size:12px; font-weight:700; }
+    .mini:hover:not(:disabled) { background:rgba(255,255,255,.08); color:#fff; }
+    .mini:disabled { opacity:.4; cursor:default; }
+    .actions { padding: 8px 10px; border-top: 1px solid #3a4a5e; background: #2c3e50; display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; }
+    .actions.editing { display:flex!important; justify-content:flex-end; gap:8px; padding:8px 12px 10px; background:transparent; border-top:none; }
+    .edit-x { width:34px; height:34px; border-radius:8px; border:1px solid rgba(255,255,255,.18); background:rgba(255,255,255,.05); color:#9aa5b4; cursor:pointer; font-size:15px; display:grid; place-items:center; flex:none; }
+    .edit-x:hover { background:rgba(255,255,255,.12); color:#fff; }
+    .edit-ok { width:34px; height:34px; border-radius:8px; border:none; background:#2196f3; color:#fff; cursor:pointer; font-size:19px; font-weight:700; display:grid; place-items:center; flex:none; }
+    .edit-ok:hover { background:#1976d2; }
+    .edit-ok:disabled { opacity:.4; cursor:default; }
+    .primary { height:34px; border:0; border-radius:4px; background:#2196f3; color:#fff; font-weight:700; font-size:12.5px; cursor:pointer; text-transform:uppercase; letter-spacing:.06em; }
+    .primary:hover:not(:disabled) { background:#1e88e5; }
+    .primary:disabled { opacity:.4; cursor:default; }
+    .secondary { height:34px; border-radius:4px; border:1px solid #3a4a5e; background:transparent; color:#cfd5e3; cursor:pointer; font-size:12.5px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
+    .secondary:hover:not(:disabled) { background:rgba(255,255,255,.08); color:#fff; }
+    .secondary:disabled { opacity:.4; cursor:default; }
+    .bubble { width:48px; height:48px; border-radius:50%; background:#2196f3; color:#fff; display:grid; place-items:center; box-shadow: 0 8px 24px rgba(33,150,243,.4); cursor:pointer; border:0; font-weight:900; font-size:20px; position: relative; }
+    .bubble.sleep { opacity: .55; }
+    .bubble.sleep:hover { opacity: 1; }
+    .bubble .dot { position:absolute; top:-2px; right:-2px; background:#ef4444; color:#fff; font-size:9px; font-weight:700; min-width:16px; height:16px; border-radius:8px; display:grid; place-items:center; padding:0 3px; border: 2px solid #273444; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,.6) } 50% { box-shadow: 0 0 0 6px rgba(239,68,68,0) } }
+    .detail { padding: 8px 12px 10px; border-top: 1px solid #3a4a5e; background:#1d2a3a; max-height: 180px; overflow:auto; }
+    .detail .row { display:flex; gap:8px; margin-bottom: 6px; font-size: 11.5px; }
+    .detail .k { color:#8a96a8; min-width: 58px; }
+    .detail .v { color:#e6e8ee; }
+    .detail .msgs { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #3a4a5e; }
+    .detail .m { font-size: 11px; line-height: 1.45; margin-bottom: 5px; color:#cfd5e3; }
+    .detail .tag { display:inline-block; font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 3px; margin-right: 5px; text-transform: uppercase; letter-spacing: .06em; }
+    .tag.b { background:#3a4a5e; color:#cfd5e3; }
+    .tag.l { background: rgba(33,150,243,.2); color:#64b5f6; }
+    .empty { padding: 14px; text-align:center; font-size:11.5px; color:#8a96a8; }
+    .rate { display:flex; gap:5px; margin-top:7px; align-items:center; font-size:11px; color:#8a96a8; }
+    .rate .lbl { letter-spacing:.1em; text-transform:uppercase; font-weight:700; }
+    .rate .rb { height:24px; padding:0 8px; border-radius:4px; border:1px solid #3a4a5e; background:transparent; color:#cfd5e3; cursor:pointer; font-size:12px; }
+    .rate .rb:hover { background:rgba(255,255,255,.08); color:#fff; }
+    .rate .rb.on { background:#2196f3; border-color:#2196f3; color:#fff; }
+    .rate .thanks { color:#a7f3d0; font-weight:700; }
+    .tabs { display:flex; gap:4px; padding: 8px 10px; background:#273444; border-bottom:1px solid #3a4a5e; flex:0 0 auto; position:relative; }
+    .tabwrap { display:flex; gap:3px; padding:3px; border-radius:999px; background:rgba(33,150,243,.06); border:1px solid rgba(33,150,243,.12); width:100%; }
+    .tab { flex:1; position:relative; background:transparent; border:0; color:#8a96a8; cursor:pointer; padding:5px 10px; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; display:flex; align-items:center; justify-content:center; gap:6px; border-radius:999px; transition: color .18s ease, background .18s ease, box-shadow .18s ease; }
+    .tab .dot { width:5px; height:5px; border-radius:50%; background:var(--mark,#8a96a8); flex:none; }
+    .tab:hover { color:#cfd5e3; }
+    .tab.on { color:#fff; background:linear-gradient(135deg,#2196f3,#22d3ee); box-shadow:0 4px 14px -5px rgba(33,150,243,.7), inset 0 1px 0 rgba(255,255,255,.18); }
+    .tab.on .dot { background:#fff; box-shadow:0 0 5px rgba(255,255,255,.7); }
+    .tab.live { --mark:#34d399; }
+    .tab.push { --mark:#fbbf24; }
+    .tab.drafts { --mark:#60a5fa; }
+    .tab .cnt { background:rgba(255,255,255,.08); color:#cfd5e3; font-size:9.5px; min-width:16px; padding:1px 5px; border-radius:999px; font-weight:700; text-align:center; line-height:1.4; }
+    .tab.on .cnt { background:rgba(255,255,255,.22); color:#fff; }
+    .tab .pulse { width:5px; height:5px; border-radius:50%; background:#34d399; box-shadow:0 0 0 0 rgba(52,211,153,.55); animation: tabpulse 1.8s ease-out infinite; flex:none; }
+    .tab.on .pulse { background:#fff; box-shadow:0 0 0 0 rgba(255,255,255,.55); }
+    @keyframes tabpulse { 0% { box-shadow:0 0 0 0 rgba(52,211,153,.55) } 70% { box-shadow:0 0 0 5px rgba(52,211,153,0) } 100% { box-shadow:0 0 0 0 rgba(52,211,153,0) } }
+    .list { padding: 6px 8px; display:flex; flex-direction:column; gap:6px; }
+    .li { position:relative; padding:9px 11px 9px 14px; background:#1d2a3a; border:1px solid #3a4a5e; border-radius:7px; cursor:pointer; transition: border-color .15s ease, background .15s ease, transform .15s ease; overflow:hidden; }
+    .li::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--accent,#2196f3); opacity:.7; }
+    .li.live { --accent:#34d399; }
+    .li.push { --accent:#fbbf24; }
+    .li:hover { border-color:var(--accent,#2196f3); background:#22324a; transform: translateX(1px); }
+    .li .top { display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:10.5px; color:#8a96a8; margin-bottom:5px; }
+    .li .top .lead { font-weight:700; color:#cfd5e3; letter-spacing:.02em; }
+    .li .top .lead-info { display:flex; flex-direction:column; gap:2px; min-width:0; }
+    .li .top .li-notes { font-size:9.5px; color:#8a96a8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:200px; opacity:.85; }.lead-hdr{display:flex;align-items:center;gap:7px;padding:8px 14px 2px;flex-wrap:wrap}.lead-hdr-name{font-size:13px;font-weight:600;color:#e2e8f0;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.stage-tag{display:inline-flex;align-items:center;gap:3px;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:600;background:rgba(139,92,246,.2);color:#a78bfa;cursor:pointer;letter-spacing:.3px;transition:background .15s;white-space:nowrap}.stage-tag:hover{background:rgba(139,92,246,.35)}.stage-tag--empty{background:rgba(255,255,255,.07);color:#64748b}.stage-select{background:#1a2535;border:1px solid rgba(139,92,246,.5);border-radius:8px;color:#e2e8f0;font-size:11px;padding:3px 8px;outline:none;cursor:pointer;max-width:180px}.li-stage{display:inline-block;margin-top:3px;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600;background:rgba(139,92,246,.18);color:#a78bfa;letter-spacing:.3px}
+    .li .top .meta { display:flex; align-items:center; gap:5px; }
+    .li .top .lvl { background:rgba(251,191,36,.15); color:#fcd34d; padding:1px 5px; border-radius:999px; font-weight:700; font-size:9.5px; letter-spacing:.04em; }
+    .li .prv { font-size:12.5px; color:#e6e8ee; line-height:1.45; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .li .foot { margin-top:6px; display:flex; align-items:center; gap:5px; font-size:10px; color:#7a8699; font-weight:600; letter-spacing:.06em; text-transform:uppercase; }
+    .li .foot .arrow { margin-left:auto; color:var(--accent,#2196f3); font-size:13px; opacity:.7; }
+    .back { background:transparent; border:0; color:#8a96a8; cursor:pointer; font-size:11.5px; padding:0; display:flex; align-items:center; gap:4px; }
+    .back:hover { color:#fff; }
+    .cardtop { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 12px 0; }
+    .openlead { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:700; color:#90caf9; text-decoration:none; background:rgba(33,150,243,.1); border:1px solid rgba(33,150,243,.2); border-radius:4px; padding:3px 8px; letter-spacing:.04em; }
+    .openlead:hover { background:rgba(33,150,243,.22); color:#bbdefb; }
+    .thread { padding:8px 10px 10px; background:#1c2a3a; border-bottom:2px solid #3a4a5e; display:flex; flex-direction:column; gap:7px; max-height:200px; overflow-y:auto; scrollbar-width:thin; scrollbar-color:#3a4a5e transparent; }
+    .thread::-webkit-scrollbar { width:5px; }
+    .thread::-webkit-scrollbar-thumb { background:#3a4a5e; border-radius:3px; }
+    .thread-lbl { font-size:9px; font-weight:800; letter-spacing:.16em; text-transform:uppercase; color:#5e7a96; margin-bottom:1px; flex:0 0 auto; }
+    .tmsg { display:flex; flex-direction:column; gap:4px; width:100%; }
+    .tmsg-hdr { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:0 2px; }
+    .tmsg .tsender { font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    .tmsg.us .tsender { color:#64b5f6; }
+    .tmsg.lead .tsender { color:#34d399; }
+    .tmsg .tat { font-size:10px; color:#5e7a96; }
+    .tmsg .tbubble { padding:8px 12px; border-radius:6px; font-size:13px; line-height:1.52; white-space:pre-wrap; word-break:break-word; width:100%; box-sizing:border-box; }
+    .tmsg.us .tbubble { background:#1e3d6b; border:1px solid #2a5498; border-left:3px solid #2196f3; color:#d4eaff; }
+    .tmsg.lead .tbubble { background:#1c3d2d; border:1px solid #2a5e40; border-left:3px solid #34d399; color:#c8f5e0; }
+    .action-row { display:flex; align-items:center; gap:7px; padding:6px 12px; border-top:1px solid #3a4a5e; background:#1f2e3f; min-height:36px; }
+    .action-row-lbl { font-size:11px; color:#8a96a8; font-weight:600; white-space:nowrap; }
+    .ext-cb { width:14px; height:14px; accent-color:#2196f3; cursor:pointer; flex:none; margin:0; }
+    .ext-select { flex:1; background:#1a2535; border:1px solid #3a4a5e; border-radius:5px; color:#e2e8f0; font-size:11px; padding:3px 7px; outline:none; cursor:pointer; min-width:0; transition:border-color .2s; }
+    .ext-select:focus { border-color:rgba(33,150,243,.6); }
+    .ext-select:disabled { opacity:.38; cursor:default; }
+    .ext-date { width:118px; flex:none; background:#1a2535; border:1px solid #3a4a5e; border-radius:5px; color:#e2e8f0; font-size:11px; padding:3px 7px; outline:none; transition:border-color .2s; color-scheme:dark; }
+    .ext-date:focus { border-color:rgba(33,150,243,.6); }
+    .ext-date:disabled { opacity:.38; cursor:default; }
+    .ext-tinput { flex:1; background:#1a2535; border:1px solid #3a4a5e; border-radius:5px; color:#e2e8f0; font-size:11px; padding:3px 7px; outline:none; min-width:0; transition:border-color .2s; }
+    .ext-tinput:focus { border-color:rgba(33,150,243,.6); }
+    .ext-tinput:disabled { opacity:.38; cursor:default; }
+    .ext-tinput::placeholder { color:#3d5068; }
+  
+    /* === ISOLATION: prevent AmoCRM page CSS from bleeding into extension === */
+    .wrap input, .wrap textarea, .wrap select, .wrap button {
+      font-family: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif !important;
+      box-sizing: border-box !important;
+      line-height: normal !important;
+    }
+    .wrap textarea { background: transparent !important; color: #e6e8ee !important; resize: none !important; }
+    .wrap input[type="text"], .wrap input[type="date"] {
+      background: #1a2333 !important; color: #e6e8ee !important;
+      border: 1px solid #3a4a5e !important; border-radius: 6px !important;
+      padding: 5px 10px !important; font-size: 12.5px !important; outline: none !important;
+    }
+    .wrap input[type="text"]:focus, .wrap input[type="date"]:focus { border-color: #2196f3 !important; }
+    .wrap input[type="checkbox"] {
+      width: 15px !important; height: 15px !important; accent-color: #2196f3 !important;
+      cursor: pointer !important; flex: none !important; margin: 0 !important;
+    }
+    .wrap select {
+      background: #1a2333 !important; color: #e6e8ee !important;
+      border: 1px solid #3a4a5e !important; border-radius: 6px !important;
+      padding: 4px 8px !important; font-size: 12px !important; outline: none !important; cursor: pointer !important;
+    }
+    .wrap select:focus { border-color: #2196f3 !important; }
+    .wrap select option { background: #1a2333; color: #e6e8ee; }
+    .wrap a { color: #90caf9 !important; text-decoration: none !important; }
+    .wrap a:hover { color: #bbdefb !important; text-decoration: underline !important; }
+    /* === ATTACHMENTS === */
+    .atts { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+    .att { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(255,255,255,.04); border: 1px solid #2a3a50; border-radius: 8px; font-size: 12px; color: #cfd5e3; }
+    .att.reminder { border-color: rgba(251,191,36,.3); background: rgba(251,191,36,.06); color: #fde68a; }
+    .att.img img { max-width: 120px; max-height: 80px; border-radius: 6px; display: block; }
+    .att.file a { color: #90caf9; font-size: 12px; word-break: break-all; }
+    .attlbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #cfd5e3; }
+    .attrm { width: 20px; height: 20px; border-radius: 4px; border: none; background: rgba(239,68,68,.15); color: #fca5a5; cursor: pointer; font-size: 13px; display: grid; place-items: center; flex: none; padding: 0; line-height: 1; }
+    .attrm:hover { background: rgba(239,68,68,.35); color: #fff; }
+    /* === LINK === */
+    .link { color: #90caf9; cursor: pointer; text-decoration: underline; font-size: inherit; }
+    .link:hover { color: #bbdefb; }
+  
+</style>
+</head>
+<body>
+
+<!-- Fake AmoCRM interface -->
+<div class="crm-bg">
+  <div class="crm-sidebar">
+    <div class="crm-sidebar-icon active">⚡</div>
+    <div class="crm-sidebar-icon">👥</div>
+    <div class="crm-sidebar-icon">📊</div>
+    <div class="crm-sidebar-icon">📋</div>
+    <div class="crm-sidebar-icon" style="margin-top:auto">⚙️</div>
+  </div>
+  <div class="crm-main">
+    <div class="crm-topbar">
+      <div class="crm-topbar-title">UNICORN PROPERTY — LEADS</div>
+      <div class="crm-topbar-tabs">
+        <div class="crm-tab active">All</div>
+        <div class="crm-tab">My leads</div>
+        <div class="crm-tab">Unread</div>
+      </div>
+    </div>
+    <div class="crm-content">
+      <div class="crm-list">
+        <div class="crm-lead-row active">
+          <div class="crm-lead-name">Abdaal Abramov</div>
+          <div class="crm-lead-stage">Contact Established · $450k</div>
+        </div>
+        <div class="crm-lead-row">
+          <div class="crm-lead-name">Maria Chen</div>
+          <div class="crm-lead-stage">Taken to Work · $280k</div>
+        </div>
+        <div class="crm-lead-row">
+          <div class="crm-lead-name">Robert Kim</div>
+          <div class="crm-lead-stage">Lead Assigned · $600k</div>
+        </div>
+        <div class="crm-lead-row">
+          <div class="crm-lead-name">Sofia Petersen</div>
+          <div class="crm-lead-stage">Contact Established · $380k</div>
+        </div>
+      </div>
+      <div class="crm-lead-detail">
+        <div class="crm-field-group">
+          <div class="crm-field-label">Lead</div>
+          <div class="crm-field-value">Abdaal Abramov #12345</div>
+        </div>
+        <div class="crm-field-group">
+          <div class="crm-field-label">Stage</div>
+          <div class="crm-field-value">Contact Established</div>
+        </div>
+        <div class="crm-field-group">
+          <div class="crm-field-label">Budget</div>
+          <div class="crm-field-value">$450,000</div>
+        </div>
+        <div class="crm-field-group">
+          <div class="crm-field-label">Last message</div>
+          <div class="crm-field-value">Yes, I am interested in Canggu area. When can we schedule a viewing?</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Extension panel (floating, like real extension) -->
+<div class="ext-host">
+
+  <!-- State switcher (for demo only) -->
+  <div style="background:#1a2535;border:1px solid #2a3a50;border-radius:8px;overflow:hidden;width:520px;max-width:calc(100vw - 24px);">
+    <div style="padding:6px 10px;font-size:10px;color:#5e7a99;font-weight:700;letter-spacing:.1em;text-transform:uppercase;border-bottom:1px solid #2a3a50;">
+      👁 PREVIEW STATE
+    </div>
+    <div class="demo-tabs">
+      <button class="demo-tab active" onclick="showState('list')">List view</button>
+      <button class="demo-tab" onclick="showState('detail')">Detail view</button>
+      <button class="demo-tab" onclick="showState('edit')">Edit + AI input</button>
+      <button class="demo-tab" onclick="showState('empty')">Empty</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+
+    <!-- STATE 1: List view with Push/Live tabs -->
+    <div id="state-list" class="state-panel active">
+      <div class="panel">
+        <div class="hd">
+          <div class="hdtop">
+            <div class="badge">
+              <div class="spark" id="panel-spark" style="background:#fbbf24">✦</div>
+              <div>
+                <div class="who">Copilot <span class="arr">›</span> <span id="panel-kind">Push</span></div>
+                <div class="sub" id="panel-sub">3 silent leads</div>
+              </div>
+            </div>
+            <div class="icons">
+              <button class="ib" title="Settings">⚙</button>
+              <button class="ib" title="Close">✕</button>
+            </div>
+          </div>
+          <!-- Push / Live tab switcher -->
+          <div style="display:flex;gap:0;border-top:1px solid #3a4a5e;margin-top:8px;">
+            <button id="tab-push" onclick="switchTab('push')" style="flex:1;height:32px;border:none;cursor:pointer;font-size:11.5px;font-weight:700;letter-spacing:.04em;border-bottom:2px solid #fbbf24;background:transparent;color:#fbbf24;">
+              ⏰ Push <span style="background:rgba(251,191,36,.18);border-radius:10px;padding:1px 6px;font-size:10px;margin-left:4px;">3</span>
+            </button>
+            <button id="tab-live" onclick="switchTab('live')" style="flex:1;height:32px;border:none;cursor:pointer;font-size:11.5px;font-weight:700;letter-spacing:.04em;border-bottom:2px solid transparent;background:transparent;color:#5e7a99;">
+              ⚡ Live <span style="background:rgba(52,211,153,.12);border-radius:10px;padding:1px 6px;font-size:10px;margin-left:4px;">2</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- PUSH tab -->
+        <div id="list-push" class="body" style="padding:6px 0 0;">
+          <div class="list">
+            <div class="li push" style="cursor:pointer" onclick="showState('detail')">
+              <div class="top">
+                <div class="lead-info">
+                  <a class="lead" href="#" onclick="return false" style="color:#90caf9;text-decoration:none;">Abdaal Abramov <span style="font-weight:400;opacity:.55">#12345</span></a>
+                  <div class="li-stage">Contact Established</div>
+                </div>
+                <span class="meta"><span class="lvl">#2</span><span>3h ago</span></span>
+              </div>
+              <div class="prv">Hi, I wanted to check back regarding your interest in high rental potential villas in Bali…</div>
+              <div class="foot"><span>Ivan Petrov</span><span class="arrow">›</span></div>
+            </div>
+            <div class="li push" style="cursor:pointer" onclick="showState('detail')">
+              <div class="top">
+                <div class="lead-info">
+                  <a class="lead" href="#" onclick="return false" style="color:#90caf9;text-decoration:none;">Robert Kim <span style="font-weight:400;opacity:.55">#11111</span></a>
+                  <div class="li-stage">Lead Assigned</div>
+                </div>
+                <span class="meta"><span class="lvl">#1</span><span>6h ago</span></span>
+              </div>
+              <div class="prv">Hello Robert, following up on your inquiry about villa investments in Bali…</div>
+              <div class="foot"><span>Anna Sokolova</span><span class="arrow">›</span></div>
+            </div>
+            <div class="li push" style="cursor:pointer" onclick="showState('detail')">
+              <div class="top">
+                <div class="lead-info">
+                  <a class="lead" href="#" onclick="return false" style="color:#90caf9;text-decoration:none;">Sofia Petersen <span style="font-weight:400;opacity:.55">#33333</span></a>
+                  <div class="li-stage">Contact Established</div>
+                </div>
+                <span class="meta"><span class="lvl">#3</span><span>1d ago</span></span>
+              </div>
+              <div class="prv">Hi Sofia, just checking in — have you had a chance to review the Uluwatu listings?</div>
+              <div class="foot"><span>Ivan Petrov</span><span class="arrow">›</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- LIVE tab (hidden by default) -->
+        <div id="list-live" class="body" style="padding:6px 0 0;display:none;">
+          <div class="list">
+            <div class="li live" style="cursor:pointer" onclick="showState('detail')">
+              <div class="top">
+                <div class="lead-info">
+                  <a class="lead" href="#" onclick="return false" style="color:#90caf9;text-decoration:none;">Maria Chen <span style="font-weight:400;opacity:.55">#67890</span></a>
+                  <div class="li-stage">Taken to Work</div>
+                </div>
+                <span class="meta"><span>1h ago</span></span>
+              </div>
+              <div class="prv">Yes, I am interested in Canggu area. When can we schedule a viewing?</div>
+              <div class="foot"><span>Live reply</span><span class="arrow">›</span></div>
+            </div>
+            <div class="li live" style="cursor:pointer" onclick="showState('detail')">
+              <div class="top">
+                <div class="lead-info">
+                  <a class="lead" href="#" onclick="return false" style="color:#90caf9;text-decoration:none;">James Wilson <span style="font-weight:400;opacity:.55">#44444</span></a>
+                  <div class="li-stage">Contact Established</div>
+                </div>
+                <span class="meta"><span>25m ago</span></span>
+              </div>
+              <div class="prv">Thanks for reaching out! I'd love to see the Seminyak options you mentioned.</div>
+              <div class="foot"><span>Live reply</span><span class="arrow">›</span></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- STATE 2: Detail view (read-only) -->
+    <div id="state-detail" class="state-panel">
+      <div class="panel">
+        <div class="hd">
+          <div class="hdtop">
+            <div class="badge">
+              <div class="spark">✦</div>
+              <div>
+                <div class="who">Copilot <span class="arr">›</span> Push</div>
+                <div class="sub">Abdaal Abramov</div>
+              </div>
+            </div>
+            <div class="icons">
+              <button class="ib" title="Back" onclick="showState('list')">←</button>
+              <button class="ib" title="Close">✕</button>
+            </div>
+          </div>
+        </div>
+        <div class="thread" style="margin:0;border-radius:0;border-left:none;border-right:none;max-height:160px;overflow-y:auto;">
+          <div class="thread-lbl">💬 Conversation</div>
+          <div style="display:flex;flex-direction:column;gap:4px;width:100%">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:0 3px">
+              <span style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#64b5f6">YOU</span>
+              <span style="font-size:10px;color:#6e8099">14:32</span>
+            </div>
+            <div style="padding:8px 11px;border-radius:6px;font-size:13px;line-height:1.52;background:rgba(33,150,243,0.18);border:1px solid rgba(33,150,243,0.45);border-left:3px solid #2196f3;color:#daeeff">Hi Abdaal, are you still interested in the Canggu property?</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;width:100%;margin-top:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:0 3px">
+              <span style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#34d399">LEAD</span>
+              <span style="font-size:10px;color:#6e8099">14:45</span>
+            </div>
+            <div style="padding:8px 11px;border-radius:6px;font-size:13px;line-height:1.52;background:rgba(52,211,153,0.15);border:1px solid rgba(52,211,153,0.4);border-left:3px solid #34d399;color:#c8f5e0">Yes, I am interested in Canggu area. When can we schedule a viewing?</div>
+          </div>
+        </div>
+        <div class="body" style="background:transparent;padding:12px 14px 10px;">
+          <div class="label">Suggested message</div>
+          <div class="msg">Hi Abdaal, I wanted to check back in regarding your interest in high rental potential villas in Bali. If you're still considering options, I can suggest some unique properties in prime areas like Canggu and Uluwatu.</div>
+          <div class="atts">
+            <div class="att reminder"><span>📌</span><span class="attlbl">Schedule call this week</span></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" style="font-size:11px">Send</button>
+          <button class="secondary" style="font-size:11px" onclick="showState('edit')">✏️ Edit</button>
+          <button class="secondary" style="font-size:11px">Already replied</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STATE 3: Edit + AI input -->
+    <div id="state-edit" class="state-panel">
+      <div class="panel">
+        <div class="hd">
+          <div class="hdtop">
+            <div class="badge">
+              <div class="spark">✦</div>
+              <div>
+                <div class="who">Copilot <span class="arr">›</span> Push</div>
+                <div class="sub">Abdaal Abramov · editing</div>
+              </div>
+            </div>
+            <div class="icons">
+              <button class="ib" onclick="showState('detail')">←</button>
+              <button class="ib">✕</button>
+            </div>
+          </div>
+        </div>
+        <div class="body" style="background:transparent;padding:12px 14px 10px;display:flex;flex-direction:column;gap:10px;">
+          <textarea class="ta" rows="4" id="edit-ta">Hi Abdaal, I wanted to check back in regarding your interest in high rental potential villas in Bali. If you're still considering options, I can suggest some unique properties in prime areas like Canggu and Uluwatu.</textarea>
+          <div class="ai-input-wrap" style="border-top:1px solid #2a3a50;padding-top:10px;">
+            <textarea class="aiinput" id="ai-instr" rows="2" placeholder="Tell AI what to change…"></textarea>
+            <div class="ai-btn-row">
+              <button class="ai-mic-btn" id="mic-btn" onclick="toggleMic()" title="Voice input">🎤 Dictate</button>
+              <button class="ai-send-btn" onclick="doRewrite()" title="Send">↑ Send</button>
+            </div>
+          </div>
+        </div>
+        <div class="actions editing">
+          <button class="edit-x" onclick="showState('detail')">✕</button>
+          <button class="edit-ok">✓</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STATE 4: Empty -->
+    <div id="state-empty" class="state-panel">
+      <div class="panel">
+        <div class="hd">
+          <div class="hdtop">
+            <div class="badge">
+              <div class="spark">✦</div>
+              <div>
+                <div class="who">Copilot <span class="arr">›</span> Push</div>
+                <div class="sub">All caught up</div>
+              </div>
+            </div>
+            <div class="icons"><button class="ib">✕</button></div>
+          </div>
+        </div>
+        <div class="body" style="padding:36px 18px;display:flex;flex-direction:column;align-items:center;gap:10px">
+          <div style="width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:20px;background:rgba(251,191,36,.12);color:#fbbf24">⏰</div>
+          <div style="color:#cfd5e3;font-weight:600;font-size:13px">All caught up</div>
+          <div style="font-size:12px;line-height:1.5;max-width:240px;text-align:center;color:#8a96a8">No silent leads right now. Scheduled follow-ups will land here when they're due.</div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- .wrap -->
+
+  <!-- Floating bubble (always visible) -->
+  <button class="bubble" onclick="togglePanel()" title="Copilot">✦<span class="dot">3</span></button>
+
+</div><!-- .ext-host -->
+
+<script>
+function showState(s) {
+  document.querySelectorAll('.state-panel').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.demo-tab').forEach(el => el.classList.remove('active'));
+  document.getElementById('state-' + s).classList.add('active');
+  const labels = {list:'List view', detail:'Detail view', edit:'Edit + AI input', empty:'Empty'};
+  document.querySelectorAll('.demo-tab').forEach(el => {
+    if (el.textContent.trim() === labels[s]) el.classList.add('active');
+  });
+}
+
+function togglePanel() {
+  const host = document.querySelector('.ext-host');
+  const panels = host.querySelector('.wrap');
+  const stateBar = host.querySelector('[style*="PREVIEW STATE"]').parentElement;
+  const hidden = panels.style.display === 'none';
+  panels.style.display = hidden ? '' : 'none';
+  stateBar.style.display = hidden ? '' : 'none';
+}
+
+let micOn = false;
+function toggleMic() {
+  micOn = !micOn;
+  const btn = document.getElementById('mic-btn');
+  if (micOn) {
+    btn.textContent = '✓ Done';
+    btn.classList.add('recording');
+  } else {
+    btn.textContent = '🎤 Dictate';
+    btn.classList.remove('recording');
+  }
+}
+
+function switchTab(tab) {
+  const isPush = tab === 'push';
+  document.getElementById('list-push').style.display = isPush ? '' : 'none';
+  document.getElementById('list-live').style.display = isPush ? 'none' : '';
+  const pushBtn = document.getElementById('tab-push');
+  const liveBtn = document.getElementById('tab-live');
+  pushBtn.style.borderBottomColor = isPush ? '#fbbf24' : 'transparent';
+  pushBtn.style.color = isPush ? '#fbbf24' : '#5e7a99';
+  liveBtn.style.borderBottomColor = isPush ? 'transparent' : '#34d399';
+  liveBtn.style.color = isPush ? '#5e7a99' : '#34d399';
+  document.getElementById('panel-spark').style.background = isPush ? '#fbbf24' : '#34d399';
+  document.getElementById('panel-kind').textContent = isPush ? 'Push' : 'Live';
+  document.getElementById('panel-sub').textContent = isPush ? '3 silent leads' : '2 live replies';
+}
+
+function doRewrite() {
+  const instr = document.getElementById('ai-instr').value.trim();
+  if (!instr) { document.getElementById('ai-instr').placeholder = 'Enter instruction first…'; return; }
+  const ta = document.getElementById('edit-ta');
+  ta.value = '⏳ Rewriting… (demo mode — no real AI call)';
+  setTimeout(() => {
+    ta.value = 'Hi Abdaal! Following up on your interest in Bali villas. ' + instr + ' — Canggu and Uluwatu have excellent options right now. Shall we schedule a viewing?';
+    document.getElementById('ai-instr').value = '';
+  }, 1200);
+}
+</script>
+</body></html>

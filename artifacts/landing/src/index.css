@@ -1,0 +1,139 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap');
+@import "tailwindcss";
+@import "tw-animate-css";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-card-border: hsl(var(--card-border));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-popover-border: hsl(var(--popover-border));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-primary-border: var(--primary-border);
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-secondary-border: var(--secondary-border);
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-muted-border: var(--muted-border);
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-accent-border: var(--accent-border);
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-destructive-border: var(--destructive-border);
+
+  --font-sans: 'Inter', sans-serif;
+  --font-mono: 'Space Mono', monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  /* amoCRM navy-blue palette */
+  --background: 215 45% 10%;
+  --foreground: 0 0% 97%;
+
+  --border: 215 30% 22%;
+
+  --card: 215 40% 14%;
+  --card-foreground: 0 0% 97%;
+  --card-border: 215 30% 22%;
+
+  --popover: 215 40% 14%;
+  --popover-foreground: 0 0% 97%;
+  --popover-border: 215 30% 22%;
+
+  /* amoCRM blue as primary */
+  --primary: 214 100% 60%;
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 215 35% 18%;
+  --secondary-foreground: 0 0% 97%;
+
+  --muted: 215 35% 18%;
+  --muted-foreground: 215 20% 60%;
+
+  --accent: 215 35% 20%;
+  --accent-foreground: 0 0% 97%;
+
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+
+  --input: 215 35% 20%;
+  --ring: 214 100% 60%;
+
+  --radius: 0.5rem;
+
+  --button-outline: rgba(255,255,255, .12);
+  --badge-outline: rgba(255,255,255, .06);
+  --elevate-1: rgba(255,255,255, .04);
+  --elevate-2: rgba(255,255,255, .08);
+
+  --primary-border: hsl(var(--primary));
+  --secondary-border: hsl(var(--secondary));
+  --muted-border: hsl(var(--muted));
+  --accent-border: hsl(var(--accent));
+  --destructive-border: hsl(var(--destructive));
+
+  /* amoCRM gradient background */
+  --amo-bg-start: #0d1f35;
+  --amo-bg-end: #1a4a7a;
+}
+
+.dark {}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased text-foreground selection:bg-primary/30 selection:text-white;
+    background: linear-gradient(135deg, var(--amo-bg-start) 0%, #112a4a 40%, var(--amo-bg-end) 100%);
+    min-height: 100vh;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, #4db8ff 0%, #ffffff 50%, #7dd3fc 100%);
+  }
+
+  .amo-gradient-bg {
+    background: linear-gradient(135deg, #0d1f35 0%, #112a4a 40%, #1a4a7a 100%);
+  }
+}
+
+.glass-panel {
+  background: rgba(13, 31, 61, 0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(77, 184, 255, 0.12);
+}
+
+/* amoCRM-style logo dot */
+.amo-logo-dot {
+  color: #4db8ff;
+}

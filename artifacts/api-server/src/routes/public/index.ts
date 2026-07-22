@@ -1,0 +1,40 @@
+import { Router } from "express";
+import suggestRouter from "./suggest";
+import suggestionsRouter from "./suggestions";
+import feedbackRouter from "./feedback";
+import approveRouter from "./approve";
+import skipRouter from "./skip";
+import themeRouter from "./theme";
+import settingsRouter from "./settings";
+import transcribeRouter from "./transcribe";
+import sendMessageRouter from "./send-message";
+import leadStageRouter from "./lead-stage";
+import correctionRouter from "./correction";
+import scheduleTaskRouter from "./schedule-task";
+import stageOptionsRouter from "./stage-options";
+import parseTaskRouter from "./parse-task";
+import botExcludeRouter from "./bot-exclude";
+import userSettingsRouter from "./user-settings";
+import responsibleUsersRouter from "./responsible-users";
+
+const router = Router();
+
+router.use(suggestRouter);
+router.use(suggestionsRouter);
+router.use(feedbackRouter);
+router.use(approveRouter);
+router.use(skipRouter);
+router.use(themeRouter);
+router.use(settingsRouter);
+router.use(transcribeRouter);
+router.use(sendMessageRouter);
+router.use(leadStageRouter);
+router.use(correctionRouter);
+router.use(scheduleTaskRouter);
+router.use(stageOptionsRouter);
+router.use(parseTaskRouter);
+router.use(botExcludeRouter);
+router.use(userSettingsRouter);
+router.use(responsibleUsersRouter);
+
+export default router;

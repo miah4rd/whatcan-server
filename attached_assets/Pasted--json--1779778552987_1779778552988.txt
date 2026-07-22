@@ -1,0 +1,26 @@
+Для пост запроса, который будет записывать в базу данных, данные из входящего json. В бд также указывай дату. {
+
+"content" : "{{lead.dialogMessages(all, all):sanitizeForJson}}",
+
+"leadId" : "{{lead.id}}",
+
+"responsibleUser" : "{{lead.responsible.name}}"
+
+}
+
+после получения такого запроса данные должны записаться в базу, идентификатором будет служить leadId, нужно будет обновлять content. при этом должен быть асинхронный процесс, который анализирует content на предмет того когда был последний ответ:
+
+Человек ответил на наше последнее сообщение. Система это видит, читает сообщение, предлагает вариант сообщения, отправляет нам на аппрув в расширение
+
+⁠Человек не ответил нам, если нет ответа после нашего сообщения больше чем 24 часа, ну или 48 часов, то запускается сет фолоапов пока не ответит человек (1 фоллоап через 24 часа, 2 через 3 дня, 3 через 5 дней и тд)
+
+Также в интерфейсе создай две вкладки Live и Push, live для первого случая, push для второго случая, описанных выше.
+
+Пример получаемого контента: 11.05.2026 05:53:03 Amojo Bot (bot - amocrm) → Hi Trynh Pham, Here is the Unicorn Property Bali brochure: https://unicorn-property.broad-union-b9f4.workers.dev/brochure/property-brochure-2026 Please note this includes only a small selection of our listings. If you share a bit about what you're looking for, budget, purpose of purchase, area and number of bedrooms, I can recommend more suitable options for you. Robert Unicorn Property Bali 11.05.2026 06:08:53 HoS (менеджер - amocrm) → Hi Trynh, If any property in the brochure caught your interest, feel free to let me know which one. If not, you can share your preferences — whether it's for living or investment, your budget, preferred location, number of bedrooms, or any other details — and I'll guide you accordingly. If helpful, we can also do a quick 5-minute call to better understand what you're looking for before I share suitable options. Just a quick note - the Unicorn Property team offers a complimentary consultation. Looking forward to your reply. Best regards, Robert Unicorn Property | Bali
+
+в примере можно заметить (менеджер - amocrm) или (bot - amocrm) это сообщения отправляемые от нас, все остальные сообщения полученны от клиента.
+
+после нажатия на approve:
+
+Отправляем пост запрос на https://hooks.tglk.ru/in/p5dmPxJ7zyLkZ1HLlPSmaJ24ZQXz9a в теле должны быть параметры leadId и message (сгенерированный или отредактированный ответ)
+сохраняй отправkенный message для дальнейшего обучения и генерации более подходящих ответов.
