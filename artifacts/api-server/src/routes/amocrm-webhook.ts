@@ -9,6 +9,8 @@ import { getPropertyCatalogSummary, fetchAllPropertiesForPriceLookup } from "../
 import { getBrokerPicks } from "../lib/settings";
 import { isStageWhitelisted, shouldSuppressPush } from "../lib/stage-routing";
 import { syncLeadContent } from "../lib/amo-message-sync";
+import { getAmoLead } from "../lib/amo-client";
+import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
 
 const router = Router();
 
@@ -539,6 +541,22 @@ router.post("/amocrm/webhook", async (req, res) => {
           responsibleUser: responsibleUser ?? existing?.responsibleUser ?? undefined,
           source: "direct",
         }).catch(() => {});
+
+        // Rental pipeline: a broker replying directly via WhatsApp (bypassing
+        // the extension) still counts as "this touch is done" — advance the
+        // stage and create the next task, same as if the bot had sent it.
+        if ((pipeline ?? "").toLowerCase() === "rental") {
+          try {
+            const amoLead = await getAmoLead(leadId);
+            if (amoLead?.status_id) {
+              const level = rentalStageToFollowupLevel(existing?.leadStage ?? leadStage);
+              await advanceRentalFollowup(leadId, amoLead.status_id, level);
+              req.log.info({ leadId, level }, "rental: manual WhatsApp reply advanced follow-up");
+            }
+          } catch (err) {
+            req.log.error({ err, leadId }, "rental: advanceRentalFollowup on manual reply failed");
+          }
+        }
       } else if (lastMsgFrom === "us") {
         // Broker wrote last, lead hasn't replied.
         // Do NOT auto-schedule — the broker creates an amoCRM task with the
