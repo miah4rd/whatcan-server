@@ -25,6 +25,7 @@ import backfillAmoCreatedAtRouter from "./admin/backfill-amo-created-at";
 import debugAmojoRouter from "./debug-amojo";
 import debugTalksRouter from "./debug-talks";
 import deployWebhookRouter from "./deploy-webhook";
+import pipelinesRouter from "./admin/pipelines";
 
 const router: IRouter = Router();
 
@@ -54,5 +55,6 @@ router.use(backfillAmoCreatedAtRouter);
 router.use(debugAmojoRouter);
 router.use(debugTalksRouter);
 router.use(deployWebhookRouter);
+router.use(pipelinesRouter);
 
 export default router;
