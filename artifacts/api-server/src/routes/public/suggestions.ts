@@ -62,8 +62,12 @@ router.get("/suggestions", async (req, res) => {
       const stage = sync?.leadStage ?? "";
       if (stage && shouldSuppressPush(stage)) return false;
 
-      // Push tab: only show stages in the dynamic whitelist (configurable via /api/admin/push-stages)
-      if (r.kind === "push" && !isPushStageAllowed(pushWhitelist, stage)) return false;
+      // Push tab: only show stages in the dynamic whitelist (configurable via /api/admin/push-stages).
+      // Rental pipeline uses its own stage vocabulary (Qualified, New LEAD, Options sent,
+      // N foolow up) that doesn't overlap with this Unicorn-oriented whitelist, so it's
+      // exempted here the same way it's exempted during generation in followup-scheduler.ts.
+      const isRentalLead = (sync?.pipeline ?? "").toLowerCase() === "rental";
+      if (r.kind === "push" && !isRentalLead && !isPushStageAllowed(pushWhitelist, stage)) return false;
 
       // Push tab: exclude Shanti Agencies pipeline — different business, not part of this copilot
       if (r.kind === "push" && sync?.pipeline === "Shanti Agencies") return false;
