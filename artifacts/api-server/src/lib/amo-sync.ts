@@ -111,21 +111,37 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
 
   for await (const lead of fetchAllLeads()) {
     total++;
-    const info = pipelineMap.get(lead.status_id);
 
-    // If status_id is not in pipeline map, the lead is closed/won/lost.
-    // Update its stage to "Closed" so it no longer appears in follow-up queries.
-    if (!info) {
-      const closedStage =
-        lead.status_id === AMO_STATUS_WON
-          ? "Won"
-          : lead.status_id === AMO_STATUS_LOST
-            ? "Closed Lost"
-            : "Closed";
+    // Status 142 (Won) / 143 (Lost) are amoCRM system-level statuses shared
+    // across EVERY pipeline in the account — every pipeline's status list
+    // includes its own 142/143 entry. Since pipelineMap is a single global
+    // Map keyed by status_id, whichever pipeline was processed last in
+    // fetchPipelineMap() silently overwrote every other pipeline's 142/143
+    // entry there — so a Rental (or any non-last) lead closed as Lost would
+    // resolve to some OTHER pipeline's name and get skipped by the
+    // ALLOWED_PIPELINES filter below, leaving its stage stuck at whatever it
+    // was before closing. Handle these two IDs before consulting the map at all.
+    if (lead.status_id === AMO_STATUS_WON || lead.status_id === AMO_STATUS_LOST) {
+      const closedStage = lead.status_id === AMO_STATUS_WON ? "Won" : "Closed Lost";
       try {
         await db
           .update(leadsSyncTable)
           .set({ leadStage: closedStage, updatedAt: new Date() })
+          .where(eq(leadsSyncTable.leadId, String(lead.id)));
+      } catch (err) {
+        logger.error({ err, leadId: lead.id }, "amoCRM sync: closed-stage update failed");
+      }
+      continue;
+    }
+
+    const info = pipelineMap.get(lead.status_id);
+
+    // If status_id is not in pipeline map at all, treat as closed too (fallback).
+    if (!info) {
+      try {
+        await db
+          .update(leadsSyncTable)
+          .set({ leadStage: "Closed", updatedAt: new Date() })
           .where(eq(leadsSyncTable.leadId, String(lead.id)));
       } catch (err) {
         logger.error({ err, leadId: lead.id }, "amoCRM sync: closed-stage update failed");
