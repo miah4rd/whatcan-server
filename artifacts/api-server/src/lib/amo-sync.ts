@@ -6,7 +6,7 @@
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, inArray, isNull, or, ilike } from "drizzle-orm";
 import { logger } from "./logger";
-import { amoFetch, getAccessToken, getAllOpenLeadTasksPaginated } from "./amo-client";
+import { amoFetch, getAccessToken, getAllOpenLeadTasksPaginated, createAmoTask } from "./amo-client";
 import { shouldSuppressPush } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
 
@@ -379,6 +379,43 @@ export async function syncTaskSchedule(): Promise<void> {
     if (snoozed > 0) {
       logger.info({ snoozed }, "amo-sync: snoozed leads whose amoCRM task is in the future");
     }
+  }
+
+  // ── Pass -1 (Rental recovery): a Rental lead sitting in a "N foolow up" stage
+  // with NO amoCRM task at all (neither due nor future) is permanently stalled —
+  // PUSH is task-driven, so with nothing to trigger on it will never be picked
+  // up again. This happens when a lead reaches that stage outside our own
+  // approve flow (manual stage change, etc.). Auto-create a task now so the
+  // sequence can resume.
+  try {
+    const rentalFollowupLeads = await db
+      .select({ leadId: leadsSyncTable.leadId, leadStage: leadsSyncTable.leadStage })
+      .from(leadsSyncTable)
+      .where(
+        and(
+          eq(leadsSyncTable.pipeline, "Rental"),
+          ilike(leadsSyncTable.leadStage, "%foolow up%"),
+        ),
+      );
+
+    let recovered = 0;
+    for (const lead of rentalFollowupLeads) {
+      if (dueTasks.has(lead.leadId) || futureTasks.has(lead.leadId)) continue;
+      const ok = await createAmoTask(
+        lead.leadId,
+        `Follow-up due — ${lead.leadStage}. No task existed; auto-created to resume the sequence.`,
+        now,
+      );
+      if (ok) {
+        recovered++;
+        dueTasks.set(lead.leadId, now); // let Pass 1 below pick it up this same cycle
+      }
+    }
+    if (recovered > 0) {
+      logger.info({ recovered }, "amo-sync: recovered Rental leads with no amoCRM task");
+    }
+  } catch (err) {
+    logger.error({ err }, "amo-sync: rental task-recovery pass failed");
   }
 
   // ── Pass 1: Task-driven scheduling (due today / overdue) ─────────────────
