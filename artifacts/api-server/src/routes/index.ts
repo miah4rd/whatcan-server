@@ -24,6 +24,7 @@ import syncLiveNowRouter from "./admin/sync-live-now";
 import backfillAmoCreatedAtRouter from "./admin/backfill-amo-created-at";
 import debugAmojoRouter from "./debug-amojo";
 import debugTalksRouter from "./debug-talks";
+import deployWebhookRouter from "./deploy-webhook";
 
 const router: IRouter = Router();
 
@@ -52,5 +53,6 @@ router.use(syncLiveNowRouter);
 router.use(backfillAmoCreatedAtRouter);
 router.use(debugAmojoRouter);
 router.use(debugTalksRouter);
+router.use(deployWebhookRouter);
 
 export default router;
