@@ -13,10 +13,23 @@ const FOLLOWUP_STAGE_ADVANCE: Record<number, number> = {
   // FINAL FOLLOW UP (72376806) → auto-closes as Lost if client never replied
 };
 
+// amoCRM status IDs for the Rental pipeline (PIPELINE 11119150) — same mechanism
+// as Unicorn above, but Rental's qualification track is daily (1 day apart)
+// instead of Unicorn's 1/3/5-day spread. See FOLLOWUP_DELAY_DAYS_RENTAL below.
+const FOLLOWUP_STAGE_ADVANCE_RENTAL: Record<number, number> = {
+  87318450: 87318706, // 1 foolow up → 2 foolow up
+  87318706: 87318710, // 2 foolow up → 3 foolow up
+  // 3 foolow up (87318710) → auto-closes as Lost if client never replied
+};
+
+// Rental qualification touches are spaced 1 calendar day apart (vs Unicorn's 1/3/5).
+const FOLLOWUP_DELAY_DAYS_RENTAL = [1, 1, 1];
+
 // AmoCRM loss reason ID for "Not Responding" (created via API)
 const LOSS_REASON_NOT_RESPONDING = 23931458;
 
-// followupLevel value that corresponds to Final Follow Up
+// followupLevel value that corresponds to Final Follow Up (same numbering for every pipeline —
+// this is our own DB-tracked touch counter, not an amoCRM-specific value).
 const FINAL_FOLLOWUP_LEVEL = 3;
 
 const router = Router();
@@ -39,6 +52,17 @@ async function autoCreateCrmTask(
   prevLastMessageFrom: string | null,
 ): Promise<void> {
   try {
+    // 0. Look up the lead's pipeline — Rental uses its own (shorter) cadence
+    //    and its own stage-advance map (see constants above).
+    const [pipelineRow] = await db
+      .select({ pipeline: leadsSyncTable.pipeline })
+      .from(leadsSyncTable)
+      .where(eq(leadsSyncTable.leadId, leadId))
+      .limit(1);
+    const isRentalPipeline = (pipelineRow?.pipeline ?? "").toLowerCase() === "rental";
+    const stageAdvanceMap = isRentalPipeline ? FOLLOWUP_STAGE_ADVANCE_RENTAL : FOLLOWUP_STAGE_ADVANCE;
+    const delayDays = isRentalPipeline ? FOLLOWUP_DELAY_DAYS_RENTAL : undefined;
+
     // 1. Close open tasks in our DB
     const closeNow = new Date();
     await db
@@ -58,7 +82,7 @@ async function autoCreateCrmTask(
 
     if (kind === "push") {
       const level = Math.max(0, followupLevel ?? 0);
-      const nextLevelDate = nextFollowupDate(approveNow, level);
+      const nextLevelDate = delayDays ? nextFollowupDate(approveNow, level, delayDays) : nextFollowupDate(approveNow, level);
 
       if (nextLevelDate) {
         taskDate = nextLevelDate;
@@ -111,7 +135,7 @@ async function autoCreateCrmTask(
           return;
         }
       } else {
-        const nextStatusId = FOLLOWUP_STAGE_ADVANCE[currentStatusId];
+        const nextStatusId = stageAdvanceMap[currentStatusId];
         if (nextStatusId) {
           try {
             await updateLeadStatus(leadId, nextStatusId);

@@ -151,7 +151,8 @@ export function resolveStageGroup(rawStage: string): StageGroup {
     s.includes("final follow") ||
     s.includes("followup") ||
     s.includes("follow up") ||
-    s.includes("follow-up")
+    s.includes("follow-up") ||
+    s.includes("foolow up") // Rental pipeline's stage names have this typo in amoCRM
   ) {
     return "early";
   }
