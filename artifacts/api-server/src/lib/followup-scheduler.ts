@@ -12,6 +12,27 @@ import { buildTemplateMessage, buildFollowupTemplateByLevel, buildRentalTouch0Me
 import { generateSuggestion } from "./generate-suggestion";
 import { getLeadTagsAndUtm } from "./amo-client";
 
+/**
+ * Auto-approve a pending suggestion by calling our own /api/public/approve —
+ * reuses the exact same send/task/stage-advance logic a broker's click would
+ * trigger, instead of duplicating it. Used for Rental Touch 0, which sends
+ * without waiting for broker approval.
+ */
+async function autoApproveSuggestion(suggestionId: string, message: string): Promise<void> {
+  try {
+    const res = await fetch("http://127.0.0.1:5000/api/public/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ suggestionId, message }),
+    });
+    if (!res.ok) {
+      logger.error({ suggestionId, status: res.status }, "autoApproveSuggestion: approve call failed");
+    }
+  } catch (err) {
+    logger.error({ err, suggestionId }, "autoApproveSuggestion: request error");
+  }
+}
+
 async function classifyObjection(
   conversationSnippet: string,
   brokerName: string,
@@ -613,7 +634,7 @@ export async function processFollowups(): Promise<void> {
           .limit(1);
 
         if (rentalExisting.length === 0) {
-          await db.insert(pendingSuggestionsTable).values({
+          const [inserted] = await db.insert(pendingSuggestionsTable).values({
             leadId: lead.leadId,
             responsibleUser: lead.responsibleUser,
             kind: "push",
@@ -624,7 +645,10 @@ export async function processFollowups(): Promise<void> {
             status: "pending",
             objectionCategory: OBJECTION_PLAYBOOK[0]!.id,
             attachments: [],
-          });
+          }).returning({ id: pendingSuggestionsTable.id });
+
+          // Touch 0 sends automatically — no broker approval needed.
+          if (inserted) autoApproveSuggestion(String(inserted.id), touch0Text).catch(() => {});
         }
 
         await db
@@ -889,7 +913,7 @@ export async function processUnansweredLive(): Promise<void> {
             ),
           );
 
-        await db.insert(pendingSuggestionsTable).values({
+        const [insertedLive] = await db.insert(pendingSuggestionsTable).values({
           leadId: lead.leadId,
           responsibleUser: lead.responsibleUser,
           kind: "push",
@@ -900,7 +924,10 @@ export async function processUnansweredLive(): Promise<void> {
           status: "pending",
           objectionCategory: OBJECTION_PLAYBOOK[0]!.id,
           attachments: [],
-        });
+        }).returning({ id: pendingSuggestionsTable.id });
+
+        // Touch 0 sends automatically — no broker approval needed.
+        if (insertedLive) autoApproveSuggestion(String(insertedLive.id), touch0Text).catch(() => {});
 
         await db
           .update(leadsSyncTable)
