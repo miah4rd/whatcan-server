@@ -7,12 +7,12 @@ AI-копилот для брокеров по недвижимости Unicorn 
 - **Landing** (`artifacts/landing`) — дашборд аналитики
 
 ## Прод URL
-`https://what-can-info13961.replit.app`
+`https://copilot.globalapplab.ru` (свой сервер, деплой через `save-and-deploy.sh` + PM2 + Traefik; Replit больше не используется)
 
 ## Стек
 - PostgreSQL + Drizzle ORM (база в Replit)
 - amoCRM API (токен в `AMOCRM_LONG_LIVED_TOKEN`) для синка лидов и задач
-- OpenAI API для генерации сообщений
+- Anthropic Claude API (`claude-3-5-haiku-20241022`) для генерации сообщений
 
 ## Брокеры
 Сейчас: **Robert** и **Amelia** (поле `responsible_user` в amoCRM). Расширение позволяет выбрать брокера внутри — лиды и inbox фильтруются по выбору.
@@ -57,15 +57,16 @@ AI-копилот для брокеров по недвижимости Unicorn 
 - Все логи на сервере только через `req.log` / `logger` (не `console.log`)
 - После любого деплоя вызывать POST `/api/admin/sync-tasks`
 - `executeSql` в Replit → только dev БД; для состояния прода — curl к prod URL
-- `amoCreatedAt` есть в schema `leadsSyncTable` (нужен для 3-месячного фильтра)
+- `amoCreatedAt` есть в schema `leadsSyncTable` (нужен для фильтра по возрасту лида: 3 месяца по умолчанию, 7 дней для воронки Rental)
 - amoCRM userMap динамический (fetchUserMap из API) — новые брокеры подхватываются автоматически
 
-## Env-переменные (секреты в Replit)
+## Env-переменные (секреты на сервере, `/opt/whatcan/.env`)
 | Переменная | Назначение |
 |---|---|
 | `AMOCRM_CLIENT_ID` | ID OAuth-приложения amoCRM |
 | `AMOCRM_LONG_LIVED_TOKEN` | Долгоживущий токен доступа к amoCRM |
-| `OPENAI_API_KEY` | OpenAI для генерации сообщений |
+| `ANTHROPIC_API_KEY` | Claude для генерации сообщений |
+| `OPENAI_API_KEY` | OpenAI (используется только для транскрибации голоса, не для сообщений) |
 | `SESSION_SECRET` | Секрет сессий Express |
 | `DATABASE_URL` | PostgreSQL connection string |
 

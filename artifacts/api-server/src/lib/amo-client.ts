@@ -121,7 +121,7 @@ export async function exchangeCode(code: string): Promise<boolean> {
 export function buildRedirectUri(): string {
   const domain = (process.env.REPLIT_DOMAINS ?? "").split(",")[0]?.trim();
   if (domain) return `https://${domain}/api/admin/amo-oauth/callback`;
-  return "https://what-can-info13961.replit.app/api/admin/amo-oauth/callback";
+  return "https://copilot.globalapplab.ru/api/admin/amo-oauth/callback";
 }
 
 export function buildAuthUrl(): string {

@@ -86,7 +86,7 @@ router.post("/amo/oauth/install", async (req, res) => {
         client_secret,
         grant_type: "authorization_code",
         code: authorization_code,
-        redirect_uri: redirect_uri ?? `https://${process.env.REPLIT_DOMAINS?.split(",")[0]}/api/amo/oauth/install`,
+        redirect_uri: redirect_uri ?? "https://copilot.globalapplab.ru/api/amo/oauth/install",
       }),
     });
 
