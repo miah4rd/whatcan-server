@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { processFollowups } from "../../lib/followup-scheduler";
+import { processFollowups, processUnansweredLive } from "../../lib/followup-scheduler";
 import { syncTaskSchedule } from "../../lib/amo-sync";
 import { logger } from "../../lib/logger";
 import { db, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
@@ -9,13 +9,16 @@ const router = Router();
 
 /**
  * POST /api/admin/run-scheduler
- * Immediately runs one full followup-scheduler tick on PROD.
- * Use when push suggestions need to be regenerated without waiting 5 min.
+ * Immediately runs one full followup-scheduler tick on PROD (both the
+ * task-driven PUSH pass and the unanswered-LIVE pass, same as the periodic
+ * background scheduler). Use when suggestions need to be regenerated
+ * without waiting 5 min.
  */
 router.post("/admin/run-scheduler", async (_req, res) => {
   try {
     logger.info("admin: manual scheduler run triggered");
     await processFollowups();
+    await processUnansweredLive();
     logger.info("admin: manual scheduler run complete");
     res.json({ ok: true, message: "Scheduler run complete. Check PUSH tab in extension." });
   } catch (err) {
