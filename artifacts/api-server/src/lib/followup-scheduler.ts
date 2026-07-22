@@ -483,59 +483,6 @@ export async function processFollowups(): Promise<void> {
         if (lead.nextFollowupAt > tenMinFromNow) continue;
       }
 
-      // ── Rental pipeline: Touch 0 (brand new lead, no external ARGO) ──────────
-      // Unicorn's brochure is sent by ARGO before the bot ever sees the lead;
-      // Rental has no such system, so the bot must generate the very first
-      // message itself — content depends on which ad campaign the lead came from.
-      if (lead.followupLevel === -1 && (lead.pipeline ?? "").toLowerCase() === "rental") {
-        const { tags, utmCampaign } = await getLeadTagsAndUtm(lead.leadId);
-        const touch0Text = buildRentalTouch0Message(tags, utmCampaign, leadFirstName, lead.responsibleUser ?? undefined);
-
-        const rentalBrokerId = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
-
-        await db.insert(aiSuggestionsTable).values({
-          brokerId: rentalBrokerId,
-          leadId: lead.leadId,
-          leadName: `Lead #${lead.leadId}`,
-          promptMessages: [],
-          suggestionText: touch0Text,
-          rationale: `Rental Touch 0 — ${tags.join(", ") || "no tags"} / utm_campaign=${utmCampaign ?? "none"}.`,
-          model: "claude-sonnet-5",
-        });
-
-        const rentalExisting = await db
-          .select({ id: pendingSuggestionsTable.id })
-          .from(pendingSuggestionsTable)
-          .where(and(
-            eq(pendingSuggestionsTable.leadId, lead.leadId),
-            eq(pendingSuggestionsTable.status, "pending"),
-          ))
-          .limit(1);
-
-        if (rentalExisting.length === 0) {
-          await db.insert(pendingSuggestionsTable).values({
-            leadId: lead.leadId,
-            responsibleUser: lead.responsibleUser,
-            kind: "push",
-            // Level 0 — approve.ts schedules the next touch 1 day later and
-            // advances New LEAD -> 1 foolow up (FOLLOWUP_STAGE_ADVANCE_RENTAL).
-            followupLevel: 0,
-            suggestionText: touch0Text,
-            status: "pending",
-            objectionCategory: OBJECTION_PLAYBOOK[0]!.id,
-            attachments: [],
-          });
-        }
-
-        await db
-          .update(leadsSyncTable)
-          .set({ followupLevel: 0, nextFollowupAt: null })
-          .where(eq(leadsSyncTable.leadId, lead.leadId));
-
-        logger.info({ leadId: lead.leadId, tags, utmCampaign }, "rental: touch 0 queued");
-        continue;
-      }
-
       // ── Warmup (followupLevel=-1): brand new lead, 15-min window passed ──────
       // Brochures are sent automatically by ARGO — NEVER suggest the brochure here.
       // Priority: 1) qual script for level 1, 2) Touch 1 template, 3) AI generation.
@@ -631,6 +578,61 @@ export async function processFollowups(): Promise<void> {
           { leadId: lead.leadId, objection: warmupEntry.id },
           "warmup push queued (task-driven next step)",
         );
+        continue;
+      }
+
+      // ── Rental pipeline: Touch 0 (brand new lead, no external ARGO) ──────────
+      // Unicorn's brochure is sent by ARGO before the bot ever sees the lead, so
+      // by the time a Unicorn lead is due here it's already past that. Rental has
+      // no such system — the bot must generate the very first message itself,
+      // triggered off the lead still sitting in its literal "New LEAD" stage.
+      // Content depends on which ad campaign the lead came from (tags/utm_campaign).
+      if ((lead.pipeline ?? "").toLowerCase() === "rental" && (lead.leadStage ?? "").toLowerCase() === "new lead") {
+        const { tags, utmCampaign } = await getLeadTagsAndUtm(lead.leadId);
+        const touch0Text = buildRentalTouch0Message(tags, utmCampaign, leadFirstName, lead.responsibleUser ?? undefined);
+
+        const rentalBrokerId = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+
+        await db.insert(aiSuggestionsTable).values({
+          brokerId: rentalBrokerId,
+          leadId: lead.leadId,
+          leadName: `Lead #${lead.leadId}`,
+          promptMessages: [],
+          suggestionText: touch0Text,
+          rationale: `Rental Touch 0 — ${tags.join(", ") || "no tags"} / utm_campaign=${utmCampaign ?? "none"}.`,
+          model: "claude-sonnet-5",
+        });
+
+        const rentalExisting = await db
+          .select({ id: pendingSuggestionsTable.id })
+          .from(pendingSuggestionsTable)
+          .where(and(
+            eq(pendingSuggestionsTable.leadId, lead.leadId),
+            eq(pendingSuggestionsTable.status, "pending"),
+          ))
+          .limit(1);
+
+        if (rentalExisting.length === 0) {
+          await db.insert(pendingSuggestionsTable).values({
+            leadId: lead.leadId,
+            responsibleUser: lead.responsibleUser,
+            kind: "push",
+            // Level 0 — approve.ts schedules the next touch 1 day later and
+            // advances New LEAD -> 1 foolow up (FOLLOWUP_STAGE_ADVANCE_RENTAL).
+            followupLevel: 0,
+            suggestionText: touch0Text,
+            status: "pending",
+            objectionCategory: OBJECTION_PLAYBOOK[0]!.id,
+            attachments: [],
+          });
+        }
+
+        await db
+          .update(leadsSyncTable)
+          .set({ followupLevel: 0, nextFollowupAt: null })
+          .where(eq(leadsSyncTable.leadId, lead.leadId));
+
+        logger.info({ leadId: lead.leadId, tags, utmCampaign }, "rental: touch 0 queued");
         continue;
       }
 
