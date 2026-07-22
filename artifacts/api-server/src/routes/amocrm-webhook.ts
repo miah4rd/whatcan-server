@@ -419,6 +419,11 @@ router.post("/amocrm/webhook", async (req, res) => {
           set: { responsibleUser, leadNotes: leadNotes ?? undefined, leadStage: leadStage ?? undefined, leadStageId: leadStageId ?? undefined, pipeline: pipeline ?? undefined, content },
         });
 
+        // "lead_assigned" fires on every (re)assignment, not just genuinely new
+        // leads — e.g. amoCRM can re-fire it after a lead is already engaged.
+        // Only treat this as a true cold-open if there's no real conversation yet.
+        const hasExistingDialog = parseDialogContent(content).messages.length > 0;
+
         const text = await generateSuggestion({
           leadId,
           responsibleUser,
@@ -427,7 +432,7 @@ router.post("/amocrm/webhook", async (req, res) => {
           contentSnippet: content,
           leadNotes,
           leadStage,
-          isFirstContact: true,
+          isFirstContact: !hasExistingDialog,
         });
         if (text) {
           await queueSuggestion({ leadId, responsibleUser, kind: "push", text });
