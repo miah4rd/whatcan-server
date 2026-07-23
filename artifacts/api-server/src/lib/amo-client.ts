@@ -137,6 +137,21 @@ export function buildAuthUrl(): string {
 
 // ── API fetch wrapper ─────────────────────────────────────────────────────────
 
+// amoCRM returns a 200 with an EMPTY body (not even "{}") for some filtered
+// list endpoints when there are zero results (e.g. GET /tasks with no open
+// tasks for that lead) — res.json() throws "Unexpected end of JSON input" on
+// that. Read as text first and only parse if there's actually a body.
+async function parseAmoResponse<T>(res: Response, path: string): Promise<T | null> {
+  const raw = await res.text();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    logger.error({ err, path, bodySnippet: raw.slice(0, 200) }, "amoCRM: failed to parse response body");
+    return null;
+  }
+}
+
 export async function amoFetch<T>(path: string): Promise<T | null> {
   const token = await getAccessToken();
   if (!token) { logger.warn("amoCRM: no access token, skipping request"); return null; }
@@ -153,11 +168,11 @@ export async function amoFetch<T>(path: string): Promise<T | null> {
       headers: { Authorization: `Bearer ${newToken}`, "Content-Type": "application/json" },
     });
     if (!retry.ok) { logger.error({ status: retry.status, path }, "amoCRM retry failed"); return null; }
-    return retry.json() as Promise<T>;
+    return parseAmoResponse<T>(retry, path);
   }
 
   if (!res.ok) { logger.error({ status: res.status, path }, "amoCRM request failed"); return null; }
-  return res.json() as Promise<T>;
+  return parseAmoResponse<T>(res, path);
 }
 
 // ── Write helpers ─────────────────────────────────────────────────────────────
