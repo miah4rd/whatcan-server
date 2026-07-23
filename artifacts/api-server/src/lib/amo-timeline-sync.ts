@@ -35,21 +35,20 @@ async function getSessionToken(): Promise<string | null> {
     return cachedSession.accessToken;
   }
 
-  let puppeteer: any;
+  let puppeteerCore: any;
   try {
-    puppeteer = await import("puppeteer");
+    puppeteerCore = await import("puppeteer-core");
   } catch {
-    logger.error("puppeteer not installed — run: npm install puppeteer");
+    logger.error("puppeteer-core not installed — run: pnpm add -w puppeteer-core");
     return null;
   }
 
-  const launchArgs: any = {
+  const chromePath = CHROME_PATH || "/root/.cache/puppeteer/chrome/linux-150.0.7871.24/chrome-linux64/chrome";
+  const browser = await puppeteerCore.default.launch({
     headless: true,
+    executablePath: chromePath,
     args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-  };
-  if (CHROME_PATH) launchArgs.executablePath = CHROME_PATH;
-
-  const browser = await puppeteer.default.launch(launchArgs);
+  });
   try {
     const page = await browser.newPage();
 
