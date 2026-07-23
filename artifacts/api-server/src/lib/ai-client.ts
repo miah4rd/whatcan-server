@@ -38,6 +38,12 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatComp
     messages: opts.messages,
     max_tokens: opts.max_tokens ?? 400,
     temperature: opts.temperature,
+    // Some models (e.g. claude-sonnet-5) use extended thinking by default. For
+    // these short, latency-sensitive chat-suggestion calls we want the direct
+    // answer, not a reasoning trace — without this, thinking can consume the
+    // entire max_tokens budget on complex prompts and leave zero tokens for
+    // the actual text, producing a response with no text block at all.
+    thinking: { type: "disabled" },
   });
 
   const text = response.content
@@ -45,18 +51,6 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatComp
     .map((block) => block.text)
     .join("")
     .trim();
-
-  if (!text) {
-    // eslint-disable-next-line no-console
-    console.error("DEBUG_EMPTY_AI_RESPONSE", JSON.stringify({
-      model: opts.model,
-      stop_reason: response.stop_reason,
-      blockTypes: response.content.map((b) => b.type),
-      usage: response.usage,
-      systemLen: opts.system.length,
-      messagesLens: opts.messages.map((m) => m.content.length),
-    }));
-  }
 
   return { content: text };
 }
