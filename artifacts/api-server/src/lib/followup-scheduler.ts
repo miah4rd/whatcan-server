@@ -8,30 +8,8 @@ import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestio
 import { OBJECTION_PLAYBOOK, type PlaybookEntry } from "./objection-playbook";
 import { shouldSuppressPush, isStageWhitelisted } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
-import { buildTemplateMessage, buildFollowupTemplateByLevel, buildRentalTouch0Message, selectVariant } from "./followup-templates";
+import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
 import { generateSuggestion } from "./generate-suggestion";
-import { getLeadTagsAndUtm } from "./amo-client";
-
-/**
- * Auto-approve a pending suggestion by calling our own /api/public/approve —
- * reuses the exact same send/task/stage-advance logic a broker's click would
- * trigger, instead of duplicating it. Used for Rental Touch 0, which sends
- * without waiting for broker approval.
- */
-async function autoApproveSuggestion(suggestionId: string, message: string): Promise<void> {
-  try {
-    const res = await fetch("http://127.0.0.1:5000/api/public/approve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ suggestionId, message }),
-    });
-    if (!res.ok) {
-      logger.error({ suggestionId, status: res.status }, "autoApproveSuggestion: approve call failed");
-    }
-  } catch (err) {
-    logger.error({ err, suggestionId }, "autoApproveSuggestion: request error");
-  }
-}
 
 async function classifyObjection(
   conversationSnippet: string,
@@ -612,64 +590,6 @@ export async function processFollowups(): Promise<void> {
         continue;
       }
 
-      // ── Rental pipeline: Touch 0 (brand new lead, no external ARGO) ──────────
-      // Unicorn's brochure is sent by ARGO before the bot ever sees the lead, so
-      // by the time a Unicorn lead is due here it's already past that. Rental has
-      // no such system — the bot must generate the very first message itself,
-      // triggered off the lead still sitting in its literal "New LEAD" stage.
-      // Content depends on which ad campaign the lead came from (tags/utm_campaign).
-      if ((lead.pipeline ?? "").toLowerCase() === "rental" && (lead.leadStage ?? "").toLowerCase() === "new lead") {
-        const { tags, utmCampaign } = await getLeadTagsAndUtm(lead.leadId);
-        const touch0Text = buildRentalTouch0Message(tags, utmCampaign, leadFirstName, lead.responsibleUser ?? undefined);
-
-        const rentalBrokerId = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
-
-        await db.insert(aiSuggestionsTable).values({
-          brokerId: rentalBrokerId,
-          leadId: lead.leadId,
-          leadName: `Lead #${lead.leadId}`,
-          promptMessages: [],
-          suggestionText: touch0Text,
-          rationale: `Rental Touch 0 — ${tags.join(", ") || "no tags"} / utm_campaign=${utmCampaign ?? "none"}.`,
-          model: "claude-sonnet-5",
-        });
-
-        const rentalExisting = await db
-          .select({ id: pendingSuggestionsTable.id })
-          .from(pendingSuggestionsTable)
-          .where(and(
-            eq(pendingSuggestionsTable.leadId, lead.leadId),
-            eq(pendingSuggestionsTable.status, "pending"),
-          ))
-          .limit(1);
-
-        if (rentalExisting.length === 0) {
-          const [inserted] = await db.insert(pendingSuggestionsTable).values({
-            leadId: lead.leadId,
-            responsibleUser: lead.responsibleUser,
-            kind: "push",
-            // Level 0 — approve.ts schedules the next touch 1 day later and
-            // advances New LEAD -> 1 foolow up (FOLLOWUP_STAGE_ADVANCE_RENTAL).
-            followupLevel: 0,
-            suggestionText: touch0Text,
-            status: "pending",
-            objectionCategory: OBJECTION_PLAYBOOK[0]!.id,
-            attachments: [],
-          }).returning({ id: pendingSuggestionsTable.id });
-
-          // Touch 0 sends automatically — no broker approval needed.
-          if (inserted) autoApproveSuggestion(String(inserted.id), touch0Text).catch(() => {});
-        }
-
-        await db
-          .update(leadsSyncTable)
-          .set({ followupLevel: 0, nextFollowupAt: null })
-          .where(eq(leadsSyncTable.leadId, lead.leadId));
-
-        logger.info({ leadId: lead.leadId, tags, utmCampaign }, "rental: touch 0 queued");
-        continue;
-      }
-
       // ── Stage-based script selection ─────────────────────────────────────
       // Use the lead's CURRENT STAGE to determine which qual script to show.
       // This handles leads manually moved to a stage (e.g. Final Follow Up)
@@ -898,60 +818,6 @@ export async function processUnansweredLive(): Promise<void> {
 
   for (const lead of batch) {
     try {
-      // ── Rental pipeline: Touch 0 ──────────────────────────────────────────
-      // A brand new Rental lead's very first inbound message (form submission,
-      // WhatsApp opener, etc.) lands it here (lastMessageFrom="lead") rather
-      // than in the task-driven PUSH path. If it's still in "New LEAD" stage,
-      // this IS Touch 0 — use the deterministic campaign-based opener instead
-      // of a generic AI reply, and store it as kind="push" so approve.ts's
-      // Rental stage-advance/auto-close mechanism picks it up correctly.
-      if (
-        (lead.pipeline ?? "").toLowerCase() === "rental" &&
-        (lead.leadStage ?? "").toLowerCase() === "new lead"
-      ) {
-        const leadFirstName = (() => {
-          const parsedForName = parseDialogContent(lead.content ?? "");
-          const msg = parsedForName.messages.find((m) => m.from === "lead" && m.senderName?.trim());
-          if (!msg?.senderName) return "";
-          return msg.senderName.replace(/\s*\([^)]*\)\s*$/, "").trim().split(/\s+/)[0] ?? "";
-        })();
-        const { tags, utmCampaign } = await getLeadTagsAndUtm(lead.leadId);
-        const touch0Text = buildRentalTouch0Message(tags, utmCampaign, leadFirstName, lead.responsibleUser ?? undefined);
-
-        await db
-          .delete(pendingSuggestionsTable)
-          .where(
-            and(
-              eq(pendingSuggestionsTable.leadId, lead.leadId),
-              eq(pendingSuggestionsTable.status, "pending"),
-            ),
-          );
-
-        const [insertedLive] = await db.insert(pendingSuggestionsTable).values({
-          leadId: lead.leadId,
-          responsibleUser: lead.responsibleUser,
-          kind: "push",
-          // Level 0 — approve.ts schedules Touch 1 one day later and advances
-          // New LEAD -> 1 foolow up (FOLLOWUP_STAGE_ADVANCE_RENTAL).
-          followupLevel: 0,
-          suggestionText: touch0Text,
-          status: "pending",
-          objectionCategory: OBJECTION_PLAYBOOK[0]!.id,
-          attachments: [],
-        }).returning({ id: pendingSuggestionsTable.id });
-
-        // Touch 0 sends automatically — no broker approval needed.
-        if (insertedLive) autoApproveSuggestion(String(insertedLive.id), touch0Text).catch(() => {});
-
-        await db
-          .update(leadsSyncTable)
-          .set({ followupLevel: 0 })
-          .where(eq(leadsSyncTable.leadId, lead.leadId));
-
-        logger.info({ leadId: lead.leadId, tags, utmCampaign }, "rental: touch 0 queued (from unanswered-live path)");
-        continue;
-      }
-
       const content = lead.content ?? "";
       if (!content) continue;
 
