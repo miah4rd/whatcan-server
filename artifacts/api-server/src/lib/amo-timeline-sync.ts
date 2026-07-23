@@ -6,10 +6,11 @@
  * Types 89 = incoming message from client
  * Types 90 = outgoing message (bot/broker)
  */
-import { db, leadMessagesTable, leadsSyncTable } from "@workspace/db";
+import { db, leadMessagesTable, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, sql, isNotNull, not } from "drizzle-orm";
 import { createHash } from "crypto";
 import { logger } from "./logger";
+import { generateSuggestion } from "./generate-suggestion.js";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
 const AMO_BASE = `https://${AMO_SUBDOMAIN}.amocrm.ru`;
@@ -350,7 +351,195 @@ export async function syncLeadMessagesFromTimeline(): Promise<{
     "timeline message sync complete",
   );
 
+  // ── Also detect new incoming messages while we have cookies ────────────────
+  try {
+    const incoming = await syncIncomingMessageDetection();
+    logger.info({ ...incoming }, "incoming message detection complete (part of timeline sync)");
+  } catch (err) {
+    logger.error({ err }, "incoming message detection failed (non-fatal)");
+  }
+
   return { synced: totalSynced, leads: leadsProcessed, errors };
+}
+
+// ── Detect new incoming messages and update lastMessageFrom ─────────────────────
+/**
+ * For leads where we sent the last message (lastMessageFrom = "us" or null),
+ * check if the client replied since our last outgoing message.
+ * If so, update lastMessageFrom = "lead" and generate a LIVE suggestion.
+ *
+ * This catches manager replies from phone/amoCRM that bypass the extension.
+ */
+export async function syncIncomingMessageDetection(): Promise<{ detected: number; liveGenerated: number }> {
+  const cookieStr = await getAmoCookies();
+  if (!cookieStr) {
+    logger.error("incoming detection: no cookies");
+    return { detected: 0, liveGenerated: 0 };
+  }
+
+  // Get leads where we potentially sent the last message
+  const leads = await db
+    .select({
+      leadId: leadsSyncTable.leadId,
+      lastMessageFrom: leadsSyncTable.lastMessageFrom,
+      lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
+      leadStage: leadsSyncTable.leadStage,
+      pipeline: leadsSyncTable.pipeline,
+      botExcluded: leadsSyncTable.botExcluded,
+      responsibleUser: leadsSyncTable.responsibleUser,
+    })
+    .from(leadsSyncTable)
+    .where(
+      and(
+        isNotNull(leadsSyncTable.leadId),
+        not(eq(leadsSyncTable.botExcluded, true)),
+        sql`${leadsSyncTable.lastMessageFrom} != 'lead' OR ${leadsSyncTable.lastMessageFrom} IS NULL`,
+      ),
+    );
+
+  if (leads.length === 0) {
+    logger.info("incoming detection: no leads to check");
+    return { detected: 0, liveGenerated: 0 };
+  }
+
+  logger.info({ leadCount: leads.length }, "incoming detection started");
+
+  let detected = 0;
+  let liveGenerated = 0;
+  const BATCH_SIZE = 10;
+  const DELAY_MS = 2000;
+
+  // Only fetch the most recent 5 events per lead (enough to find latest incoming/outgoing)
+  const RECENT_LIMIT = 5;
+
+  for (let i = 0; i < leads.length; i += BATCH_SIZE) {
+    const batch = leads.slice(i, i + BATCH_SIZE);
+
+    const results = await Promise.allSettled(
+      batch.map(async (lead) => {
+        try {
+          const events = await fetchTimeline(cookieStr, lead.leadId, RECENT_LIMIT);
+          if (events.length === 0) return { leadId: lead.leadId, detected: false };
+
+          // Find most recent type 89 (incoming) and type 90 (outgoing)
+          let latestIncoming = 0;
+          let latestOutgoing = 0;
+          let latestIncomingText = "";
+
+          for (const ev of events) {
+            if (ev.type === 89 && ev.created_at && ev.created_at > latestIncoming) {
+              latestIncoming = ev.created_at;
+              latestIncomingText = ev.data?.message?.text || "";
+            }
+            if (ev.type === 90 && ev.created_at && ev.created_at > latestOutgoing) {
+              latestOutgoing = ev.created_at;
+            }
+          }
+
+          if (latestIncoming === 0) return { leadId: lead.leadId, detected: false };
+
+          // Client replied after our last outgoing message?
+          const lastOurAt = lead.lastOurMessageAt?.getTime() ?? 0;
+          const lastOurTs = Math.floor(lastOurAt / 1000);
+
+          if (latestIncoming <= latestOutgoing && latestOutgoing > 0) {
+            // Incoming is older than outgoing — no new client reply
+            return { leadId: lead.leadId, detected: false };
+          }
+
+          if (lastOurTs > 0 && latestIncoming <= lastOurTs) {
+            // We already know about a more recent outgoing
+            return { leadId: lead.leadId, detected: false };
+          }
+
+          // Client replied! Update lastMessageFrom
+          const incomingAt = new Date(latestIncoming * 1000);
+          await db
+            .update(leadsSyncTable)
+            .set({
+              lastMessageFrom: "lead",
+              lastMessageAt: incomingAt,
+              updatedAt: new Date(),
+            })
+            .where(eq(leadsSyncTable.leadId, lead.leadId));
+
+          // Delete any pending PUSH suggestions (client just replied — no follow-up needed)
+          await db
+            .delete(pendingSuggestionsTable)
+            .where(
+              and(
+                eq(pendingSuggestionsTable.leadId, lead.leadId),
+                eq(pendingSuggestionsTable.status, "pending"),
+                eq(pendingSuggestionsTable.kind, "push"),
+              ),
+            );
+
+          // Check if there's already a pending LIVE suggestion
+          const [existingLive] = await db
+            .select({ id: pendingSuggestionsTable.id })
+            .from(pendingSuggestionsTable)
+            .where(
+              and(
+                eq(pendingSuggestionsTable.leadId, lead.leadId),
+                eq(pendingSuggestionsTable.status, "pending"),
+                eq(pendingSuggestionsTable.kind, "live"),
+              ),
+            )
+            .limit(1);
+
+          let liveCreated = false;
+          if (!existingLive && latestIncomingText) {
+            // Generate LIVE suggestion — fetch more context for the AI
+            try {
+              const fullEvents = await fetchTimeline(cookieStr, lead.leadId, 20);
+              const allMsgs = parseTimelineEvents(lead.leadId, fullEvents);
+              const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
+              const contentSnippet = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
+
+              if (lastLeadMsg) {
+                await generateSuggestion({
+                  leadId: lead.leadId,
+                  responsibleUser: lead.responsibleUser,
+                  kind: "live",
+                  lastLeadMessage: lastLeadMsg.text,
+                  contentSnippet: contentSnippet.slice(0, 3000),
+                  leadStage: lead.leadStage,
+                  pipeline: lead.pipeline,
+                });
+                liveCreated = true;
+              }
+            } catch (err) {
+              logger.error({ leadId: lead.leadId, err }, "incoming detection: LIVE generation failed");
+            }
+          }
+
+          logger.info(
+            { leadId: lead.leadId, incomingAt, latestOutgoing, liveCreated },
+            "incoming detection: client replied detected",
+          );
+
+          return { leadId: lead.leadId, detected: true, liveCreated };
+        } catch (err) {
+          logger.error({ leadId: lead.leadId, err }, "incoming detection error");
+          return { leadId: lead.leadId, detected: false };
+        }
+      }),
+    );
+
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value.detected) {
+        detected++;
+        if (r.value.liveCreated) liveGenerated++;
+      }
+    }
+
+    if (i + BATCH_SIZE < leads.length) {
+      await new Promise((r) => setTimeout(r, DELAY_MS));
+    }
+  }
+
+  logger.info({ detected, liveGenerated, totalChecked: leads.length }, "incoming detection complete");
+  return { detected, liveGenerated };
 }
 
 // ── Standalone runner ──────────────────────────────────────────────────────────
