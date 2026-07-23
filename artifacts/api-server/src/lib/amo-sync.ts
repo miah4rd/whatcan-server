@@ -164,7 +164,14 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
 
     try {
       const now = new Date();
-      const autoSchedule = !shouldSuppressPush(info.stageName) ? now : null;
+      // New leads wait 24h before becoming eligible for a bot-generated PUSH —
+      // gives amoCRM's own automation (Команда F5 / ARGO) time to send its
+      // first message. This has no effect on LIVE: that's triggered in
+      // real time whenever the lead actually replies, independent of this field.
+      const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+      const autoSchedule = !shouldSuppressPush(info.stageName)
+        ? new Date(now.getTime() + TWENTY_FOUR_HOURS_MS)
+        : null;
 
       const amoCreatedAt = lead.created_at ? new Date(lead.created_at * 1000) : null;
 
