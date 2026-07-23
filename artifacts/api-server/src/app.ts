@@ -37,7 +37,7 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
 
-startFollowupScheduler(1 * 60 * 1000); // TEMP for testing — revert to default (5 min) by calling with no args
+startFollowupScheduler();
 startAmoSyncScheduler();
 startFunnelSnapshotScheduler();
 startMessageSyncScheduler();

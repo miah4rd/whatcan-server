@@ -598,7 +598,7 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
-const SYNC_INTERVAL_MS = 1 * 60 * 1000; // TEMP for testing — revert to 5 * 60 * 1000
+const SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 export function startAmoSyncScheduler(): void {
   // First sync after 10 seconds (let server boot first)
