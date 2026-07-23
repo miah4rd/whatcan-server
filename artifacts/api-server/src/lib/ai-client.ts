@@ -46,6 +46,18 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatComp
     .join("")
     .trim();
 
+  if (!text) {
+    // eslint-disable-next-line no-console
+    console.error("DEBUG_EMPTY_AI_RESPONSE", JSON.stringify({
+      model: opts.model,
+      stop_reason: response.stop_reason,
+      blockTypes: response.content.map((b) => b.type),
+      usage: response.usage,
+      systemLen: opts.system.length,
+      messagesLens: opts.messages.map((m) => m.content.length),
+    }));
+  }
+
   return { content: text };
 }
 
