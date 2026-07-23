@@ -202,7 +202,7 @@ function parseTimelineEvents(leadId: string, events: TimelineEvent[]): RawMessag
     }
 
     // Use event id as unique identifier
-    const amoMsgId = ev.id || messageId(leadId, ev.created_at ?? 0, senderId ?? "", text);
+    const amoMessageId = ev.id || messageId(leadId, ev.created_at ?? 0, senderId ?? "", text);
     const sentAt = ev.created_at ? new Date(ev.created_at * 1000) : new Date();
 
     messages.push({
