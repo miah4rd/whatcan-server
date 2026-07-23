@@ -366,3 +366,19 @@ if (process.argv[1]?.includes("amo-timeline-sync")) {
       process.exit(1);
     });
 }
+
+// ── Scheduler ──────────────────────────────────────────────────────────────────
+const TIMELINE_SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+
+export function startTimelineSyncScheduler(): void {
+  // First sync after 60 seconds (let other schedulers finish first)
+  setTimeout(async () => {
+    try { await syncLeadMessagesFromTimeline(); } catch (err) { logger.error({ err }, "initial timeline sync error"); }
+  }, 60_000);
+
+  setInterval(async () => {
+    try { await syncLeadMessagesFromTimeline(); } catch (err) { logger.error({ err }, "periodic timeline sync error"); }
+  }, TIMELINE_SYNC_INTERVAL_MS);
+
+  logger.info("timeline sync scheduler started (every 30 min)");
+}
