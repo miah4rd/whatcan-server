@@ -27,6 +27,8 @@ import debugTalksRouter from "./debug-talks";
 import deployWebhookRouter from "./deploy-webhook";
 import pipelinesRouter from "./admin/pipelines";
 import syncTimelineRouter from "./admin/sync-timeline";
+import amocrmChatWebhookRouter from "./amocrm-chat-webhook";
+import sendChatMessageRouter from "./public/send-chat-message";
 
 const router: IRouter = Router();
 
@@ -58,5 +60,7 @@ router.use(debugTalksRouter);
 router.use(deployWebhookRouter);
 router.use(pipelinesRouter);
 router.use(syncTimelineRouter);
+router.use(amocrmChatWebhookRouter);
+router.use(sendChatMessageRouter);
 
 export default router;

@@ -8,7 +8,7 @@ const router = Router();
  * Manually trigger message sync from amoCRM events_timeline.
  * Body: { limit?: number } — optional max leads to process
  */
-router.post("/api/admin/sync-timeline-messages", async (req, res) => {
+router.post("/admin/sync-timeline-messages", async (req, res) => {
   try {
     const result = await syncLeadMessagesFromTimeline();
     res.json({ ok: true, ...result });
