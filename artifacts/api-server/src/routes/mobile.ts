@@ -138,10 +138,6 @@ const PAGE_HTML = `<!doctype html>
   .att-img img { max-width: 140px; max-height: 100px; border-radius: 6px; display: block; }
   .attlbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attrm { width: 22px; height: 22px; border-radius: 6px; border: none; background: rgba(239,68,68,.15); color: #fca5a5; cursor: pointer; flex: none; }
-  .rate { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 12px; color: #8a93a8; }
-  .rate-lbl { text-transform: uppercase; font-weight: 700; letter-spacing: .06em; font-size: 10.5px; }
-  .rb { height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid #2a3146; background: transparent; color: #cfd5e3; cursor: pointer; font-size: 12.5px; }
-  .rate-thanks { color: #86efac; font-weight: 700; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #181d2e; border: 1px solid #2a3146; color: #e6e8ee; padding: 10px 18px; border-radius: 10px; font-size: 13px; z-index: 20; max-width: 90vw; text-align: center; }
   .setup { max-width: 340px; margin: 80px auto; padding: 24px; text-align: center; }
   .setup input { width: 100%; background: #181d2e; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 12px; font-size: 15px; margin: 14px 0; }
@@ -330,14 +326,6 @@ const PAGE_HTML = `<!doctype html>
     html += '</div>';
     return html;
   }
-  function renderRating(item) {
-    if (!item.id) return "";
-    if (item.rated) {
-      return '<div class="rate"><span class="rate-thanks">' + (item.rated === "good" ? "\\u2713 Marked as good \\u2014 will reuse this style" : "\\u2713 Marked as bad \\u2014 will avoid this style") + '</span></div>';
-    }
-    return '<div class="rate"><span class="rate-lbl">Train AI:</span><button class="rb" data-rate="good">\\ud83d\\udc4d Good</button><button class="rb" data-rate="bad">\\ud83d\\udc4e Bad</button></div>';
-  }
-
   // ── Voice dictation (Web Speech API — same as extension; gracefully absent on iOS Safari) ─
   var _voiceEl = null, _voiceBtn = null, _directSR = null;
   function stopVoiceDictation() {
@@ -507,18 +495,6 @@ const PAGE_HTML = `<!doctype html>
     }
   }
 
-  async function rateServer(item, verdict) {
-    if (item.rated) return;
-    item.rated = verdict;
-    try {
-      await fetch(API + "/feedback", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ suggestionId: item.id, brokerId: brokerName, brokerName: brokerName, verdict: verdict, finalText: item.text }),
-      });
-    } catch (e) {}
-    render();
-  }
-
   function openDetail(item, tabKind) {
     var stageChecked = detectStageTransition(item.suggestion_text);
     var nextStages = stagesAfterCurrent(item.lead_stage || "");
@@ -536,7 +512,6 @@ const PAGE_HTML = `<!doctype html>
       original: item.suggestion_text || "",
       recent_messages: Array.isArray(item.recent_messages) ? item.recent_messages : [],
       attachments: Array.isArray(item.attachments) ? item.attachments.slice() : [],
-      rated: null,
       loading: false,
       busy: false,
       error: "",
@@ -681,7 +656,6 @@ const PAGE_HTML = `<!doctype html>
       html += '<label class="section">Suggested message</label>';
       html += '<div class="msg-text">' + esc(it.text) + '</div>';
       html += renderAttachments(it);
-      html += renderRating(it);
     }
     if (it.error) html += '<div class="err-text">' + esc(it.error) + '</div>';
     html += '</div>';
@@ -812,12 +786,6 @@ const PAGE_HTML = `<!doctype html>
       return;
     }
 
-    document.querySelectorAll("[data-rate]").forEach(function (btn) {
-      btn.onclick = function () {
-        var v = btn.getAttribute("data-rate");
-        if (v === "good" || v === "bad") rateServer(it, v);
-      };
-    });
 
     if (it._stageConfirm) {
       $("#confirm-send-move").onclick = async function () {
