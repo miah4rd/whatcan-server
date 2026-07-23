@@ -64,4 +64,28 @@ router.get("/admin/raw-lead/:id", async (req, res) => {
   }
 });
 
+/**
+ * GET /api/admin/lead-events/:id
+ * Read-only dump of amoCRM events for a single lead (all types, since the
+ * given timestamp if provided) — used to check whether an outgoing message
+ * attempt actually registered in amoCRM at all.
+ */
+router.get("/admin/lead-events/:id", async (req, res) => {
+  try {
+    const since = req.query.since ? String(req.query.since) : undefined;
+    const path = since
+      ? `/api/v4/events?filter[entity]=lead&filter[entity_id]=${req.params.id}&filter[created_at][from]=${since}&limit=250`
+      : `/api/v4/events?filter[entity]=lead&filter[entity_id]=${req.params.id}&limit=250`;
+    const data = await amoFetch(path);
+    if (!data) {
+      res.status(502).json({ error: "amoCRM fetch failed" });
+      return;
+    }
+    res.json(data);
+  } catch (err) {
+    logger.error({ err }, "admin/lead-events error");
+    res.status(500).json({ error: "internal error" });
+  }
+});
+
 export default router;
