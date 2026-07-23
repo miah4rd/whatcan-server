@@ -5,6 +5,7 @@ import { nextFollowupDate } from "../../lib/dialog-parser";
 import { chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL } from "../../lib/rental-followup.js";
+import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
 
 // amoCRM status IDs for the Unicorn Property pipeline (PIPELINE 8347534)
 // Maps each follow-up stage to the NEXT stage — bot auto-advances on approve.
@@ -393,6 +394,18 @@ router.post("/approve", async (req, res) => {
       req.log,
       prevLastMessageFrom,
     ).catch(() => {});
+
+    // ── Track property picks — personalizes future matching for this broker ──
+    if (sug.responsibleUser && sug.attachments && sug.attachments.length > 0) {
+      for (const att of sug.attachments) {
+        if (att.type !== "link" || !att.url) continue;
+        const match = att.url.match(/\/property\/([A-Za-z0-9-]+)/i);
+        if (!match) continue;
+        const propertyId = match[1];
+        const listingType = /^R-/i.test(propertyId) ? "rent" : "sale";
+        incrementBrokerPick(sug.responsibleUser, propertyId, listingType).catch(() => {});
+      }
+    }
   }
 
   // ── Stage change (applies for both normal approve and skip-message) ─────────

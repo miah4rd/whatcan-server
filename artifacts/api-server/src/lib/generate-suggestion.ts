@@ -2,6 +2,17 @@ import { chatCompletion } from "./ai-client";
 import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
 import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
+import { buildRentalSystemPrompt } from "./rental-prompt";
+import { matchProperties, type PropertyPick } from "./property-catalog";
+
+export type GeneratedSuggestion = {
+  text: string;
+  attachments: Array<{ type: "link"; label: string; url: string }>;
+};
+
+function toAttachments(picks: PropertyPick[]): GeneratedSuggestion["attachments"] {
+  return picks.map((p) => ({ type: "link" as const, label: p.label, url: p.url }));
+}
 
 export async function generateSuggestion(opts: {
   leadId: string;
@@ -14,7 +25,11 @@ export async function generateSuggestion(opts: {
   isFirstContact?: boolean;
   /** Pre-built corrections block to inject into system prompt */
   correctionsBlock?: string;
-}): Promise<string> {
+  /** "rental" swaps in the villa-rental prompt/qualifying logic instead of the Sales one */
+  pipeline?: string | null;
+}): Promise<GeneratedSuggestion> {
+  const isRental = (opts.pipeline ?? "").toLowerCase() === "rental";
+
   const [kb] = await Promise.all([
     getKnowledgeBase(),
   ]);
@@ -22,7 +37,9 @@ export async function generateSuggestion(opts: {
   const brokerPicksBlock = "";
   const catalog = "";
 
-  const systemPrompt =
+  const systemPrompt = isRental
+    ? buildRentalSystemPrompt({ leadStage: opts.leadStage, kb, correctionsBlock: opts.correctionsBlock })
+    :
 `You are a senior Bali real estate broker working directly with international clients for Unicorn Property, Bali.
 
 LANGUAGE RULE (absolute, highest priority):
@@ -235,8 +252,8 @@ Broker: ${opts.responsibleUser ?? "Broker"}
 
 Task: Write the broker's opening WhatsApp message — a warm, direct first introduction.
 - Max 3 sentences.
-- Introduce yourself briefly as a Bali real estate advisor at Unicorn Property.
-- End with ONE simple, open question to understand their interest (investment? personal use? area? budget?).
+- Introduce yourself briefly as ${isRental ? "a Bali villa rental specialist" : "a Bali real estate advisor"} at Unicorn Property.
+- End with ONE simple, open question to understand their interest (${isRental ? "dates? how long? how many guests?" : "investment? personal use? area? budget?"}).
 - Do NOT list properties yet.
 - Under 60 words.${AVOID_PHRASES_REMINDER}`
       : opts.kind === "live"
@@ -253,12 +270,17 @@ Task: Write the broker's next WhatsApp reply. React directly to what the lead ju
 STEP 1 — COUNT LEAD MESSAGES in the conversation above (lines starting with [Lead]).
 STEP 2 — APPLY THIS RULE, no exceptions:
 
-  • Lead has sent 1 message → ask ONE question: investment or personal use?
+${isRental ? `  • Lead has sent 1 message → ask ONE question: check-in/check-out dates and number of guests?
+  • Lead has sent 2 messages → ask ONE question: budget per month/night, and short-term or long-term stay?
+  • Lead has sent 3 or more messages → DO NOT ask any qualifying question.
+    The lead has engaged enough. Write a message that: (1) briefly confirms what you understood, (2) offers to prepare a curated shortlist. Example CTA: "I've got a few that could work well for this, want me to send them over?"
+
+This rule is absolute. Even if area or exact size is unknown — at 3+ lead messages, move forward.` : `  • Lead has sent 1 message → ask ONE question: investment or personal use?
   • Lead has sent 2 messages → ask ONE question: villas or other property type?
   • Lead has sent 3 or more messages → DO NOT ask any qualifying question.
     The lead has engaged enough. Write a message that: (1) briefly confirms what you understood, (2) adds one short market insight, (3) offers to prepare a curated shortlist. Example CTA: "I have a few options that match well — want me to send them over?"
 
-This rule is absolute. Even if budget or area is unknown — at 3+ lead messages, move forward. Budget and area are discovered through the options, not through more questions.
+This rule is absolute. Even if budget or area is unknown — at 3+ lead messages, move forward. Budget and area are discovered through the options, not through more questions.`}
 
 IMPORTANT: Do NOT include any property links or listings in this reply. The broker will personally choose and share properties when ready.
 Only suggest an in-person meeting if the lead explicitly mentioned being in Bali.
@@ -286,5 +308,13 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     max_tokens: 400,
   });
 
-  return sanitizeSuggestion(completion.content);
+  const text = sanitizeSuggestion(completion.content);
+
+  const picks = await matchProperties({
+    listingType: isRental ? "rent" : "sale",
+    conversationText: `${formattedDialog}\n${lastLeadText}`,
+    brokerId: opts.responsibleUser,
+  }).catch(() => []);
+
+  return { text, attachments: toAttachments(picks) };
 }

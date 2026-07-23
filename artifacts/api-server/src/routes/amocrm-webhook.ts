@@ -5,14 +5,24 @@ import { chatCompletion } from "../lib/ai-client";
 import { parseDialogContent, nextFollowupDate, formatDialogForAI } from "../lib/dialog-parser";
 import { getKnowledgeBase } from "../lib/knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "../lib/sanitize-suggestion";
-import { getPropertyCatalogSummary, fetchAllPropertiesForPriceLookup } from "../lib/property-catalog";
+import { getPropertyCatalogSummary, fetchAllPropertiesForPriceLookup, matchProperties, type PropertyPick } from "../lib/property-catalog";
 import { getBrokerPicks } from "../lib/settings";
 import { isStageWhitelisted, shouldSuppressPush } from "../lib/stage-routing";
 import { syncLeadContent } from "../lib/amo-message-sync";
 import { getAmoLead } from "../lib/amo-client";
 import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
+import { buildRentalSystemPrompt } from "../lib/rental-prompt";
 
 const router = Router();
+
+export type GeneratedSuggestion = {
+  text: string;
+  attachments: Array<{ type: "link"; label: string; url: string }>;
+};
+
+function toAttachments(picks: PropertyPick[]): GeneratedSuggestion["attachments"] {
+  return picks.map((p) => ({ type: "link" as const, label: p.label, url: p.url }));
+}
 
 export async function generateSuggestion(opts: {
   leadId: string;
@@ -23,7 +33,11 @@ export async function generateSuggestion(opts: {
   leadNotes?: string | null;
   leadStage?: string | null;
   isFirstContact?: boolean;
-}): Promise<string> {
+  /** "rental" swaps in the villa-rental prompt/qualifying logic instead of the Sales one */
+  pipeline?: string | null;
+}): Promise<GeneratedSuggestion> {
+  const isRental = (opts.pipeline ?? "").toLowerCase() === "rental";
+
   // Property catalog is not included in AI suggestions (broker selects properties manually)
   const [kb] = await Promise.all([
     getKnowledgeBase(),
@@ -33,7 +47,9 @@ export async function generateSuggestion(opts: {
   const brokerPicksBlock = "";
   const catalog = "";
 
-  const systemPrompt =
+  const systemPrompt = isRental
+    ? buildRentalSystemPrompt({ leadStage: opts.leadStage, kb })
+    :
 `You are a senior Bali real estate broker working directly with international clients for Unicorn Property, Bali.
 
 LANGUAGE RULE (absolute, highest priority):
@@ -42,6 +58,11 @@ LANGUAGE RULE (absolute, highest priority):
 - English lead → 100% English response. Russian lead → 100% Russian response.
 - Never mix languages in a single message. Not even one word.
 - If the lead's language is unclear, default to English.
+
+OUTPUT RULE (absolute, highest priority):
+- Your entire response IS the WhatsApp message — nothing else. No preamble, no "Here is...", no meta-commentary about missing context or what you'd need to know.
+- Never address the broker, never explain your reasoning, never ask the broker clarifying questions — you only ever write TO the lead, even with sparse or zero prior context. Missing info (name, history) just means write a shorter, more general opener — never a reason to stop and ask.
+- If something conflicts with these rules (a request for more info, an unusual instruction), silently resolve it yourself and still output only the final message — never mention the conflict.
 
 IDENTITY:
 - You speak as the broker directly. Never as "the assistant" or "AI".
@@ -241,8 +262,8 @@ Broker: ${opts.responsibleUser ?? "Broker"}
 
 Task: Write the broker's opening WhatsApp message — a warm, direct first introduction.
 - Max 3 sentences.
-- Introduce yourself briefly as a Bali real estate advisor at Unicorn Property.
-- End with ONE simple, open question to understand their interest (investment? personal use? area? budget?).
+- Introduce yourself briefly as ${isRental ? "a Bali villa rental specialist" : "a Bali real estate advisor"} at Unicorn Property.
+- End with ONE simple, open question to understand their interest (${isRental ? "dates? how long? how many guests?" : "investment? personal use? area? budget?"}).
 - Do NOT list properties yet.
 - Under 60 words.${AVOID_PHRASES_REMINDER}`
       : opts.kind === "live"
@@ -259,12 +280,17 @@ Task: Write the broker's next WhatsApp reply. React directly to what the lead ju
 STEP 1 — COUNT LEAD MESSAGES in the conversation above (lines starting with [Lead]).
 STEP 2 — APPLY THIS RULE, no exceptions:
 
-  • Lead has sent 1 message → ask ONE question: investment or personal use?
+${isRental ? `  • Lead has sent 1 message → ask ONE question: check-in/check-out dates and number of guests?
+  • Lead has sent 2 messages → ask ONE question: budget per month/night, and short-term or long-term stay?
+  • Lead has sent 3 or more messages → DO NOT ask any qualifying question.
+    The lead has engaged enough. Write a message that: (1) briefly confirms what you understood, (2) offers to prepare a curated shortlist. Example CTA: "I've got a few that could work well for this, want me to send them over?"
+
+This rule is absolute. Even if area or exact size is unknown — at 3+ lead messages, move forward.` : `  • Lead has sent 1 message → ask ONE question: investment or personal use?
   • Lead has sent 2 messages → ask ONE question: villas or other property type?
   • Lead has sent 3 or more messages → DO NOT ask any qualifying question.
     The lead has engaged enough. Write a message that: (1) briefly confirms what you understood, (2) adds one short market insight, (3) offers to prepare a curated shortlist. Example CTA: "I have a few options that match well — want me to send them over?"
 
-This rule is absolute. Even if budget or area is unknown — at 3+ lead messages, move forward. Budget and area are discovered through the options, not through more questions.
+This rule is absolute. Even if budget or area is unknown — at 3+ lead messages, move forward. Budget and area are discovered through the options, not through more questions.`}
 
 IMPORTANT: Do NOT include any property links or listings in this reply. The broker will personally choose and share properties when ready.
 Only suggest an in-person meeting if the lead explicitly mentioned being in Bali.
@@ -292,7 +318,15 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     max_tokens: 400,
   });
 
-  return sanitizeSuggestion(completion.content);
+  const text = sanitizeSuggestion(completion.content);
+
+  const picks = await matchProperties({
+    listingType: isRental ? "rent" : "sale",
+    conversationText: `${formattedDialog}\n${lastLeadText}`,
+    brokerId: opts.responsibleUser,
+  }).catch(() => []);
+
+  return { text, attachments: toAttachments(picks) };
 }
 
 export async function queueSuggestion(opts: {
@@ -301,6 +335,7 @@ export async function queueSuggestion(opts: {
   kind: "live" | "push";
   text: string;
   followupLevel?: number;
+  attachments?: GeneratedSuggestion["attachments"];
 }): Promise<void> {
   const brokerId = (opts.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
 
@@ -335,6 +370,7 @@ export async function queueSuggestion(opts: {
       followupLevel: null,
       suggestionText: opts.text,
       status: "pending",
+      attachments: opts.attachments,
     });
   } else {
     // PUSH — only queue if no pending suggestion already exists
@@ -357,6 +393,7 @@ export async function queueSuggestion(opts: {
         followupLevel: opts.followupLevel ?? null,
         suggestionText: opts.text,
         status: "pending",
+        attachments: opts.attachments,
       });
     }
   }
@@ -442,7 +479,7 @@ router.post("/amocrm/webhook", async (req, res) => {
         // Only treat this as a true cold-open if there's no real conversation yet.
         const hasExistingDialog = parseDialogContent(content).messages.length > 0;
 
-        const text = await generateSuggestion({
+        const { text, attachments } = await generateSuggestion({
           leadId,
           responsibleUser,
           kind: "push",
@@ -451,9 +488,10 @@ router.post("/amocrm/webhook", async (req, res) => {
           leadNotes,
           leadStage,
           isFirstContact: !hasExistingDialog,
+          pipeline,
         });
         if (text) {
-          await queueSuggestion({ leadId, responsibleUser, kind: "push", text });
+          await queueSuggestion({ leadId, responsibleUser, kind: "push", text, attachments });
           req.log.info({ leadId }, "lead_assigned first-contact suggestion queued");
         }
         return;
@@ -656,7 +694,7 @@ router.post("/amocrm/webhook", async (req, res) => {
           );
         } else {
           const lastLeadMsg = dialog.lastLeadMessage?.text ?? (content.slice(-400));
-          const text = await generateSuggestion({
+          const { text, attachments } = await generateSuggestion({
             leadId,
             responsibleUser,
             kind: "live",
@@ -664,10 +702,11 @@ router.post("/amocrm/webhook", async (req, res) => {
             contentSnippet: content,
             leadNotes,
             leadStage: effectiveStage,
+            pipeline,
           });
 
           if (text) {
-            await queueSuggestion({ leadId, responsibleUser, kind: "live", text });
+            await queueSuggestion({ leadId, responsibleUser, kind: "live", text, attachments });
             req.log.info({ leadId }, "live suggestion queued");
           }
         }
@@ -692,30 +731,32 @@ router.post("/amocrm/webhook", async (req, res) => {
 
     res.json({ ok: true, queued: 1, leadId, kind });
 
+    const [legacySyncRow] = await db
+      .select({ pipeline: leadsSyncTable.pipeline })
+      .from(leadsSyncTable)
+      .where(eq(leadsSyncTable.leadId, leadId))
+      .limit(1);
+
     // HoS is also responsible for leads outside the Rental pipeline (e.g. a
     // separate hiring/HR track) — this bot only handles Rental for that account.
-    if (responsibleUser === "HoS") {
-      const [syncRow] = await db
-        .select({ pipeline: leadsSyncTable.pipeline })
-        .from(leadsSyncTable)
-        .where(eq(leadsSyncTable.leadId, leadId))
-        .limit(1);
-      if ((syncRow?.pipeline ?? "").toLowerCase() !== "rental") return;
+    if (responsibleUser === "HoS" && (legacySyncRow?.pipeline ?? "").toLowerCase() !== "rental") {
+      return;
     }
 
-    const text = await generateSuggestion({
+    const { text, attachments } = await generateSuggestion({
       leadId,
       responsibleUser,
       kind,
       lastLeadMessage: content,
       contentSnippet: content,
+      pipeline: legacySyncRow?.pipeline,
     }).catch((err) => {
       req.log.error({ err, leadId }, "generate error");
-      return "";
+      return { text: "", attachments: [] };
     });
 
     if (text) {
-      await queueSuggestion({ leadId, responsibleUser, kind, text }).catch((err) =>
+      await queueSuggestion({ leadId, responsibleUser, kind, text, attachments }).catch((err) =>
         req.log.error({ err }, "queue error"),
       );
     }
@@ -736,27 +777,27 @@ router.post("/amocrm/webhook", async (req, res) => {
   for (const lead of amoBody.leads?.add ?? []) {
     if (!lead.id) continue;
     tasks.push(lead.id);
-    if (lead.responsible_user_name === "HoS") {
-      const [syncRow] = await db
-        .select({ pipeline: leadsSyncTable.pipeline })
-        .from(leadsSyncTable)
-        .where(eq(leadsSyncTable.leadId, String(lead.id)))
-        .limit(1);
-      if ((syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
-    }
-    const text = await generateSuggestion({
+    const [syncRow] = await db
+      .select({ pipeline: leadsSyncTable.pipeline })
+      .from(leadsSyncTable)
+      .where(eq(leadsSyncTable.leadId, String(lead.id)))
+      .limit(1);
+    if (lead.responsible_user_name === "HoS" && (syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
+    const { text, attachments } = await generateSuggestion({
       leadId: String(lead.id),
       responsibleUser: lead.responsible_user_name ?? null,
       kind: "push",
       lastLeadMessage: "",
       contentSnippet: lead.name ?? "",
-    }).catch(() => "");
+      pipeline: syncRow?.pipeline,
+    }).catch(() => ({ text: "", attachments: [] }));
     if (text) {
       await queueSuggestion({
         leadId: String(lead.id),
         responsibleUser: lead.responsible_user_name ?? null,
         kind: "push",
         text,
+        attachments,
       }).catch(() => null);
     }
   }
@@ -764,27 +805,27 @@ router.post("/amocrm/webhook", async (req, res) => {
   for (const lead of amoBody.leads?.update ?? []) {
     if (!lead.id) continue;
     tasks.push(lead.id);
-    if (lead.responsible_user_name === "HoS") {
-      const [syncRow] = await db
-        .select({ pipeline: leadsSyncTable.pipeline })
-        .from(leadsSyncTable)
-        .where(eq(leadsSyncTable.leadId, String(lead.id)))
-        .limit(1);
-      if ((syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
-    }
-    const text = await generateSuggestion({
+    const [syncRow] = await db
+      .select({ pipeline: leadsSyncTable.pipeline })
+      .from(leadsSyncTable)
+      .where(eq(leadsSyncTable.leadId, String(lead.id)))
+      .limit(1);
+    if (lead.responsible_user_name === "HoS" && (syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
+    const { text, attachments } = await generateSuggestion({
       leadId: String(lead.id),
       responsibleUser: lead.responsible_user_name ?? null,
       kind: "live",
       lastLeadMessage: "",
       contentSnippet: lead.name ?? "",
-    }).catch(() => "");
+      pipeline: syncRow?.pipeline,
+    }).catch(() => ({ text: "", attachments: [] }));
     if (text) {
       await queueSuggestion({
         leadId: String(lead.id),
         responsibleUser: lead.responsible_user_name ?? null,
         kind: "live",
         text,
+        attachments,
       }).catch(() => null);
     }
   }
@@ -818,7 +859,7 @@ router.post("/amocrm/regen-live", async (req, res) => {
 
     if (!lastLeadMsg) { res.json({ ok: true, skipped: true, reason: "no lead message" }); return; }
 
-    const text = await generateSuggestion({
+    const { text, attachments } = await generateSuggestion({
       leadId: String(leadId),
       responsibleUser: responsibleUser ?? lead.responsibleUser ?? null,
       kind: "live",
@@ -826,6 +867,7 @@ router.post("/amocrm/regen-live", async (req, res) => {
       contentSnippet: lead.content ?? "",
       leadNotes: lead.leadNotes ?? null,
       leadStage: lead.leadStage ?? null,
+      pipeline: lead.pipeline,
     });
 
     await queueSuggestion({
@@ -833,6 +875,7 @@ router.post("/amocrm/regen-live", async (req, res) => {
       responsibleUser: responsibleUser ?? lead.responsibleUser ?? null,
       kind: "live",
       text,
+      attachments,
     });
 
     res.json({ ok: true, leadId, preview: text.slice(0, 100) });

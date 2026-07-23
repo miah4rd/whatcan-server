@@ -418,31 +418,33 @@ router.get("/admin/properties/refresh", (_req, res) => {
 
 // ── Quick test: generate a suggestion from a raw dialog snippet ──────────────
 router.post("/admin/test-suggest", async (req, res) => {
-  const { content, lastLeadMessage, leadNotes, kind } = req.body as {
+  const { content, lastLeadMessage, leadNotes, kind, pipeline } = req.body as {
     content?: string;
     lastLeadMessage?: string;
     leadNotes?: string;
     kind?: "live" | "push";
+    pipeline?: string;
   };
   if (!content) {
     res.status(400).json({ error: "content required" });
     return;
   }
   try {
-    const text = await generateSuggestion({
+    const { text, attachments } = await generateSuggestion({
       leadId: "test-001",
       responsibleUser: "Robert",
       kind: kind ?? "live",
       lastLeadMessage: lastLeadMessage ?? content,
       contentSnippet: content,
       leadNotes: leadNotes ?? null,
+      pipeline,
     });
     // Split multi-property responses into individual WhatsApp messages
     const messages = text
       ? text.split(/\n(?=https?:\/\/)/).map((p) => p.trim()).filter(Boolean)
       : [];
     const isMulti = messages.length > 1;
-    res.json({ text, messages: isMulti ? messages : undefined, count: isMulti ? messages.length : 1 });
+    res.json({ text, attachments, messages: isMulti ? messages : undefined, count: isMulti ? messages.length : 1 });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

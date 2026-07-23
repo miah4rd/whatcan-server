@@ -827,7 +827,7 @@ export async function processUnansweredLive(): Promise<void> {
 
       const liveBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
       const liveCorrections = await buildBrokerCorrectionsBlock(liveBrokerIdKey, unansweredCorrectionsCache);
-      const text = await generateSuggestion({
+      const { text, attachments } = await generateSuggestion({
         leadId: lead.leadId,
         responsibleUser: lead.responsibleUser,
         kind: "live",
@@ -836,6 +836,7 @@ export async function processUnansweredLive(): Promise<void> {
         leadNotes: lead.leadNotes,
         leadStage: lead.leadStage,
         correctionsBlock: liveCorrections,
+        pipeline: lead.pipeline,
       });
 
       if (!text) continue;
@@ -857,6 +858,7 @@ export async function processUnansweredLive(): Promise<void> {
         followupLevel: null,
         suggestionText: text,
         status: "pending",
+        attachments,
       });
 
       logger.info({ leadId: lead.leadId }, "live suggestion generated for unanswered lead");

@@ -186,6 +186,20 @@ export const userSettingsTable = pgTable("user_settings", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Tracks how often each broker's approved messages reference a given
+// property listing — used to personalize future property matching per broker.
+export const brokerPropertyPicksTable = pgTable("broker_property_picks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  brokerId: text("broker_id").notNull(),
+  propertyId: text("property_id").notNull(),
+  listingType: text("listing_type"), // "sale" | "rent"
+  useCount: integer("use_count").notNull().default(1),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [unique("broker_property_picks_uniq").on(t.brokerId, t.propertyId)]);
+
+export type BrokerPropertyPick = typeof brokerPropertyPicksTable.$inferSelect;
+
 export type AiSuggestion = typeof aiSuggestionsTable.$inferSelect;
 export type PendingSuggestion = typeof pendingSuggestionsTable.$inferSelect;
 export type SuggestionFeedback = typeof suggestionFeedbackTable.$inferSelect;

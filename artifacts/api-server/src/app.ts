@@ -1,5 +1,6 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import path from "path";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import mobileRouter from "./routes/mobile";
@@ -38,6 +39,20 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
 app.use(mobileRouter);
+
+// ── Copilot Dashboard (landing app: login/dashboard/tasks/settings) ─────────
+// Built React SPA served statically; relative /api/* fetches inside it hit
+// this same server. Fallback below excludes /api and /m so those keep
+// their own handlers/404s instead of being swallowed by the SPA shell.
+const landingDist = path.resolve(__dirname, "../../landing/dist/public");
+app.use(express.static(landingDist));
+app.use((req, res, next) => {
+  if (req.method !== "GET" || req.path.startsWith("/api") || req.path === "/m") {
+    next();
+    return;
+  }
+  res.sendFile(path.join(landingDist, "index.html"));
+});
 
 startFollowupScheduler();
 startAmoSyncScheduler();
@@ -144,5 +159,20 @@ pool.query(`
   )
 `).then(() => logger.info("startup migration: user_settings table ensured"))
   .catch((err) => logger.error({ err }, "user_settings migration failed"));
+
+// ── broker_property_picks table ─────────────────────────────────────────────
+pool.query(`
+  CREATE TABLE IF NOT EXISTS broker_property_picks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    broker_id TEXT NOT NULL,
+    property_id TEXT NOT NULL,
+    listing_type TEXT,
+    use_count INTEGER NOT NULL DEFAULT 1,
+    last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT broker_property_picks_uniq UNIQUE(broker_id, property_id)
+  )
+`).then(() => logger.info("startup migration: broker_property_picks table ensured"))
+  .catch((err) => logger.error({ err }, "broker_property_picks migration failed"));
 
 export default app;

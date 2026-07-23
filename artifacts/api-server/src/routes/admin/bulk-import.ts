@@ -193,7 +193,7 @@ router.post("/admin/import", async (req, res) => {
           .where(eq(leadsSyncTable.leadId, leadId));
       }
 
-      const text = await generateSuggestion({
+      const { text, attachments } = await generateSuggestion({
         leadId,
         responsibleUser,
         kind: "push",
@@ -204,7 +204,7 @@ router.post("/admin/import", async (req, res) => {
       });
 
       if (text) {
-        await queueSuggestion({ leadId, responsibleUser, kind: "push", text });
+        await queueSuggestion({ leadId, responsibleUser, kind: "push", text, attachments });
         imported++;
         results.push({ leadId, responsibleUser, status: "ok", message: "queued first-contact suggestion" });
       } else {
@@ -375,6 +375,7 @@ router.post("/admin/regen-live", async (_req, res) => {
         content: leadsSyncTable.content,
         leadNotes: leadsSyncTable.leadNotes,
         leadStage: leadsSyncTable.leadStage,
+        pipeline: leadsSyncTable.pipeline,
       })
       .from(leadsSyncTable)
       .where(
@@ -412,7 +413,7 @@ router.post("/admin/regen-live", async (_req, res) => {
         const lastLeadMessage = parsed?.lastLeadMessage?.text ?? "";
         const contentSnippet = parsed ? formatDialogForAI(parsed.messages) : "";
 
-        const text = await generateSuggestion({
+        const { text, attachments } = await generateSuggestion({
           leadId: lead.leadId,
           responsibleUser: lead.responsibleUser ?? null,
           kind: "live",
@@ -420,6 +421,7 @@ router.post("/admin/regen-live", async (_req, res) => {
           contentSnippet,
           leadNotes: lead.leadNotes ?? null,
           leadStage: lead.leadStage ?? null,
+          pipeline: lead.pipeline,
         });
 
         await db.insert(pendingSuggestionsTable).values({
@@ -429,6 +431,7 @@ router.post("/admin/regen-live", async (_req, res) => {
           followupLevel: null,
           suggestionText: text,
           status: "pending",
+          attachments,
         });
         queued++;
       } catch {

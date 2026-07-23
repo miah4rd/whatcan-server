@@ -76,7 +76,7 @@ router.post("/skip", async (req, res) => {
             const contentSnippet = formatDialogForAI(parsed.messages);
 
             if (lastLeadMessage) {
-              const text = await generateSuggestion({
+              const { text, attachments } = await generateSuggestion({
                 leadId,
                 responsibleUser: sync.responsibleUser ?? null,
                 kind: "live",
@@ -84,6 +84,7 @@ router.post("/skip", async (req, res) => {
                 contentSnippet,
                 leadNotes: sync.leadNotes ?? null,
                 leadStage: sync.leadStage ?? null,
+                pipeline: sync.pipeline,
               });
 
               if (text) {
@@ -94,6 +95,7 @@ router.post("/skip", async (req, res) => {
                   followupLevel: null,
                   suggestionText: text,
                   status: "pending",
+                  attachments,
                 });
                 req.log.info({ leadId }, "skip: generated live suggestion after push skip");
               }
