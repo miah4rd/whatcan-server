@@ -26,6 +26,7 @@ import debugAmojoRouter from "./debug-amojo";
 import debugTalksRouter from "./debug-talks";
 import deployWebhookRouter from "./deploy-webhook";
 import pipelinesRouter from "./admin/pipelines";
+import syncTimelineRouter from "./admin/sync-timeline";
 
 const router: IRouter = Router();
 
@@ -56,5 +57,6 @@ router.use(debugAmojoRouter);
 router.use(debugTalksRouter);
 router.use(deployWebhookRouter);
 router.use(pipelinesRouter);
+router.use(syncTimelineRouter);
 
 export default router;
