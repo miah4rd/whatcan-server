@@ -428,6 +428,15 @@ router.post("/amocrm/webhook", async (req, res) => {
           set: { responsibleUser, leadNotes: leadNotes ?? undefined, leadStage: leadStage ?? undefined, leadStageId: leadStageId ?? undefined, pipeline: pipeline ?? undefined, content },
         });
 
+        // Rental has its own amoCRM automation ("Команда F5") that sends the
+        // very first message, same role ARGO plays for Unicorn — the bot must
+        // not also suggest a first-contact message on top of that. In practice
+        // this handler has never fired for Unicorn leads either (no historical
+        // records), so skipping it for Rental brings the two pipelines to parity.
+        if ((pipeline ?? "").toLowerCase() === "rental") {
+          return;
+        }
+
         // "lead_assigned" fires on every (re)assignment, not just genuinely new
         // leads — e.g. amoCRM can re-fire it after a lead is already engaged.
         // Only treat this as a true cold-open if there's no real conversation yet.
