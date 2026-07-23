@@ -10,8 +10,24 @@ const BANNED_PHRASES: [RegExp, string][] = [
   [/[Ff]eel free to reach out/g, ""],
 ];
 
+// Meta-commentary label lines a model sometimes prepends before the real
+// message, despite the OUTPUT RULE — strip them as a safety net rather than
+// relying on prompt-following alone.
+const PREAMBLE_LABEL_LINE = /^(here'?s?( is)? (the |your |my )?(whatsapp )?(reply|message|response):?|reply:?|message:?|response:?)\s*/i;
+
 export function sanitizeSuggestion(text: string): string {
   let out = text;
+
+  // If the model narrated its reasoning before the actual message, a "---"
+  // separator (or a lone line of 3+ dashes) usually marks where the real
+  // reply starts — keep only what comes after the LAST such separator.
+  const separatorMatches = [...out.matchAll(/^\s*-{3,}\s*$/gm)];
+  if (separatorMatches.length > 0) {
+    const last = separatorMatches[separatorMatches.length - 1];
+    out = out.slice((last.index ?? 0) + last[0].length);
+  }
+  out = out.replace(PREAMBLE_LABEL_LINE, "").trim();
+
   for (const [pattern, replacement] of BANNED_PHRASES) {
     out = out.replace(pattern, replacement);
   }
