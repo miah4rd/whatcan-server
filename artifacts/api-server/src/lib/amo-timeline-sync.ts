@@ -1,6 +1,7 @@
 /**
  * Fetches chat messages from amoCRM via internal /ajax/v3/leads/{id}/events_timeline/
- * endpoint. Requires Puppeteer login to get session access_token.
+ * endpoint. Uses Puppeteer to login and extract access_token cookie, then makes
+ * direct HTTP requests with that cookie.
  *
  * Types 89 = incoming message from client
  * Types 90 = outgoing message (bot/broker)
@@ -22,17 +23,17 @@ function messageId(leadId: string, eventTs: number, authorId: string, text: stri
   return createHash("sha256").update(payload).digest("hex").slice(0, 32);
 }
 
-// ── Session token cache ────────────────────────────────────────────────────────
-let cachedSession: { accessToken: string; expiresAt: number } | null = null;
+// ── Cookie cache ───────────────────────────────────────────────────────────────
+let cachedCookies: { cookieStr: string; expiresAt: number } | null = null;
 
 /**
- * Login via Puppeteer and get session access_token from /ajax/v1/chats/session.
- * The session token is used as Bearer for internal /ajax/ endpoints.
+ * Login via Puppeteer and extract access_token + other cookies.
+ * The access_token cookie is used for direct HTTP requests to /ajax/ endpoints.
  */
-async function getSessionToken(): Promise<string | null> {
+async function getAmoCookies(): Promise<string | null> {
   // Return cached if still valid (with 5 min buffer)
-  if (cachedSession && cachedSession.expiresAt > Date.now() + 5 * 60 * 1000) {
-    return cachedSession.accessToken;
+  if (cachedCookies && cachedCookies.expiresAt > Date.now() + 5 * 60 * 1000) {
+    return cachedCookies.cookieStr;
   }
 
   let puppeteerCore: any;
@@ -52,23 +53,6 @@ async function getSessionToken(): Promise<string | null> {
   try {
     const page = await browser.newPage();
 
-    // Capture session token from network responses
-    let sessionToken: string | null = null;
-    let sessionExpiresAt = 0;
-
-    page.on("response", async (res: any) => {
-      if (res.url().includes("/ajax/v1/chats/session") && res.status() === 200) {
-        try {
-          const data = await res.json();
-          const session = data?.response?.chats?.session;
-          if (session?.access_token) {
-            sessionToken = session.access_token;
-            sessionExpiresAt = (session.expired_at ?? 0) * 1000;
-          }
-        } catch {}
-      }
-    });
-
     // Login
     await page.goto(AMO_BASE + "/", { waitUntil: "networkidle2", timeout: 30000 });
     const loginInput = await page.$('input[name="login"], input[type="email"], input[type="text"]');
@@ -84,18 +68,27 @@ async function getSessionToken(): Promise<string | null> {
       await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }).catch(() => {});
     }
 
-    // Navigate to a lead page to trigger session token loading
+    // Navigate to a lead page to ensure session is fully established
     await page.goto(AMO_BASE + "/leads/detail/22609833", { waitUntil: "networkidle2", timeout: 30000 });
     await new Promise((r) => setTimeout(r, 5000));
 
-    if (sessionToken) {
-      cachedSession = { accessToken: sessionToken, expiresAt: sessionExpiresAt };
-      logger.info({ expiresAt: new Date(sessionExpiresAt).toISOString() }, "amoCRM session token obtained");
+    // Extract cookies
+    const cookies = await page.cookies();
+    const cookieStr = cookies.map((c) => c.name + "=" + c.value).join("; ");
+
+    // Find access_token expiry from cookie
+    const accessTokenCookie = cookies.find((c) => c.name === "access_token");
+    const expiresAtCookie = cookies.find((c) => c.name === "access_token_expires_at");
+    const expiresAt = expiresAtCookie ? parseInt(expiresAtCookie.value, 10) * 1000 : Date.now() + 3600 * 1000;
+
+    if (accessTokenCookie) {
+      cachedCookies = { cookieStr, expiresAt };
+      logger.info({ expiresAt: new Date(expiresAt).toISOString(), cookieCount: cookies.length }, "amoCRM cookies obtained");
     } else {
-      logger.error("Failed to obtain session token from amoCRM");
+      logger.error("Failed to obtain access_token cookie from amoCRM");
     }
 
-    return sessionToken;
+    return cookieStr;
   } catch (err) {
     logger.error({ err }, "Puppeteer login failed");
     return null;
@@ -125,7 +118,7 @@ interface TimelineResponse {
 }
 
 async function fetchTimeline(
-  accessToken: string,
+  cookieStr: string,
   leadId: string,
   limit = 200,
   beforeTs?: number,
@@ -135,7 +128,7 @@ async function fetchTimeline(
 
   const res = await fetch(url, {
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      Cookie: cookieStr,
       "Content-Type": "application/json",
     },
   });
@@ -261,10 +254,10 @@ export async function syncLeadMessagesFromTimeline(): Promise<{
   leads: number;
   errors: number;
 }> {
-  // Get session token
-  const accessToken = await getSessionToken();
-  if (!accessToken) {
-    logger.error("Cannot sync messages: no session token");
+  // Get cookies
+  const cookieStr = await getAmoCookies();
+  if (!cookieStr) {
+    logger.error("Cannot sync messages: no cookies");
     return { synced: 0, leads: 0, errors: 0 };
   }
 
@@ -309,7 +302,7 @@ export async function syncLeadMessagesFromTimeline(): Promise<{
           const MAX_PAGES = 10;
 
           while (pageNum < MAX_PAGES) {
-            const events = await fetchTimeline(accessToken, lead.leadId, 200, beforeTs);
+            const events = await fetchTimeline(cookieStr, lead.leadId, 200, beforeTs);
             if (events.length === 0) break;
             allEvents.push(...events);
 
