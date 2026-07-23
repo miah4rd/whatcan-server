@@ -116,7 +116,7 @@ export async function getLeadMessageHistory(leadId: string, limit = 60): Promise
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
-const MESSAGE_SYNC_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const MESSAGE_SYNC_INTERVAL_MS = 1 * 60 * 1000; // TEMP for testing — revert to 10 * 60 * 1000
 
 export function startMessageSyncScheduler(): void {
   // First sync after 20 seconds (let lead sync finish first)
