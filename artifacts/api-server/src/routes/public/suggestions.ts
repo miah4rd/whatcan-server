@@ -50,6 +50,9 @@ router.get("/suggestions", async (req, res) => {
               profilePotential: leadsSyncTable.profilePotential,
               profileOpenQuestion: leadsSyncTable.profileOpenQuestion,
               profileAlive: leadsSyncTable.profileAlive,
+              profileSummary: leadsSyncTable.profileSummary,
+              discardFlaggedAt: leadsSyncTable.discardFlaggedAt,
+              discardReason: leadsSyncTable.discardReason,
             })
             .from(leadsSyncTable)
             .where(inArray(leadsSyncTable.leadId, allLeadIds))
@@ -200,6 +203,9 @@ router.get("/suggestions", async (req, res) => {
         profile_potential: sync?.profilePotential ?? null,
         profile_open_question: sync?.profileOpenQuestion ?? null,
         profile_alive: sync?.profileAlive ?? null,
+        profile_summary: sync?.profileSummary ?? null,
+        discard_flagged: !!sync?.discardFlaggedAt,
+        discard_reason: sync?.discardReason ?? null,
         age_days: sync?.amoCreatedAt
           ? Math.floor((Date.now() - sync.amoCreatedAt.getTime()) / 86400000)
           : null,

@@ -6,6 +6,7 @@ import { computeNextFollowupDays } from "../../lib/adaptive-followup";
 import { chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
+import { ensureMessengerField } from "../../lib/amo-messenger-field";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
 
@@ -362,6 +363,11 @@ router.post("/approve", async (req, res) => {
         })
         .where(eq(leadsSyncTable.leadId, sug.leadId));
     }
+
+    // ── Ensure messenger field is filled before Salesbot ──────────────────────
+    await ensureMessengerField(sug.leadId).catch((e) => {
+      req.log.warn({ leadId: sug.leadId, err: e }, "ensureMessengerField failed (non-fatal)");
+    });
 
     // ── Send via Salesbot (replaces F5 hook) ──────────────────────────────────
     // 1. Write message to custom field "companion massage"
