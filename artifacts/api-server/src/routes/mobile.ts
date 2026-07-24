@@ -440,33 +440,68 @@ const PAGE_HTML = `<!doctype html>
       showToast("Push not supported on this browser");
       return;
     }
+
+    var permission;
     try {
-      var permission = await Notification.requestPermission();
-      if (permission !== "granted") {
-        showToast("Notifications not allowed");
-        render();
-        return;
-      }
-      var reg = await navigator.serviceWorker.register("/m/sw.js", { scope: "/m/" });
+      permission = await Notification.requestPermission();
+    } catch (e) {
+      showToast("Permission request failed: " + ((e && e.message) || e));
+      return;
+    }
+    if (permission !== "granted") {
+      showToast("Notifications not allowed");
+      render();
+      return;
+    }
+
+    var reg;
+    try {
+      reg = await navigator.serviceWorker.register("/m/sw.js", { scope: "/m/" });
       await navigator.serviceWorker.ready;
+    } catch (e) {
+      showToast("Service worker failed: " + ((e && e.message) || e));
+      return;
+    }
+
+    var keyData;
+    try {
       var keyRes = await fetch(API + "/push/vapid-public-key");
-      var keyData = await keyRes.json();
-      if (!keyData.key) { showToast("Push not configured on server"); return; }
-      var sub = await reg.pushManager.subscribe({
+      keyData = await keyRes.json();
+    } catch (e) {
+      showToast("Could not reach server for push key");
+      return;
+    }
+    if (!keyData.key) { showToast("Push not configured on server"); return; }
+
+    var sub;
+    try {
+      sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(keyData.key),
       });
-      await fetch(API + "/push/subscribe", {
+    } catch (e) {
+      showToast("Subscribe failed: " + ((e && e.message) || e));
+      return;
+    }
+
+    try {
+      var saveRes = await fetch(API + "/push/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ brokerId: brokerName, subscription: sub.toJSON() }),
       });
-      localStorage.setItem("copilot_push_enabled", "1");
-      showToast("Notifications enabled");
-      render();
+      if (!saveRes.ok) {
+        showToast("Server rejected subscription (" + saveRes.status + ")");
+        return;
+      }
     } catch (e) {
-      showToast("Could not enable notifications");
+      showToast("Could not save subscription to server");
+      return;
     }
+
+    localStorage.setItem("copilot_push_enabled", "1");
+    showToast("Notifications enabled");
+    render();
   }
 
   async function disablePush() {
