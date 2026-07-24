@@ -1,7 +1,8 @@
 import webpush from "web-push";
-import { db, pushSubscriptionsTable, pendingSuggestionsTable } from "@workspace/db";
+import { db, pushSubscriptionsTable, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { logger } from "./logger";
+import { parseDialogContent } from "./dialog-parser";
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY ?? "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY ?? "";
@@ -91,4 +92,51 @@ export async function notifyBroker(brokerId: string | null, title: string, body:
   if (!brokerId) return;
   const badge = await countPendingForBroker(brokerId);
   await sendPushToBroker(brokerId, { title, body: body.slice(0, 150), url: "/m", badge });
+}
+
+// Same "Name (client - source)" → "Name" cleanup used for the inbox list's card title.
+function extractLeadName(content: string | null | undefined): string | null {
+  if (!content) return null;
+  try {
+    const dialog = parseDialogContent(content);
+    const leadMsg = dialog.messages.find((m) => m.from === "lead" && m.senderName && m.senderName.trim().length > 1);
+    if (!leadMsg?.senderName) return null;
+    return leadMsg.senderName.replace(/\s*\([^)]*\)\s*$/, "").trim() || leadMsg.senderName;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Notify a broker about a specific lead, mirroring the inbox card's title:
+ * "<lead name> #<leadId> · <stage>". Pass `hint` with fields already in hand
+ * (from a leadsSyncTable row you already fetched) to skip the extra DB read.
+ */
+export async function notifyBrokerForLead(
+  brokerId: string | null,
+  leadId: string,
+  action: "replied" | "assigned",
+  body: string,
+  hint?: { content?: string | null; leadStage?: string | null; leadName?: string | null },
+): Promise<void> {
+  if (!brokerId) return;
+
+  let content = hint?.content;
+  let stage = hint?.leadStage ?? null;
+  if (content === undefined) {
+    try {
+      const [sync] = await db.select().from(leadsSyncTable).where(eq(leadsSyncTable.leadId, leadId)).limit(1);
+      content = sync?.content ?? null;
+      stage = stage ?? sync?.leadStage ?? null;
+    } catch {
+      content = null;
+    }
+  }
+
+  const name = hint?.leadName ?? extractLeadName(content);
+  const label = name ? `${name} #${leadId}` : `Lead #${leadId}`;
+  const icon = action === "replied" ? "\u{1F4AC}" : "\u{1F195}";
+  const title = stage ? `${icon} ${label} · ${stage}` : `${icon} ${label}`;
+
+  await notifyBroker(brokerId, title, body);
 }
