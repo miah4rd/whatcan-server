@@ -445,7 +445,6 @@ const PAGE_HTML = `<!doctype html>
   }
 
   function pushMsg(msg) {
-    try { alert(msg); } catch (e) {}
     showToast(msg);
   }
 
@@ -1053,6 +1052,8 @@ const PAGE_HTML = `<!doctype html>
     if (openItem) renderDetail();
     else renderList();
 
+    var oldToasts = document.querySelectorAll(".toast");
+    for (var i = 0; i < oldToasts.length; i++) oldToasts[i].remove();
     if (toastMsg) {
       var t = document.createElement("div");
       t.className = "toast";
