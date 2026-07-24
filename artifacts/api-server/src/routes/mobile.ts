@@ -782,7 +782,7 @@ const PAGE_HTML = `<!doctype html>
     html += '<button class="back-btn" id="back-btn">\\u2190 Back</button>';
     html += '<a class="openlead-btn" href="' + leadUrl + '" target="_blank" rel="noopener">\\u2197 Open Lead</a>';
     html += "</div>";
-    html += '<div class="lead-hdr"><span class="lead-hdr-name">' + (it.lead_name ? esc(it.lead_name) : "Lead " + esc(it.lead_id)) + '</span>' + taskStatusBadge(it.next_followup_at) + '</div>';
+    html += '<div class="lead-hdr"><span class="lead-hdr-name">' + (it.lead_name ? esc(it.lead_name) + ' <span style="opacity:.5;font-weight:400">#' + esc(it.lead_id) + '</span>' : "Lead " + esc(it.lead_id)) + '</span>' + taskStatusBadge(it.next_followup_at) + '</div>';
     html += "</header><main>";
 
     var msgs = it.recent_messages || [];
