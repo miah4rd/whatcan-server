@@ -60,7 +60,10 @@ function pickModel(hasRevisions: boolean, lastLeadText: string, messages: Msg[],
     reasons.push("objection-keyword");
   }
 
-  return reasons.length ? "claude-sonnet-5" : "claude-haiku-4-5-20251001";
+  // Everything runs on Sonnet 5 now (no more Haiku tier). Kept as a function
+  // so call sites and the reason-collection above stay untouched.
+  void reasons;
+  return "claude-sonnet-5";
 }
 
 router.options("/suggest", (_req, res) => {
@@ -332,7 +335,7 @@ ${transcript || "(no messages yet)"}`;
     try {
       const today = new Date().toISOString().slice(0, 10);
       const parsed = await chatCompletionJSON<{ taskDate?: string | null; taskText?: string | null }>({
-        model: "claude-haiku-4-5-20251001",
+        model: "claude-sonnet-5",
         system: `Today is ${today}. You analyze a real estate sales conversation.
 Detect if the lead explicitly stated a concrete future contact date — vacation return, scheduled call, scheduled viewing, or similar committed date.
 

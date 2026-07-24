@@ -1,7 +1,7 @@
 import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable } from "@workspace/db";
 import { lt, isNotNull, eq, and, or, isNull, inArray, desc } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON } from "./ai-client";
-import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages } from "./dialog-parser";
+import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming } from "./dialog-parser";
 import { getFollowupSteps, getQualificationSteps } from "./settings";
 import { logger } from "./logger";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
@@ -136,7 +136,9 @@ export async function generatePushFollowup(opts: {
 }): Promise<{ text: string; rationale: string }> {
   const brokerName = opts.responsibleUser ?? "Broker";
   const parsedDialog = parseDialogContent(opts.lastContent);
-  const formattedDialog = formatDialogForAI(parsedDialog.messages);
+  const now = new Date();
+  const formattedDialog = formatDialogForAI(parsedDialog.messages, 500, true);
+  const timingSummary = describeConversationTiming(parsedDialog.messages, now);
   const isCold = opts.trailingUnanswered >= 3;
 
   const leadContext = opts.leadNotes?.trim()
@@ -149,7 +151,13 @@ export async function generatePushFollowup(opts: {
 
 LANGUAGE RULE (absolute): Detect the language the lead writes in. Respond 100% in that language. Never mix languages. Default to English if unclear.
 
-READ THE FULL CONVERSATION FIRST. Then decide your approach:
+READ THE FULL CONVERSATION FIRST — including WHEN each message was sent (every line is timestamped, and a timing summary is provided). Then decide your approach:
+
+0. TIMING IS CRITICAL — do not treat an old conversation as if it happened yesterday. Look at how long it has actually been since the last interaction:
+   - If the last exchange was RECENT (days): follow up naturally, continuing the thread.
+   - If it has been WEEKS OR MONTHS: acknowledge the gap honestly and naturally ("it's been a while", "hope things have moved along since we last spoke") rather than replying as if the previous message just arrived. Re-open warmly, don't pretend no time passed.
+   - Consider whether the lead's last message actually warranted a reply. A bare closer ("ok thanks", "great, see you", 👍) did NOT need one, so no need to apologize for a gap — just re-engage with something fresh. But if the lead asked a real question or showed real interest and it went unanswered for a long time, address that gracefully (a light acknowledgment of the delay, then real value) instead of ignoring it.
+   - Never reference a specific date/season/event from an old message as if it's still current (e.g. don't ask about a trip or deadline that has already passed).
 
 1. GAUGE HOW TALKATIVE THE LEAD HAS BEEN — message count, message length, how much they've volunteered beyond bare answers.
    - TALKATIVE / expressive lead (shared context beyond bare facts — family, work, travel plans, lifestyle, reasons for buying, frustrations, excitement, etc.): write warmer and more personal. Reference a SPECIFIC detail they shared — business-related (budget, area, property type, timeline) AND personal if available. Show you remember them as a person, not just a lead record.
@@ -176,7 +184,7 @@ STYLE:
     messages: [
       {
         role: "user",
-        content: `Lead card notes: ${leadContext || "(none)"}\n\nFull conversation:\n${formattedDialog}\n\nWrite the follow-up message.`,
+        content: `TIMING:\n${timingSummary}\n\nLead card notes:${leadContext || " (none)"}\n\nFull conversation (each line timestamped, oldest → newest):\n${formattedDialog}\n\nWrite the follow-up message.`,
       },
     ],
     max_tokens: 250,
@@ -203,7 +211,7 @@ async function estimateContextualDelay(
 ): Promise<{ delayMs: number; reason: string; contextual: boolean }> {
   try {
     const parsed = await chatCompletionJSON<{ delayHours?: number | null; reason?: string }>({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       system: `You analyze a real estate sales conversation and decide the ideal timing for the next follow-up.
 
 Look for concrete signals:

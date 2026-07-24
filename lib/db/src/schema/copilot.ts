@@ -12,7 +12,7 @@ export const aiSuggestionsTable = pgTable("ai_suggestions", {
   promptMessages: jsonb("prompt_messages").notNull(),
   suggestionText: text("suggestion_text").notNull(),
   rationale: text("rationale"),
-  model: text("model").notNull().default("claude-3-5-haiku-20241022"),
+  model: text("model").notNull().default("claude-sonnet-5"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
