@@ -1,6 +1,6 @@
 import webpush from "web-push";
 import { db, pushSubscriptionsTable, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { parseDialogContent } from "./dialog-parser";
 
@@ -77,10 +77,19 @@ export async function sendPushToBroker(
 /** Counts this broker's current pending suggestions, for the app-icon badge number. */
 async function countPendingForBroker(brokerId: string): Promise<number> {
   try {
+    // Case/whitespace-insensitive: the same broker identity has shown up with
+    // different casing across write paths (extension vs. mobile), so an exact
+    // match here can under- or over-count the badge relative to what the
+    // inbox itself shows.
     const rows = await db
       .select({ id: pendingSuggestionsTable.id })
       .from(pendingSuggestionsTable)
-      .where(and(eq(pendingSuggestionsTable.responsibleUser, brokerId), eq(pendingSuggestionsTable.status, "pending")));
+      .where(
+        and(
+          sql`lower(trim(${pendingSuggestionsTable.responsibleUser})) = lower(trim(${brokerId}))`,
+          eq(pendingSuggestionsTable.status, "pending"),
+        ),
+      );
     return rows.length;
   } catch {
     return 0;

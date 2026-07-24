@@ -338,6 +338,8 @@ export async function queueSuggestion(opts: {
   text: string;
   followupLevel?: number;
   attachments?: GeneratedSuggestion["attachments"];
+  /** The lead's own incoming message (kind "live" only) — shown in the push notification instead of our draft reply. */
+  leadMessageText?: string;
 }): Promise<void> {
   const brokerId = (opts.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
 
@@ -374,7 +376,7 @@ export async function queueSuggestion(opts: {
       status: "pending",
       attachments: opts.attachments,
     });
-    notifyBrokerForLead(opts.responsibleUser, opts.leadId, "replied", opts.text).catch(() => {});
+    notifyBrokerForLead(opts.responsibleUser, opts.leadId, "replied", opts.leadMessageText || opts.text).catch(() => {});
   } else {
     // PUSH — only queue if no pending suggestion already exists
     const existing = await db
@@ -709,7 +711,7 @@ router.post("/amocrm/webhook", async (req, res) => {
           });
 
           if (text) {
-            await queueSuggestion({ leadId, responsibleUser, kind: "live", text, attachments });
+            await queueSuggestion({ leadId, responsibleUser, kind: "live", text, attachments, leadMessageText: lastLeadMsg });
             req.log.info({ leadId }, "live suggestion queued");
           }
         }
@@ -759,7 +761,7 @@ router.post("/amocrm/webhook", async (req, res) => {
     });
 
     if (text) {
-      await queueSuggestion({ leadId, responsibleUser, kind, text, attachments }).catch((err) =>
+      await queueSuggestion({ leadId, responsibleUser, kind, text, attachments, leadMessageText: content }).catch((err) =>
         req.log.error({ err }, "queue error"),
       );
     }
@@ -879,6 +881,7 @@ router.post("/amocrm/regen-live", async (req, res) => {
       kind: "live",
       text,
       attachments,
+      leadMessageText: lastLeadMsg,
     });
 
     res.json({ ok: true, leadId, preview: text.slice(0, 100) });

@@ -747,7 +747,8 @@ const PAGE_HTML = `<!doctype html>
           html += '<div class="card-notes">' + esc(String(item.lead_notes).split("\\n")[0].trim().slice(0, 80)) + '</div>';
         }
         html += '<div class="badges">' + cardBadges(item) + "</div>";
-        html += '<div class="card-preview">' + esc((item.suggestion_text || "").slice(0, 160)) + "</div>";
+        var previewText = (item.kind === "live" && item.last_lead_text) ? item.last_lead_text : (item.suggestion_text || "");
+        html += '<div class="card-preview">' + esc(previewText.slice(0, 160)) + "</div>";
         var footLabel = item.responsible_user ? item.responsible_user : (activeTab === "live" ? "Live reply" : activeTab === "reach" ? "Reach follow-up" : "Push follow-up");
         html += '<div class="card-foot"><span>' + esc(footLabel) + '</span><span class="card-arrow">\\u203a</span></div>';
         html += "</div>";
