@@ -541,10 +541,10 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
                 }
               }
 
-              if (sourceId && sourceMap[sourceId]) {
-                sourceName = sourceMap[sourceId];
-              } else if (author?.origin_name) {
+              if (author?.origin_name) {
                 sourceName = author.origin_name;
+              } else if (sourceId && sourceMap[sourceId]) {
+                sourceName = sourceMap[sourceId];
               }
 
               if (sourceName) {
