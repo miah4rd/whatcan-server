@@ -418,11 +418,15 @@ async function loadSourceMap(cookieStr: string): Promise<void> {
 
 // ── Detect new incoming messages and update lastMessageFrom ─────────────────────
 /**
- * For leads where we sent the last message (lastMessageFrom = "us" or null),
- * check if the client replied since our last outgoing message.
- * If so, update lastMessageFrom = "lead" and generate a LIVE suggestion.
+ * For ALL non-excluded leads, check if the client sent a new message that we
+ * haven't processed yet. Uses `lastMessageAt` from DB as the deduplication
+ * anchor — if the latest type 89 event is newer, it's a new client message.
  *
- * This catches manager replies from phone/amoCRM that bypass the extension.
+ * Previously this only checked leads where lastMessageFrom != 'lead', which
+ * meant once a client replied, their subsequent messages were never detected
+ * (because syncOutgoingEvents is broken and never resets lastMessageFrom to 'us').
+ *
+ * This catches: manager replies from phone/amoCRM, new client messages, etc.
  */
 export async function syncIncomingMessageDetection(): Promise<{ detected: number; liveGenerated: number }> {
   const cookieStr = await getAmoCookies();
@@ -431,11 +435,12 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
     return { detected: 0, liveGenerated: 0 };
   }
 
-  // Get leads where we potentially sent the last message
+  // Get ALL non-excluded leads — we need to check every lead for new messages
   const leads = await db
     .select({
       leadId: leadsSyncTable.leadId,
       lastMessageFrom: leadsSyncTable.lastMessageFrom,
+      lastMessageAt: leadsSyncTable.lastMessageAt,
       lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
       leadStage: leadsSyncTable.leadStage,
       pipeline: leadsSyncTable.pipeline,
@@ -447,7 +452,6 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
       and(
         isNotNull(leadsSyncTable.leadId),
         not(eq(leadsSyncTable.botExcluded, true)),
-        sql`${leadsSyncTable.lastMessageFrom} != 'lead' OR ${leadsSyncTable.lastMessageFrom} IS NULL`,
       ),
     );
 
@@ -467,8 +471,8 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
   const BATCH_SIZE = 10;
   const DELAY_MS = 2000;
 
-  // Only fetch the most recent 5 events per lead (enough to find latest incoming/outgoing)
-  const RECENT_LIMIT = 5;
+  // Fetch more events to avoid race conditions with Salesbot replies
+  const RECENT_LIMIT = 20;
 
   for (let i = 0; i < leads.length; i += BATCH_SIZE) {
     const batch = leads.slice(i, i + BATCH_SIZE);
@@ -479,9 +483,8 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
           const events = await fetchTimeline(cookieStr, lead.leadId, RECENT_LIMIT);
           if (events.length === 0) return { leadId: lead.leadId, detected: false };
 
-          // Find most recent type 89 (incoming) and type 90 (outgoing)
+          // Find most recent type 89 (incoming)
           let latestIncoming = 0;
-          let latestOutgoing = 0;
           let latestIncomingText = "";
           let latestIncomingEvent: TimelineEvent | null = null;
 
@@ -491,28 +494,23 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
               latestIncomingText = ev.data?.message?.text || "";
               latestIncomingEvent = ev;
             }
-            if (ev.type === 90 && ev.created_at && ev.created_at > latestOutgoing) {
-              latestOutgoing = ev.created_at;
-            }
           }
 
           if (latestIncoming === 0) return { leadId: lead.leadId, detected: false };
 
-          // Client replied after our last outgoing message?
+          // Compare with lastMessageAt from DB — the anchor for deduplication
+          // Use whichever timestamp is more recent between lastMessageAt and lastOurMessageAt
+          const lastMsgAt = lead.lastMessageAt?.getTime() ?? 0;
           const lastOurAt = lead.lastOurMessageAt?.getTime() ?? 0;
-          const lastOurTs = Math.floor(lastOurAt / 1000);
+          const knownAt = Math.max(lastMsgAt, lastOurAt);
+          const knownTs = Math.floor(knownAt / 1000);
 
-          if (latestIncoming <= latestOutgoing && latestOutgoing > 0) {
-            // Incoming is older than outgoing — no new client reply
+          if (knownTs > 0 && latestIncoming <= knownTs) {
+            // We already know about this message (or a newer one)
             return { leadId: lead.leadId, detected: false };
           }
 
-          if (lastOurTs > 0 && latestIncoming <= lastOurTs) {
-            // We already know about a more recent outgoing
-            return { leadId: lead.leadId, detected: false };
-          }
-
-          // Client replied! Update lastMessageFrom
+          // New client message detected! Update lastMessageFrom
           const incomingAt = new Date(latestIncoming * 1000);
           await db
             .update(leadsSyncTable)
@@ -606,7 +604,7 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
           }
 
           logger.info(
-            { leadId: lead.leadId, incomingAt, latestOutgoing, liveCreated },
+            { leadId: lead.leadId, incomingAt, knownTs, liveCreated },
             "incoming detection: client replied detected",
           );
 
@@ -648,13 +646,234 @@ if (process.argv[1]?.includes("amo-timeline-sync")) {
     });
 }
 
+// ── Quick poll: fetch only new incoming messages via v4 events API ─────────────
+/**
+ * Instead of scanning all 2193 leads, poll the v4 events API for
+ * incoming_chat_message events. Returns unique lead IDs that have new messages.
+ * Uses cookie-based auth (not Bearer token).
+ */
+async function pollNewIncomingLeadIds(cookieStr: string, lookbackMs = 5 * 60 * 1000): Promise<string[]> {
+  const fromTs = Math.floor((Date.now() - lookbackMs) / 1000);
+  const url = `${AMO_BASE}/api/v4/events?filter[type][]=incoming_chat_message&filter[created_at][from]=${fromTs}&limit=250`;
+
+  try {
+    const res = await fetch(url, {
+      headers: { Cookie: cookieStr, "Content-Type": "application/json" },
+    });
+    if (!res.ok) {
+      logger.warn({ status: res.status }, "poll incoming: v4 events failed");
+      return [];
+    }
+    const text = await res.text();
+    if (!text || text.length < 3) return []; // 204 No Content or empty body
+    const data = JSON.parse(text) as { _embedded?: { events?: Array<{ entity_id: number | string }> } };
+    const events = data?._embedded?.events ?? [];
+    const leadIds = [...new Set(events.map((e) => String(e.entity_id)))];
+    if (leadIds.length > 0) {
+      logger.info({ count: leadIds.length, eventCount: events.length }, "poll incoming: found new messages");
+    }
+    return leadIds;
+  } catch (err) {
+    logger.warn({ err }, "poll incoming: fetch failed");
+    return [];
+  }
+}
+
+/**
+ * Process a single lead: fetch timeline, store new messages, detect incoming,
+ * generate LIVE suggestion if needed. Same as the full sync but for ONE lead.
+ */
+async function processQuickPollLead(
+  cookieStr: string,
+  leadId: string,
+): Promise<{ stored: number; detected: boolean; liveCreated: boolean }> {
+  // Fetch full timeline for this lead
+  let allEvents: TimelineEvent[] = [];
+  let beforeTs: number | undefined;
+  for (let pageNum = 0; pageNum < 10; pageNum++) {
+    const events = await fetchTimeline(cookieStr, leadId, 200, beforeTs);
+    if (events.length === 0) break;
+    allEvents.push(...events);
+    const oldest = events[events.length - 1];
+    if (oldest?.created_at) beforeTs = oldest.created_at;
+    else break;
+    if (events.length < 200) break;
+  }
+
+  if (allEvents.length === 0) return { stored: 0, detected: false, liveCreated: false };
+
+  // Store messages
+  const messages = parseTimelineEvents(leadId, allEvents);
+  const stored = await storeMessages(messages);
+
+  // Get lead info from DB
+  const [leadRow] = await db
+    .select({
+      lastMessageAt: leadsSyncTable.lastMessageAt,
+      lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
+      leadStage: leadsSyncTable.leadStage,
+      pipeline: leadsSyncTable.pipeline,
+      botExcluded: leadsSyncTable.botExcluded,
+      responsibleUser: leadsSyncTable.responsibleUser,
+    })
+    .from(leadsSyncTable)
+    .where(eq(leadsSyncTable.leadId, leadId))
+    .limit(1);
+
+  if (!leadRow || leadRow.botExcluded) return { stored, detected: false, liveCreated: false };
+
+  // Find latest type 89 (incoming)
+  let latestIncoming = 0;
+  let latestIncomingText = "";
+  let latestIncomingEvent: TimelineEvent | null = null;
+  for (const ev of allEvents) {
+    if (ev.type === 89 && ev.created_at && ev.created_at > latestIncoming) {
+      latestIncoming = ev.created_at;
+      latestIncomingText = ev.data?.message?.text || "";
+      latestIncomingEvent = ev;
+    }
+  }
+  if (latestIncoming === 0) return { stored, detected: false, liveCreated: false };
+
+  // Compare with known timestamps
+  const lastMsgAt = leadRow.lastMessageAt?.getTime() ?? 0;
+  const lastOurAt = leadRow.lastOurMessageAt?.getTime() ?? 0;
+  const knownAt = Math.max(lastMsgAt, lastOurAt);
+  const knownTs = Math.floor(knownAt / 1000);
+  if (knownTs > 0 && latestIncoming <= knownTs) return { stored, detected: false, liveCreated: false };
+
+  // New incoming detected! Update DB
+  const incomingAt = new Date(latestIncoming * 1000);
+  await db
+    .update(leadsSyncTable)
+    .set({ lastMessageFrom: "lead", lastMessageAt: incomingAt, updatedAt: new Date() })
+    .where(eq(leadsSyncTable.leadId, leadId));
+
+  // Update messenger field
+  const fieldId = getLastMessengerFieldId();
+  if (latestIncomingEvent && fieldId) {
+    try {
+      const author = latestIncomingEvent.data?.author;
+      let sourceName: string | undefined;
+      if (author?.origin_profile) {
+        try {
+          const profile = typeof author.origin_profile === "string" ? JSON.parse(author.origin_profile) : author.origin_profile;
+          const sourceId = profile?.id ? String(profile.id) : undefined;
+          if (sourceId && sourceMap[sourceId]) sourceName = sourceMap[sourceId];
+        } catch { /* ignore */ }
+      }
+      if (!sourceName && author?.origin_name) sourceName = author.origin_name;
+      if (sourceName) {
+        await updateLastMessengerField(leadId, sourceName, 0, fieldId);
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  // Delete pending PUSH suggestions
+  await db
+    .delete(pendingSuggestionsTable)
+    .where(and(
+      eq(pendingSuggestionsTable.leadId, leadId),
+      eq(pendingSuggestionsTable.status, "pending"),
+      eq(pendingSuggestionsTable.kind, "push"),
+    ));
+
+  // Check for existing LIVE suggestion
+  const [existingLive] = await db
+    .select({ id: pendingSuggestionsTable.id })
+    .from(pendingSuggestionsTable)
+    .where(and(
+      eq(pendingSuggestionsTable.leadId, leadId),
+      eq(pendingSuggestionsTable.status, "pending"),
+      eq(pendingSuggestionsTable.kind, "live"),
+    ))
+    .limit(1);
+
+  let liveCreated = false;
+  if (!existingLive && latestIncomingText) {
+    try {
+      const fullEvents = await fetchTimeline(cookieStr, leadId, 20);
+      const allMsgs = parseTimelineEvents(leadId, fullEvents);
+      const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
+      const contentSnippet = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
+      if (lastLeadMsg) {
+        await generateSuggestion({
+          leadId,
+          responsibleUser: leadRow.responsibleUser,
+          kind: "live",
+          lastLeadMessage: lastLeadMsg.text,
+          contentSnippet: contentSnippet.slice(0, 3000),
+          leadStage: leadRow.leadStage,
+          pipeline: leadRow.pipeline,
+        });
+        liveCreated = true;
+      }
+    } catch (err) {
+      logger.error({ leadId, err }, "quick poll: LIVE generation failed");
+    }
+  }
+
+  logger.info({ leadId, incomingAt, liveCreated }, "quick poll: new incoming processed");
+  return { stored, detected: true, liveCreated };
+}
+
+// ── Quick poll scheduler: check for new messages every 2 minutes ───────────────
+const QUICK_POLL_INTERVAL_MS = 15 * 1000; // 15 seconds
+const QUICK_POLL_LOOKBACK_MS = 60 * 1000; // look back 1 min (overlap for safety)
+
+async function runQuickPoll(): Promise<void> {
+  const cookieStr = await getAmoCookies();
+  if (!cookieStr) {
+    logger.error("quick poll: no cookies");
+    return;
+  }
+
+  await loadSourceMap(cookieStr);
+
+  const leadIds = await pollNewIncomingLeadIds(cookieStr, QUICK_POLL_LOOKBACK_MS);
+  if (leadIds.length === 0) return;
+
+  const BATCH_SIZE = 5;
+  let detected = 0;
+  let liveCreated = 0;
+
+  for (let i = 0; i < leadIds.length; i += BATCH_SIZE) {
+    const batch = leadIds.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(
+      batch.map((leadId) => processQuickPollLead(cookieStr, leadId)),
+    );
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value.detected) {
+        detected++;
+        if (r.value.liveCreated) liveCreated++;
+      }
+    }
+    if (i + BATCH_SIZE < leadIds.length) {
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+
+  if (detected > 0) {
+    logger.info({ detected, liveCreated, total: leadIds.length }, "quick poll complete");
+  }
+}
+
 // ── Scheduler ──────────────────────────────────────────────────────────────────
-const TIMELINE_SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const TIMELINE_SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes (full sync backup)
 
 export function startTimelineSyncScheduler(): void {
   logger.info({ fieldId: getLastMessengerFieldId() }, "last messenger custom field configured");
 
-  // First sync after 60 seconds (let other schedulers finish first)
+  // Quick poll every 2 minutes (fast path — catches new messages quickly)
+  setTimeout(async () => {
+    try { await runQuickPoll(); } catch (err) { logger.error({ err }, "initial quick poll error"); }
+  }, 30_000); // first poll after 30 seconds
+
+  setInterval(async () => {
+    try { await runQuickPoll(); } catch (err) { logger.error({ err }, "quick poll error"); }
+  }, QUICK_POLL_INTERVAL_MS);
+
+  // Full sync every 30 minutes (backup — catches anything the quick poll missed)
   setTimeout(async () => {
     try { await syncLeadMessagesFromTimeline(); } catch (err) { logger.error({ err }, "initial timeline sync error"); }
   }, 60_000);
@@ -663,5 +882,5 @@ export function startTimelineSyncScheduler(): void {
     try { await syncLeadMessagesFromTimeline(); } catch (err) { logger.error({ err }, "periodic timeline sync error"); }
   }, TIMELINE_SYNC_INTERVAL_MS);
 
-  logger.info("timeline sync scheduler started (every 30 min)");
+  logger.info("scheduler started: quick poll every 2 min, full sync every 30 min");
 }
