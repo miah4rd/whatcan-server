@@ -78,6 +78,24 @@ pool.query(`ALTER TABLE leads_sync ADD COLUMN IF NOT EXISTS amo_created_at TIMES
   .then(() => logger.info("startup migration: amo_created_at column ensured"))
   .catch((err) => logger.error({ err }, "startup migration: amo_created_at failed"));
 
+// ── Lead profile + discard-flag columns (adaptive follow-up system) ─────────
+pool.query(`
+  ALTER TABLE leads_sync
+    ADD COLUMN IF NOT EXISTS profile_temperature TEXT,
+    ADD COLUMN IF NOT EXISTS profile_potential INTEGER,
+    ADD COLUMN IF NOT EXISTS profile_intent TEXT,
+    ADD COLUMN IF NOT EXISTS profile_timeframe TEXT,
+    ADD COLUMN IF NOT EXISTS profile_open_question BOOLEAN,
+    ADD COLUMN IF NOT EXISTS profile_alive TEXT,
+    ADD COLUMN IF NOT EXISTS profile_summary TEXT,
+    ADD COLUMN IF NOT EXISTS profile_updated_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS profile_source_msg_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS discard_flagged_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS discard_reason TEXT
+`)
+  .then(() => logger.info("startup migration: lead profile + discard columns ensured"))
+  .catch((err) => logger.error({ err }, "startup migration: lead profile columns failed"));
+
 pool.query(`ALTER TABLE lead_crm_tasks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open'`)
   .then(() => pool.query(`ALTER TABLE lead_crm_tasks ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ`))
   .then(() => logger.info("startup migration: lead_crm_tasks status/closed_at ensured"))

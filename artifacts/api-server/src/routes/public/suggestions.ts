@@ -4,6 +4,7 @@ import { desc, inArray, eq, and, sql } from "drizzle-orm";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { shouldSuppressPush } from "../../lib/stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed } from "../../lib/push-stage-whitelist";
+import { computePushPriority } from "../../lib/adaptive-followup";
 
 const router = Router();
 
@@ -44,6 +45,11 @@ router.get("/suggestions", async (req, res) => {
               updatedAt: leadsSyncTable.updatedAt,
               botExcluded: leadsSyncTable.botExcluded,
               pipeline: leadsSyncTable.pipeline,
+              amoCreatedAt: leadsSyncTable.amoCreatedAt,
+              profileTemperature: leadsSyncTable.profileTemperature,
+              profilePotential: leadsSyncTable.profilePotential,
+              profileOpenQuestion: leadsSyncTable.profileOpenQuestion,
+              profileAlive: leadsSyncTable.profileAlive,
             })
             .from(leadsSyncTable)
             .where(inArray(leadsSyncTable.leadId, allLeadIds))
@@ -189,6 +195,14 @@ router.get("/suggestions", async (req, res) => {
         next_followup_at: sync?.nextFollowupAt?.toISOString() ?? null,
         last_lead_channel: lastLeadChannel,
         trailing_unanswered: trailingUnanswered,
+        // Distilled profile (for adaptive ranking + surfaced to the client UI)
+        profile_temperature: sync?.profileTemperature ?? null,
+        profile_potential: sync?.profilePotential ?? null,
+        profile_open_question: sync?.profileOpenQuestion ?? null,
+        profile_alive: sync?.profileAlive ?? null,
+        age_days: sync?.amoCreatedAt
+          ? Math.floor((Date.now() - sync.amoCreatedAt.getTime()) / 86400000)
+          : null,
         _brokerReplied: brokerRepliedAfterSuggestion,
       };
     });
@@ -250,42 +264,72 @@ router.get("/suggestions", async (req, res) => {
         Date.UTC(nowBali.getUTCFullYear(), nowBali.getUTCMonth(), nowBali.getUTCDate()) - BALI_OFFSET_MS,
       );
 
-      const taskGroup = (item: (typeof enriched)[0]): number => {
-        if (item.kind !== "push") return 0; // LIVE items sort first by stage rank, handled below
+      const taskGroup = (item: (typeof enriched)[0]): 1 | 2 | 3 => {
         const nfa = item.next_followup_at ? new Date(item.next_followup_at) : null;
         if (!nfa) return 3; // no task → last
         if (nfa >= todayStartBali) return 1; // today's task → first
         return 2; // overdue → middle
       };
 
-      enriched.sort((a, b) => {
-        // 1) funnel stage (unqualified stages first — see STAGE_RANK above)
-        const ra = stageRank(a.lead_stage);
-        const rb = stageRank(b.lead_stage);
-        if (ra !== rb) return ra - rb;
+      // Adaptive priority ranking is Robert-only (rest of the adaptive system is
+      // gated to him too). Other brokers keep the original stage→task→warmth sort.
+      const useAdaptiveRanking = responsibleUser === "Robert";
 
-        // 2) task urgency (today → overdue asc → no task)
-        const ga = taskGroup(a);
-        const gb = taskGroup(b);
-        if (ga !== gb) return ga - gb;
+      if (useAdaptiveRanking) {
+        const overdueDays = (item: (typeof enriched)[0]): number => {
+          const nfa = item.next_followup_at ? new Date(item.next_followup_at).getTime() : null;
+          if (!nfa) return 0;
+          return Math.max(0, Math.floor((nowMs - nfa) / 86400000));
+        };
+        const scoreOf = (item: (typeof enriched)[0]): number => {
+          if (item.kind !== "push") return 1e6; // LIVE (if mixed in) always on top
+          return computePushPriority({
+            leadStage: item.lead_stage,
+            temperature: (item.profile_temperature as "cold" | "warm" | "hot" | null) ?? null,
+            potential: item.profile_potential ?? null,
+            openQuestion: item.profile_open_question ?? null,
+            taskGroup: taskGroup(item),
+            streak: item.trailing_unanswered ?? 0,
+            ageDays: item.age_days ?? null,
+            daysWaitingPastEligible: overdueDays(item),
+          });
+        };
+        enriched.sort((a, b) => {
+          const sa = scoreOf(a);
+          const sb = scoreOf(b);
+          if (sa !== sb) return sb - sa; // higher score first
+          try { return Number(BigInt(b.lead_id) - BigInt(a.lead_id)); } catch { return 0; }
+        });
+      } else {
+        enriched.sort((a, b) => {
+          // 1) funnel stage (unqualified stages first — see STAGE_RANK above)
+          const ra = stageRank(a.lead_stage);
+          const rb = stageRank(b.lead_stage);
+          if (ra !== rb) return ra - rb;
 
-        if (a.kind === "push" && b.kind === "push") {
-          const nfaA = a.next_followup_at ? new Date(a.next_followup_at).getTime() : null;
-          const nfaB = b.next_followup_at ? new Date(b.next_followup_at).getTime() : null;
-          if (ga === 2 && nfaA !== null && nfaB !== null && nfaA !== nfaB) {
-            // Overdue: ascending (oldest overdue first)
-            return nfaA - nfaB;
+          // 2) task urgency (today → overdue asc → no task)
+          const ga = taskGroup(a);
+          const gb = taskGroup(b);
+          if (ga !== gb) return ga - gb;
+
+          if (a.kind === "push" && b.kind === "push") {
+            const nfaA = a.next_followup_at ? new Date(a.next_followup_at).getTime() : null;
+            const nfaB = b.next_followup_at ? new Date(b.next_followup_at).getTime() : null;
+            if (ga === 2 && nfaA !== null && nfaB !== null && nfaA !== nfaB) {
+              // Overdue: ascending (oldest overdue first)
+              return nfaA - nfaB;
+            }
+
+            // 3) warmth — fewer unanswered touches in a row first
+            const wa = a.trailing_unanswered ?? 0;
+            const wb = b.trailing_unanswered ?? 0;
+            if (wa !== wb) return wa - wb;
           }
 
-          // 3) warmth — fewer unanswered touches in a row first (warmer lead = higher priority)
-          const wa = a.trailing_unanswered ?? 0;
-          const wb = b.trailing_unanswered ?? 0;
-          if (wa !== wb) return wa - wb;
-        }
-
-        // Default: newest lead first
-        try { return Number(BigInt(b.lead_id) - BigInt(a.lead_id)); } catch { return 0; }
-      });
+          // Default: newest lead first
+          try { return Number(BigInt(b.lead_id) - BigInt(a.lead_id)); } catch { return 0; }
+        });
+      }
     } else {
       enriched.sort((a, b) => {
         const rankDiff = stageRank(a.lead_stage) - stageRank(b.lead_stage);

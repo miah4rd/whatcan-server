@@ -75,6 +75,22 @@ export const leadsSyncTable = pgTable("leads_sync", {
   botExcluded: boolean("bot_excluded").default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   amoCreatedAt: timestamp("amo_created_at", { withTimezone: true }),
+  // ── Distilled lead profile (see lib/lead-profile.ts) — maintained on new lead
+  // activity, read for free by the daily ranking so it stays context-aware
+  // without re-reading conversations every day. ─────────────────────────────
+  profileTemperature: text("profile_temperature"),        // cold | warm | hot
+  profilePotential: integer("profile_potential"),         // 0-100 latent potential
+  profileIntent: text("profile_intent"),                  // short phrase of what they want
+  profileTimeframe: text("profile_timeframe"),            // implied timing for next step, or null
+  profileOpenQuestion: boolean("profile_open_question"),  // lead has an unanswered real question
+  profileAlive: text("profile_alive"),                    // alive | dead_candidate (content-based, never silence)
+  profileSummary: text("profile_summary"),                // 1-2 line essence
+  profileUpdatedAt: timestamp("profile_updated_at", { withTimezone: true }),
+  profileSourceMsgAt: timestamp("profile_source_msg_at", { withTimezone: true }), // lead-msg time the profile reflects (cache key)
+  // ── Discard-review flag (funnel cleaning) — set when a lead becomes a
+  // content-based discard candidate; surfaced for BROKER confirmation, never auto-acted.
+  discardFlaggedAt: timestamp("discard_flagged_at", { withTimezone: true }),
+  discardReason: text("discard_reason"),
 });
 
 export const brokerSettingsTable = pgTable("broker_settings", {
