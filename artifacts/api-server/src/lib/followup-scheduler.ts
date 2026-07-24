@@ -387,6 +387,17 @@ export async function processFollowups(): Promise<void> {
         //   overdue task  → nextFollowupAt = actualTaskDate (past date, for sort)
         //   no task / >3mo → nextFollowupAt = null (skipped by scheduler query)
         // No stale guard here — overdue leads must generate so they appear in PUSH.
+
+        // TEMP (rollout gate): the push-stage-whitelist above was just corrected
+        // from REACH stage names to the actual CE/Needs Assessed/Options Sent
+        // funnel stages. Restrict the newly-unlocked generation to Robert while
+        // he validates PUSH end-to-end, so other brokers' queues don't fill up
+        // with a backlog all at once. Does NOT touch nextFollowupAt, so once this
+        // gate is removed, all brokers' eligible leads pick up automatically on
+        // the next scheduler run. Remove this block to roll out to everyone.
+        if (lead.responsibleUser !== "Robert") {
+          continue;
+        }
       }
 
       // ── Bot-excluded leads ────────────────────────────────────────────────
