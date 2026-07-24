@@ -450,21 +450,25 @@ const PAGE_HTML = `<!doctype html>
   }
 
   async function enablePush() {
-    pushMsg("Step 0: button tapped");
     if (!pushSupported()) {
       pushMsg("Push not supported on this browser");
       return;
     }
 
-    var permission;
-    try {
-      permission = await Notification.requestPermission();
-    } catch (e) {
-      pushMsg("Permission request failed: " + ((e && e.message) || e));
-      return;
+    // IMPORTANT: Notification.requestPermission() must run synchronously inside
+    // the tap gesture on iOS — any alert()/await before it consumes the gesture
+    // and iOS silently returns "denied" without ever showing the system prompt.
+    var permission = Notification.permission;
+    if (permission === "default") {
+      try {
+        permission = await Notification.requestPermission();
+      } catch (e) {
+        pushMsg("Permission request failed: " + ((e && e.message) || e));
+        return;
+      }
     }
     if (permission !== "granted") {
-      pushMsg("Notifications not allowed");
+      pushMsg("Notifications are blocked for this app. Delete the home-screen icon, re-add it via Share → Add to Home Screen, then tap the bell again.");
       render();
       return;
     }
