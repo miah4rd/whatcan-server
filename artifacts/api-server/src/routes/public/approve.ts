@@ -4,6 +4,7 @@ import { eq, and } from "drizzle-orm";
 import { nextFollowupDate } from "../../lib/dialog-parser";
 import { chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
+import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
 
@@ -24,7 +25,14 @@ const FINAL_FOLLOWUP_LEVEL = 3;
 
 const router = Router();
 
-const HOOK_URL = "https://hooks.tglk.ru/in/p5dmPxJ7zyLkZ1HLlPSmaJ24ZQXz9a";
+const COMPANION_FIELD_ID = 965907;
+
+const SALESBOT_MAP: Record<string, number> = {
+  robert: 22127,
+  hos: 22247,
+  amelia: 22249,
+  companion: 22129,
+};
 
 /**
  * Close any open CRM tasks for this lead (in DB + amoCRM directly via API),
@@ -257,12 +265,9 @@ router.post("/approve", async (req, res) => {
   let hookStatus = 0;
   let hookBody = "";
   let stageOk = false;
+  let chatSent = false;
 
   // ── Atomic idempotency guard ──────────────────────────────────────────────
-  // Claim the suggestion by flipping status+finalText in a single UPDATE that
-  // only matches rows where status is still 'pending'. If two requests arrive
-  // simultaneously both pass the sug.status check above, but only ONE will
-  // receive a returned row here — the other gets a 409.
   const claimedStatus = skipMessage ? "skipped" : (body.edited ? "edited" : "approved");
   const [claimed] = await db
     .update(pendingSuggestionsTable)
@@ -275,12 +280,8 @@ router.post("/approve", async (req, res) => {
   }
 
   if (skipMessage) {
-    // ── Skip message mode: only move stage, do NOT send WhatsApp message ─────
-    // Suggestion already marked 'skipped' by the atomic update above.
-
     req.log.info({ leadId: sug.leadId, newStage }, "approve skip-message: suggestion skipped, no message sent");
   } else {
-    // ── Diagnostic log: capture message shape on every approve ───────────────
     req.log.info({
       leadId: sug.leadId,
       kind: sug.kind,
@@ -290,14 +291,7 @@ router.post("/approve", async (req, res) => {
       msgPreview: body.message.slice(0, 120).replace(/\n/g, "↵"),
     }, "approve: message received");
 
-  // ── Normal approve: update leads_sync BEFORE calling Ф5 hook ─────────────
-    // Critical ordering: Ф5 fires a webhook back to us immediately after receiving
-    // the message. If we update lastMessageFrom AFTER the hook call, the webhook
-    // handler sees stale 'lead' state and re-creates a LIVE suggestion.
-    // Updating first ensures the stale-content guard sees lastMessageFrom='us'.
-
-    // Capture lastMessageFrom BEFORE the update so autoCreateCrmTask can determine
-    // whether the client had ever replied (after the update it will always be "us").
+    // ── Update leads_sync BEFORE sending message ────────────────────────────
     const [prevSyncRow] = await db
       .select({ lastMessageFrom: leadsSyncTable.lastMessageFrom })
       .from(leadsSyncTable)
@@ -306,12 +300,7 @@ router.post("/approve", async (req, res) => {
     const prevLastMessageFrom = prevSyncRow?.lastMessageFrom ?? null;
 
     if (sug.kind === "push") {
-      // followupLevel in the suggestion is the level just sent (e.g. 1 = first follow-up).
-      // Persist it so the next scheduler run knows which script to use.
       const sentLevel = sug.followupLevel ?? 1;
-      // Pre-set nextFollowupAt to the future task date so amo-sync orphan sweep
-      // does NOT immediately re-queue this lead while autoCreateCrmTask is still
-      // running (fire-and-forget). Mirrors the same date logic used by autoCreateCrmTask.
       const level = Math.max(0, sentLevel);
       const precomputedNextAt =
         nextFollowupDate(approveNow, level) ??
@@ -322,15 +311,11 @@ router.post("/approve", async (req, res) => {
           lastMessageFrom: "us",
           lastOurMessageAt: approveNow,
           followupLevel: sentLevel,
-          // Set to the next task date so amo-sync does not treat this lead as an
-          // orphan until that date becomes due. amo-sync will overwrite this with
-          // now() when the AmoCRM task's complete_till is reached.
           nextFollowupAt: precomputedNextAt,
           updatedAt: approveNow,
         })
         .where(eq(leadsSyncTable.leadId, sug.leadId));
     } else {
-      // LIVE approved: broker replied — clear unanswered state immediately.
       await db
         .update(leadsSyncTable)
         .set({
@@ -341,20 +326,27 @@ router.post("/approve", async (req, res) => {
         .where(eq(leadsSyncTable.leadId, sug.leadId));
     }
 
-    // ── Send to Ф5 hook ───────────────────────────────────────────────────────
+    // ── Send via Salesbot (replaces F5 hook) ──────────────────────────────────
+    // 1. Write message to custom field "companion massage"
+    // 2. Trigger Salesbot which reads the field and sends via WhatsApp
+    const botId = SALESBOT_MAP.companion;
     try {
-      const r = await fetch(HOOK_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ leadId: sug.leadId, message: body.message }),
-      });
-      hookStatus = r.status;
-      hookBody = (await r.text()).slice(0, 1000);
+      const fieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, body.message);
+      if (fieldOk) {
+        const botTriggered = await triggerSalesbot(sug.leadId, botId);
+        chatSent = botTriggered;
+        hookStatus = botTriggered ? 200 : 500;
+        hookBody = botTriggered ? `Salesbot ${botId} triggered` : "Salesbot trigger failed";
+      } else {
+        hookStatus = 500;
+        hookBody = "Custom field update failed";
+      }
     } catch (e) {
-      req.log.error({ err: e }, "webhook error");
+      req.log.error({ err: e }, "Salesbot send error");
+      hookStatus = 500;
       hookBody = String(e).slice(0, 1000);
     }
-    req.log.info({ leadId: sug.leadId, hookStatus, hookBodySnippet: hookBody.slice(0, 200) }, "hook response");
+    req.log.info({ leadId: sug.leadId, hookStatus, chatSent, hookBody }, "Salesbot response");
 
     // Note: suggestion status already set atomically above (claimed update).
 

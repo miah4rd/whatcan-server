@@ -9,6 +9,7 @@ import { startFollowupScheduler } from "./lib/followup-scheduler";
 import { startAmoSyncScheduler } from "./lib/amo-sync";
 import { startFunnelSnapshotScheduler } from "./lib/funnel-snapshot";
 import { startMessageSyncScheduler } from "./lib/amo-message-sync";
+import { startTimelineSyncScheduler } from "./lib/amo-timeline-sync";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
 
@@ -57,7 +58,7 @@ app.use((req, res, next) => {
 startFollowupScheduler();
 startAmoSyncScheduler();
 startFunnelSnapshotScheduler();
-startMessageSyncScheduler();
+startTimelineSyncScheduler();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
 pool.query(`ALTER TABLE leads_sync ADD COLUMN IF NOT EXISTS pipeline text`)
