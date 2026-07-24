@@ -3,9 +3,83 @@ import { processFollowups, processUnansweredLive } from "../../lib/followup-sche
 import { syncTaskSchedule } from "../../lib/amo-sync";
 import { logger } from "../../lib/logger";
 import { db, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
-import { and, eq, lt, inArray } from "drizzle-orm";
+import { and, eq, lt, inArray, isNotNull, sql } from "drizzle-orm";
+import { refreshLeadProfile } from "../../lib/lead-profile";
+import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 
 const router = Router();
+
+/**
+ * POST /api/admin/backfill-profiles
+ * One-time (idempotent) backfill of the distilled lead profile + discard flag
+ * for Robert's active-funnel PUSH leads, so the adaptive ranking has data to
+ * work with without waiting for every lead to regenerate. Bounded by ?limit
+ * (default 80). refreshLeadProfile is cached, so re-running is cheap.
+ */
+router.post("/admin/backfill-profiles", async (req, res) => {
+  const limit = Math.min(200, Math.max(1, Number(req.query["limit"]) || 80));
+  try {
+    const rows = await db
+      .select()
+      .from(leadsSyncTable)
+      .where(
+        and(
+          eq(leadsSyncTable.responsibleUser, "Robert"),
+          eq(leadsSyncTable.botExcluded, false),
+          isNotNull(leadsSyncTable.content),
+        ),
+      )
+      .orderBy(sql`CASE WHEN ${leadsSyncTable.leadId} ~ '^[0-9]+$' THEN ${leadsSyncTable.leadId}::bigint ELSE 0 END DESC`)
+      .limit(limit);
+
+    const active = rows.filter((r) => {
+      const s = (r.leadStage ?? "").toLowerCase();
+      return s.includes("contact established") || s.includes("needs assessed") || s.includes("options sent") || s.includes("option send");
+    });
+
+    let profiled = 0;
+    let flagged = 0;
+    const now = new Date();
+    for (const lead of active) {
+      try {
+        const profile = await refreshLeadProfile({
+          leadId: lead.leadId,
+          responsibleUser: lead.responsibleUser,
+          content: lead.content,
+          leadStage: lead.leadStage,
+          leadNotes: lead.leadNotes,
+          profileSourceMsgAt: lead.profileSourceMsgAt,
+          stored: lead,
+        });
+        if (profile) profiled++;
+
+        const parsed = parseDialogContent(lead.content ?? "");
+        const streak = countTrailingOurMessages(parsed.messages);
+        const ageDays = lead.amoCreatedAt ? Math.floor((now.getTime() - lead.amoCreatedAt.getTime()) / 86400000) : 0;
+        const everEngaged = parsed.messages.some((m) => m.from === "lead" && m.text.trim().length > 25);
+        const deadByContent = profile?.alive === "dead_candidate";
+        const deadBySilence = !everEngaged && streak >= 5 && ageDays > 60;
+        if ((deadByContent || deadBySilence) && !lead.discardFlaggedAt) {
+          await db
+            .update(leadsSyncTable)
+            .set({
+              discardFlaggedAt: new Date(),
+              discardReason: deadByContent ? (profile?.summary || "content indicates the lead is no longer active") : "long silence, never engaged, many unanswered touches",
+            })
+            .where(eq(leadsSyncTable.leadId, lead.leadId));
+          flagged++;
+        }
+      } catch (err) {
+        logger.error({ err, leadId: lead.leadId }, "backfill-profiles: lead failed (non-fatal)");
+      }
+    }
+    logger.info({ scanned: active.length, profiled, flagged }, "admin: backfill-profiles complete");
+    res.json({ ok: true, scanned: active.length, profiled, flagged });
+  } catch (err) {
+    logger.error({ err }, "admin: backfill-profiles error");
+    res.status(500).json({ error: String(err) });
+  }
+});
 
 /**
  * POST /api/admin/run-scheduler
