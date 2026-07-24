@@ -818,10 +818,25 @@ async function processQuickPollLead(
 }
 
 // ── Quick poll scheduler: check for new messages every 2 minutes ───────────────
-const QUICK_POLL_INTERVAL_MS = 15 * 1000; // 15 seconds
+const QUICK_POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes (was 15s — overlapping runs piled up concurrent Puppeteer browsers and exhausted server memory)
 const QUICK_POLL_LOOKBACK_MS = 60 * 1000; // look back 1 min (overlap for safety)
 
+let quickPollInFlight = false;
+
 async function runQuickPoll(): Promise<void> {
+  if (quickPollInFlight) {
+    logger.warn("quick poll: previous run still in flight, skipping this tick");
+    return;
+  }
+  quickPollInFlight = true;
+  try {
+    await runQuickPollInner();
+  } finally {
+    quickPollInFlight = false;
+  }
+}
+
+async function runQuickPollInner(): Promise<void> {
   const cookieStr = await getAmoCookies();
   if (!cookieStr) {
     logger.error("quick poll: no cookies");
