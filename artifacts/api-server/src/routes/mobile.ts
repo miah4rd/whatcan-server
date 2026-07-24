@@ -444,9 +444,15 @@ const PAGE_HTML = `<!doctype html>
     return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
   }
 
+  function pushMsg(msg) {
+    try { alert(msg); } catch (e) {}
+    showToast(msg);
+  }
+
   async function enablePush() {
+    pushMsg("Step 0: button tapped");
     if (!pushSupported()) {
-      showToast("Push not supported on this browser");
+      pushMsg("Push not supported on this browser");
       return;
     }
 
@@ -454,11 +460,11 @@ const PAGE_HTML = `<!doctype html>
     try {
       permission = await Notification.requestPermission();
     } catch (e) {
-      showToast("Permission request failed: " + ((e && e.message) || e));
+      pushMsg("Permission request failed: " + ((e && e.message) || e));
       return;
     }
     if (permission !== "granted") {
-      showToast("Notifications not allowed");
+      pushMsg("Notifications not allowed");
       render();
       return;
     }
@@ -468,7 +474,7 @@ const PAGE_HTML = `<!doctype html>
       reg = await navigator.serviceWorker.register("/m/sw.js", { scope: "/m/" });
       await navigator.serviceWorker.ready;
     } catch (e) {
-      showToast("Service worker failed: " + ((e && e.message) || e));
+      pushMsg("Service worker failed: " + ((e && e.message) || e));
       return;
     }
 
@@ -477,10 +483,10 @@ const PAGE_HTML = `<!doctype html>
       var keyRes = await fetch(API + "/push/vapid-public-key");
       keyData = await keyRes.json();
     } catch (e) {
-      showToast("Could not reach server for push key");
+      pushMsg("Could not reach server for push key");
       return;
     }
-    if (!keyData.key) { showToast("Push not configured on server"); return; }
+    if (!keyData.key) { pushMsg("Push not configured on server"); return; }
 
     var sub;
     try {
@@ -489,7 +495,7 @@ const PAGE_HTML = `<!doctype html>
         applicationServerKey: urlBase64ToUint8Array(keyData.key),
       });
     } catch (e) {
-      showToast("Subscribe failed: " + ((e && e.message) || e));
+      pushMsg("Subscribe failed: " + ((e && e.message) || e));
       return;
     }
 
@@ -500,16 +506,16 @@ const PAGE_HTML = `<!doctype html>
         body: JSON.stringify({ brokerId: brokerName, subscription: sub.toJSON() }),
       });
       if (!saveRes.ok) {
-        showToast("Server rejected subscription (" + saveRes.status + ")");
+        pushMsg("Server rejected subscription (" + saveRes.status + ")");
         return;
       }
     } catch (e) {
-      showToast("Could not save subscription to server");
+      pushMsg("Could not save subscription to server");
       return;
     }
 
     localStorage.setItem("copilot_push_enabled", "1");
-    showToast("Notifications enabled");
+    pushMsg("Notifications enabled");
     render();
   }
 
