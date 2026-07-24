@@ -26,13 +26,7 @@ const FINAL_FOLLOWUP_LEVEL = 3;
 const router = Router();
 
 const COMPANION_FIELD_ID = 965907;
-
-const SALESBOT_MAP: Record<string, number> = {
-  robert: 22127,
-  hos: 22247,
-  amelia: 22249,
-  companion: 22129,
-};
+const COMPANION_ROBERT_BOT_ID = 22127;
 
 /**
  * Close any open CRM tasks for this lead (in DB + amoCRM directly via API),
@@ -328,8 +322,8 @@ router.post("/approve", async (req, res) => {
 
     // ── Send via Salesbot (replaces F5 hook) ──────────────────────────────────
     // 1. Write message to custom field "companion massage"
-    // 2. Trigger Salesbot which reads the field and sends via WhatsApp
-    const botId = SALESBOT_MAP.companion;
+    // 2. Trigger Salesbot "Companion Robert" which reads the field and sends via WhatsApp
+    const botId = COMPANION_ROBERT_BOT_ID;
     try {
       const fieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, body.message);
       if (fieldOk) {
