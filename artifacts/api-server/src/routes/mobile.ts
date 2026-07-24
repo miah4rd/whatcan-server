@@ -444,38 +444,95 @@ const PAGE_HTML = `<!doctype html>
     return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
   }
 
+  function pushMsg(msg) {
+    showToast(msg);
+  }
+
   async function enablePush() {
     if (!pushSupported()) {
-      showToast("Push not supported on this browser");
+      pushMsg("Push not supported on this browser");
       return;
     }
-    try {
-      var permission = await Notification.requestPermission();
-      if (permission !== "granted") {
-        showToast("Notifications not allowed");
-        render();
+
+    // IMPORTANT: Notification.requestPermission() must run synchronously inside
+    // the tap gesture on iOS — any alert()/await before it consumes the gesture
+    // and iOS silently returns "denied" without ever showing the system prompt.
+    var permission = Notification.permission;
+    if (permission === "default") {
+      try {
+        permission = await Notification.requestPermission();
+      } catch (e) {
+        pushMsg("Permission request failed: " + ((e && e.message) || e));
         return;
       }
-      var reg = await navigator.serviceWorker.register("/m/sw.js", { scope: "/m/" });
-      await navigator.serviceWorker.ready;
+    }
+    if (permission !== "granted") {
+      pushMsg("Notifications are blocked for this app. Delete the home-screen icon, re-add it via Share → Add to Home Screen, then tap the bell again.");
+      render();
+      return;
+    }
+
+    var reg;
+    try {
+      reg = await navigator.serviceWorker.register("/m/sw.js", { scope: "/m/" });
+      // Do NOT use navigator.serviceWorker.ready here: the page lives at /m
+      // (no trailing slash) which is outside scope "/m/", so .ready never
+      // resolves and the whole flow hangs silently. Wait on the registration's
+      // own worker instead, with a hard timeout.
+      await new Promise(function (resolve, reject) {
+        if (reg.active) return resolve();
+        var pending = reg.installing || reg.waiting;
+        if (!pending) return reject(new Error("no worker installing"));
+        var timer = setTimeout(function () { reject(new Error("activation timed out")); }, 15000);
+        pending.addEventListener("statechange", function () {
+          if (pending.state === "activated") { clearTimeout(timer); resolve(); }
+          else if (pending.state === "redundant") { clearTimeout(timer); reject(new Error("worker became redundant")); }
+        });
+      });
+    } catch (e) {
+      pushMsg("Service worker failed: " + ((e && e.message) || e));
+      return;
+    }
+
+    var keyData;
+    try {
       var keyRes = await fetch(API + "/push/vapid-public-key");
-      var keyData = await keyRes.json();
-      if (!keyData.key) { showToast("Push not configured on server"); return; }
-      var sub = await reg.pushManager.subscribe({
+      keyData = await keyRes.json();
+    } catch (e) {
+      pushMsg("Could not reach server for push key");
+      return;
+    }
+    if (!keyData.key) { pushMsg("Push not configured on server"); return; }
+
+    var sub;
+    try {
+      sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(keyData.key),
       });
-      await fetch(API + "/push/subscribe", {
+    } catch (e) {
+      pushMsg("Subscribe failed: " + ((e && e.message) || e));
+      return;
+    }
+
+    try {
+      var saveRes = await fetch(API + "/push/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ brokerId: brokerName, subscription: sub.toJSON() }),
       });
-      localStorage.setItem("copilot_push_enabled", "1");
-      showToast("Notifications enabled");
-      render();
+      if (!saveRes.ok) {
+        pushMsg("Server rejected subscription (" + saveRes.status + ")");
+        return;
+      }
     } catch (e) {
-      showToast("Could not enable notifications");
+      pushMsg("Could not save subscription to server");
+      return;
     }
+
+    localStorage.setItem("copilot_push_enabled", "1");
+    pushMsg("Notifications enabled");
+    render();
   }
 
   async function disablePush() {
@@ -995,6 +1052,8 @@ const PAGE_HTML = `<!doctype html>
     if (openItem) renderDetail();
     else renderList();
 
+    var oldToasts = document.querySelectorAll(".toast");
+    for (var i = 0; i < oldToasts.length; i++) oldToasts[i].remove();
     if (toastMsg) {
       var t = document.createElement("div");
       t.className = "toast";
