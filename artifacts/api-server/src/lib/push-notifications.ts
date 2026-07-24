@@ -1,8 +1,10 @@
 import webpush from "web-push";
 import { db, pushSubscriptionsTable, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { logger } from "./logger";
 import { parseDialogContent } from "./dialog-parser";
+import { getPushStageWhitelist } from "./push-stage-whitelist";
+import { isPendingVisible, dedupePushPerLead } from "./pending-visibility";
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY ?? "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY ?? "";
@@ -82,7 +84,12 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
     // match here can under- or over-count the badge relative to what the
     // inbox itself shows.
     const rows = await db
-      .select({ id: pendingSuggestionsTable.id })
+      .select({
+        id: pendingSuggestionsTable.id,
+        leadId: pendingSuggestionsTable.leadId,
+        kind: pendingSuggestionsTable.kind,
+        responsibleUser: pendingSuggestionsTable.responsibleUser,
+      })
       .from(pendingSuggestionsTable)
       .where(
         and(
@@ -90,7 +97,29 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
           eq(pendingSuggestionsTable.status, "pending"),
         ),
       );
-    return rows.length;
+    if (rows.length === 0) return 0;
+
+    // Apply the SAME visibility rules the inbox uses (stage suppression, push
+    // whitelist, HoS rental scoping, stale-LIVE checks, per-lead push dedupe) —
+    // otherwise the badge counts rows the broker never actually sees.
+    const leadIds = [...new Set(rows.map((r) => r.leadId))];
+    const syncRows = await db
+      .select({
+        leadId: leadsSyncTable.leadId,
+        botExcluded: leadsSyncTable.botExcluded,
+        leadStage: leadsSyncTable.leadStage,
+        pipeline: leadsSyncTable.pipeline,
+        nextFollowupAt: leadsSyncTable.nextFollowupAt,
+        lastMessageFrom: leadsSyncTable.lastMessageFrom,
+        content: leadsSyncTable.content,
+      })
+      .from(leadsSyncTable)
+      .where(inArray(leadsSyncTable.leadId, leadIds));
+    const syncByLeadId = new Map(syncRows.map((r) => [r.leadId, r]));
+    const whitelist = await getPushStageWhitelist();
+
+    const visible = dedupePushPerLead(rows.filter((r) => isPendingVisible(r, syncByLeadId.get(r.leadId), whitelist)));
+    return visible.length;
   } catch {
     return 0;
   }
