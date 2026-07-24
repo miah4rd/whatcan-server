@@ -9,7 +9,7 @@ import { logger } from "./logger";
 import { amoFetch, getAccessToken, getAllOpenLeadTasksPaginated, createAmoTask } from "./amo-client";
 import { shouldSuppressPush } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
-import { notifyBroker } from "./push-notifications";
+import { notifyBrokerForLead } from "./push-notifications";
 
 type AmoLead = {
   id: number;
@@ -210,7 +210,11 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
         });
 
       if (isNewLead && responsibleUser) {
-        notifyBroker(responsibleUser, "New lead assigned", lead.name || `Lead #${lead.id}`).catch(() => {});
+        notifyBrokerForLead(responsibleUser, String(lead.id), "assigned", "New lead assigned", {
+          content: null,
+          leadStage: info.stageName,
+          leadName: lead.name || null,
+        }).catch(() => {});
       }
 
       updated++;

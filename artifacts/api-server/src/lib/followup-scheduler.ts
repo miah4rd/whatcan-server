@@ -10,7 +10,7 @@ import { shouldSuppressPush, isStageWhitelisted } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
 import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
 import { generateSuggestion } from "./generate-suggestion";
-import { notifyBroker } from "./push-notifications";
+import { notifyBrokerForLead } from "./push-notifications";
 
 async function classifyObjection(
   conversationSnippet: string,
@@ -986,7 +986,10 @@ export async function processUnansweredLive(): Promise<void> {
         status: "pending",
         attachments,
       });
-      notifyBroker(lead.responsibleUser, "Lead replied", text).catch(() => {});
+      notifyBrokerForLead(lead.responsibleUser, lead.leadId, "replied", text, {
+        content: lead.content,
+        leadStage: lead.leadStage,
+      }).catch(() => {});
 
       logger.info({ leadId: lead.leadId }, "live suggestion generated for unanswered lead");
     } catch (err) {
