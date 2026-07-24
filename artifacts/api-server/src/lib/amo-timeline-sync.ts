@@ -142,6 +142,7 @@ async function fetchTimeline(
       Cookie: cookieStr,
       "Content-Type": "application/json",
     },
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!res.ok) {
@@ -403,6 +404,7 @@ async function loadSourceMap(cookieStr: string): Promise<void> {
   try {
     const res = await fetch(`${AMO_BASE}/ajax/v1/chats/origin/sources`, {
       headers: { Cookie: cookieStr },
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return;
     const data = await res.json() as { response: { sources: Array<{ id: number; name: string }> } };
@@ -659,6 +661,7 @@ async function pollNewIncomingLeadIds(cookieStr: string, lookbackMs = 5 * 60 * 1
   try {
     const res = await fetch(url, {
       headers: { Cookie: cookieStr, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
       logger.warn({ status: res.status }, "poll incoming: v4 events failed");
@@ -829,10 +832,24 @@ async function runQuickPoll(): Promise<void> {
     return;
   }
   quickPollInFlight = true;
+  const QUICK_POLL_TIMEOUT_MS = 60_000; // hard limit: 60 seconds max
+  const startMs = Date.now();
   try {
-    await runQuickPollInner();
+    await Promise.race([
+      runQuickPollInner(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("quick poll timed out after 60s")), QUICK_POLL_TIMEOUT_MS)
+      ),
+    ]);
+  } catch (err) {
+    if ((err as Error).message?.includes("timed out")) {
+      logger.error("quick poll: timed out after 60s — forcing reset");
+    } else {
+      logger.error({ err }, "quick poll error");
+    }
   } finally {
     quickPollInFlight = false;
+    logger.info({ durationMs: Date.now() - startMs }, "quick poll: finished (flag cleared)");
   }
 }
 
@@ -855,7 +872,17 @@ async function runQuickPollInner(): Promise<void> {
   for (let i = 0; i < leadIds.length; i += BATCH_SIZE) {
     const batch = leadIds.slice(i, i + BATCH_SIZE);
     const results = await Promise.allSettled(
-      batch.map((leadId) => processQuickPollLead(cookieStr, leadId)),
+      batch.map((leadId) =>
+        Promise.race([
+          processQuickPollLead(cookieStr, leadId),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`lead ${leadId} timed out`)), 20_000)
+          ),
+        ]).catch((err) => {
+          logger.warn({ leadId, err: (err as Error).message }, "quick poll: lead timed out or failed");
+          return { stored: 0, detected: false, liveCreated: false };
+        })
+      ),
     );
     for (const r of results) {
       if (r.status === "fulfilled" && r.value.detected) {
