@@ -144,7 +144,10 @@ export function parseDialogContent(content: string): DialogSummary {
  *   [Broker]: text
  *   [Lead]: text
  */
-export function formatDialogForAI(messages: ParsedMessage[], limit = 30): string {
+// Default is generous (not a tight recency window) so the AI sees the whole
+// conversation, including the lead's original request at the very start —
+// real conversations top out around 150 messages, well under this cap.
+export function formatDialogForAI(messages: ParsedMessage[], limit = 500): string {
   const recent = messages.slice(-limit);
   return recent
     .map((m) => {

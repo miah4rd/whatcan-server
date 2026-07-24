@@ -313,8 +313,8 @@ ${kb}`;
       const lastBrokerText = parsedDlg.lastOurMessage?.text ?? "";
 
       const userPrompt = row.kind === "live"
-        ? `RECENT CONVERSATION (last messages, oldest → newest):
-${formatDialogForAI(parsedDlg.messages, 8)}
+        ? `FULL CONVERSATION (oldest → newest):
+${formatDialogForAI(parsedDlg.messages)}
 
 SITUATION: The lead just replied. Their latest message:
 "${lastLeadText}"
@@ -322,8 +322,8 @@ SITUATION: The lead just replied. Their latest message:
 Broker: ${row.responsibleUser ?? "Broker"}
 
 Task: Write the broker's next WhatsApp reply. React directly to what the lead just said. Do NOT repeat questions already asked above. Move the conversation forward. Under 90 words.${AVOID_PHRASES_REMINDER}`
-        : `RECENT CONVERSATION (last messages, oldest → newest):
-${formatDialogForAI(parsedDlg.messages, 6)}
+        : `FULL CONVERSATION (oldest → newest):
+${formatDialogForAI(parsedDlg.messages)}
 
 SITUATION: The broker's last message was:
 "${lastBrokerText.slice(0, 400)}"

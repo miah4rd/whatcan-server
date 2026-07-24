@@ -101,8 +101,9 @@ router.post("/suggest", async (req, res) => {
       const sync = syncRows[0];
       if (sync?.content) {
         const dialog = parseDialogContent(sync.content);
-        // Use up to 60 messages — enough for full context without hitting token limits
-        fullTranscript = formatDialogForAI(dialog.messages, 60);
+        // Full history, not a recency window — losing the lead's original
+        // ask from early in a long conversation produces worse suggestions.
+        fullTranscript = formatDialogForAI(dialog.messages, 500);
         // Return last 30 messages to extension for conversation history display
         recentMessages = dialog.messages.slice(-30).map((m) => ({
           from: m.from === "us" ? "us" : "lead",
