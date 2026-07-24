@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
 import { desc, inArray, eq, and, sql } from "drizzle-orm";
-import { parseDialogContent } from "../../lib/dialog-parser";
+import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { shouldSuppressPush } from "../../lib/stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed } from "../../lib/push-stage-whitelist";
 
@@ -134,6 +134,7 @@ router.get("/suggestions", async (req, res) => {
       let recentMessages: Array<{ from: string; senderName: string; text: string; at: string; channel: string | null }> = [];
       let brokerRepliedAfterSuggestion = false;
       let lastLeadChannel: string | null = null;
+      let trailingUnanswered = 0;
 
       let leadName: string | null = null;
 
@@ -142,6 +143,7 @@ router.get("/suggestions", async (req, res) => {
           const dialog = parseDialogContent(content);
           lastLeadText = dialog.lastLeadMessage?.text ?? null;
           lastLeadChannel = dialog.lastLeadChannel;
+          trailingUnanswered = countTrailingOurMessages(dialog.messages);
           // Extract lead's display name from first message that has a real sender name
           const leadMsg = dialog.messages.find(
             (m) => m.from === "lead" && m.senderName && m.senderName.trim().length > 1,
@@ -186,6 +188,7 @@ router.get("/suggestions", async (req, res) => {
         last_message_at: sync?.lastMessageAt?.toISOString() ?? null,
         next_followup_at: sync?.nextFollowupAt?.toISOString() ?? null,
         last_lead_channel: lastLeadChannel,
+        trailing_unanswered: trailingUnanswered,
         _brokerReplied: brokerRepliedAfterSuggestion,
       };
     });
@@ -256,6 +259,12 @@ router.get("/suggestions", async (req, res) => {
       };
 
       enriched.sort((a, b) => {
+        // 1) funnel stage (unqualified stages first — see STAGE_RANK above)
+        const ra = stageRank(a.lead_stage);
+        const rb = stageRank(b.lead_stage);
+        if (ra !== rb) return ra - rb;
+
+        // 2) task urgency (today → overdue asc → no task)
         const ga = taskGroup(a);
         const gb = taskGroup(b);
         if (ga !== gb) return ga - gb;
@@ -263,10 +272,15 @@ router.get("/suggestions", async (req, res) => {
         if (a.kind === "push" && b.kind === "push") {
           const nfaA = a.next_followup_at ? new Date(a.next_followup_at).getTime() : null;
           const nfaB = b.next_followup_at ? new Date(b.next_followup_at).getTime() : null;
-          if (ga === 2) {
+          if (ga === 2 && nfaA !== null && nfaB !== null && nfaA !== nfaB) {
             // Overdue: ascending (oldest overdue first)
-            if (nfaA !== null && nfaB !== null) return nfaA - nfaB;
+            return nfaA - nfaB;
           }
+
+          // 3) warmth — fewer unanswered touches in a row first (warmer lead = higher priority)
+          const wa = a.trailing_unanswered ?? 0;
+          const wb = b.trailing_unanswered ?? 0;
+          if (wa !== wb) return wa - wb;
         }
 
         // Default: newest lead first

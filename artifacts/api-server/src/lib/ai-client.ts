@@ -29,22 +29,35 @@ interface ChatCompletionResult {
  * Wrapper around Anthropic Messages API with an OpenAI-like interface.
  * Handles system prompt extraction, response parsing, and model selection.
  */
+// Newer models (claude-sonnet-5 and up) reject the `temperature` param with a
+// 400 "temperature is deprecated for this model". Callers still pass
+// temperature: 0 for deterministic tasks, so strip it centrally for these
+// models rather than having every call site 400. Match by family prefix so
+// future sonnet/opus 5+ ids are covered without another code change.
+function modelRejectsTemperature(model: string): boolean {
+  return /claude-(sonnet|opus|fable)-[5-9]/.test(model);
+}
+
 export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatCompletionResult> {
   const client = getAnthropic();
 
-  const response = await client.messages.create({
+  const params: Anthropic.MessageCreateParamsNonStreaming = {
     model: opts.model,
     system: opts.system,
     messages: opts.messages,
     max_tokens: opts.max_tokens ?? 400,
-    temperature: opts.temperature,
     // Some models (e.g. claude-sonnet-5) use extended thinking by default. For
     // these short, latency-sensitive chat-suggestion calls we want the direct
     // answer, not a reasoning trace — without this, thinking can consume the
     // entire max_tokens budget on complex prompts and leave zero tokens for
     // the actual text, producing a response with no text block at all.
     thinking: { type: "disabled" },
-  });
+  };
+  if (opts.temperature !== undefined && !modelRejectsTemperature(opts.model)) {
+    params.temperature = opts.temperature;
+  }
+
+  const response = await client.messages.create(params);
 
   const text = response.content
     .filter((block): block is Anthropic.TextBlock => block.type === "text")

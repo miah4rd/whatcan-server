@@ -17,7 +17,7 @@ router.options("/correction", (_req, res) => res.sendStatus(204));
 async function distillInstruction(raw: string): Promise<string | null> {
   try {
     const parsed = await chatCompletionJSON<{ instruction?: string }>({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       system: `You are a writing coach analyzing feedback a real estate broker gave about AI-generated messages.
 Extract a SHORT, REUSABLE instruction (max 120 chars) that describes the broker's general preference,
 so it can be applied to future messages automatically. Ignore any specific lead name, property, or one-off detail.
@@ -25,7 +25,6 @@ so it can be applied to future messages automatically. Ignore any specific lead 
 Respond with JSON only: {"instruction": "..."}`,
       messages: [{ role: "user", content: raw.slice(0, 2000) }],
       max_tokens: 80,
-      temperature: 0,
     });
     const instruction = parsed.instruction?.trim();
     return instruction && instruction.length >= 5 ? instruction : null;

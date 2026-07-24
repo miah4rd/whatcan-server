@@ -1,5 +1,5 @@
 import { chatCompletion } from "./ai-client";
-import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
+import { parseDialogContent, formatDialogForAI, describeConversationTiming } from "./dialog-parser";
 import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { buildRentalSystemPrompt } from "./rental-prompt";
@@ -236,9 +236,17 @@ ${kb}${brokerPicksBlock ? `\n\nBROKER'S HANDPICKED PROPERTIES (use FIRST when th
 
 
   const dialog = parseDialogContent(opts.contentSnippet);
-  const formattedDialog = formatDialogForAI(dialog.messages);
+  const formattedDialog = formatDialogForAI(dialog.messages, 500, true);
+  const timingSummary = describeConversationTiming(dialog.messages);
   const lastLeadText = opts.lastLeadMessage.trim() || dialog.lastLeadMessage?.text || "";
   const lastBrokerText = dialog.lastOurMessage?.text ?? "";
+
+  // Shared timing-awareness guidance injected into every non-first-contact task
+  // so the AI calibrates to how long it's actually been, not just message order.
+  const timingGuidance = `TIMING AWARENESS (read the timestamps — do not treat an old exchange as if it just happened):
+- If the last interaction was recent (hours/days): reply naturally in-thread.
+- If it has been weeks or months: acknowledge the gap honestly ("it's been a while") instead of pretending no time passed. Do not reference dates, trips, seasons or deadlines from old messages as if still current — they may have passed.
+- Judge whether the lead's last message actually needed a reply: a bare closer ("ok thanks", "see you", 👍) did not, so don't over-apologize; but a real unanswered question or expressed interest left hanging for a long time should be addressed gracefully — light acknowledgment of the delay, then real value.`;
 
   const leadContext = opts.leadNotes?.trim()
     ? `\nLEAD CARD INFO (name, budget, notes from broker):\n${opts.leadNotes.trim()}\n`
@@ -258,8 +266,13 @@ Task: Write the broker's opening WhatsApp message — a warm, direct first intro
 - Do NOT list properties yet.
 - Under 60 words.${AVOID_PHRASES_REMINDER}`
       : opts.kind === "live"
-      ? `FULL CONVERSATION (oldest → newest):
+      ? `FULL CONVERSATION (each line timestamped, oldest → newest):
 ${formattedDialog}
+
+TIMING:
+${timingSummary}
+
+${timingGuidance}
 ${leadContext}
 SITUATION: The lead just replied. Their latest message:
 "${lastLeadText}"
@@ -287,8 +300,13 @@ IMPORTANT: Do NOT include any property links or listings in this reply. The brok
 Only suggest an in-person meeting if the lead explicitly mentioned being in Bali.
 
 Under 90 words.${AVOID_PHRASES_REMINDER}`
-      : `FULL CONVERSATION (oldest → newest):
+      : `FULL CONVERSATION (each line timestamped, oldest → newest):
 ${formattedDialog}
+
+TIMING:
+${timingSummary}
+
+${timingGuidance}
 ${leadContext}
 SITUATION: The broker's last message was:
 "${lastBrokerText}"
@@ -296,14 +314,14 @@ The lead has NOT replied to this message yet.
 
 Broker: ${opts.responsibleUser ?? "Broker"}
 
-Task: Write a short follow-up. The lead hasn't responded — re-engage without repeating the same message. Use any lead card info above to personalise.
+Task: Write a short follow-up. The lead hasn't responded — re-engage without repeating the same message. Use any lead card info above to personalise. Let the timing above guide tone: a long silence after a message that did not need a reply is normal (re-engage fresh); a long silence after the lead's real question went unanswered should be acknowledged gracefully.
 
 IMPORTANT: Do NOT include property links or listings in this follow-up. The broker will personally select and share properties when ready. Your job is to re-engage naturally — add value, reference something they said earlier, or propose a low-effort next step.
 
 Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   const completion = await chatCompletion({
-    model: "claude-haiku-4-5-20251001",
+    model: "claude-sonnet-5",
     system: systemPrompt,
     messages: [{ role: "user", content: prompt }],
     max_tokens: 400,

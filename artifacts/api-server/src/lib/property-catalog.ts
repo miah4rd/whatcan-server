@@ -173,7 +173,7 @@ export async function matchProperties(opts: {
     const brokerBlock = brokerTop.length > 0 ? `\n\nThis broker frequently recommends: ${brokerTop.join(", ")} — prefer these when they genuinely fit too, but never at the expense of actual fit.` : "";
 
     const result = await chatCompletionJSON<{ ids?: string[] }>({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       system: `You match a real estate lead's stated needs to the best-fitting listings from a catalog.
 Read the conversation and pick at most ${limit} listing IDs from the catalog that genuinely fit what the lead described (area, budget, bedrooms, purpose, style). If nothing in the conversation gives enough to judge fit, return an empty list — do not guess.${brokerBlock}
 
