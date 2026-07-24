@@ -139,6 +139,21 @@ export function parseDialogContent(content: string): DialogSummary {
 }
 
 /**
+ * Count consecutive messages from "us" at the tail of the conversation —
+ * i.e. how many of our touches in a row the lead has left unanswered.
+ * Used to gauge how "cold" a lead has gone without a hardcoded threshold
+ * table: 0 = lead spoke last, 1-2 = normal follow-up, 3+ = going cold.
+ */
+export function countTrailingOurMessages(messages: ParsedMessage[]): number {
+  let n = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.from === "us") n++;
+    else break;
+  }
+  return n;
+}
+
+/**
  * Format parsed messages as a clean, AI-readable conversation.
  * Returns the last `limit` messages formatted as:
  *   [Broker]: text

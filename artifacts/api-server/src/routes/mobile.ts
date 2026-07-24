@@ -279,30 +279,39 @@ const PAGE_HTML = `<!doctype html>
     } catch (e) { /* keep built-in defaults */ }
   }
 
-  // ── PUSH tab sort: task urgency, then funnel-stage order (mirrors extension) ─
-  var PUSH_STAGE_ORDER = ['contact established', 'needs assessed', 'options sent', 'option send'];
-  function pushTaskScore(row) {
+  // ── PUSH tab sort: stage → task urgency → warmth (mirrors suggestions.ts) ─
+  var PUSH_STAGE_RANK = { 'contact established': 9, 'needs assessed': 50, 'options sent': 51, 'option send': 51 };
+  function pushStageRank(stage) {
+    var s = (stage || '').toLowerCase();
+    for (var key in PUSH_STAGE_RANK) { if (s.indexOf(key) !== -1) return PUSH_STAGE_RANK[key]; }
+    return 99;
+  }
+  // 1 = due today, 2 = overdue, 3 = no task
+  function pushTaskGroup(row) {
     var nfa = row.next_followup_at;
-    if (!nfa) return 1e9;
+    if (!nfa) return 3;
     var due = new Date(nfa);
     var n = new Date();
     var dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate());
     var todayDay = new Date(n.getFullYear(), n.getMonth(), n.getDate());
-    var diff = Math.round((dueDay - todayDay) / 864e5);
-    return Math.max(0, -diff);
-  }
-  function pushStageScore(row) {
-    var s = (row.lead_stage || '').toLowerCase();
-    for (var i = 0; i < PUSH_STAGE_ORDER.length; i++) { if (s.indexOf(PUSH_STAGE_ORDER[i]) !== -1) return i; }
-    return 999;
+    return dueDay.getTime() >= todayDay.getTime() ? 1 : 2;
   }
   function sortedList(kind) {
     var raw = (items[kind] || []).slice();
     if (kind !== 'push') return raw;
     raw.sort(function (a, b) {
-      var at = pushTaskScore(a), bt = pushTaskScore(b);
-      if (at !== bt) return at - bt;
-      return pushStageScore(a) - pushStageScore(b);
+      var ra = pushStageRank(a.lead_stage), rb = pushStageRank(b.lead_stage);
+      if (ra !== rb) return ra - rb;
+      var ga = pushTaskGroup(a), gb = pushTaskGroup(b);
+      if (ga !== gb) return ga - gb;
+      if (ga === 2) {
+        var da = a.next_followup_at ? new Date(a.next_followup_at).getTime() : 0;
+        var db = b.next_followup_at ? new Date(b.next_followup_at).getTime() : 0;
+        if (da !== db) return da - db;
+      }
+      var wa = a.trailing_unanswered || 0, wb = b.trailing_unanswered || 0;
+      if (wa !== wb) return wa - wb;
+      return 0;
     });
     return raw;
   }

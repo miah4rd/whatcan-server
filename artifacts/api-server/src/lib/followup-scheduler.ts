@@ -1,7 +1,7 @@
 import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable } from "@workspace/db";
 import { lt, isNotNull, eq, and, or, isNull, inArray, desc } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON } from "./ai-client";
-import { nextFollowupDate, parseDialogContent, formatDialogForAI } from "./dialog-parser";
+import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages } from "./dialog-parser";
 import { getFollowupSteps, getQualificationSteps } from "./settings";
 import { logger } from "./logger";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
@@ -21,7 +21,7 @@ async function classifyObjection(
   ).join("\n");
 
   const completion = await chatCompletion({
-    model: "claude-haiku-4-5-20251001",
+    model: "claude-sonnet-5",
     system: "You are a Bali real estate sales coach. Based on the conversation snippet, identify which hidden objection is most likely blocking the lead. Reply with ONLY the id from the list, nothing else.",
     messages: [
       {
@@ -30,7 +30,6 @@ async function classifyObjection(
       },
     ],
     max_tokens: 20,
-    temperature: 0,
   });
 
   const raw = completion.content.toLowerCase();
@@ -101,7 +100,8 @@ Write the follow-up message.`,
       },
     ],
     max_tokens: 250,
-    temperature: 0.5,
+    // NOTE: `temperature` is deprecated/rejected by the API for claude-sonnet-5
+    // (returns a 400) — omit it rather than hardcoding a value.
   });
 
   const text = sanitizeSuggestion(
@@ -111,6 +111,83 @@ Write the follow-up message.`,
   const rationale = `Follow-up #${opts.followupLevel} — context-aware. Situation tactic: ${entry.label}.`;
 
   return { text, entry, rationale, formattedDialog };
+}
+
+/**
+ * PUSH follow-ups for the active-funnel stages (Contact established / Needs
+ * Assessed / Options Sent). Unlike generateFollowup() above, this always
+ * writes a fresh, context-aware message — it does not fall back to a static
+ * qual-script/template, since reusing the same canned text on every repeat
+ * touch to the same lead defeats the point of personalization.
+ *
+ * `trailingUnanswered` = how many of our messages in a row the lead has left
+ * unanswered (see countTrailingOurMessages). The prompt uses this to shift
+ * tone: 0-2 = normal warm follow-up, 3+ = lower-pressure re-engagement — no
+ * hardcoded script, the model just writes shorter and gives the lead an easy
+ * out, since a broker doesn't have "cold lead scripts" written yet.
+ */
+export async function generatePushFollowup(opts: {
+  responsibleUser: string | null;
+  leadStage: string;
+  lastContent: string;
+  leadNotes?: string | null;
+  trailingUnanswered: number;
+  correctionsBlock?: string;
+}): Promise<{ text: string; rationale: string }> {
+  const brokerName = opts.responsibleUser ?? "Broker";
+  const parsedDialog = parseDialogContent(opts.lastContent);
+  const formattedDialog = formatDialogForAI(parsedDialog.messages);
+  const isCold = opts.trailingUnanswered >= 3;
+
+  const leadContext = opts.leadNotes?.trim()
+    ? `\nLead card notes: ${opts.leadNotes.trim()}`
+    : "";
+
+  const completion = await chatCompletion({
+    model: "claude-sonnet-5",
+    system: `You are ${brokerName}, a senior Bali real estate broker at Unicorn Property, writing a WhatsApp follow-up to a lead currently at CRM stage "${opts.leadStage}".
+
+LANGUAGE RULE (absolute): Detect the language the lead writes in. Respond 100% in that language. Never mix languages. Default to English if unclear.
+
+READ THE FULL CONVERSATION FIRST. Then decide your approach:
+
+1. GAUGE HOW TALKATIVE THE LEAD HAS BEEN — message count, message length, how much they've volunteered beyond bare answers.
+   - TALKATIVE / expressive lead (shared context beyond bare facts — family, work, travel plans, lifestyle, reasons for buying, frustrations, excitement, etc.): write warmer and more personal. Reference a SPECIFIC detail they shared — business-related (budget, area, property type, timeline) AND personal if available. Show you remember them as a person, not just a lead record.
+   - QUIET / terse lead (short answers, facts but little else) — especially common at "Contact established": do NOT try to be personal, it reads as fake. Lead with ONE piece of concrete value (a market insight, a relevant fact tied to what they asked about), then end with exactly ONE simple, easy-to-answer opening question that invites them back into conversation. Keep it short.
+
+2. STAGE AWARENESS — but the CRM stage label can be STALE. Brokers sometimes forget to move a lead forward after real progress happens in the conversation (e.g. options were already sent, needs were already discussed, but the card is still sitting on "Contact established"). Treat the stage below as a HINT, not ground truth — if the actual conversation shows the lead is further along than the label says, respond to what's ACTUALLY happening in the conversation, not the label:
+   - "Contact established": still early — the goal is to get them talking, not to sell. Value + one opening question. (Unless the conversation shows real needs/options already discussed — then treat it like Needs Assessed/Options Sent instead.)
+   - "Needs Assessed" / "Options Sent": lead has already shared real criteria or seen options — be specific and consultative, reference what they actually said they want or what was sent, move them toward a concrete next step (call, viewing, narrowing down options).
+
+3. FOLLOW-UP RECENCY: this lead has left ${opts.trailingUnanswered} of your messages in a row unanswered.${
+      isCold
+        ? " That's several touches with no reply — this is a re-engagement, not a normal follow-up. Keep it noticeably shorter and lower-pressure than a warm follow-up would be. Give them an easy, guilt-free way to respond (e.g. acknowledge they might be busy or have moved on) rather than piling on more information. Do NOT repeat what previous unanswered messages already said."
+        : " Still within a normal follow-up rhythm — write as usual."
+    }
+
+4. GROUNDING: every message must reference something concrete from THIS conversation. Never a generic template. If the conversation is thin, say less — don't invent details.
+
+STYLE:
+- WhatsApp style: short, natural, conversational. No bullet points, no long dashes, no corporate tone.
+- Under 80 words unless the situation genuinely needs more.
+- No "Just checking in", "Hope you're doing well", or other filler openers.
+- No formal sign-offs. Sign naturally if it fits, don't force it.
+- Return ONLY the message body — no preamble, no quotes, no explanation of your reasoning.${opts.correctionsBlock ?? ""}${AVOID_PHRASES_REMINDER}`,
+    messages: [
+      {
+        role: "user",
+        content: `Lead card notes: ${leadContext || "(none)"}\n\nFull conversation:\n${formattedDialog}\n\nWrite the follow-up message.`,
+      },
+    ],
+    max_tokens: 250,
+  });
+
+  const text = sanitizeSuggestion(completion.content);
+  const rationale = isCold
+    ? `PUSH — re-engagement (${opts.trailingUnanswered} unanswered touches), stage "${opts.leadStage}".`
+    : `PUSH — adaptive follow-up, stage "${opts.leadStage}".`;
+
+  return { text, rationale };
 }
 
 /**
@@ -182,7 +259,7 @@ async function isLeadActiveForFollowup(content: string, stage: string): Promise<
   try {
     const snippet = content.slice(-3000);
     const parsed = await chatCompletionJSON<{ active?: boolean; reason?: string }>({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       system: `You are a CRM analyst. Given a sales conversation, decide if the lead is still a viable prospect worth following up with.
 
 Return JSON: {"active": true/false, "reason": "one short line"}
@@ -207,7 +284,6 @@ When in doubt → return true. False positives (following up on a dead lead) are
         },
       ],
       max_tokens: 60,
-      temperature: 0,
     });
     if (parsed.active === false) {
       logger.info({ stage, reason: parsed.reason }, "relevance check: lead marked inactive");
@@ -439,9 +515,13 @@ export async function processFollowups(): Promise<void> {
       // Exception: if a stage template exists for this lead, proceed without
       // content — templates are pre-written and don't require conversation context.
       // Has a qual script configured in Settings, or a non-brochure touch template?
+      // Active-funnel PUSH (CE / Needs Assessed / Options Sent) no longer has a
+      // template fallback (see generatePushFollowup below) — it always needs
+      // real conversation content, so this bypass only applies to Reach/Rental.
       const hasStageTpl =
-        qualSteps.some((s) => s.message?.trim()) ||
-        !!buildFollowupTemplateByLevel(1, lead.leadId, "");
+        (isReachStage || isRentalPipeline) &&
+        (qualSteps.some((s) => s.message?.trim()) ||
+          !!buildFollowupTemplateByLevel(1, lead.leadId, ""));
       if (!hasStageTpl && (!lead.content || lead.content.trim().length < 30)) {
         logger.info(
           { leadId: lead.leadId, leadStage: lead.leadStage },
@@ -614,18 +694,43 @@ export async function processFollowups(): Promise<void> {
       const currentLevel = lead.followupLevel ?? 0;
       const nextLevel = stageLevel; // always use stage-derived level
 
-      if (qualSteps.length === 0 && steps.length === 0) {
-        logger.info({ leadId: lead.leadId }, "followup: no steps configured, skipping");
-        continue;
-      }
-
-      const currentStep = steps[stageScriptIdx] ?? steps[0];
-      const presetMessage = currentStep?.message?.trim() ?? "";
-
       let text: string;
       let entry: PlaybookEntry;
       let rationale: string;
       let formattedDialog: string;
+
+      if (!isReachStage && !isRentalPipeline) {
+        // ── Active-funnel PUSH (CE / Needs Assessed / Options Sent) ─────────
+        // Always write a fresh, context-aware message here — no static
+        // qual-script/template fallback. qualScriptIndexForStage() always maps
+        // "Contact established" to the same script slot regardless of how many
+        // touches were already sent to this lead, so the old cascade below was
+        // sending the identical canned text on every repeat follow-up.
+        const trailingUnanswered = countTrailingOurMessages(leadParsed.messages);
+        const pushBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+        const pushCorrections = await buildBrokerCorrectionsBlock(pushBrokerIdKey, correctionsCache);
+        const generated = await generatePushFollowup({
+          responsibleUser: lead.responsibleUser,
+          leadStage: lead.leadStage ?? "",
+          lastContent: lead.content ?? "",
+          leadNotes: lead.leadNotes,
+          trailingUnanswered,
+          correctionsBlock: pushCorrections,
+        });
+        text = generated.text;
+        entry = OBJECTION_PLAYBOOK[0]!; // not classified on this path — field kept for schema/analytics compat
+        rationale = generated.rationale;
+        formattedDialog = formatDialogForAI(leadParsed.messages);
+        logger.info(
+          { leadId: lead.leadId, stage: lead.leadStage, trailingUnanswered },
+          "followup: adaptive PUSH generated",
+        );
+      } else if (qualSteps.length === 0 && steps.length === 0) {
+        logger.info({ leadId: lead.leadId }, "followup: no steps configured, skipping");
+        continue;
+      } else {
+      const currentStep = steps[stageScriptIdx] ?? steps[0];
+      const presetMessage = currentStep?.message?.trim() ?? "";
 
       if (presetMessage) {
         // ── Broker pre-wrote this step's message — use it verbatim ──────────
@@ -675,6 +780,7 @@ export async function processFollowups(): Promise<void> {
           formattedDialog = generated.formattedDialog;
         }
       }
+      }
 
       if (!text) {
         logger.warn({ leadId: lead.leadId }, "empty followup text, skipping");
@@ -690,7 +796,7 @@ export async function processFollowups(): Promise<void> {
         promptMessages: [],
         suggestionText: text,
         rationale,
-        model: "claude-haiku-4-5-20251001",
+        model: "claude-sonnet-5",
       });
 
       const existing = await db

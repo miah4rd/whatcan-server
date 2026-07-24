@@ -172,7 +172,7 @@ async function learnFromManualEdit(
 ): Promise<void> {
   try {
     const parsed = await chatCompletionJSON<{ instruction?: string }>({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       system: `You are a writing coach analyzing how a real estate broker edited an AI-generated message.
 Extract a SHORT, REUSABLE instruction (max 120 chars) that describes WHAT the broker changed and WHY, 
 so an AI can apply this preference to future messages automatically.
@@ -192,7 +192,6 @@ Respond with JSON only: {"instruction": "..."}`,
         },
       ],
       max_tokens: 80,
-      temperature: 0,
     });
     const instruction = parsed.instruction?.trim();
 
