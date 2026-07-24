@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { db, pendingSuggestionsTable, sentMessagesTable, leadsSyncTable, stageEventsTable, brokerCorrectionsTable, leadCrmTasksTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
-import { nextFollowupDate } from "../../lib/dialog-parser";
+import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
+import { computeNextFollowupDays } from "../../lib/adaptive-followup";
 import { chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
@@ -47,7 +48,14 @@ async function autoCreateCrmTask(
     // 0. Look up the lead's pipeline — Rental uses its own (shorter) cadence
     //    and its own stage-advance map (see constants above).
     const [pipelineRow] = await db
-      .select({ pipeline: leadsSyncTable.pipeline })
+      .select({
+        pipeline: leadsSyncTable.pipeline,
+        responsibleUser: leadsSyncTable.responsibleUser,
+        leadStage: leadsSyncTable.leadStage,
+        content: leadsSyncTable.content,
+        amoCreatedAt: leadsSyncTable.amoCreatedAt,
+        profileTemperature: leadsSyncTable.profileTemperature,
+      })
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, leadId))
       .limit(1);
@@ -72,7 +80,43 @@ async function autoCreateCrmTask(
     let taskDate: Date;
     let nextActionNote: string;
 
-    if (kind === "push") {
+    // Adaptive cadence applies only to Robert's active-funnel PUSH leads
+    // (Contact Established / Needs Assessed / Options Sent). Everything else —
+    // qualification/Reach, Rental, other brokers — keeps the original fixed
+    // [1,3,5] cadence untouched.
+    const stageLower = (pipelineRow?.leadStage ?? "").toLowerCase();
+    const isActivePushStage =
+      stageLower.includes("contact established") ||
+      stageLower.includes("needs assessed") ||
+      stageLower.includes("options sent") ||
+      stageLower.includes("option send");
+    const useAdaptiveCadence =
+      kind === "push" &&
+      !isRentalPipeline &&
+      pipelineRow?.responsibleUser === "Robert" &&
+      isActivePushStage;
+
+    if (kind === "push" && useAdaptiveCadence) {
+      // Silence streak = consecutive unanswered touches, +1 for the one we're
+      // sending now (the lead hasn't replied, so this send extends the streak).
+      let streak = 1;
+      try {
+        const parsed = parseDialogContent(pipelineRow?.content ?? "");
+        streak = countTrailingOurMessages(parsed.messages) + 1;
+      } catch { /* default streak 1 */ }
+      const ageDays = pipelineRow?.amoCreatedAt
+        ? Math.floor((approveNow.getTime() - pipelineRow.amoCreatedAt.getTime()) / 86400000)
+        : null;
+      const days = computeNextFollowupDays({
+        streak,
+        leadStage: pipelineRow?.leadStage ?? null,
+        temperature: pipelineRow?.profileTemperature as "cold" | "warm" | "hot" | null,
+        ageDays,
+      });
+      taskDate = new Date(approveNow.getTime() + days * 86400000);
+      nextActionNote = `Adaptive follow-up (серия ${streak}, +${days}д) — если нет ответа, следующий touch.`;
+      log.info({ leadId, streak, days, stage: pipelineRow?.leadStage, temp: pipelineRow?.profileTemperature }, "adaptive cadence: next task scheduled");
+    } else if (kind === "push") {
       const level = Math.max(0, followupLevel ?? 0);
       const nextLevelDate = delayDays ? nextFollowupDate(approveNow, level, delayDays) : nextFollowupDate(approveNow, level);
 

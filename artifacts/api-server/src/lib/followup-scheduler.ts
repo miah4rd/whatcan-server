@@ -11,6 +11,7 @@ import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelis
 import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
 import { generateSuggestion } from "./generate-suggestion";
 import { notifyBrokerForLead } from "./push-notifications";
+import { refreshLeadProfile } from "./lead-profile";
 
 async function classifyObjection(
   conversationSnippet: string,
@@ -709,12 +710,57 @@ export async function processFollowups(): Promise<void> {
 
       if (!isReachStage && !isRentalPipeline) {
         // ── Active-funnel PUSH (CE / Needs Assessed / Options Sent) ─────────
+        // (Reached only for Robert — the whitelist gate above already `continue`d
+        // every other broker, so profile/discard work here is Robert-scoped.)
         // Always write a fresh, context-aware message here — no static
         // qual-script/template fallback. qualScriptIndexForStage() always maps
         // "Contact established" to the same script slot regardless of how many
         // touches were already sent to this lead, so the old cascade below was
         // sending the identical canned text on every repeat follow-up.
         const trailingUnanswered = countTrailingOurMessages(leadParsed.messages);
+
+        // Refresh the distilled profile — bounded + cached (only calls AI when
+        // the lead's last message changed since last distillation).
+        let profile = null as Awaited<ReturnType<typeof refreshLeadProfile>>;
+        try {
+          profile = await refreshLeadProfile({
+            leadId: lead.leadId,
+            responsibleUser: lead.responsibleUser,
+            content: lead.content,
+            leadStage: lead.leadStage,
+            leadNotes: lead.leadNotes,
+            profileSourceMsgAt: lead.profileSourceMsgAt,
+            stored: lead,
+          });
+        } catch { /* non-fatal */ }
+
+        // ── Discard-candidate detection (FLAG ONLY — broker confirms, never auto) ──
+        // Content saying the lead is dead → flag. Otherwise flag only on a long,
+        // deep silence with zero real engagement — NEVER on time alone (real
+        // estate leads go quiet for months and come back).
+        try {
+          const ageDays = lead.amoCreatedAt
+            ? Math.floor((now.getTime() - lead.amoCreatedAt.getTime()) / 86400000)
+            : 0;
+          const everEngaged = leadParsed.messages.some(
+            (m) => m.from === "lead" && m.text.trim().length > 25,
+          );
+          const deadByContent = profile?.alive === "dead_candidate";
+          const deadBySilence = !everEngaged && trailingUnanswered >= 5 && ageDays > 60;
+          if ((deadByContent || deadBySilence) && !lead.discardFlaggedAt) {
+            await db
+              .update(leadsSyncTable)
+              .set({
+                discardFlaggedAt: new Date(),
+                discardReason: deadByContent
+                  ? (profile?.summary || "content indicates the lead is no longer active")
+                  : "long silence, never engaged, many unanswered touches",
+              })
+              .where(eq(leadsSyncTable.leadId, lead.leadId));
+            logger.info({ leadId: lead.leadId, deadByContent, deadBySilence }, "discard: lead flagged for broker review");
+          }
+        } catch { /* non-fatal */ }
+
         const pushBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
         const pushCorrections = await buildBrokerCorrectionsBlock(pushBrokerIdKey, correctionsCache);
         const generated = await generatePushFollowup({
@@ -869,6 +915,14 @@ export async function processUnansweredLive(): Promise<void> {
       leadStage: leadsSyncTable.leadStage,
       botExcluded: leadsSyncTable.botExcluded,
       pipeline: leadsSyncTable.pipeline,
+      profileSourceMsgAt: leadsSyncTable.profileSourceMsgAt,
+      profileTemperature: leadsSyncTable.profileTemperature,
+      profilePotential: leadsSyncTable.profilePotential,
+      profileIntent: leadsSyncTable.profileIntent,
+      profileTimeframe: leadsSyncTable.profileTimeframe,
+      profileOpenQuestion: leadsSyncTable.profileOpenQuestion,
+      profileAlive: leadsSyncTable.profileAlive,
+      profileSummary: leadsSyncTable.profileSummary,
     })
     .from(leadsSyncTable)
     .where(eq(leadsSyncTable.lastMessageFrom, "lead"));
@@ -950,6 +1004,23 @@ export async function processUnansweredLive(): Promise<void> {
       const parsed = parseDialogContent(content);
       const lastLeadMessage = parsed.lastLeadMessage?.text ?? "";
       if (!lastLeadMessage) continue;
+
+      // A lead that just replied is the highest-value moment to refresh its
+      // distilled profile. Robert-only (rest of adaptive system is gated to him);
+      // cached, so it only calls AI when the last lead message actually changed.
+      if (lead.responsibleUser === "Robert") {
+        try {
+          await refreshLeadProfile({
+            leadId: lead.leadId,
+            responsibleUser: lead.responsibleUser,
+            content,
+            leadStage: lead.leadStage,
+            leadNotes: lead.leadNotes,
+            profileSourceMsgAt: lead.profileSourceMsgAt,
+            stored: lead,
+          });
+        } catch { /* non-fatal */ }
+      }
 
       const liveBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
       const liveCorrections = await buildBrokerCorrectionsBlock(liveBrokerIdKey, unansweredCorrectionsCache);
