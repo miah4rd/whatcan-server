@@ -476,7 +476,20 @@ const PAGE_HTML = `<!doctype html>
     var reg;
     try {
       reg = await navigator.serviceWorker.register("/m/sw.js", { scope: "/m/" });
-      await navigator.serviceWorker.ready;
+      // Do NOT use navigator.serviceWorker.ready here: the page lives at /m
+      // (no trailing slash) which is outside scope "/m/", so .ready never
+      // resolves and the whole flow hangs silently. Wait on the registration's
+      // own worker instead, with a hard timeout.
+      await new Promise(function (resolve, reject) {
+        if (reg.active) return resolve();
+        var pending = reg.installing || reg.waiting;
+        if (!pending) return reject(new Error("no worker installing"));
+        var timer = setTimeout(function () { reject(new Error("activation timed out")); }, 15000);
+        pending.addEventListener("statechange", function () {
+          if (pending.state === "activated") { clearTimeout(timer); resolve(); }
+          else if (pending.state === "redundant") { clearTimeout(timer); reject(new Error("worker became redundant")); }
+        });
+      });
     } catch (e) {
       pushMsg("Service worker failed: " + ((e && e.message) || e));
       return;
