@@ -469,6 +469,34 @@ const PAGE_HTML = `<!doctype html>
     }
   }
 
+  async function disablePush() {
+    try {
+      if ("serviceWorker" in navigator) {
+        var reg = await navigator.serviceWorker.getRegistration("/m/");
+        if (reg) {
+          var sub = await reg.pushManager.getSubscription();
+          if (sub) {
+            await fetch(API + "/push/unsubscribe", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ endpoint: sub.endpoint }),
+            }).catch(function () {});
+            await sub.unsubscribe().catch(function () {});
+          }
+        }
+      }
+      if ("setAppBadge" in navigator) { try { await navigator.clearAppBadge(); } catch (e) {} }
+    } catch (e) {}
+    localStorage.removeItem("copilot_push_enabled");
+    showToast("Notifications disabled");
+    render();
+  }
+
+  function togglePush() {
+    if (pushEnabled()) disablePush();
+    else enablePush();
+  }
+
   function pushEnabled() {
     return typeof Notification !== "undefined" && Notification.permission === "granted" && localStorage.getItem("copilot_push_enabled") === "1";
   }
@@ -619,8 +647,9 @@ const PAGE_HTML = `<!doctype html>
     html += '<div class="brand"><span class="dot"></span> Copilot Inbox</div>';
     html += '<div style="display:flex;align-items:center;gap:6px">';
     html += '<span class="broker-chip">\\ud83d\\udc64 <b>' + esc(brokerName) + '</b></span>';
-    if (pushSupported() && !pushEnabled()) {
-      html += '<button class="refresh-btn" id="enable-push-btn" title="Enable notifications">\\ud83d\\udd14</button>';
+    if (pushSupported()) {
+      var pushOn = pushEnabled();
+      html += '<button class="refresh-btn" id="toggle-push-btn" title="' + (pushOn ? "Disable notifications" : "Enable notifications") + '" style="' + (pushOn ? "" : "opacity:.45") + '">' + (pushOn ? "\\ud83d\\udd14" : "\\ud83d\\udd15") + '</button>';
     }
     html += '<button class="refresh-btn" id="refresh-btn" title="Refresh">\\u27f3</button>';
     html += "</div></div>";
@@ -662,8 +691,8 @@ const PAGE_HTML = `<!doctype html>
     app.innerHTML = html;
 
     $("#refresh-btn").onclick = fetchInbox;
-    var enablePushBtn = $("#enable-push-btn");
-    if (enablePushBtn) enablePushBtn.onclick = enablePush;
+    var togglePushBtn = $("#toggle-push-btn");
+    if (togglePushBtn) togglePushBtn.onclick = togglePush;
     document.querySelectorAll(".tab").forEach(function (el) {
       el.onclick = function () { activeTab = el.getAttribute("data-tab"); render(); };
     });
