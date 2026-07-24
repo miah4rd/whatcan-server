@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
+import { db, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable } from "@workspace/db";
 import { desc, inArray, eq, and, sql } from "drizzle-orm";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
@@ -60,6 +60,33 @@ router.get("/suggestions", async (req, res) => {
 
     const syncByLeadId = new Map(syncRows.map((r) => [r.leadId, r]));
 
+    // Timeline-synced messages (lead_messages) are fresher than leads_sync.content,
+    // which only updates when an amoCRM webhook fires. Without merging these in,
+    // the conversation view lags behind and the broker thinks the bot "didn't see"
+    // the lead's newest reply.
+    const timelineMsgRows =
+      allLeadIds.length > 0
+        ? await db
+            .select({
+              leadId: leadMessagesTable.leadId,
+              senderType: leadMessagesTable.senderType,
+              senderName: leadMessagesTable.senderName,
+              text: leadMessagesTable.text,
+              channel: leadMessagesTable.channel,
+              sentAt: leadMessagesTable.sentAt,
+            })
+            .from(leadMessagesTable)
+            .where(inArray(leadMessagesTable.leadId, allLeadIds))
+            .orderBy(desc(leadMessagesTable.sentAt))
+            .limit(600)
+        : [];
+    const timelineMsgsByLead = new Map<string, typeof timelineMsgRows>();
+    for (const m of timelineMsgRows) {
+      const arr = timelineMsgsByLead.get(m.leadId);
+      if (arr) { if (arr.length < 15) arr.push(m); }
+      else timelineMsgsByLead.set(m.leadId, [m]);
+    }
+
     // Visibility rules are shared with the push-notification badge counter
     // (lib/pending-visibility.ts) so the icon number always matches the inbox.
     let items = allPending.filter((r) => isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist));
@@ -113,6 +140,37 @@ router.get("/suggestions", async (req, res) => {
           }
         } catch {
           // ignore parse errors
+        }
+      }
+
+      // Merge in timeline-synced messages newer than the webhook content —
+      // dedupe by text+minute since both paths write overlapping history.
+      {
+        const lastContentMs = recentMessages.length > 0 ? new Date(recentMessages[recentMessages.length - 1]!.at).getTime() : 0;
+        const seen = new Set(recentMessages.map((m) => `${m.text}|${Math.floor(new Date(m.at).getTime() / 60000)}`));
+        const fresh = (timelineMsgsByLead.get(i.leadId) ?? [])
+          .filter((m) => m.sentAt.getTime() > lastContentMs)
+          .sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
+        for (const m of fresh) {
+          const key = `${m.text ?? ""}|${Math.floor(m.sentAt.getTime() / 60000)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const from = m.senderType === "lead" ? "lead" : "us";
+          recentMessages.push({
+            from,
+            senderName: m.senderName ?? (from === "lead" ? "Lead" : "Us"),
+            text: m.text ?? "",
+            at: m.sentAt.toISOString(),
+            channel: m.channel ?? null,
+          });
+          if (from === "lead" && m.text) lastLeadText = m.text;
+        }
+        recentMessages = recentMessages.slice(-8);
+        // Re-evaluate staleness against the MERGED view: a lead reply that only
+        // exists in the timeline (webhook lagging) must keep the LIVE visible.
+        const mergedLast = recentMessages[recentMessages.length - 1];
+        if (i.kind === "live" && mergedLast) {
+          brokerRepliedAfterSuggestion = mergedLast.from === "us";
         }
       }
 

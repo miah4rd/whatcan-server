@@ -469,6 +469,8 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
       pipeline: leadsSyncTable.pipeline,
       botExcluded: leadsSyncTable.botExcluded,
       responsibleUser: leadsSyncTable.responsibleUser,
+      content: leadsSyncTable.content,
+      leadNotes: leadsSyncTable.leadNotes,
     })
     .from(leadsSyncTable)
     .where(
@@ -588,27 +590,22 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
               ),
             );
 
-          // Check if there's already a pending LIVE suggestion
-          const [existingLive] = await db
-            .select({ id: pendingSuggestionsTable.id })
-            .from(pendingSuggestionsTable)
-            .where(
-              and(
-                eq(pendingSuggestionsTable.leadId, lead.leadId),
-                eq(pendingSuggestionsTable.status, "pending"),
-                eq(pendingSuggestionsTable.kind, "live"),
-              ),
-            )
-            .limit(1);
-
+          // NOTE: no "existing pending LIVE → skip" check. A NEW incoming message
+          // must always refresh the suggestion (queueSuggestion replaces pending
+          // rows atomically) — otherwise a stale answer written for an older
+          // message sits in the inbox and the bot looks blind to newer replies.
+          // The knownTs comparison above runs this at most once per message.
           let liveCreated = false;
-          if (!existingLive && latestIncomingText) {
+          if (latestIncomingText) {
             // Generate LIVE suggestion — fetch more context for the AI
             try {
               const fullEvents = await fetchTimeline(cookieStr, lead.leadId, 20);
               const allMsgs = parseTimelineEvents(lead.leadId, fullEvents);
               const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
-              const contentSnippet = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
+              const timelineTail = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
+              const contentSnippet = lead.content
+                ? `${lead.content}\n\n[LATEST MESSAGES — may not be in the log above yet]\n${timelineTail.slice(-1500)}`
+                : timelineTail;
 
               if (lastLeadMsg) {
                 const { text, attachments } = await generateSuggestion({
@@ -616,7 +613,8 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
                   responsibleUser: lead.responsibleUser,
                   kind: "live",
                   lastLeadMessage: lastLeadMsg.text,
-                  contentSnippet: contentSnippet.slice(0, 3000),
+                  contentSnippet,
+                  leadNotes: lead.leadNotes,
                   leadStage: lead.leadStage,
                   pipeline: lead.pipeline,
                 });
@@ -751,6 +749,8 @@ async function processQuickPollLead(
       pipeline: leadsSyncTable.pipeline,
       botExcluded: leadsSyncTable.botExcluded,
       responsibleUser: leadsSyncTable.responsibleUser,
+      content: leadsSyncTable.content,
+      leadNotes: leadsSyncTable.leadNotes,
     })
     .from(leadsSyncTable)
     .where(eq(leadsSyncTable.leadId, leadId))
@@ -815,31 +815,32 @@ async function processQuickPollLead(
       eq(pendingSuggestionsTable.kind, "push"),
     ));
 
-  // Check for existing LIVE suggestion
-  const [existingLive] = await db
-    .select({ id: pendingSuggestionsTable.id })
-    .from(pendingSuggestionsTable)
-    .where(and(
-      eq(pendingSuggestionsTable.leadId, leadId),
-      eq(pendingSuggestionsTable.status, "pending"),
-      eq(pendingSuggestionsTable.kind, "live"),
-    ))
-    .limit(1);
-
+  // NOTE: no "existing pending LIVE → skip" check here. Each NEW incoming
+  // message must refresh the suggestion — the previous behavior left a stale
+  // pending answer (written for an older message) sitting in the inbox, so
+  // from the broker's perspective the bot stopped seeing replies after the
+  // first exchange. queueSuggestion replaces any pending rows atomically.
+  // The knownTs comparison above guarantees this runs at most once per message.
   let liveCreated = false;
-  if (!existingLive && latestIncomingText) {
+  if (latestIncomingText) {
     try {
       const fullEvents = await fetchTimeline(cookieStr, leadId, 20);
       const allMsgs = parseTimelineEvents(leadId, fullEvents);
       const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
-      const contentSnippet = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
+      const timelineTail = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
+      // The webhook-fed content has the full formatted history; the timeline
+      // tail covers the newest messages the webhook may not have delivered yet.
+      const contentSnippet = leadRow.content
+        ? `${leadRow.content}\n\n[LATEST MESSAGES — may not be in the log above yet]\n${timelineTail.slice(-1500)}`
+        : timelineTail;
       if (lastLeadMsg) {
         const { text, attachments } = await generateSuggestion({
           leadId,
           responsibleUser: leadRow.responsibleUser,
           kind: "live",
           lastLeadMessage: lastLeadMsg.text,
-          contentSnippet: contentSnippet.slice(0, 3000),
+          contentSnippet,
+          leadNotes: leadRow.leadNotes,
           leadStage: leadRow.leadStage,
           pipeline: leadRow.pipeline,
         });
