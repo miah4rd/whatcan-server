@@ -104,6 +104,8 @@ interface TimelineEvent {
   id: string;
   type: number;
   created_at?: number;
+  date_create?: number;      // unix seconds — the field the ajax v3 endpoint ACTUALLY returns
+  msec_created_at?: number;  // unix seconds with fractional ms (despite the name)
   data?: {
     text?: string;
     message?: { type: string; text: string; media?: string };
@@ -126,6 +128,19 @@ interface TimelineEvent {
 interface TimelineResponse {
   _embedded?: { items: TimelineEvent[] };
   _links?: { prev?: { href: string } };
+}
+
+// The ajax v3 events_timeline items do NOT carry `created_at` — the real event
+// time lives in `date_create` (unix seconds) / `msec_created_at` (unix seconds
+// with fractional ms, despite the name). Reading only `created_at` meant every
+// message was stored with "now" as its timestamp and incoming-reply detection
+// never fired (latestIncoming stayed 0), so LIVE suggestions were never
+// created from the timeline path. Returns unix SECONDS, 0 if undeterminable.
+function eventTs(ev: TimelineEvent): number {
+  if (typeof ev.created_at === "number" && ev.created_at > 0) return ev.created_at;
+  if (typeof ev.date_create === "number" && ev.date_create > 0) return ev.date_create;
+  if (typeof ev.msec_created_at === "number" && ev.msec_created_at > 0) return Math.floor(ev.msec_created_at);
+  return 0;
 }
 
 async function fetchTimeline(
@@ -235,8 +250,9 @@ function parseTimelineEvents(leadId: string, events: TimelineEvent[]): RawMessag
     }
 
     // Use event id as unique identifier
-    const amoMessageId = ev.id || messageId(leadId, ev.created_at ?? 0, senderId ?? "", text);
-    const sentAt = ev.created_at ? new Date(ev.created_at * 1000) : new Date();
+    const ts = eventTs(ev);
+    const amoMessageId = ev.id || messageId(leadId, ts, senderId ?? "", text);
+    const sentAt = ts ? new Date(ts * 1000) : new Date();
 
     messages.push({
       amoMessageId,
@@ -343,8 +359,9 @@ export async function syncLeadMessagesFromTimeline(): Promise<{
 
             // Get oldest event timestamp for pagination
             const oldest = events[events.length - 1];
-            if (oldest?.created_at) {
-              beforeTs = oldest.created_at;
+            const oldestTs = oldest ? eventTs(oldest) : 0;
+            if (oldestTs) {
+              beforeTs = oldestTs;
             } else break;
 
             // If we got a full page, there might be more
@@ -491,8 +508,9 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
           let latestIncomingEvent: TimelineEvent | null = null;
 
           for (const ev of events) {
-            if (ev.type === 89 && ev.created_at && ev.created_at > latestIncoming) {
-              latestIncoming = ev.created_at;
+            const ts = eventTs(ev);
+            if (ev.type === 89 && ts && ts > latestIncoming) {
+              latestIncoming = ts;
               latestIncomingText = ev.data?.message?.text || "";
               latestIncomingEvent = ev;
             }
@@ -698,7 +716,8 @@ async function processQuickPollLead(
     if (events.length === 0) break;
     allEvents.push(...events);
     const oldest = events[events.length - 1];
-    if (oldest?.created_at) beforeTs = oldest.created_at;
+    const oldestTs = oldest ? eventTs(oldest) : 0;
+    if (oldestTs) beforeTs = oldestTs;
     else break;
     if (events.length < 200) break;
   }
@@ -730,8 +749,9 @@ async function processQuickPollLead(
   let latestIncomingText = "";
   let latestIncomingEvent: TimelineEvent | null = null;
   for (const ev of allEvents) {
-    if (ev.type === 89 && ev.created_at && ev.created_at > latestIncoming) {
-      latestIncoming = ev.created_at;
+    const ts = eventTs(ev);
+    if (ev.type === 89 && ts && ts > latestIncoming) {
+      latestIncoming = ts;
       latestIncomingText = ev.data?.message?.text || "";
       latestIncomingEvent = ev;
     }
