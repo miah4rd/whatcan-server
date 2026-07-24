@@ -9,6 +9,7 @@ import { logger } from "./logger";
 import { amoFetch, getAccessToken, getAllOpenLeadTasksPaginated, createAmoTask } from "./amo-client";
 import { shouldSuppressPush } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
+import { notifyBroker } from "./push-notifications";
 
 type AmoLead = {
   id: number;
@@ -100,6 +101,13 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
   let updated = 0;
   let skipped = 0;
 
+  // Snapshot of already-known lead IDs, so we can tell a genuinely new lead
+  // apart from an update further down (upsert alone can't distinguish them)
+  // and notify the broker only for the former.
+  const existingLeadIds = new Set(
+    (await db.select({ leadId: leadsSyncTable.leadId }).from(leadsSyncTable)).map((r) => r.leadId),
+  );
+
   // Only sync leads from these pipelines (case-insensitive)
   const ALLOWED_PIPELINES = new Set(["unicorn", "rental"]);
   // Unicorn pipeline: exclude these stages (case-insensitive)
@@ -161,6 +169,7 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
     }
 
     const responsibleUser = userMap.get(lead.responsible_user_id) ?? null;
+    const isNewLead = !existingLeadIds.has(String(lead.id));
 
     try {
       const now = new Date();
@@ -199,6 +208,10 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
             // Do NOT touch nextFollowupAt for existing leads — preserve scheduler state
           },
         });
+
+      if (isNewLead && responsibleUser) {
+        notifyBroker(responsibleUser, "New lead assigned", lead.name || `Lead #${lead.id}`).catch(() => {});
+      }
 
       updated++;
     } catch (err) {

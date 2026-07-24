@@ -6,7 +6,7 @@ import { logger } from "../lib/logger";
 const execAsync = promisify(exec);
 const router = Router();
 
-const WEBHOOK_SECRET = "whatcan-deploy-2026";
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "whatcan-deploy-2026";
 
 router.post("/webhook/deploy", async (req, res) => {
   const secret = req.headers["x-webhook-secret"] as string;

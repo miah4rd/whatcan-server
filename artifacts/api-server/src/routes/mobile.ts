@@ -407,8 +407,98 @@ const PAGE_HTML = `<!doctype html>
         reach: all.filter(function (i) { return i.kind === "push" && isReachStage(i.lead_stage); }),
         push: all.filter(function (i) { return i.kind === "push" && !isReachStage(i.lead_stage); }),
       };
+      updateAppBadge();
       render();
     } catch (e) { /* network hiccup — keep last snapshot */ }
+  }
+
+  function updateAppBadge() {
+    if (!("setAppBadge" in navigator)) return;
+    var total = items.live.length + items.reach.length + items.push.length;
+    try {
+      if (total > 0) navigator.setAppBadge(total).catch(function () {});
+      else navigator.clearAppBadge().catch(function () {});
+    } catch (e) {}
+  }
+
+  // ── Web Push subscription ────────────────────────────────────────────────
+  function urlBase64ToUint8Array(base64String) {
+    var padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+    var base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+    var rawData = atob(base64);
+    var outputArray = new Uint8Array(rawData.length);
+    for (var i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+    return outputArray;
+  }
+
+  function pushSupported() {
+    return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  }
+
+  async function enablePush() {
+    if (!pushSupported()) {
+      showToast("Push not supported on this browser");
+      return;
+    }
+    try {
+      var permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        showToast("Notifications not allowed");
+        render();
+        return;
+      }
+      var reg = await navigator.serviceWorker.register("/m/sw.js", { scope: "/m/" });
+      await navigator.serviceWorker.ready;
+      var keyRes = await fetch(API + "/push/vapid-public-key");
+      var keyData = await keyRes.json();
+      if (!keyData.key) { showToast("Push not configured on server"); return; }
+      var sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(keyData.key),
+      });
+      await fetch(API + "/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brokerId: brokerName, subscription: sub.toJSON() }),
+      });
+      localStorage.setItem("copilot_push_enabled", "1");
+      showToast("Notifications enabled");
+      render();
+    } catch (e) {
+      showToast("Could not enable notifications");
+    }
+  }
+
+  async function disablePush() {
+    try {
+      if ("serviceWorker" in navigator) {
+        var reg = await navigator.serviceWorker.getRegistration("/m/");
+        if (reg) {
+          var sub = await reg.pushManager.getSubscription();
+          if (sub) {
+            await fetch(API + "/push/unsubscribe", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ endpoint: sub.endpoint }),
+            }).catch(function () {});
+            await sub.unsubscribe().catch(function () {});
+          }
+        }
+      }
+      if ("setAppBadge" in navigator) { try { await navigator.clearAppBadge(); } catch (e) {} }
+    } catch (e) {}
+    localStorage.removeItem("copilot_push_enabled");
+    showToast("Notifications disabled");
+    render();
+  }
+
+  function togglePush() {
+    if (pushEnabled()) disablePush();
+    else enablePush();
+  }
+
+  function pushEnabled() {
+    return typeof Notification !== "undefined" && Notification.permission === "granted" && localStorage.getItem("copilot_push_enabled") === "1";
   }
 
   async function approveServer(item, finalText) {
@@ -557,6 +647,10 @@ const PAGE_HTML = `<!doctype html>
     html += '<div class="brand"><span class="dot"></span> Copilot Inbox</div>';
     html += '<div style="display:flex;align-items:center;gap:6px">';
     html += '<span class="broker-chip">\\ud83d\\udc64 <b>' + esc(brokerName) + '</b></span>';
+    if (pushSupported()) {
+      var pushOn = pushEnabled();
+      html += '<button class="refresh-btn" id="toggle-push-btn" title="' + (pushOn ? "Disable notifications" : "Enable notifications") + '" style="' + (pushOn ? "" : "opacity:.45") + '">' + (pushOn ? "\\ud83d\\udd14" : "\\ud83d\\udd15") + '</button>';
+    }
     html += '<button class="refresh-btn" id="refresh-btn" title="Refresh">\\u27f3</button>';
     html += "</div></div>";
     html += '<div class="tabs">';
@@ -597,6 +691,8 @@ const PAGE_HTML = `<!doctype html>
     app.innerHTML = html;
 
     $("#refresh-btn").onclick = fetchInbox;
+    var togglePushBtn = $("#toggle-push-btn");
+    if (togglePushBtn) togglePushBtn.onclick = togglePush;
     document.querySelectorAll(".tab").forEach(function (el) {
       el.onclick = function () { activeTab = el.getAttribute("data-tab"); render(); };
     });

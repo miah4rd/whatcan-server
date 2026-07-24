@@ -109,7 +109,10 @@ router.get("/suggestions", async (req, res) => {
     });
 
     if (kind === "live" || kind === "push") items = items.filter((r) => r.kind === kind);
-    if (responsibleUser) items = items.filter((r) => r.responsibleUser === responsibleUser);
+    if (responsibleUser) {
+      const wanted = responsibleUser.trim().toLowerCase();
+      items = items.filter((r) => (r.responsibleUser ?? "").trim().toLowerCase() === wanted);
+    }
 
     // Deduplicate push suggestions by leadId — keep only the first (oldest) pending push
     // per lead. Duplicates can appear due to scheduler race conditions (concurrent runs
