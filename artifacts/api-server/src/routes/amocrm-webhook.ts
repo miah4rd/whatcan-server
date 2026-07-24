@@ -12,6 +12,7 @@ import { syncLeadContent } from "../lib/amo-message-sync";
 import { getAmoLead } from "../lib/amo-client";
 import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
 import { buildRentalSystemPrompt } from "../lib/rental-prompt";
+import { notifyBroker } from "../lib/push-notifications";
 
 const router = Router();
 
@@ -373,6 +374,7 @@ export async function queueSuggestion(opts: {
       status: "pending",
       attachments: opts.attachments,
     });
+    notifyBroker(opts.responsibleUser, "Lead replied", opts.text).catch(() => {});
   } else {
     // PUSH — only queue if no pending suggestion already exists
     const existing = await db

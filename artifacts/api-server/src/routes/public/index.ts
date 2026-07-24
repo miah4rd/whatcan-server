@@ -16,6 +16,7 @@ import parseTaskRouter from "./parse-task";
 import botExcludeRouter from "./bot-exclude";
 import userSettingsRouter from "./user-settings";
 import responsibleUsersRouter from "./responsible-users";
+import pushRouter from "./push";
 
 const router = Router();
 
@@ -36,5 +37,6 @@ router.use(parseTaskRouter);
 router.use(botExcludeRouter);
 router.use(userSettingsRouter);
 router.use(responsibleUsersRouter);
+router.use(pushRouter);
 
 export default router;

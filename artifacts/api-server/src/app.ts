@@ -4,11 +4,11 @@ import path from "path";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import mobileRouter from "./routes/mobile";
+import swRouter from "./routes/public-sw";
 import { logger } from "./lib/logger";
 import { startFollowupScheduler } from "./lib/followup-scheduler";
 import { startAmoSyncScheduler } from "./lib/amo-sync";
 import { startFunnelSnapshotScheduler } from "./lib/funnel-snapshot";
-import { startMessageSyncScheduler } from "./lib/amo-message-sync";
 import { startTimelineSyncScheduler } from "./lib/amo-timeline-sync";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
@@ -40,6 +40,7 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
 app.use(mobileRouter);
+app.use(swRouter);
 
 // ── Copilot Dashboard (landing app: login/dashboard/tasks/settings) ─────────
 // Built React SPA served statically; relative /api/* fetches inside it hit
@@ -175,5 +176,18 @@ pool.query(`
   )
 `).then(() => logger.info("startup migration: broker_property_picks table ensured"))
   .catch((err) => logger.error({ err }, "broker_property_picks migration failed"));
+
+// ── push_subscriptions table ─────────────────────────────────────────────────
+pool.query(`
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    broker_id TEXT NOT NULL,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )
+`).then(() => logger.info("startup migration: push_subscriptions table ensured"))
+  .catch((err) => logger.error({ err }, "push_subscriptions migration failed"));
 
 export default app;
