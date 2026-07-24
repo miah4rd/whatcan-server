@@ -147,10 +147,14 @@ export async function matchProperties(opts: {
   conversationText: string;
   brokerId?: string | null;
   limit?: number;
+  /** Property IDs already sent to this lead — excluded so a re-match after an
+   * objection surfaces DIFFERENT listings instead of repeating rejected ones. */
+  excludeIds?: string[];
 }): Promise<PropertyPick[]> {
   const limit = opts.limit ?? 2;
   const all = await fetchAllProperties();
-  const pool = all.filter((p) => p.listing_type === opts.listingType);
+  const exclude = new Set((opts.excludeIds ?? []).map((id) => id.toUpperCase()));
+  const pool = all.filter((p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()));
   if (pool.length === 0) return [];
 
   // 1. Explicit mention fast-path — deterministic, no AI call.
@@ -175,7 +179,7 @@ export async function matchProperties(opts: {
     const result = await chatCompletionJSON<{ ids?: string[] }>({
       model: "claude-sonnet-5",
       system: `You match a real estate lead's stated needs to the best-fitting listings from a catalog.
-Read the conversation and pick at most ${limit} listing IDs from the catalog that genuinely fit what the lead described (area, budget, bedrooms, purpose, style). If nothing in the conversation gives enough to judge fit, return an empty list — do not guess.${brokerBlock}
+Read the conversation and pick at most ${limit} listing IDs from the catalog. You do NOT need every detail (area, budget, bedrooms, purpose, style) — if even one or two of those are known or stated, use them to pick your best reasonable candidates. This is a starting shortlist for the lead to react to and refine, not a final match, so approximate is fine. Only return an empty list if the conversation gives truly nothing to go on (e.g. just a greeting).${brokerBlock}
 
 Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
       messages: [

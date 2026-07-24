@@ -391,6 +391,22 @@ router.post("/approve", async (req, res) => {
     }
     req.log.info({ leadId: sug.leadId, hookStatus, chatSent, hookBody }, "Salesbot response");
 
+    // Send each property link as its OWN follow-up WhatsApp message — glued
+    // into one message, WhatsApp only unfurls a rich preview banner for the
+    // first link, so listings need their own message each to all get one.
+    if (chatSent && sug.attachments && sug.attachments.length > 0) {
+      const linkAttachments = sug.attachments.filter((a) => a.type === "link" && a.url);
+      for (const att of linkAttachments) {
+        await new Promise((r) => setTimeout(r, 1200));
+        try {
+          const linkFieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, att.url as string);
+          if (linkFieldOk) await triggerSalesbot(sug.leadId, botId);
+        } catch (e) {
+          req.log.warn({ leadId: sug.leadId, url: att.url, err: e }, "attachment send failed (non-fatal)");
+        }
+      }
+    }
+
     // Note: suggestion status already set atomically above (claimed update).
 
     await db.insert(sentMessagesTable).values({

@@ -987,8 +987,10 @@ const PAGE_HTML = `<!doctype html>
       if (it.busy || it._approving) return;
       var shouldChangeStage = !!(stageCb && stageCb.checked && stageSelect.value);
       var newStageVal = stageSelect ? stageSelect.value : "";
-      var links = (it.attachments || []).filter(function (a) { return a.type === "link"; }).map(function (a) { return a.label + ": " + a.url; }).join("\\n");
-      var fullText = links ? (it.text + "\\n\\n" + links) : it.text;
+      // Property links are NOT appended to the text — the server sends each one
+      // as its own follow-up WhatsApp message so every listing gets its own
+      // link-preview banner instead of them all gluing into one message.
+      var fullText = it.text;
       if (shouldChangeStage && newStageVal) {
         it._stageConfirm = { text: fullText, newStage: newStageVal };
         render();

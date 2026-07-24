@@ -4,6 +4,30 @@ import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { buildRentalSystemPrompt } from "./rental-prompt";
 import { matchProperties, type PropertyPick } from "./property-catalog";
+import { db, pendingSuggestionsTable } from "@workspace/db";
+import { eq, inArray, and } from "drizzle-orm";
+
+/** Property IDs already sent to this lead — a re-match should surface DIFFERENT
+ * listings instead of repeating ones the lead already saw (and may have objected to). */
+async function alreadySentPropertyIds(leadId: string): Promise<string[]> {
+  try {
+    const rows = await db
+      .select({ attachments: pendingSuggestionsTable.attachments })
+      .from(pendingSuggestionsTable)
+      .where(and(eq(pendingSuggestionsTable.leadId, leadId), inArray(pendingSuggestionsTable.status, ["approved", "edited"])));
+    const ids = new Set<string>();
+    for (const r of rows) {
+      for (const att of r.attachments ?? []) {
+        if (att.type !== "link" || !att.url) continue;
+        const m = att.url.match(/\/property\/([A-Za-z0-9-]+)/i);
+        if (m) ids.add(m[1]);
+      }
+    }
+    return [...ids];
+  } catch {
+    return [];
+  }
+}
 
 export type GeneratedSuggestion = {
   text: string;
@@ -329,10 +353,12 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   const text = sanitizeSuggestion(completion.content);
 
+  const excludeIds = await alreadySentPropertyIds(opts.leadId);
   const picks = await matchProperties({
     listingType: isRental ? "rent" : "sale",
     conversationText: `${formattedDialog}\n${lastLeadText}`,
     brokerId: opts.responsibleUser,
+    excludeIds,
   }).catch(() => []);
 
   return { text, attachments: toAttachments(picks) };

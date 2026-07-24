@@ -357,25 +357,51 @@ export async function queueSuggestion(opts: {
   });
 
   if (opts.kind === "live") {
-    // Lead replied — LIVE always wins. Replace any stale PUSH or LIVE suggestions.
+    // Lead replied — LIVE always wins over any pending PUSH.
     await db
       .delete(pendingSuggestionsTable)
       .where(
         and(
           eq(pendingSuggestionsTable.leadId, opts.leadId),
           eq(pendingSuggestionsTable.status, "pending"),
+          eq(pendingSuggestionsTable.kind, "push"),
         ),
       );
 
-    await db.insert(pendingSuggestionsTable).values({
-      leadId: opts.leadId,
-      responsibleUser: opts.responsibleUser,
-      kind: "live",
-      followupLevel: null,
-      suggestionText: opts.text,
-      status: "pending",
-      attachments: opts.attachments,
-    });
+    // Update the EXISTING pending LIVE row in place rather than delete+insert.
+    // A broker can have this suggestion open on their phone when the lead sends
+    // a follow-up message that triggers a regeneration; delete+insert changed
+    // the row's id out from under them, so tapping "Approve" 404'd against an
+    // id that no longer existed. Same id survives a refresh → approve always
+    // resolves, worst case against text one message older than the newest.
+    const [existingLive] = await db
+      .select({ id: pendingSuggestionsTable.id })
+      .from(pendingSuggestionsTable)
+      .where(
+        and(
+          eq(pendingSuggestionsTable.leadId, opts.leadId),
+          eq(pendingSuggestionsTable.status, "pending"),
+          eq(pendingSuggestionsTable.kind, "live"),
+        ),
+      )
+      .limit(1);
+
+    if (existingLive) {
+      await db
+        .update(pendingSuggestionsTable)
+        .set({ suggestionText: opts.text, attachments: opts.attachments, createdAt: new Date() })
+        .where(eq(pendingSuggestionsTable.id, existingLive.id));
+    } else {
+      await db.insert(pendingSuggestionsTable).values({
+        leadId: opts.leadId,
+        responsibleUser: opts.responsibleUser,
+        kind: "live",
+        followupLevel: null,
+        suggestionText: opts.text,
+        status: "pending",
+        attachments: opts.attachments,
+      });
+    }
     notifyBrokerForLead(opts.responsibleUser, opts.leadId, "replied", opts.leadMessageText || opts.text).catch(() => {});
   } else {
     // PUSH — only queue if no pending suggestion already exists
