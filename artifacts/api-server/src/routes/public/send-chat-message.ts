@@ -14,25 +14,19 @@ import { logger } from "../../lib/logger";
 
 const router = Router();
 
-const SALESBOT_MAP: Record<string, number> = {
-  robert: 22127,
-  hos: 22247,
-  amelia: 22249,
-  companion: 22129,
-};
-
 const COMPANION_FIELD_ID = 965907;
+const COMPANION_ROBERT_BOT_ID = 22127;
 
 router.post("/public/send-chat-message", async (req, res) => {
   try {
-    const { leadId, message, salesbotId, broker } = req.body;
+    const { leadId, message, salesbotId } = req.body;
 
     if (!leadId || !message) {
       res.status(400).json({ error: "leadId and message are required" });
       return;
     }
 
-    const botId = salesbotId ?? SALESBOT_MAP[broker?.toLowerCase()] ?? SALESBOT_MAP.companion;
+    const botId = salesbotId ?? COMPANION_ROBERT_BOT_ID;
 
     const fieldUpdated = await updateLeadCustomField(leadId, COMPANION_FIELD_ID, message);
     if (!fieldUpdated) {
@@ -56,8 +50,9 @@ router.post("/public/send-chat-message", async (req, res) => {
 
 router.get("/public/chat-salesbots", (_req, res) => {
   res.json({
-    salesbots: Object.entries(SALESBOT_MAP).map(([name, id]) => ({ name, id })),
+    botId: COMPANION_ROBERT_BOT_ID,
     fieldId: COMPANION_FIELD_ID,
+    name: "Companion Robert",
   });
 });
 
