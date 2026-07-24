@@ -1063,9 +1063,23 @@ const PAGE_HTML = `<!doctype html>
     }
   }
 
+  function openDeepLinkedLead() {
+    var params = new URLSearchParams(location.search);
+    var targetLead = params.get("lead");
+    if (!targetLead) return;
+    history.replaceState(null, "", location.pathname);
+    var found = null, foundKind = null;
+    ["live", "reach", "push"].forEach(function (k) {
+      if (found) return;
+      var match = (items[k] || []).find(function (i) { return String(i.lead_id) === String(targetLead); });
+      if (match) { found = match; foundKind = k; }
+    });
+    if (found) { activeTab = foundKind; openDetail(found, foundKind); }
+  }
+
   render();
   fetchStageOptions();
-  if (brokerName) fetchInbox();
+  if (brokerName) fetchInbox().then(openDeepLinkedLead);
   setInterval(function () { if (!openItem) fetchInbox(); }, 20000);
 })();
 </script>

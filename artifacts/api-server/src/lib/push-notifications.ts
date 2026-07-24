@@ -126,10 +126,10 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
 }
 
 /** Notify a broker that a lead just replied (LIVE) or a new lead was assigned. */
-export async function notifyBroker(brokerId: string | null, title: string, body: string): Promise<void> {
+export async function notifyBroker(brokerId: string | null, title: string, body: string, url = "/m"): Promise<void> {
   if (!brokerId) return;
   const badge = await countPendingForBroker(brokerId);
-  await sendPushToBroker(brokerId, { title, body: body.slice(0, 150), url: "/m", badge });
+  await sendPushToBroker(brokerId, { title, body: body.slice(0, 150), url, badge });
 }
 
 // Same "Name (client - source)" → "Name" cleanup used for the inbox list's card title.
@@ -176,5 +176,6 @@ export async function notifyBrokerForLead(
   const icon = action === "replied" ? "\u{1F4AC}" : "\u{1F195}";
   const title = stage ? `${icon} ${label} · ${stage}` : `${icon} ${label}`;
 
-  await notifyBroker(brokerId, title, body);
+  // Deep-link straight to this lead instead of the general inbox list.
+  await notifyBroker(brokerId, title, body, `/m?lead=${encodeURIComponent(leadId)}`);
 }
