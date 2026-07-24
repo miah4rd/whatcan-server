@@ -818,7 +818,7 @@ async function processQuickPollLead(
 }
 
 // ── Quick poll scheduler: check for new messages every 2 minutes ───────────────
-const QUICK_POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes (was 15s — overlapping runs piled up concurrent Puppeteer browsers and exhausted server memory)
+const QUICK_POLL_INTERVAL_MS = 45 * 1000; // 45 seconds
 const QUICK_POLL_LOOKBACK_MS = 60 * 1000; // look back 1 min (overlap for safety)
 
 let quickPollInFlight = false;
