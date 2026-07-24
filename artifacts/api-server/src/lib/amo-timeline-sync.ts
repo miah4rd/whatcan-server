@@ -11,6 +11,10 @@ import { eq, and, sql, isNotNull, not } from "drizzle-orm";
 import { createHash } from "crypto";
 import { logger } from "./logger";
 import { generateSuggestion } from "./generate-suggestion.js";
+// queueSuggestion persists the generated text into pending_suggestions (the
+// inbox) and fires the broker push notification. generateSuggestion alone only
+// RETURNS the text — without queueing, the suggestion silently evaporates.
+import { queueSuggestion } from "../routes/amocrm-webhook.js";
 import { getLastMessengerFieldId, updateLastMessengerField } from "./amo-messenger-field.js";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
@@ -607,7 +611,7 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
               const contentSnippet = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
 
               if (lastLeadMsg) {
-                await generateSuggestion({
+                const { text, attachments } = await generateSuggestion({
                   leadId: lead.leadId,
                   responsibleUser: lead.responsibleUser,
                   kind: "live",
@@ -616,7 +620,17 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
                   leadStage: lead.leadStage,
                   pipeline: lead.pipeline,
                 });
-                liveCreated = true;
+                if (text) {
+                  await queueSuggestion({
+                    leadId: lead.leadId,
+                    responsibleUser: lead.responsibleUser,
+                    kind: "live",
+                    text,
+                    attachments,
+                    leadMessageText: lastLeadMsg.text,
+                  });
+                  liveCreated = true;
+                }
               }
             } catch (err) {
               logger.error({ leadId: lead.leadId, err }, "incoming detection: LIVE generation failed");
@@ -820,7 +834,7 @@ async function processQuickPollLead(
       const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
       const contentSnippet = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
       if (lastLeadMsg) {
-        await generateSuggestion({
+        const { text, attachments } = await generateSuggestion({
           leadId,
           responsibleUser: leadRow.responsibleUser,
           kind: "live",
@@ -829,7 +843,17 @@ async function processQuickPollLead(
           leadStage: leadRow.leadStage,
           pipeline: leadRow.pipeline,
         });
-        liveCreated = true;
+        if (text) {
+          await queueSuggestion({
+            leadId,
+            responsibleUser: leadRow.responsibleUser,
+            kind: "live",
+            text,
+            attachments,
+            leadMessageText: lastLeadMsg.text,
+          });
+          liveCreated = true;
+        }
       }
     } catch (err) {
       logger.error({ leadId, err }, "quick poll: LIVE generation failed");
