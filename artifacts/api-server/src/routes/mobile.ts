@@ -67,6 +67,10 @@ const PAGE_HTML = `<!doctype html>
   .badge.overdue { background: #4a1f24; color: #f87171; }
   .badge.today { background: #1f3a2e; color: #4ade80; }
   .badge.notask { background: #23293b; color: #6b7488; }
+  .badge.temp-hot { background: rgba(239,68,68,.16); color: #fca5a5; }
+  .badge.temp-warm { background: rgba(251,146,60,.16); color: #fdba74; }
+  .badge.temp-cold { background: rgba(96,165,250,.14); color: #93c5fd; }
+  .badge.discard { background: rgba(148,163,184,.16); color: #cbd5e1; }
   .card-preview { font-size: 13px; color: #b6bccd; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .card-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 10px; color: #7a8699; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
   .card-arrow { margin-left: auto; color: #2dd4bf; font-size: 13px; }
@@ -227,9 +231,17 @@ const PAGE_HTML = `<!doctype html>
     if (diffDays === 0) return '<span class="badge today">Today</span>';
     return '<span class="badge notask">In ' + diffDays + 'd</span>';
   }
+  function tempBadge(t) {
+    if (!t) return '';
+    var map = { hot: '\\ud83d\\udd25 Hot', warm: '\\ud83c\\udf24 Warm', cold: '\\u2744\\ufe0f Cold' };
+    var label = map[t]; if (!label) return '';
+    return '<span class="badge temp-' + esc(t) + '">' + label + '</span>';
+  }
   function cardBadges(item) {
     var html = taskStatusBadge(item.next_followup_at);
+    if (item.profile_temperature) html += tempBadge(item.profile_temperature);
     if (item.lead_stage) html += '<span class="badge stagepill">' + esc(item.lead_stage) + '</span>';
+    if (item.discard_flagged) html += '<span class="badge discard">\\u2298 Review</span>';
     return html;
   }
 
@@ -297,23 +309,11 @@ const PAGE_HTML = `<!doctype html>
     return dueDay.getTime() >= todayDay.getTime() ? 1 : 2;
   }
   function sortedList(kind) {
-    var raw = (items[kind] || []).slice();
-    if (kind !== 'push') return raw;
-    raw.sort(function (a, b) {
-      var ra = pushStageRank(a.lead_stage), rb = pushStageRank(b.lead_stage);
-      if (ra !== rb) return ra - rb;
-      var ga = pushTaskGroup(a), gb = pushTaskGroup(b);
-      if (ga !== gb) return ga - gb;
-      if (ga === 2) {
-        var da = a.next_followup_at ? new Date(a.next_followup_at).getTime() : 0;
-        var db = b.next_followup_at ? new Date(b.next_followup_at).getTime() : 0;
-        if (da !== db) return da - db;
-      }
-      var wa = a.trailing_unanswered || 0, wb = b.trailing_unanswered || 0;
-      if (wa !== wb) return wa - wb;
-      return 0;
-    });
-    return raw;
+    // The server (suggestions.ts) now ranks PUSH by the adaptive priority score
+    // (stage → temperature/potential → task urgency → warmth → aging). Preserve
+    // that server order verbatim instead of re-sorting client-side. Legacy
+    // pushStageRank/pushTaskGroup kept above only as a fallback reference.
+    return (items[kind] || []).slice();
   }
 
   function renderAttachments(item) {
