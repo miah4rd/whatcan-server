@@ -11,7 +11,7 @@ import { eq, and, sql, isNotNull, not } from "drizzle-orm";
 import { createHash } from "crypto";
 import { logger } from "./logger";
 import { generateSuggestion } from "./generate-suggestion.js";
-import { ensureLastMessengerField, updateLastMessengerField } from "./amo-messenger-field.js";
+import { getLastMessengerFieldId, updateLastMessengerField } from "./amo-messenger-field.js";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
 const AMO_BASE = `https://${AMO_SUBDOMAIN}.amocrm.ru`;
@@ -395,15 +395,6 @@ export async function syncLeadMessagesFromTimeline(): Promise<{
   return { synced: totalSynced, leads: leadsProcessed, errors };
 }
 
-// ── Custom field cache ─────────────────────────────────────────────────────────
-let lastMessengerFieldId: number | null = null;
-
-async function getFieldId(): Promise<number | null> {
-  if (lastMessengerFieldId) return lastMessengerFieldId;
-  lastMessengerFieldId = await ensureLastMessengerField();
-  return lastMessengerFieldId;
-}
-
 // ── Source ID → channel name mapping (from /ajax/v1/chats/origin/sources) ─────
 let sourceMap: Record<string, string> = {};
 
@@ -469,7 +460,7 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
 
   // Load source map for channel name resolution
   await loadSourceMap(cookieStr);
-  const fieldId = await getFieldId();
+  const fieldId = getLastMessengerFieldId();
 
   let detected = 0;
   let liveGenerated = 0;
@@ -661,11 +652,7 @@ if (process.argv[1]?.includes("amo-timeline-sync")) {
 const TIMELINE_SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
 export function startTimelineSyncScheduler(): void {
-  // Create custom field on startup (non-blocking)
-  getFieldId().then((id) => {
-    if (id) logger.info({ fieldId: id }, "last messenger custom field ready");
-    else logger.warn("last messenger custom field not created (will retry on incoming detection)");
-  });
+  logger.info({ fieldId: getLastMessengerFieldId() }, "last messenger custom field configured");
 
   // First sync after 60 seconds (let other schedulers finish first)
   setTimeout(async () => {

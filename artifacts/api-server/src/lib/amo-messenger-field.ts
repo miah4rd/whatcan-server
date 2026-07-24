@@ -1,63 +1,16 @@
 /**
- * Creates a custom field "last active chat messenger" in amoCRM leads.
- * This field stores the source_id of the last channel used by the client.
- * The Salesbot reads this field to determine which channel to send through.
+ * Updates the "last active chat messenger" custom field on a lead in amoCRM.
+ * Field ID 967477 was created manually in amoCRM UI (API didn't allow creation).
  */
 import { logger } from "./logger";
 
 const AMO_BASE = `https://${process.env.AMO_SUBDOMAIN ?? "unicornproperty"}.amocrm.ru`;
-const TOKEN = process.env.AMOCRM_LONG_LIVED_TOKEN ?? "";
 
-// Known field name to look for
-const FIELD_NAME = "last active chat messenger";
+// Hardcoded — field created manually in amoCRM
+const LAST_MESSENGER_FIELD_ID = 967477;
 
-export async function ensureLastMessengerField(): Promise<number | null> {
-  if (!TOKEN) {
-    logger.error("ensureLastMessengerField: missing AMOCRM_LONG_LIVED_TOKEN");
-    return null;
-  }
-
-  try {
-    // 1. Check if field already exists
-    const listRes = await fetch(`${AMO_BASE}/api/v4/leads/custom_fields`, {
-      headers: { Authorization: `Bearer ${TOKEN}` },
-    });
-    if (!listRes.ok) {
-      logger.error({ status: listRes.status }, "ensureLastMessengerField: failed to list custom fields");
-      return null;
-    }
-    const listData = await listRes.json() as { _embedded?: { custom_fields: Array<{ id: number; name: string }> } };
-    const existing = listData._embedded?.custom_fields?.find((f) => f.name === FIELD_NAME);
-    if (existing) {
-      logger.info({ fieldId: existing.id }, "ensureLastMessengerField: field already exists");
-      return existing.id;
-    }
-
-    // 2. Create the field
-    const createRes = await fetch(`${AMO_BASE}/api/v4/leads/custom_fields`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        name: FIELD_NAME,
-        type: "text",
-        group_id: 0,
-      }),
-    });
-    if (!createRes.ok) {
-      const err = await createRes.text();
-      logger.error({ status: createRes.status, err }, "ensureLastMessengerField: failed to create field");
-      return null;
-    }
-    const created = await createRes.json() as { id: number };
-    logger.info({ fieldId: created.id }, "ensureLastMessengerField: field created");
-    return created.id;
-  } catch (err) {
-    logger.error({ err }, "ensureLastMessengerField: error");
-    return null;
-  }
+export function getLastMessengerFieldId(): number {
+  return LAST_MESSENGER_FIELD_ID;
 }
 
 /**
