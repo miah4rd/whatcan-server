@@ -33,11 +33,30 @@ const SOURCE_MAP: Record<number, string> = {
 
 const KNOWN_BOT_NAMES = Object.values(SOURCE_MAP);
 
+// Reverse: lowercase name → source ID
+const NAME_TO_ID: Record<string, number> = {};
+for (const [id, name] of Object.entries(SOURCE_MAP)) {
+  NAME_TO_ID[name.toLowerCase()] = Number(id);
+}
+
 // Integration origin → default channel name
 const INTEGRATION_DEFAULT: Record<string, string | null> = {
   "wahelp.whatbot": null, // determined from DOM
   "ru.wababa.amocrm": "Phone 1",
 };
+
+function mapNameToSourceId(name: string): number | null {
+  if (!name) return null;
+  const lower = name.toLowerCase().trim();
+  if (NAME_TO_ID[lower]) return NAME_TO_ID[lower];
+  for (const [mapName, id] of Object.entries(NAME_TO_ID)) {
+    if (lower.startsWith(mapName + " ") || lower === mapName) return id;
+  }
+  for (const [mapName, id] of Object.entries(NAME_TO_ID)) {
+    if (lower.includes(mapName)) return id;
+  }
+  return null;
+}
 
 export function getLastMessengerFieldId(): number {
   return LAST_MESSENGER_FIELD_ID;
@@ -177,6 +196,7 @@ async function scanLeadPageForChannel(leadId: string): Promise<string | null> {
 /**
  * Ensure the messenger field is filled for a lead.
  * Called before Salesbot trigger — reads current value, fills via Puppeteer if empty.
+ * Field 967477 stores the source ID (number), not the name.
  */
 export async function ensureMessengerField(leadId: string): Promise<string | null> {
   // 1. Check if already filled
@@ -194,12 +214,19 @@ export async function ensureMessengerField(leadId: string): Promise<string | nul
     return null;
   }
 
-  // 3. Fill the field
-  const ok = await updateLastMessengerField(leadId, channelName, 0, LAST_MESSENGER_FIELD_ID);
-  if (ok) {
-    logger.info({ leadId, channelName }, "messenger field filled via Puppeteer scan");
+  // 3. Map name → source ID
+  const sourceId = mapNameToSourceId(channelName);
+  if (!sourceId) {
+    logger.warn({ leadId, channelName }, "could not map channel name to source ID");
+    return null;
   }
-  return channelName;
+
+  // 4. Write source ID as string number
+  const ok = await updateLastMessengerField(leadId, String(sourceId), 0, LAST_MESSENGER_FIELD_ID);
+  if (ok) {
+    logger.info({ leadId, channelName, sourceId }, "messenger field filled via Puppeteer scan");
+  }
+  return String(sourceId);
 }
 
 /**
