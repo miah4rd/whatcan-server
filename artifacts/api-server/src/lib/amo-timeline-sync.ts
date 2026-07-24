@@ -11,6 +11,7 @@ import { eq, and, sql, isNotNull, not } from "drizzle-orm";
 import { createHash } from "crypto";
 import { logger } from "./logger";
 import { generateSuggestion } from "./generate-suggestion.js";
+import { ensureLastMessengerField, updateLastMessengerField } from "./amo-messenger-field.js";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
 const AMO_BASE = `https://${AMO_SUBDOMAIN}.amocrm.ru`;
@@ -106,7 +107,16 @@ interface TimelineEvent {
   data?: {
     text?: string;
     message?: { type: string; text: string; media?: string };
-    author?: { id: string; name: string; full_name: string; type: string };
+    author?: {
+      id: string;
+      name: string;
+      full_name: string;
+      type: string;
+      origin?: string;          // "wahelp.whatbot", "ru.wababa.amocrm", etc.
+      origin_profile?: string;  // JSON with { id: number } — source_id
+      origin_chat_id?: string;
+      origin_name?: string;     // channel name e.g. "Wahelp Nick"
+    };
     recipient?: { id: string; name: string; full_name: string };
     dialog?: { id: number; category: string };
     params?: any;
@@ -154,6 +164,9 @@ interface RawMessage {
   channel: string | null;
   direction: "inbound" | "outbound";
   sentAt: Date;
+  // Channel source info from type 89 origin fields
+  channelSourceId?: string;
+  channelSourceName?: string;
 }
 
 function parseTimelineEvents(leadId: string, events: TimelineEvent[]): RawMessage[] {
@@ -173,6 +186,8 @@ function parseTimelineEvents(leadId: string, events: TimelineEvent[]): RawMessag
     let direction: "inbound" | "outbound";
     let senderType: "lead" | "broker" | "bot";
     let channel: string | null = null;
+    let channelSourceId: string | undefined;
+    let channelSourceName: string | undefined;
 
     if (ev.type === 89) {
       // Incoming from client
@@ -180,6 +195,22 @@ function parseTimelineEvents(leadId: string, events: TimelineEvent[]): RawMessag
       senderId = data.author?.id || null;
       direction = "inbound";
       senderType = "lead";
+
+      // Extract channel source from origin fields
+      if (data.author?.origin_profile) {
+        try {
+          const profile = typeof data.author.origin_profile === "string"
+            ? JSON.parse(data.author.origin_profile)
+            : data.author.origin_profile;
+          if (profile?.id) channelSourceId = String(profile.id);
+        } catch {
+          // Not JSON — might be a plain ID
+          channelSourceId = data.author.origin_profile;
+        }
+      }
+      if (data.author?.origin_name) {
+        channelSourceName = data.author.origin_name;
+      }
     } else {
       // Outgoing (type 90)
       senderName = data.author?.full_name || data.author?.name || "Bot";
@@ -216,6 +247,8 @@ function parseTimelineEvents(leadId: string, events: TimelineEvent[]): RawMessag
       channel,
       direction,
       sentAt,
+      channelSourceId,
+      channelSourceName,
     });
   }
 
@@ -362,6 +395,36 @@ export async function syncLeadMessagesFromTimeline(): Promise<{
   return { synced: totalSynced, leads: leadsProcessed, errors };
 }
 
+// ── Custom field cache ─────────────────────────────────────────────────────────
+let lastMessengerFieldId: number | null = null;
+
+async function getFieldId(): Promise<number | null> {
+  if (lastMessengerFieldId) return lastMessengerFieldId;
+  lastMessengerFieldId = await ensureLastMessengerField();
+  return lastMessengerFieldId;
+}
+
+// ── Source ID → channel name mapping (from /ajax/v1/chats/origin/sources) ─────
+let sourceMap: Record<string, string> = {};
+
+async function loadSourceMap(cookieStr: string): Promise<void> {
+  if (Object.keys(sourceMap).length > 0) return; // Already loaded
+  try {
+    const res = await fetch(`${AMO_BASE}/ajax/v1/chats/origin/sources`, {
+      headers: { Cookie: cookieStr },
+    });
+    if (!res.ok) return;
+    const data = await res.json() as { response: { sources: Array<{ id: number; name: string }> } };
+    const sources = data?.response?.sources ?? [];
+    for (const s of sources) {
+      sourceMap[String(s.id)] = s.name;
+    }
+    logger.info({ count: sources.length }, "loaded amoCRM source map");
+  } catch (err) {
+    logger.warn({ err }, "failed to load source map");
+  }
+}
+
 // ── Detect new incoming messages and update lastMessageFrom ─────────────────────
 /**
  * For leads where we sent the last message (lastMessageFrom = "us" or null),
@@ -404,6 +467,10 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
 
   logger.info({ leadCount: leads.length }, "incoming detection started");
 
+  // Load source map for channel name resolution
+  await loadSourceMap(cookieStr);
+  const fieldId = await getFieldId();
+
   let detected = 0;
   let liveGenerated = 0;
   const BATCH_SIZE = 10;
@@ -425,11 +492,13 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
           let latestIncoming = 0;
           let latestOutgoing = 0;
           let latestIncomingText = "";
+          let latestIncomingEvent: TimelineEvent | null = null;
 
           for (const ev of events) {
             if (ev.type === 89 && ev.created_at && ev.created_at > latestIncoming) {
               latestIncoming = ev.created_at;
               latestIncomingText = ev.data?.message?.text || "";
+              latestIncomingEvent = ev;
             }
             if (ev.type === 90 && ev.created_at && ev.created_at > latestOutgoing) {
               latestOutgoing = ev.created_at;
@@ -462,6 +531,38 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
               updatedAt: new Date(),
             })
             .where(eq(leadsSyncTable.leadId, lead.leadId));
+
+          // Update "last active chat messenger" custom field for Salesbot routing
+          if (latestIncomingEvent && fieldId) {
+            try {
+              const author = latestIncomingEvent.data?.author;
+              let sourceId: string | undefined;
+              let sourceName: string | undefined;
+
+              if (author?.origin_profile) {
+                try {
+                  const profile = typeof author.origin_profile === "string"
+                    ? JSON.parse(author.origin_profile)
+                    : author.origin_profile;
+                  if (profile?.id) sourceId = String(profile.id);
+                } catch {
+                  sourceId = author.origin_profile;
+                }
+              }
+
+              if (sourceId && sourceMap[sourceId]) {
+                sourceName = sourceMap[sourceId];
+              } else if (author?.origin_name) {
+                sourceName = author.origin_name;
+              }
+
+              if (sourceName) {
+                await updateLastMessengerField(lead.leadId, sourceName, parseInt(sourceId ?? "0", 10), fieldId);
+              }
+            } catch (err) {
+              logger.warn({ leadId: lead.leadId, err }, "incoming detection: failed to update messenger field");
+            }
+          }
 
           // Delete any pending PUSH suggestions (client just replied — no follow-up needed)
           await db
@@ -560,6 +661,12 @@ if (process.argv[1]?.includes("amo-timeline-sync")) {
 const TIMELINE_SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
 export function startTimelineSyncScheduler(): void {
+  // Create custom field on startup (non-blocking)
+  getFieldId().then((id) => {
+    if (id) logger.info({ fieldId: id }, "last messenger custom field ready");
+    else logger.warn("last messenger custom field not created (will retry on incoming detection)");
+  });
+
   // First sync after 60 seconds (let other schedulers finish first)
   setTimeout(async () => {
     try { await syncLeadMessagesFromTimeline(); } catch (err) { logger.error({ err }, "initial timeline sync error"); }
