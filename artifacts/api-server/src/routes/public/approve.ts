@@ -9,7 +9,6 @@ import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-clien
 import { ensureMessengerField } from "../../lib/amo-messenger-field";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
-import { detectRentalAutoStageAdvance } from "../../lib/rental-stage-advance.js";
 
 // amoCRM status IDs for the Unicorn Property pipeline (PIPELINE 8347534)
 // Maps each follow-up stage to the NEXT stage — bot auto-advances on approve.
@@ -462,28 +461,24 @@ router.post("/approve", async (req, res) => {
       }
     }
 
-    // ── Auto-advance stage (Rental only) ──────────────────────────────────────
-    // A sent LIVE reply with real property links means "Options sent" already
-    // happened — reflect that automatically instead of relying on the broker
-    // to remember to move it by hand. Never overrides a stage the broker
-    // explicitly picked; never advances past Options sent (Viewing/Negotiation/
-    // Closed carry scheduling or money weight and stay a human call).
-    if (!explicitNewStage && sug.kind === "live") {
-      const [stageRow] = await db
-        .select({ leadStage: leadsSyncTable.leadStage, pipeline: leadsSyncTable.pipeline })
-        .from(leadsSyncTable)
-        .where(eq(leadsSyncTable.leadId, sug.leadId))
-        .limit(1);
-      const detected = detectRentalAutoStageAdvance({
-        pipeline: stageRow?.pipeline ?? null,
-        currentStage: stageRow?.leadStage ?? null,
-        attachmentsJustSent: chatSent && !!(sug.attachments && sug.attachments.length > 0),
-      });
-      if (detected) {
-        autoStage = detected;
+    // ── Auto-apply the stage derived from the conversation ────────────────────
+    // The stage is just a reflection of where the conversation stands, and the
+    // bot holds that conversation — so it classifies the stage when generating
+    // the reply (see lib/stage-classifier.ts) and it gets applied here on send.
+    // Two guards: a stage the broker picked themselves always wins, and a
+    // terminal stage (Closed won/lost) is never applied automatically — those
+    // carry money and reporting weight, so the broker confirms them explicitly.
+    if (!explicitNewStage && sug.suggestedStage && sug.suggestedStageId) {
+      if (sug.suggestedStageTerminal) {
         req.log.info(
-          { leadId: sug.leadId, fromStage: stageRow?.leadStage, toStage: detected.name },
-          "auto stage advance: Options sent (attachments delivered)",
+          { leadId: sug.leadId, stage: sug.suggestedStage },
+          "stage suggestion is terminal — left for broker confirmation",
+        );
+      } else {
+        autoStage = { name: sug.suggestedStage, id: Number(sug.suggestedStageId) };
+        req.log.info(
+          { leadId: sug.leadId, toStage: sug.suggestedStage, reason: sug.suggestedStageReason },
+          "auto stage: applied from conversation classification",
         );
       }
     }

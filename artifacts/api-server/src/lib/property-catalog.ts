@@ -150,6 +150,9 @@ export async function matchProperties(opts: {
   /** Property IDs already sent to this lead — excluded so a re-match after an
    * objection surfaces DIFFERENT listings instead of repeating rejected ones. */
   excludeIds?: string[];
+  /** How many listings this lead has already seen — drives the "give them
+   * something genuinely different" instruction on follow-up shortlists. */
+  seenCount?: number;
 }): Promise<PropertyPick[]> {
   const limit = opts.limit ?? 2;
   const all = await fetchAllProperties();
@@ -178,8 +181,18 @@ export async function matchProperties(opts: {
 
     const result = await chatCompletionJSON<{ ids?: string[] }>({
       model: "claude-sonnet-5",
-      system: `You match a real estate lead's stated needs to the best-fitting listings from a catalog.
-Read the conversation and pick at most ${limit} listing IDs from the catalog. You do NOT need every detail (area, budget, bedrooms, purpose, style) — if even one or two of those are known or stated, use them to pick your best reasonable candidates. This is a starting shortlist for the lead to react to and refine, not a final match, so approximate is fine. Only return an empty list if the conversation gives truly nothing to go on (e.g. just a greeting).${brokerBlock}
+      system: `You decide whether to attach property listings to a broker's next reply, and if so which ones.
+
+Return an EMPTY list when sending listings would be the wrong move:
+- The lead has just expressed interest in a SPECIFIC listing they were already shown ("I like this one", "this looks good", quoting one link approvingly). The conversation should now move toward a viewing or the practical next step on THAT property — pushing a fresh batch talks over them.
+- The lead is arranging a viewing, negotiating terms, or discussing a property they've already chosen.
+- The conversation gives truly nothing to go on (e.g. only a greeting).
+
+Otherwise pick at most ${limit} listing IDs that fit what the lead described. You do NOT need every detail (area, budget, bedrooms, purpose, style) — one or two known criteria are enough to make a reasonable first pass. This is a shortlist for the lead to react to and refine, so approximate is fine.${
+        (opts.seenCount ?? 0) > 0
+          ? `\n\nThis lead has already been shown ${opts.seenCount} listing(s) and those are excluded from the catalog below. Anything you pick is new to them — favour genuine variety (different areas, price points, layouts) over near-duplicates of what they already saw.`
+          : ""
+      }${brokerBlock}
 
 Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
       messages: [

@@ -43,6 +43,14 @@ export const pendingSuggestionsTable = pgTable("pending_suggestions", {
     url?: string | null;
     storageKey?: string;
   }>>(),
+  // Funnel stage the conversation reaches once this reply is sent, derived from
+  // the conversation itself (see lib/stage-classifier.ts). Applied on approve so
+  // brokers don't move cards by hand — except when `terminal` (Closed won/lost),
+  // which is only ever surfaced for the broker to confirm.
+  suggestedStage: text("suggested_stage"),
+  suggestedStageId: text("suggested_stage_id"),
+  suggestedStageReason: text("suggested_stage_reason"),
+  suggestedStageTerminal: boolean("suggested_stage_terminal"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

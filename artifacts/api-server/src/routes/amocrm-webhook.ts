@@ -14,6 +14,8 @@ import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental
 import { buildRentalSystemPrompt } from "../lib/rental-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
+import { classifyStage } from "../lib/stage-classifier";
+import { logger } from "../lib/logger";
 
 const router = Router();
 
@@ -387,23 +389,40 @@ export async function queueSuggestion(opts: {
       )
       .limit(1);
 
+    let rowId = existingLive?.id ?? null;
     if (existingLive) {
       await db
         .update(pendingSuggestionsTable)
-        .set({ suggestionText: opts.text, attachments: opts.attachments, createdAt: new Date() })
+        .set({
+          suggestionText: opts.text,
+          attachments: opts.attachments,
+          createdAt: new Date(),
+          // Clear the previous classification — it described an older reply.
+          suggestedStage: null,
+          suggestedStageId: null,
+          suggestedStageReason: null,
+          suggestedStageTerminal: null,
+        })
         .where(eq(pendingSuggestionsTable.id, existingLive.id));
     } else {
-      await db.insert(pendingSuggestionsTable).values({
-        leadId: opts.leadId,
-        responsibleUser: opts.responsibleUser,
-        kind: "live",
-        followupLevel: null,
-        suggestionText: opts.text,
-        status: "pending",
-        attachments: opts.attachments,
-      });
+      const [inserted] = await db
+        .insert(pendingSuggestionsTable)
+        .values({
+          leadId: opts.leadId,
+          responsibleUser: opts.responsibleUser,
+          kind: "live",
+          followupLevel: null,
+          suggestionText: opts.text,
+          status: "pending",
+          attachments: opts.attachments,
+        })
+        .returning({ id: pendingSuggestionsTable.id });
+      rowId = inserted?.id ?? null;
     }
+    // Notify BEFORE classifying the stage — the broker should hear about the
+    // lead's reply the moment it's ready, not after another AI round-trip.
     notifyBrokerForLead(opts.responsibleUser, opts.leadId, "replied", opts.leadMessageText || opts.text).catch(() => {});
+    if (rowId) void classifyStageInBackground(rowId, opts.leadId, opts.text, opts.attachments?.length ?? 0);
   } else {
     // PUSH — only queue if no pending suggestion already exists
     const existing = await db
@@ -428,6 +447,59 @@ export async function queueSuggestion(opts: {
         attachments: opts.attachments,
       });
     }
+  }
+}
+
+/**
+ * Works out which funnel stage the conversation reaches once this reply is sent
+ * and stores it on the suggestion, so approving applies it without the broker
+ * dragging the card by hand. Runs AFTER the push notification deliberately —
+ * it's an extra AI round-trip and the stage isn't needed until the broker
+ * actually approves, which is seconds away at the earliest.
+ */
+async function classifyStageInBackground(
+  rowId: string,
+  leadId: string,
+  replyText: string,
+  attachmentsCount: number,
+): Promise<void> {
+  try {
+    const [lead] = await db
+      .select({
+        content: leadsSyncTable.content,
+        leadStage: leadsSyncTable.leadStage,
+        pipeline: leadsSyncTable.pipeline,
+      })
+      .from(leadsSyncTable)
+      .where(eq(leadsSyncTable.leadId, leadId))
+      .limit(1);
+    if (!lead) return;
+
+    const dialog = parseDialogContent(lead.content ?? "");
+    const classification = await classifyStage({
+      pipeline: lead.pipeline,
+      currentStage: lead.leadStage,
+      conversationText: formatDialogForAI(dialog.messages),
+      replyText,
+      attachmentsCount,
+    });
+    if (!classification) return;
+
+    await db
+      .update(pendingSuggestionsTable)
+      .set({
+        suggestedStage: classification.stage.name,
+        suggestedStageId: String(classification.stage.id),
+        suggestedStageReason: classification.reason,
+        suggestedStageTerminal: classification.terminal,
+      })
+      .where(eq(pendingSuggestionsTable.id, rowId));
+    logger.info(
+      { leadId, from: lead.leadStage, to: classification.stage.name, terminal: classification.terminal },
+      "stage classified for pending suggestion",
+    );
+  } catch (err) {
+    logger.error({ err, leadId }, "background stage classification failed (non-fatal)");
   }
 }
 

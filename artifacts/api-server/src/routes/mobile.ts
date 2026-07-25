@@ -71,6 +71,8 @@ const PAGE_HTML = `<!doctype html>
   .badge.temp-warm { background: rgba(251,146,60,.16); color: #fdba74; }
   .badge.temp-cold { background: rgba(96,165,250,.14); color: #93c5fd; }
   .badge.discard { background: rgba(148,163,184,.16); color: #cbd5e1; }
+  .stage-hint { font-size: 11.5px; color: #7dd3fc; background: rgba(45,212,191,.08); border: 1px solid rgba(45,212,191,.2); border-radius: 8px; padding: 7px 10px; margin-bottom: 8px; }
+  .stage-hint .dim { color: #6b7488; }
   .card-preview { font-size: 13px; color: #b6bccd; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .card-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 10px; color: #7a8699; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
   .card-arrow { margin-left: auto; color: #2dd4bf; font-size: 13px; }
@@ -652,8 +654,12 @@ const PAGE_HTML = `<!doctype html>
   }
 
   function openDetail(item, tabKind) {
-    var stageChecked = detectStageTransition(item.suggestion_text);
     var nextStages = stagesAfterCurrent(item.lead_stage || "");
+    // Non-terminal stages apply themselves server-side on approve, so the only
+    // thing that needs the broker's hand here is a closing stage (Closed
+    // won/lost): pre-filled and pre-checked so confirming is a single tap.
+    var termStage = item.suggested_stage_terminal ? (item.suggested_stage || "") : "";
+    var stageChecked = termStage ? true : detectStageTransition(item.suggestion_text);
     openItem = {
       id: item.id,
       lead_id: item.lead_id,
@@ -673,8 +679,11 @@ const PAGE_HTML = `<!doctype html>
       error: "",
       revisionChain: [],
       _stageChecked: stageChecked,
-      _selectedStage: stageChecked && nextStages.length > 0 ? nextStages[0] : "",
+      _selectedStage: termStage || (stageChecked && nextStages.length > 0 ? nextStages[0] : ""),
       _originalStage: item.lead_stage || null,
+      suggested_stage: item.suggested_stage || null,
+      suggested_stage_reason: item.suggested_stage_reason || null,
+      suggested_stage_terminal: !!item.suggested_stage_terminal,
       _skipExpanded: false,
       _skipTaskMode: false,
       _skipTaskVoice: "",
@@ -825,6 +834,14 @@ const PAGE_HTML = `<!doctype html>
 
     if (!editing) {
       var nextStages = stagesAfterCurrent(it.lead_stage);
+      if (it.suggested_stage) {
+        html += '<div class="stage-hint">' +
+          (it.suggested_stage_terminal
+            ? '\\u26a0\\ufe0f Confirm to close: \\u201c' + esc(it.suggested_stage) + '\\u201d'
+            : '\\u2713 Stage moves to \\u201c' + esc(it.suggested_stage) + '\\u201d on send') +
+          (it.suggested_stage_reason ? ' <span class="dim">(' + esc(it.suggested_stage_reason) + ')</span>' : '') +
+          '</div>';
+      }
       html += '<div class="action-row">';
       html += '<input type="checkbox" class="ext-cb" id="stage-cb" ' + (it._stageChecked ? "checked" : "") + '>';
       html += '<span class="action-row-lbl">Next step:</span>';

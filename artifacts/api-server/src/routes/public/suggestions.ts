@@ -192,6 +192,13 @@ router.get("/suggestions", async (req, res) => {
         next_followup_at: sync?.nextFollowupAt?.toISOString() ?? null,
         last_lead_channel: lastLeadChannel,
         trailing_unanswered: trailingUnanswered,
+        // Conversation-derived funnel stage. Non-terminal ones apply themselves
+        // on approve; terminal ones (Closed won/lost) are surfaced pre-filled
+        // for the broker to confirm.
+        suggested_stage: i.suggestedStage ?? null,
+        suggested_stage_id: i.suggestedStageId ?? null,
+        suggested_stage_reason: i.suggestedStageReason ?? null,
+        suggested_stage_terminal: i.suggestedStageTerminal ?? false,
         // Distilled profile (for adaptive ranking + surfaced to the client UI)
         profile_temperature: sync?.profileTemperature ?? null,
         profile_potential: sync?.profilePotential ?? null,
