@@ -9,6 +9,7 @@ import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-clien
 import { ensureMessengerField } from "../../lib/amo-messenger-field";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
+import { detectRentalAutoStageAdvance } from "../../lib/rental-stage-advance.js";
 
 // amoCRM status IDs for the Unicorn Property pipeline (PIPELINE 8347534)
 // Maps each follow-up stage to the NEXT stage — bot auto-advances on approve.
@@ -270,8 +271,11 @@ router.post("/approve", async (req, res) => {
     brokerId?: string;
   };
 
-  const newStage = typeof body?.newStage === "string" && body.newStage.trim() ? body.newStage.trim() : null;
+  const explicitNewStage = typeof body?.newStage === "string" && body.newStage.trim() ? body.newStage.trim() : null;
   const skipMessage = body?.skipMessage === true;
+  // Set below (only for a sent LIVE reply with real property attachments) when
+  // the broker didn't already pick a stage themselves via the checkbox.
+  let autoStage: { name: string; id: number } | null = null;
 
   if (
     !body?.suggestionId ||
@@ -318,7 +322,7 @@ router.post("/approve", async (req, res) => {
   }
 
   if (skipMessage) {
-    req.log.info({ leadId: sug.leadId, newStage }, "approve skip-message: suggestion skipped, no message sent");
+    req.log.info({ leadId: sug.leadId, newStage: explicitNewStage }, "approve skip-message: suggestion skipped, no message sent");
   } else {
     req.log.info({
       leadId: sug.leadId,
@@ -430,7 +434,7 @@ router.post("/approve", async (req, res) => {
         body.brokerId,
         body.originalText,
         body.message,
-        newStage ?? sug.responsibleUser ?? "",
+        explicitNewStage ?? sug.responsibleUser ?? "",
         req.log,
       ).catch(() => {});
     }
@@ -457,10 +461,37 @@ router.post("/approve", async (req, res) => {
         incrementBrokerPick(sug.responsibleUser, propertyId, listingType).catch(() => {});
       }
     }
+
+    // ── Auto-advance stage (Rental only) ──────────────────────────────────────
+    // A sent LIVE reply with real property links means "Options sent" already
+    // happened — reflect that automatically instead of relying on the broker
+    // to remember to move it by hand. Never overrides a stage the broker
+    // explicitly picked; never advances past Options sent (Viewing/Negotiation/
+    // Closed carry scheduling or money weight and stay a human call).
+    if (!explicitNewStage && sug.kind === "live") {
+      const [stageRow] = await db
+        .select({ leadStage: leadsSyncTable.leadStage, pipeline: leadsSyncTable.pipeline })
+        .from(leadsSyncTable)
+        .where(eq(leadsSyncTable.leadId, sug.leadId))
+        .limit(1);
+      const detected = detectRentalAutoStageAdvance({
+        pipeline: stageRow?.pipeline ?? null,
+        currentStage: stageRow?.leadStage ?? null,
+        attachmentsJustSent: chatSent && !!(sug.attachments && sug.attachments.length > 0),
+      });
+      if (detected) {
+        autoStage = detected;
+        req.log.info(
+          { leadId: sug.leadId, fromStage: stageRow?.leadStage, toStage: detected.name },
+          "auto stage advance: Options sent (attachments delivered)",
+        );
+      }
+    }
   }
 
   // ── Stage change (applies for both normal approve and skip-message) ─────────
-  if (newStage) {
+  const effectiveNewStage = explicitNewStage ?? autoStage?.name ?? null;
+  if (effectiveNewStage) {
     const prevSync = await db
       .select({ leadStage: leadsSyncTable.leadStage })
       .from(leadsSyncTable)
@@ -469,18 +500,20 @@ router.post("/approve", async (req, res) => {
 
     const prevStage = prevSync[0]?.leadStage ?? null;
 
-    const stageId = typeof body.stageId === "string" && body.stageId.trim() ? body.stageId.trim() : null;
+    const stageId =
+      (typeof body.stageId === "string" && body.stageId.trim() ? body.stageId.trim() : null) ??
+      (autoStage ? String(autoStage.id) : null);
 
     await db
       .update(leadsSyncTable)
-      .set({ leadStage: newStage, leadStageId: stageId ?? undefined, nextFollowupAt: null, updatedAt: new Date() })
+      .set({ leadStage: effectiveNewStage, leadStageId: stageId ?? undefined, nextFollowupAt: null, updatedAt: new Date() })
       .where(eq(leadsSyncTable.leadId, sug.leadId));
 
-    if (newStage !== prevStage) {
+    if (effectiveNewStage !== prevStage) {
       await db.insert(stageEventsTable).values({
         leadId: sug.leadId,
         fromStage: prevStage,
-        toStage: newStage,
+        toStage: effectiveNewStage,
         responsibleUser: sug.responsibleUser,
       }).catch(() => {});
     }
@@ -489,12 +522,12 @@ router.post("/approve", async (req, res) => {
     if (stageId) {
       try {
         stageOk = await updateLeadStatus(sug.leadId, Number(stageId));
-        req.log.info({ leadId: sug.leadId, newStage, stageId, stageOk }, "stage updated in amoCRM via API");
+        req.log.info({ leadId: sug.leadId, newStage: effectiveNewStage, stageId, stageOk }, "stage updated in amoCRM via API");
       } catch (e) {
         req.log.error({ err: e }, "stage-change API error");
       }
     } else {
-      req.log.warn({ leadId: sug.leadId, newStage }, "no stageId provided — skipping amoCRM stage update");
+      req.log.warn({ leadId: sug.leadId, newStage: effectiveNewStage }, "no stageId provided — skipping amoCRM stage update");
     }
   }
 
