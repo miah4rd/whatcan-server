@@ -16,6 +16,9 @@ import { generateSuggestion } from "./generate-suggestion.js";
 // RETURNS the text — without queueing, the suggestion silently evaporates.
 import { queueSuggestion } from "../routes/amocrm-webhook.js";
 import { getLastMessengerFieldId, updateLastMessengerField } from "./amo-messenger-field.js";
+// Coalesces this detection with the real-time webhook's — both can fire for
+// the same burst of WhatsApp messages, so both route through the same debounce.
+import { scheduleLiveReply } from "./live-reply-debounce.js";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
 const AMO_BASE = `https://${AMO_SUBDOMAIN}.amocrm.ru`;
@@ -597,42 +600,59 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
           // The knownTs comparison above runs this at most once per message.
           let liveCreated = false;
           if (latestIncomingText) {
-            // Generate LIVE suggestion — fetch more context for the AI
-            try {
-              const fullEvents = await fetchTimeline(cookieStr, lead.leadId, 20);
-              const allMsgs = parseTimelineEvents(lead.leadId, fullEvents);
-              const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
-              const timelineTail = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
-              const contentSnippet = lead.content
-                ? `${lead.content}\n\n[LATEST MESSAGES — may not be in the log above yet]\n${timelineTail.slice(-1500)}`
-                : timelineTail;
+            liveCreated = true;
+            // Debounced + re-fetched fresh at fire time — this detection and the
+            // real-time webhook's can both fire for the same message burst; without
+            // coalescing, each fires its own generation and the lead sees near-
+            // duplicate replies a couple minutes apart.
+            scheduleLiveReply(lead.leadId, async () => {
+              try {
+                const [freshLead] = await db
+                  .select({
+                    content: leadsSyncTable.content,
+                    leadNotes: leadsSyncTable.leadNotes,
+                    leadStage: leadsSyncTable.leadStage,
+                    pipeline: leadsSyncTable.pipeline,
+                    responsibleUser: leadsSyncTable.responsibleUser,
+                  })
+                  .from(leadsSyncTable)
+                  .where(eq(leadsSyncTable.leadId, lead.leadId))
+                  .limit(1);
+                if (!freshLead) return;
 
-              if (lastLeadMsg) {
+                const fullEvents = await fetchTimeline(cookieStr, lead.leadId, 20);
+                const allMsgs = parseTimelineEvents(lead.leadId, fullEvents);
+                const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
+                const timelineTail = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
+                const contentSnippet = freshLead.content
+                  ? `${freshLead.content}\n\n[LATEST MESSAGES — may not be in the log above yet]\n${timelineTail.slice(-1500)}`
+                  : timelineTail;
+
+                if (!lastLeadMsg) return;
                 const { text, attachments } = await generateSuggestion({
                   leadId: lead.leadId,
-                  responsibleUser: lead.responsibleUser,
+                  responsibleUser: freshLead.responsibleUser,
                   kind: "live",
                   lastLeadMessage: lastLeadMsg.text,
                   contentSnippet,
-                  leadNotes: lead.leadNotes,
-                  leadStage: lead.leadStage,
-                  pipeline: lead.pipeline,
+                  leadNotes: freshLead.leadNotes,
+                  leadStage: freshLead.leadStage,
+                  pipeline: freshLead.pipeline,
                 });
                 if (text) {
                   await queueSuggestion({
                     leadId: lead.leadId,
-                    responsibleUser: lead.responsibleUser,
+                    responsibleUser: freshLead.responsibleUser,
                     kind: "live",
                     text,
                     attachments,
                     leadMessageText: lastLeadMsg.text,
                   });
-                  liveCreated = true;
                 }
+              } catch (err) {
+                logger.error({ leadId: lead.leadId, err }, "incoming detection: LIVE generation failed");
               }
-            } catch (err) {
-              logger.error({ leadId: lead.leadId, err }, "incoming detection: LIVE generation failed");
-            }
+            });
           }
 
           logger.info(
@@ -823,45 +843,62 @@ async function processQuickPollLead(
   // The knownTs comparison above guarantees this runs at most once per message.
   let liveCreated = false;
   if (latestIncomingText) {
-    try {
-      const fullEvents = await fetchTimeline(cookieStr, leadId, 20);
-      const allMsgs = parseTimelineEvents(leadId, fullEvents);
-      const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
-      const timelineTail = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
-      // The webhook-fed content has the full formatted history; the timeline
-      // tail covers the newest messages the webhook may not have delivered yet.
-      const contentSnippet = leadRow.content
-        ? `${leadRow.content}\n\n[LATEST MESSAGES — may not be in the log above yet]\n${timelineTail.slice(-1500)}`
-        : timelineTail;
-      if (lastLeadMsg) {
+    liveCreated = true;
+    // Debounced + re-fetched fresh at fire time — see live-reply-debounce.ts.
+    // The real-time webhook can detect the same message burst independently;
+    // without coalescing, each fires its own generation.
+    scheduleLiveReply(leadId, async () => {
+      try {
+        const [freshLead] = await db
+          .select({
+            content: leadsSyncTable.content,
+            leadNotes: leadsSyncTable.leadNotes,
+            leadStage: leadsSyncTable.leadStage,
+            pipeline: leadsSyncTable.pipeline,
+            responsibleUser: leadsSyncTable.responsibleUser,
+          })
+          .from(leadsSyncTable)
+          .where(eq(leadsSyncTable.leadId, leadId))
+          .limit(1);
+        if (!freshLead) return;
+
+        const fullEvents = await fetchTimeline(cookieStr, leadId, 20);
+        const allMsgs = parseTimelineEvents(leadId, fullEvents);
+        const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
+        const timelineTail = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
+        // The webhook-fed content has the full formatted history; the timeline
+        // tail covers the newest messages the webhook may not have delivered yet.
+        const contentSnippet = freshLead.content
+          ? `${freshLead.content}\n\n[LATEST MESSAGES — may not be in the log above yet]\n${timelineTail.slice(-1500)}`
+          : timelineTail;
+        if (!lastLeadMsg) return;
         const { text, attachments } = await generateSuggestion({
           leadId,
-          responsibleUser: leadRow.responsibleUser,
+          responsibleUser: freshLead.responsibleUser,
           kind: "live",
           lastLeadMessage: lastLeadMsg.text,
           contentSnippet,
-          leadNotes: leadRow.leadNotes,
-          leadStage: leadRow.leadStage,
-          pipeline: leadRow.pipeline,
+          leadNotes: freshLead.leadNotes,
+          leadStage: freshLead.leadStage,
+          pipeline: freshLead.pipeline,
         });
         if (text) {
           await queueSuggestion({
             leadId,
-            responsibleUser: leadRow.responsibleUser,
+            responsibleUser: freshLead.responsibleUser,
             kind: "live",
             text,
             attachments,
             leadMessageText: lastLeadMsg.text,
           });
-          liveCreated = true;
         }
+      } catch (err) {
+        logger.error({ leadId, err }, "quick poll: LIVE generation failed");
       }
-    } catch (err) {
-      logger.error({ leadId, err }, "quick poll: LIVE generation failed");
-    }
+    });
   }
 
-  logger.info({ leadId, incomingAt, liveCreated }, "quick poll: new incoming processed");
+  logger.info({ leadId, incomingAt, liveScheduled: liveCreated }, "quick poll: new incoming processed");
   return { stored, detected: true, liveCreated };
 }
 

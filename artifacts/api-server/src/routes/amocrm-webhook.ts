@@ -13,6 +13,7 @@ import { getAmoLead } from "../lib/amo-client";
 import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
 import { buildRentalSystemPrompt } from "../lib/rental-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
+import { scheduleLiveReply } from "../lib/live-reply-debounce";
 
 const router = Router();
 
@@ -714,7 +715,6 @@ router.post("/amocrm/webhook", async (req, res) => {
       }
 
       if (isLive) {
-        // LIVE — generate AI suggestion right now
         const effectiveStage = leadStage ?? existing?.leadStage ?? null;
 
         // ── Stage whitelist (testing filter) ─────────────────────────────────
@@ -724,22 +724,54 @@ router.post("/amocrm/webhook", async (req, res) => {
             "live suggestion skipped — stage not in testing whitelist",
           );
         } else {
-          const lastLeadMsg = dialog.lastLeadMessage?.text ?? (content.slice(-400));
-          const { text, attachments } = await generateSuggestion({
-            leadId,
-            responsibleUser,
-            kind: "live",
-            lastLeadMessage: lastLeadMsg,
-            contentSnippet: content,
-            leadNotes,
-            leadStage: effectiveStage,
-            pipeline,
-          });
+          // Debounced: the timeline quick-poll can independently detect the
+          // same burst of WhatsApp messages a few seconds later. Without this,
+          // a lead sending 2-3 messages in a row triggered a separate
+          // generation per message, producing near-duplicate replies that
+          // looked like the bot answering something already two messages old.
+          // Re-reads the lead fresh at fire time so whichever trigger's timer
+          // actually runs still reflects the latest content, not a stale snapshot.
+          scheduleLiveReply(leadId, async () => {
+            const [freshLead] = await db
+              .select({
+                content: leadsSyncTable.content,
+                leadNotes: leadsSyncTable.leadNotes,
+                leadStage: leadsSyncTable.leadStage,
+                pipeline: leadsSyncTable.pipeline,
+                responsibleUser: leadsSyncTable.responsibleUser,
+              })
+              .from(leadsSyncTable)
+              .where(eq(leadsSyncTable.leadId, leadId))
+              .limit(1);
+            if (!freshLead) return;
 
-          if (text) {
-            await queueSuggestion({ leadId, responsibleUser, kind: "live", text, attachments, leadMessageText: lastLeadMsg });
-            req.log.info({ leadId }, "live suggestion queued");
-          }
+            const freshContent = freshLead.content ?? content;
+            const freshDialog = parseDialogContent(freshContent);
+            const lastLeadMsg = freshDialog.lastLeadMessage?.text ?? freshContent.slice(-400);
+
+            const { text, attachments } = await generateSuggestion({
+              leadId,
+              responsibleUser: freshLead.responsibleUser ?? responsibleUser,
+              kind: "live",
+              lastLeadMessage: lastLeadMsg,
+              contentSnippet: freshContent,
+              leadNotes: freshLead.leadNotes ?? leadNotes,
+              leadStage: freshLead.leadStage ?? effectiveStage,
+              pipeline: freshLead.pipeline ?? pipeline,
+            });
+
+            if (text) {
+              await queueSuggestion({
+                leadId,
+                responsibleUser: freshLead.responsibleUser ?? responsibleUser,
+                kind: "live",
+                text,
+                attachments,
+                leadMessageText: lastLeadMsg,
+              });
+              req.log.info({ leadId }, "live suggestion queued (debounced)");
+            }
+          });
         }
       }
       // PUSH / follow-ups are handled by the scheduler (not inline)
