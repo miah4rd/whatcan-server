@@ -322,7 +322,7 @@ const PAGE_HTML = `<!doctype html>
     return (items[kind] || []).slice();
   }
 
-  // `removable` is only true in edit mode, where the × buttons get wired up —
+  // removable is only true in edit mode, where the remove buttons get wired up —
   // rendering them in the read-only view would give the broker dead controls.
   // Bot-picked property links are removable too: the broker needs to be able to
   // drop or swap a listing they disagree with, not just the ones they added.
