@@ -59,6 +59,26 @@ async function getPipelineStages(): Promise<Map<string, PipelineStage[]>> {
   return byPipeline;
 }
 
+/**
+ * A canonical stage name for a funnel group, so the message prompt keys off the
+ * INFERRED stage even when we don't (or can't) move the amoCRM card — e.g. a
+ * commitment stage the broker must confirm, or a pipeline that lacks that exact
+ * stage. Each name is chosen so resolveStageGroup() maps it back to the group.
+ */
+function canonicalStageName(group: StageGroup): string | null {
+  switch (group) {
+    case "early": return "New LEAD";
+    case "needs_assessed": return "Needs Assessed";
+    case "options": return "Options Sent";
+    case "zoom": return "Zoom Call scheduled";
+    case "viewing": return "Viewing Scheduled";
+    case "objections": return "Feedback / Handling Objections";
+    case "closing": return "Reservation";
+    case "won": return "Closed - won";
+    default: return null;
+  }
+}
+
 /** Find the amoCRM status the target funnel group maps to within the lead's own pipeline. */
 async function resolveStageForGroup(
   pipelineName: string | null,
@@ -174,8 +194,13 @@ export async function computeEffectiveStage(opts: {
   if (inferredRank <= stageGroupRank(crmGroup)) return base; // never move backward
 
   // The message should already reflect the real (inferred) stage, even when we
-  // deliberately leave the CRM card for the broker to move.
-  const effective: EffectiveStage = { ...base, group: inferred.group };
+  // deliberately leave the CRM card for the broker to move. Synthesize a
+  // canonical name for the inferred group so the prompt keys off it correctly.
+  const effective: EffectiveStage = {
+    ...base,
+    group: inferred.group,
+    stageName: canonicalStageName(inferred.group) ?? base.stageName,
+  };
 
   if (inferredRank > AUTO_ADVANCE_MAX_RANK) {
     logger.info(

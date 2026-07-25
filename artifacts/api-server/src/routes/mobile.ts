@@ -192,6 +192,12 @@ const PAGE_HTML = `<!doctype html>
   var editing = false;
   var editValue = "";
   var toastMsg = "";
+  // Deep-link: a "client replied" notification can open /m?lead=<leadId> to jump
+  // straight into that conversation instead of dropping the broker on the list.
+  var deepLinkLeadId = (function () {
+    try { return new URLSearchParams(location.search).get("lead"); } catch (e) { return null; }
+  })();
+  var deepLinkTries = 0;
   var toastTimer = null;
 
   var PIPELINE_STAGES = [
@@ -407,6 +413,25 @@ const PAGE_HTML = `<!doctype html>
         reach: all.filter(function (i) { return i.kind === "push" && isReachStage(i.lead_stage); }),
         push: all.filter(function (i) { return i.kind === "push" && !isReachStage(i.lead_stage); }),
       };
+      // Honor a /m?lead=<id> deep link: open that lead's card once its suggestion
+      // is present. Retry a few polls to cover the race where the notification
+      // arrives just before the suggestion is queued, then give up so we never
+      // yank the broker into a stale card minutes later.
+      if (deepLinkLeadId && !openItem) {
+        var tabsOrder = ["live", "reach", "push"];
+        var pick = null, pickTab = activeTab;
+        for (var ti = 0; ti < tabsOrder.length; ti++) {
+          var f = (items[tabsOrder[ti]] || []).find(function (i) { return String(i.lead_id) === String(deepLinkLeadId); });
+          if (f) { pick = f; pickTab = tabsOrder[ti]; break; }
+        }
+        if (pick) {
+          deepLinkLeadId = null;
+          activeTab = pickTab;
+          openDetail(pick, pickTab);
+          return;
+        }
+        if (++deepLinkTries >= 5) deepLinkLeadId = null;
+      }
       render();
     } catch (e) { /* network hiccup — keep last snapshot */ }
   }
@@ -717,6 +742,11 @@ const PAGE_HTML = `<!doctype html>
 
     html += "</main>";
     app.innerHTML = html;
+
+    // Open the conversation scrolled to the newest message (the lead's latest
+    // reply the bot is answering), not the top of the recent-history window.
+    var convEl = document.querySelector(".conv");
+    if (convEl) convEl.scrollTop = convEl.scrollHeight;
 
     $("#back-btn").onclick = function () { openItem = null; editing = false; render(); };
 
