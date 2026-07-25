@@ -922,6 +922,12 @@ const PAGE_HTML = `<!doctype html>
     html += "</main>";
     app.innerHTML = html;
 
+    // The conversation box scrolls internally and renders oldest→newest, so it
+    // opened parked on old history. Jump it to the bottom: the message the
+    // broker needs to see is the lead's latest one, the one being replied to.
+    var convEl = document.querySelector(".conv");
+    if (convEl) convEl.scrollTop = convEl.scrollHeight;
+
     $("#back-btn").onclick = function () { openItem = null; editing = false; render(); };
 
     var stageToggle = $("#stage-toggle");
