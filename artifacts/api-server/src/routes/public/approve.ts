@@ -268,6 +268,9 @@ router.post("/approve", async (req, res) => {
     originalText?: string;
     /** Broker identifier — used to save correction */
     brokerId?: string;
+    /** Property links as the broker left them — they can remove or add listings
+     * while editing, so this overrides the originally generated attachments. */
+    attachments?: Array<{ type?: string; label?: string; url?: string }>;
   };
 
   const explicitNewStage = typeof body?.newStage === "string" && body.newStage.trim() ? body.newStage.trim() : null;
@@ -301,6 +304,14 @@ router.post("/approve", async (req, res) => {
     res.status(409).json({ error: "Already processed" });
     return;
   }
+
+  // The broker's edited list wins when the client sent one; older clients that
+  // don't send the field fall back to what was generated.
+  const effectiveAttachments = Array.isArray(body.attachments)
+    ? body.attachments
+        .filter((a) => a?.type === "link" && typeof a.url === "string" && a.url)
+        .map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url! }))
+    : (sug.attachments ?? []).filter((a) => a.type === "link" && a.url);
 
   const approveNow = new Date();
   let hookStatus = 0;
@@ -397,9 +408,8 @@ router.post("/approve", async (req, res) => {
     // Send each property link as its OWN follow-up WhatsApp message — glued
     // into one message, WhatsApp only unfurls a rich preview banner for the
     // first link, so listings need their own message each to all get one.
-    if (chatSent && sug.attachments && sug.attachments.length > 0) {
-      const linkAttachments = sug.attachments.filter((a) => a.type === "link" && a.url);
-      for (const att of linkAttachments) {
+    if (chatSent && effectiveAttachments.length > 0) {
+      for (const att of effectiveAttachments) {
         await new Promise((r) => setTimeout(r, 1200));
         try {
           const linkFieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, att.url as string);
@@ -450,9 +460,8 @@ router.post("/approve", async (req, res) => {
     ).catch(() => {});
 
     // ── Track property picks — personalizes future matching for this broker ──
-    if (sug.responsibleUser && sug.attachments && sug.attachments.length > 0) {
-      for (const att of sug.attachments) {
-        if (att.type !== "link" || !att.url) continue;
+    if (sug.responsibleUser && effectiveAttachments.length > 0) {
+      for (const att of effectiveAttachments) {
         const match = att.url.match(/\/property\/([A-Za-z0-9-]+)/i);
         if (!match) continue;
         const propertyId = match[1];

@@ -46,6 +46,36 @@ async function alreadySentPropertyIds(leadId: string, conversationText: string):
   return [...ids];
 }
 
+/**
+ * Once the lead has picked out a specific villa, attaching a fresh batch talks
+ * straight over them at the most important moment in the conversation — so this
+ * is enforced in code rather than left to the matching model, which was asked
+ * not to and did it anyway.
+ *
+ * Two signals, both deterministic:
+ *  - the lead's own recent message references a listing we already sent them
+ *    (quoting the link back is how "I like this one" arrives over WhatsApp)
+ *  - the CRM stage already says the conversation is past browsing
+ */
+function shouldSkipNewListings(
+  messages: ReturnType<typeof parseDialogContent>["messages"],
+  alreadySentIds: string[],
+  leadStage: string | null | undefined,
+): boolean {
+  const stage = (leadStage ?? "").toLowerCase();
+  if (/viewing|zoom call|negotiat|reservation|contract signed|closed/.test(stage)) return true;
+
+  if (alreadySentIds.length === 0) return false;
+  const sent = new Set(alreadySentIds.map((id) => id.toUpperCase()));
+  const recentLeadText = messages
+    .filter((m) => m.from === "lead")
+    .slice(-3)
+    .map((m) => m.text)
+    .join("\n")
+    .toUpperCase();
+  return [...sent].some((id) => recentLeadText.includes(id));
+}
+
 export type GeneratedSuggestion = {
   text: string;
   attachments: Array<{ type: "link"; label: string; url: string }>;
@@ -375,15 +405,18 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
       max_tokens: 400,
     }),
     alreadySentPropertyIds(opts.leadId, `${opts.contentSnippet}\n${formattedDialog}`)
-      .then((excludeIds) =>
-        matchProperties({
+      .then((excludeIds) => {
+        if (shouldSkipNewListings(dialog.messages, excludeIds, opts.leadStage)) {
+          return [] as PropertyPick[];
+        }
+        return matchProperties({
           listingType: isRental ? "rent" : "sale",
           conversationText: `${formattedDialog}\n${lastLeadText}`,
           brokerId: opts.responsibleUser,
           excludeIds,
           seenCount: excludeIds.length,
-        }),
-      )
+        });
+      })
       .catch(() => [] as PropertyPick[]),
   ]);
 

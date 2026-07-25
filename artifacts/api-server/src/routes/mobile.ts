@@ -144,6 +144,10 @@ const PAGE_HTML = `<!doctype html>
   .att-img img { max-width: 140px; max-height: 100px; border-radius: 6px; display: block; }
   .attlbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attrm { width: 22px; height: 22px; border-radius: 6px; border: none; background: rgba(239,68,68,.15); color: #fca5a5; cursor: pointer; flex: none; }
+  .att-add-row { display: flex; gap: 6px; margin-top: 8px; }
+  .att-add-input { flex: 1; min-width: 0; background: #141827; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; font-family: inherit; }
+  .att-add-input:focus { outline: none; border-color: #2dd4bf; }
+  .att-add-btn { background: #23293b; color: #b6bccd; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; flex: none; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #181d2e; border: 1px solid #2a3146; color: #e6e8ee; padding: 10px 18px; border-radius: 10px; font-size: 13px; z-index: 20; max-width: 90vw; text-align: center; }
   .setup { max-width: 340px; margin: 80px auto; padding: 24px; text-align: center; }
   .setup input { width: 100%; background: #181d2e; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 12px; font-size: 15px; margin: 14px 0; }
@@ -318,12 +322,16 @@ const PAGE_HTML = `<!doctype html>
     return (items[kind] || []).slice();
   }
 
-  function renderAttachments(item) {
+  // `removable` is only true in edit mode, where the × buttons get wired up —
+  // rendering them in the read-only view would give the broker dead controls.
+  // Bot-picked property links are removable too: the broker needs to be able to
+  // drop or swap a listing they disagree with, not just the ones they added.
+  function renderAttachments(item, removable) {
     if (!item.attachments || !item.attachments.length) return "";
     var html = '<div class="atts">';
     for (var i = 0; i < item.attachments.length; i++) {
       var a = item.attachments[i];
-      var rm = a._broker ? '<button class="attrm" data-rmattach="' + i + '" title="Remove">\\u00d7</button>' : "";
+      var rm = removable ? '<button class="attrm" data-rmattach="' + i + '" title="Remove">\\u00d7</button>' : "";
       if (a.type === "reminder") {
         html += '<div class="att att-reminder"><span>\\ud83d\\udccc</span><span class="attlbl">' + esc(a.label) + '</span></div>';
       } else if (a.type === "image" && a.url) {
@@ -581,6 +589,10 @@ const PAGE_HTML = `<!doctype html>
           edited: finalText.trim() !== (item.original || "").trim(),
           originalText: item.original || "",
           brokerId: brokerName,
+          // Send the CURRENT attachment list — the broker may have removed or
+          // added property links while editing, and the server would otherwise
+          // fall back to the originally generated set.
+          attachments: (item.attachments || []).filter(function (a) { return a.type === "link" && a.url; }),
           newStage: (item.lead_stage && item.lead_stage !== item._originalStage) ? item.lead_stage : undefined,
           stageId: (item.lead_stage && item.lead_stage !== item._originalStage) ? (stageIdForName(item.lead_stage) || item.lead_stage_id || undefined) : (item.lead_stage_id || undefined),
         }),
@@ -815,7 +827,8 @@ const PAGE_HTML = `<!doctype html>
     if (editing) {
       html += '<label class="section">Edit message</label>';
       html += '<textarea id="msg-text" placeholder="Edit message…">' + esc(editValue) + '</textarea>';
-      html += renderAttachments(it);
+      html += renderAttachments(it, true);
+      html += '<div class="att-add-row"><input class="att-add-input" id="att-add-url" placeholder="Paste a property link to add…"><button class="att-add-btn" id="att-add-btn">+ Add</button></div>';
       html += '<input type="file" id="file-input" accept="image/*" style="display:none">';
       html += '<div class="ai-input-wrap">';
       html += '<textarea class="aiinput" id="ai-input" placeholder="Tell AI what to change…" rows="2"></textarea>';
@@ -827,7 +840,7 @@ const PAGE_HTML = `<!doctype html>
     } else {
       html += '<label class="section">Suggested message</label>';
       html += '<div class="msg-text">' + esc(it.text) + '</div>';
-      html += renderAttachments(it);
+      html += renderAttachments(it, false);
     }
     if (it.error) html += '<div class="err-text">' + esc(it.error) + '</div>';
     html += '</div>';
@@ -926,6 +939,20 @@ const PAGE_HTML = `<!doctype html>
           renderDetail();
         };
       });
+      var attAddBtn = $("#att-add-btn");
+      if (attAddBtn) {
+        attAddBtn.onclick = function () {
+          var input = $("#att-add-url");
+          var url = (input.value || "").trim();
+          if (!url) return;
+          if (!/^https?:\\/\\//i.test(url)) { showToast("Needs to be a full link (https://…)"); return; }
+          it.attachments = it.attachments || [];
+          var idMatch = url.match(/\\/property\\/([A-Za-z0-9-]+)/i);
+          it.attachments.push({ type: "link", label: idMatch ? idMatch[1] : url, url: url, _broker: true });
+          input.value = "";
+          renderDetail();
+        };
+      }
       var fileInput = $("#file-input");
       fileInput.onchange = function (e) {
         var file = e.target.files && e.target.files[0];
