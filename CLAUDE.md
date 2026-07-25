@@ -1,0 +1,143 @@
+# whatcan — AI copilot for Unicorn Property (Bali real estate)
+
+Context for any new session. Read this before changing behaviour — several rules
+here exist because the obvious implementation was tried and broke in production.
+
+## What it is
+
+A broker copilot on top of amoCRM. When a lead replies on WhatsApp, the bot
+drafts the answer, picks matching listings, and the broker approves it with one
+tap. Two surfaces, one server:
+
+- **Mobile web** `/m` — a single-file PWA served from
+  `artifacts/api-server/src/routes/mobile.ts` (page HTML lives in one big
+  template literal). Updates the moment the server restarts; nothing to install.
+- **Chrome extension** — plain unbundled files, **source is NOT in this repo**
+  (Alexander builds it separately). Prebuilt zips live in
+  `artifacts/landing/public/ext*.zip` and are served at
+  `https://copilot.globalapplab.ru/extNN.zip`. Current: **ext70.zip (1.0.70)**.
+  To change it: unzip the newest, edit, bump `manifest.json` version, rezip,
+  copy to BOTH `artifacts/landing/public/` and (on the VPS)
+  `artifacts/landing/dist/public/` — only `dist/public` is actually served.
+
+## Deploy
+
+Production is a single VPS behind Traefik, PM2 process `whatcan`, SSH host alias
+`whatcan`. The VPS's GitHub deploy key is **read-only** — it can never push, so
+anything edited directly there must be reconciled by hand.
+
+```bash
+git push origin master
+ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no-edit \
+  && cd artifacts/api-server && pnpm run build \
+  && cd /opt/whatcan && pm2 restart ecosystem.config.cjs --update-env && pm2 save"
+```
+
+- `pm2 restart whatcan` does **not** reload env vars. You must reference the
+  **file** (`ecosystem.config.cjs`) — it reads `.env` via a custom loader
+  because PM2's native `env_file` didn't work.
+- `pnpm run build` is esbuild and does **not** type-check. `pnpm run typecheck`
+  has pre-existing failures in files nobody touched — check only the files you
+  changed.
+- **`mobile.ts` gotcha:** the page is one template literal. A backtick anywhere
+  in it — including inside a code comment — terminates the string and breaks the
+  build. Verify with a balanced-backtick count before deploying.
+- Secrets live only in `/opt/whatcan/.env` on the VPS (never in git).
+
+## Architecture, in the order a message flows
+
+1. **Two independent detectors** notice a lead replied:
+   - `routes/amocrm-webhook.ts` — real-time amoCRM webhook (~8-15s).
+   - `lib/amo-timeline-sync.ts` — quick poll every 45s over amoCRM's internal
+     `events_timeline` (Puppeteer-authenticated). Safety net for missed webhooks.
+2. Both route through **`lib/live-reply-debounce.ts`** — a per-lead 5s quiet
+   window. Without it, both detectors fire for the same burst of messages and
+   the lead gets near-duplicate replies minutes apart.
+3. **`lib/generate-suggestion.ts`** writes the reply. The main completion and
+   `matchProperties` run **concurrently** — serialising them delayed the push
+   notification by seconds.
+4. **`queueSuggestion`** (in `amocrm-webhook.ts`) persists to
+   `pending_suggestions`, fires the push notification, **then** classifies the
+   stage in the background (deliberately after the notification).
+5. **`routes/public/approve.ts`** sends via amoCRM Salesbot (bot 22127, writes
+   the text into custom field 965907), applies the stage, creates the CRM task.
+
+## Rules that exist because of a production bug
+
+- **amoCRM `content` timestamps are Moscow time (UTC+3), not UTC.** Parsing them
+  as UTC stored every message 3h in the future, which made the poll's
+  "is this newer than what I know?" check discard real replies for hours.
+  (`lib/dialog-parser.ts`)
+- **`events_timeline` returns events NEWEST-FIRST** and its time field is
+  `date_create` / `msec_created_at`, **not** `created_at`. Reading `created_at`
+  silently fell back to `now()`; consuming the raw order made "latest message"
+  actually the oldest. `parseTimelineEvents` now sorts ascending — keep it that way.
+- **A new incoming message must always refresh the pending LIVE suggestion.**
+  Skipping when one already existed left a stale answer in the inbox and the bot
+  looked blind after the first exchange. But **update the row in place** — a
+  delete+reinsert changed the id under a broker with the card open, so approve
+  404'd.
+- **Never re-offer a listing the lead has seen.** The exclusion list is derived
+  from `/property/<ID>` links **in the conversation text**, which covers every
+  send path. Reading only `pending_suggestions.attachments` missed links sent
+  elsewhere, and they leaked back via the explicit-mention fast path.
+- **Each property link is sent as its own WhatsApp message** — glued together,
+  WhatsApp only unfurls a preview banner for the first one.
+- **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
+  or the number on the app icon disagrees with what the broker sees.
+
+## Funnel stages move themselves
+
+`lib/stage-classifier.ts` derives the stage from the conversation and it's
+applied on send (`approve.ts`). Brokers no longer drag cards. Decisions the
+owner made explicitly — do not change without asking:
+
+- Moves **both forward and backward** (backward only on genuine regression, not
+  a passing clarifying question).
+- **`Closed - won` / `Closed - lost` are never applied automatically.** They're
+  classified, flagged `terminal`, and surfaced pre-filled for the broker to
+  confirm with one tap.
+- Only **Rental** and **Unicorn** pipelines. Stage IDs differ per pipeline even
+  when names match — they're verified against `GET /api/admin/pipelines`.
+- Administrative stages (Mailing, Long-Term Cycle, TAKEN TO WORK, Неразобранное)
+  are never auto-set: they describe work outside the chat.
+- The manual picker in `/m` is collapsed behind "Change stage", kept for
+  closes, administrative stages, and overrides.
+
+Verified with 11 synthetic cases including the dangerous ones (silence and mild
+hesitation must NOT close a deal; an explicit "we booked elsewhere" must).
+
+## Rental conversation rules (`lib/rental-prompt.ts`)
+
+- Offer a shortlist once **~2 criteria** are roughly known. Don't interrogate.
+- **When the lead likes a specific villa, stop sending options** — confirm
+  availability and propose an **in-person viewing with a concrete time slot**.
+  Viewings on Bali are live; video walkthrough only if the lead says they're not
+  on the island. This is also enforced in code (`shouldSkipNewListings` in
+  `generate-suggestion.ts`) because the model ignored the instruction.
+
+## Notifications
+
+Web Push, built in this repo: `lib/push-notifications.ts`,
+`routes/public/push.ts`, service worker at `routes/public-sw.ts` (`/m/sw.js`).
+VAPID keys in the VPS `.env`. Notifications carry the lead's **own incoming
+message** (not our draft), the lead name/id/stage, and deep-link to
+`/m?lead=<id>`; the SW navigates an already-open tab so it lands on that lead.
+
+iOS caveat: push only works for a home-screen-installed PWA, and if Safari has
+recorded a denial it will not re-prompt — the site's data must be cleared.
+
+## Working conventions
+
+- **Other people push to `master` concurrently** (Alexander, other sessions).
+  Always `git fetch` and inspect `git log HEAD..origin/master` before merging,
+  and never assume the VPS working tree is clean.
+- A stale branch caused real confusion once: `claude/amo-copilot-project-qt3tex`
+  was cut before ~22 commits landed and re-implemented push, deep-linking and
+  stage advance that already existed, with rules contradicting the owner's
+  decisions. It was not merged; only its conversation auto-scroll was taken.
+- **Do not run synthetic tests against live leads.** Injecting fake messages
+  into lead 22962823 put invented client requirements into a real WhatsApp
+  conversation. Test the prompts/classifiers standalone instead.
+- Owner communicates in Russian and wants plain-language explanations of what
+  broke and why, not jargon.
