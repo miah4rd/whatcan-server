@@ -7,7 +7,8 @@ import { getKnowledgeBase } from "../lib/knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "../lib/sanitize-suggestion";
 import { getPropertyCatalogSummary, fetchAllPropertiesForPriceLookup, matchProperties, type PropertyPick } from "../lib/property-catalog";
 import { getBrokerPicks } from "../lib/settings";
-import { isStageWhitelisted, shouldSuppressPush } from "../lib/stage-routing";
+import { isStageWhitelisted, shouldSuppressPush, resolveStageGroup, stageAllowsPropertyAttachments } from "../lib/stage-routing";
+import { computeEffectiveStage } from "../lib/stage-advance";
 import { syncLeadContent } from "../lib/amo-message-sync";
 import { getAmoLead } from "../lib/amo-client";
 import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
@@ -321,11 +322,18 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   const text = sanitizeSuggestion(completion.content);
 
-  const picks = await matchProperties({
-    listingType: isRental ? "rent" : "sale",
-    conversationText: `${formattedDialog}\n${lastLeadText}`,
-    brokerId: opts.responsibleUser,
-  }).catch(() => []);
+  // Attach a curated shortlist only when the lead is qualified and ready for
+  // options (needs_assessed). Once options are sent / a viewing is being
+  // booked / negotiating, the choice is already made — re-listing properties
+  // restarts a decision the lead already passed.
+  const allowAttachments = stageAllowsPropertyAttachments(resolveStageGroup(opts.leadStage ?? ""));
+  const picks = allowAttachments
+    ? await matchProperties({
+        listingType: isRental ? "rent" : "sale",
+        conversationText: `${formattedDialog}\n${lastLeadText}`,
+        brokerId: opts.responsibleUser,
+      }).catch(() => [])
+    : [];
 
   return { text, attachments: toAttachments(picks) };
 }
@@ -695,6 +703,20 @@ router.post("/amocrm/webhook", async (req, res) => {
           );
         } else {
           const lastLeadMsg = dialog.lastLeadMessage?.text ?? (content.slice(-400));
+
+          // Auto-advance the CRM stage when the conversation has clearly moved
+          // ahead of it (a fresh lead message just arrived → allowAdvance).
+          // The returned effective stage drives the prompt + attachment gating.
+          const eff = await computeEffectiveStage({
+            leadId,
+            pipeline: pipeline ?? existing?.pipeline ?? null,
+            crmStage: effectiveStage,
+            crmStageId: leadStageId ?? existing?.leadStageId ?? null,
+            transcript: content,
+            responsibleUser,
+            allowAdvance: true,
+          });
+
           const { text, attachments } = await generateSuggestion({
             leadId,
             responsibleUser,
@@ -702,7 +724,7 @@ router.post("/amocrm/webhook", async (req, res) => {
             lastLeadMessage: lastLeadMsg,
             contentSnippet: content,
             leadNotes,
-            leadStage: effectiveStage,
+            leadStage: eff.stageName ?? effectiveStage,
             pipeline,
           });
 

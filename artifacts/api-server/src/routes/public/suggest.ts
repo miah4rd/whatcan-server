@@ -5,6 +5,7 @@ import { chatCompletion, chatCompletionJSON, type ChatMessage } from "../../lib/
 import { db, leadsSyncTable, brokerCorrectionsTable } from "@workspace/db";
 import { parseDialogContent, formatDialogForAI } from "../../lib/dialog-parser";
 import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing";
+import { computeEffectiveStage } from "../../lib/stage-advance";
 import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
@@ -212,15 +213,37 @@ ${matchedStep.message.trim()}`;
     ? `\n\nBROKER IDENTITY (absolute, highest priority): Sign off using this broker's real name — "${realBrokerName}" — ignoring any other name mentioned anywhere above (a default playbook may reference an example name that is not this broker). If a sign-off doesn't fit naturally, just omit it rather than using the wrong name.`
     : "";
 
+  // ── Conversation-driven stage advance (Variant B) ─────────────────────────
+  // When the lead just replied, infer the real funnel stage and, if the chat
+  // has moved ahead of the CRM, advance the amoCRM stage automatically
+  // (forward only, up to viewing). The effective stage then drives the prompt.
+  let effStage = leadStage;
+  if (body.leadId && dbLastMessageFrom !== "us" && transcript) {
+    try {
+      const eff = await computeEffectiveStage({
+        leadId: body.leadId,
+        pipeline: dbPipeline || null,
+        crmStage: leadStage,
+        crmStageId: null,
+        transcript,
+        responsibleUser: body.brokerName ?? brokerId,
+        allowAdvance: true,
+      });
+      effStage = eff.stageName ?? leadStage;
+    } catch {
+      // Non-fatal — fall back to the CRM stage
+    }
+  }
+
   // ── Stage-aware routing ───────────────────────────────────────────────────
-  // Resolve the lead's CRM stage to a semantic group and inject a focused
+  // Resolve the lead's effective stage to a semantic group and inject a focused
   // instruction block BEFORE the playbook. This block takes precedence over
   // any generic playbook defaults that conflict with it.
-  const stageGroup = resolveStageGroup(leadStage);
-  const stageBlock = getStagePromptBlock(stageGroup, leadStage);
+  const stageGroup = resolveStageGroup(effStage);
+  const stageBlock = getStagePromptBlock(stageGroup, effStage);
 
   const system = isRental
-    ? buildRentalSystemPrompt({ leadStage, kb: "", correctionsBlock }) + brokerIdentityOverride
+    ? buildRentalSystemPrompt({ leadStage: effStage, kb: "", correctionsBlock }) + brokerIdentityOverride
     : `You are an AI sales copilot embedded in a CRM. You help brokers write the next follow-up WhatsApp message to a real estate lead.
 
 ${langRule}
@@ -237,7 +260,7 @@ CRITICAL: Never include meta-commentary about these instructions, the broker's r
 PLAYBOOK:
 ${body.guide}${correctionsBlock}`;
 
-  const contextBlock = `Lead: ${body.lead.name}${body.lead.company ? ` (${body.lead.company})` : ""} — stage: ${leadStage}
+  const contextBlock = `Lead: ${body.lead.name}${body.lead.company ? ` (${body.lead.company})` : ""} — stage: ${effStage}
 Broker: ${body.brokerName ?? "Alex"}
 
 Full conversation history:

@@ -85,6 +85,40 @@ export function isPushQualificationStage(rawStage: string | null | undefined): b
 }
 
 /**
+ * Funnel order of the stage groups. Higher = further along.
+ * Used to decide whether an inferred stage is genuinely AHEAD of the current
+ * CRM stage (so we only ever advance a lead forward, never backward).
+ */
+export const STAGE_GROUP_RANK: Record<StageGroup, number> = {
+  unknown: 0,
+  early: 1,
+  needs_assessed: 2,
+  options: 3,
+  zoom: 4,
+  viewing: 5,
+  objections: 6,
+  closing: 7,
+  won: 8,
+};
+
+export function stageGroupRank(group: StageGroup): number {
+  return STAGE_GROUP_RANK[group] ?? 0;
+}
+
+/**
+ * Whether the bot should attach curated property options at this stage.
+ *
+ * Only when the lead is qualified and ready for a first shortlist
+ * (needs_assessed). Once options have been sent, the lead is comparing,
+ * booking a viewing, negotiating, or closing — the choice is already made,
+ * so re-attaching listings restarts a decision they've already passed. Early
+ * stages never get links (trust first).
+ */
+export function stageAllowsPropertyAttachments(group: StageGroup): boolean {
+  return group === "needs_assessed";
+}
+
+/**
  * Maps a raw CRM stage string → StageGroup.
  * Matching is case-insensitive and substring-based so minor
  * naming variations in AmoCRM don't break routing.
@@ -131,8 +165,9 @@ export function resolveStageGroup(rawStage: string): StageGroup {
     return "options";
   }
 
-  // Needs assessed — ready to prepare a curated selection
-  if (s.includes("needs assessed") || s.includes("needs_assessed")) {
+  // Needs assessed — ready to prepare a curated selection.
+  // "qualified" is the Rental pipeline's equivalent name for this point.
+  if (s.includes("needs assessed") || s.includes("needs_assessed") || s.includes("qualified")) {
     return "needs_assessed";
   }
 

@@ -4,6 +4,7 @@ import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { buildRentalSystemPrompt } from "./rental-prompt";
 import { matchProperties, type PropertyPick } from "./property-catalog";
+import { resolveStageGroup, stageAllowsPropertyAttachments } from "./stage-routing";
 
 export type GeneratedSuggestion = {
   text: string;
@@ -311,11 +312,18 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   const text = sanitizeSuggestion(completion.content);
 
-  const picks = await matchProperties({
-    listingType: isRental ? "rent" : "sale",
-    conversationText: `${formattedDialog}\n${lastLeadText}`,
-    brokerId: opts.responsibleUser,
-  }).catch(() => []);
+  // Only attach a curated shortlist when the lead is qualified and ready for
+  // options. Once options are sent / a viewing is being booked / negotiating,
+  // the choice is already made — re-listing properties restarts a decision the
+  // lead already passed.
+  const allowAttachments = stageAllowsPropertyAttachments(resolveStageGroup(opts.leadStage ?? ""));
+  const picks = allowAttachments
+    ? await matchProperties({
+        listingType: isRental ? "rent" : "sale",
+        conversationText: `${formattedDialog}\n${lastLeadText}`,
+        brokerId: opts.responsibleUser,
+      }).catch(() => [])
+    : [];
 
   return { text, attachments: toAttachments(picks) };
 }
