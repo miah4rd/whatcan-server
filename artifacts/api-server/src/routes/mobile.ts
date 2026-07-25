@@ -148,6 +148,7 @@ const PAGE_HTML = `<!doctype html>
   .att-add-input { flex: 1; min-width: 0; background: #141827; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; font-family: inherit; }
   .att-add-input:focus { outline: none; border-color: #2dd4bf; }
   .att-add-btn { background: #23293b; color: #b6bccd; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; flex: none; }
+  .stage-toggle { background: none; border: none; color: #6b7488; font-size: 12px; padding: 6px 0; margin-bottom: 4px; cursor: pointer; text-decoration: underline; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #181d2e; border: 1px solid #2a3146; color: #e6e8ee; padding: 10px 18px; border-radius: 10px; font-size: 13px; z-index: 20; max-width: 90vw; text-align: center; }
   .setup { max-width: 340px; margin: 80px auto; padding: 24px; text-align: center; }
   .setup input { width: 100%; background: #181d2e; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 12px; font-size: 15px; margin: 14px 0; }
@@ -700,6 +701,7 @@ const PAGE_HTML = `<!doctype html>
       _skipTaskMode: false,
       _skipTaskVoice: "",
       _stageConfirm: null,
+      _stageExpanded: false,
       _approving: false,
     };
     editing = false;
@@ -855,7 +857,16 @@ const PAGE_HTML = `<!doctype html>
           (it.suggested_stage_reason ? ' <span class="dim">(' + esc(it.suggested_stage_reason) + ')</span>' : '') +
           '</div>';
       }
-      html += '<div class="action-row">';
+      // The stage now follows the conversation on its own, so the manual picker
+      // is collapsed out of the way. It stays reachable for the cases the bot
+      // deliberately won't do itself: confirming a close, setting an
+      // administrative stage (Mailing, Long-Term Cycle — those describe work
+      // outside the chat), or overriding a misjudged classification.
+      var stageOpen = it._stageExpanded || it.suggested_stage_terminal || it._stageChecked;
+      if (!stageOpen) {
+        html += '<button class="stage-toggle" id="stage-toggle">Change stage \\u2304</button>';
+      }
+      html += '<div class="action-row"' + (stageOpen ? "" : ' style="display:none"') + '>';
       html += '<input type="checkbox" class="ext-cb" id="stage-cb" ' + (it._stageChecked ? "checked" : "") + '>';
       html += '<span class="action-row-lbl">Next step:</span>';
       html += '<select class="ext-select" id="stage-select" ' + (!it._stageChecked ? "disabled" : "") + '>';
@@ -912,6 +923,11 @@ const PAGE_HTML = `<!doctype html>
     app.innerHTML = html;
 
     $("#back-btn").onclick = function () { openItem = null; editing = false; render(); };
+
+    var stageToggle = $("#stage-toggle");
+    if (stageToggle) {
+      stageToggle.onclick = function () { it._stageExpanded = true; renderDetail(); };
+    }
 
     var stageCb = $("#stage-cb");
     var stageSelect = $("#stage-select");
