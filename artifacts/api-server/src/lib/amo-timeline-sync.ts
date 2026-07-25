@@ -276,6 +276,15 @@ function parseTimelineEvents(leadId: string, events: TimelineEvent[]): RawMessag
     });
   }
 
+  // The events_timeline endpoint returns events NEWEST-FIRST. Callers assume
+  // chronological order — `.pop()` for "the lead's latest message", joining
+  // into an oldest→newest conversation snippet for the AI. Consuming the raw
+  // order silently inverted both: the "latest" message was actually the OLDEST
+  // in the window (stale text in push notifications, replies addressed to old
+  // messages) and the AI read the dialog backwards. Sort ascending here so
+  // every consumer gets chronological order.
+  messages.sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
+
   return messages;
 }
 
