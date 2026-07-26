@@ -268,10 +268,16 @@ router.post("/approve", async (req, res) => {
     originalText?: string;
     /** Broker identifier — used to save correction */
     brokerId?: string;
+    /** Property links as the broker left them — they can remove or add listings
+     * while editing, so this overrides the originally generated attachments. */
+    attachments?: Array<{ type?: string; label?: string; url?: string }>;
   };
 
-  const newStage = typeof body?.newStage === "string" && body.newStage.trim() ? body.newStage.trim() : null;
+  const explicitNewStage = typeof body?.newStage === "string" && body.newStage.trim() ? body.newStage.trim() : null;
   const skipMessage = body?.skipMessage === true;
+  // Set below (only for a sent LIVE reply with real property attachments) when
+  // the broker didn't already pick a stage themselves via the checkbox.
+  let autoStage: { name: string; id: number } | null = null;
 
   if (
     !body?.suggestionId ||
@@ -299,6 +305,14 @@ router.post("/approve", async (req, res) => {
     return;
   }
 
+  // The broker's edited list wins when the client sent one; older clients that
+  // don't send the field fall back to what was generated.
+  const effectiveAttachments = Array.isArray(body.attachments)
+    ? body.attachments
+        .filter((a) => a?.type === "link" && typeof a.url === "string" && a.url)
+        .map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url! }))
+    : (sug.attachments ?? []).filter((a) => a.type === "link" && a.url);
+
   const approveNow = new Date();
   let hookStatus = 0;
   let hookBody = "";
@@ -318,7 +332,7 @@ router.post("/approve", async (req, res) => {
   }
 
   if (skipMessage) {
-    req.log.info({ leadId: sug.leadId, newStage }, "approve skip-message: suggestion skipped, no message sent");
+    req.log.info({ leadId: sug.leadId, newStage: explicitNewStage }, "approve skip-message: suggestion skipped, no message sent");
   } else {
     req.log.info({
       leadId: sug.leadId,
@@ -391,6 +405,21 @@ router.post("/approve", async (req, res) => {
     }
     req.log.info({ leadId: sug.leadId, hookStatus, chatSent, hookBody }, "Salesbot response");
 
+    // Send each property link as its OWN follow-up WhatsApp message — glued
+    // into one message, WhatsApp only unfurls a rich preview banner for the
+    // first link, so listings need their own message each to all get one.
+    if (chatSent && effectiveAttachments.length > 0) {
+      for (const att of effectiveAttachments) {
+        await new Promise((r) => setTimeout(r, 1200));
+        try {
+          const linkFieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, att.url as string);
+          if (linkFieldOk) await triggerSalesbot(sug.leadId, botId);
+        } catch (e) {
+          req.log.warn({ leadId: sug.leadId, url: att.url, err: e }, "attachment send failed (non-fatal)");
+        }
+      }
+    }
+
     // Note: suggestion status already set atomically above (claimed update).
 
     await db.insert(sentMessagesTable).values({
@@ -414,7 +443,7 @@ router.post("/approve", async (req, res) => {
         body.brokerId,
         body.originalText,
         body.message,
-        newStage ?? sug.responsibleUser ?? "",
+        explicitNewStage ?? sug.responsibleUser ?? "",
         req.log,
       ).catch(() => {});
     }
@@ -431,9 +460,8 @@ router.post("/approve", async (req, res) => {
     ).catch(() => {});
 
     // ── Track property picks — personalizes future matching for this broker ──
-    if (sug.responsibleUser && sug.attachments && sug.attachments.length > 0) {
-      for (const att of sug.attachments) {
-        if (att.type !== "link" || !att.url) continue;
+    if (sug.responsibleUser && effectiveAttachments.length > 0) {
+      for (const att of effectiveAttachments) {
         const match = att.url.match(/\/property\/([A-Za-z0-9-]+)/i);
         if (!match) continue;
         const propertyId = match[1];
@@ -441,10 +469,33 @@ router.post("/approve", async (req, res) => {
         incrementBrokerPick(sug.responsibleUser, propertyId, listingType).catch(() => {});
       }
     }
+
+    // ── Auto-apply the stage derived from the conversation ────────────────────
+    // The stage is just a reflection of where the conversation stands, and the
+    // bot holds that conversation — so it classifies the stage when generating
+    // the reply (see lib/stage-classifier.ts) and it gets applied here on send.
+    // Two guards: a stage the broker picked themselves always wins, and a
+    // terminal stage (Closed won/lost) is never applied automatically — those
+    // carry money and reporting weight, so the broker confirms them explicitly.
+    if (!explicitNewStage && sug.suggestedStage && sug.suggestedStageId) {
+      if (sug.suggestedStageTerminal) {
+        req.log.info(
+          { leadId: sug.leadId, stage: sug.suggestedStage },
+          "stage suggestion is terminal — left for broker confirmation",
+        );
+      } else {
+        autoStage = { name: sug.suggestedStage, id: Number(sug.suggestedStageId) };
+        req.log.info(
+          { leadId: sug.leadId, toStage: sug.suggestedStage, reason: sug.suggestedStageReason },
+          "auto stage: applied from conversation classification",
+        );
+      }
+    }
   }
 
   // ── Stage change (applies for both normal approve and skip-message) ─────────
-  if (newStage) {
+  const effectiveNewStage = explicitNewStage ?? autoStage?.name ?? null;
+  if (effectiveNewStage) {
     const prevSync = await db
       .select({ leadStage: leadsSyncTable.leadStage })
       .from(leadsSyncTable)
@@ -453,18 +504,20 @@ router.post("/approve", async (req, res) => {
 
     const prevStage = prevSync[0]?.leadStage ?? null;
 
-    const stageId = typeof body.stageId === "string" && body.stageId.trim() ? body.stageId.trim() : null;
+    const stageId =
+      (typeof body.stageId === "string" && body.stageId.trim() ? body.stageId.trim() : null) ??
+      (autoStage ? String(autoStage.id) : null);
 
     await db
       .update(leadsSyncTable)
-      .set({ leadStage: newStage, leadStageId: stageId ?? undefined, nextFollowupAt: null, updatedAt: new Date() })
+      .set({ leadStage: effectiveNewStage, leadStageId: stageId ?? undefined, nextFollowupAt: null, updatedAt: new Date() })
       .where(eq(leadsSyncTable.leadId, sug.leadId));
 
-    if (newStage !== prevStage) {
+    if (effectiveNewStage !== prevStage) {
       await db.insert(stageEventsTable).values({
         leadId: sug.leadId,
         fromStage: prevStage,
-        toStage: newStage,
+        toStage: effectiveNewStage,
         responsibleUser: sug.responsibleUser,
       }).catch(() => {});
     }
@@ -473,12 +526,12 @@ router.post("/approve", async (req, res) => {
     if (stageId) {
       try {
         stageOk = await updateLeadStatus(sug.leadId, Number(stageId));
-        req.log.info({ leadId: sug.leadId, newStage, stageId, stageOk }, "stage updated in amoCRM via API");
+        req.log.info({ leadId: sug.leadId, newStage: effectiveNewStage, stageId, stageOk }, "stage updated in amoCRM via API");
       } catch (e) {
         req.log.error({ err: e }, "stage-change API error");
       }
     } else {
-      req.log.warn({ leadId: sug.leadId, newStage }, "no stageId provided — skipping amoCRM stage update");
+      req.log.warn({ leadId: sug.leadId, newStage: effectiveNewStage }, "no stageId provided — skipping amoCRM stage update");
     }
   }
 

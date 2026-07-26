@@ -1057,7 +1057,7 @@ export async function processUnansweredLive(): Promise<void> {
         status: "pending",
         attachments,
       });
-      notifyBrokerForLead(lead.responsibleUser, lead.leadId, "replied", text, {
+      notifyBrokerForLead(lead.responsibleUser, lead.leadId, "replied", lastLeadMessage, {
         content: lead.content,
         leadStage: lead.leadStage,
       }).catch(() => {});

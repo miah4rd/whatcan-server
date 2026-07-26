@@ -34,15 +34,20 @@ self.addEventListener('push', function (event) {
 self.addEventListener('notificationclick', function (event) {
   event.notification.close();
   var url = (event.notification.data && event.notification.data.url) || '/m';
-  event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (clientList) {
-      for (var i = 0; i < clientList.length; i++) {
-        var client = clientList[i];
-        if (client.url.indexOf('/m') !== -1 && 'focus' in client) return client.focus();
-      }
-      if (self.clients.openWindow) return self.clients.openWindow(url);
-    })
-  );
+  event.waitUntil((async function () {
+    var clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (var i = 0; i < clientList.length; i++) {
+      var client = clientList[i];
+      if (client.url.indexOf('/m') === -1) continue;
+      // An already-open tab just gets focused, not navigated — force it to the
+      // deep-linked lead, otherwise clicking the notification lands on whatever
+      // screen was already showing instead of the lead it's actually about.
+      if ('navigate' in client) { try { await client.navigate(url); } catch (e) {} }
+      if ('focus' in client) return client.focus();
+      return;
+    }
+    if (self.clients.openWindow) return self.clients.openWindow(url);
+  })());
 });
 `;
 

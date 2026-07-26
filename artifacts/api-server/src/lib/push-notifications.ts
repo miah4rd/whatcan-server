@@ -1,8 +1,10 @@
 import webpush from "web-push";
 import { db, pushSubscriptionsTable, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { logger } from "./logger";
 import { parseDialogContent } from "./dialog-parser";
+import { getPushStageWhitelist } from "./push-stage-whitelist";
+import { isPendingVisible, dedupePushPerLead } from "./pending-visibility";
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY ?? "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY ?? "";
@@ -77,21 +79,57 @@ export async function sendPushToBroker(
 /** Counts this broker's current pending suggestions, for the app-icon badge number. */
 async function countPendingForBroker(brokerId: string): Promise<number> {
   try {
+    // Case/whitespace-insensitive: the same broker identity has shown up with
+    // different casing across write paths (extension vs. mobile), so an exact
+    // match here can under- or over-count the badge relative to what the
+    // inbox itself shows.
     const rows = await db
-      .select({ id: pendingSuggestionsTable.id })
+      .select({
+        id: pendingSuggestionsTable.id,
+        leadId: pendingSuggestionsTable.leadId,
+        kind: pendingSuggestionsTable.kind,
+        responsibleUser: pendingSuggestionsTable.responsibleUser,
+      })
       .from(pendingSuggestionsTable)
-      .where(and(eq(pendingSuggestionsTable.responsibleUser, brokerId), eq(pendingSuggestionsTable.status, "pending")));
-    return rows.length;
+      .where(
+        and(
+          sql`lower(trim(${pendingSuggestionsTable.responsibleUser})) = lower(trim(${brokerId}))`,
+          eq(pendingSuggestionsTable.status, "pending"),
+        ),
+      );
+    if (rows.length === 0) return 0;
+
+    // Apply the SAME visibility rules the inbox uses (stage suppression, push
+    // whitelist, HoS rental scoping, stale-LIVE checks, per-lead push dedupe) —
+    // otherwise the badge counts rows the broker never actually sees.
+    const leadIds = [...new Set(rows.map((r) => r.leadId))];
+    const syncRows = await db
+      .select({
+        leadId: leadsSyncTable.leadId,
+        botExcluded: leadsSyncTable.botExcluded,
+        leadStage: leadsSyncTable.leadStage,
+        pipeline: leadsSyncTable.pipeline,
+        nextFollowupAt: leadsSyncTable.nextFollowupAt,
+        lastMessageFrom: leadsSyncTable.lastMessageFrom,
+        content: leadsSyncTable.content,
+      })
+      .from(leadsSyncTable)
+      .where(inArray(leadsSyncTable.leadId, leadIds));
+    const syncByLeadId = new Map(syncRows.map((r) => [r.leadId, r]));
+    const whitelist = await getPushStageWhitelist();
+
+    const visible = dedupePushPerLead(rows.filter((r) => isPendingVisible(r, syncByLeadId.get(r.leadId), whitelist)));
+    return visible.length;
   } catch {
     return 0;
   }
 }
 
 /** Notify a broker that a lead just replied (LIVE) or a new lead was assigned. */
-export async function notifyBroker(brokerId: string | null, title: string, body: string): Promise<void> {
+export async function notifyBroker(brokerId: string | null, title: string, body: string, url = "/m"): Promise<void> {
   if (!brokerId) return;
   const badge = await countPendingForBroker(brokerId);
-  await sendPushToBroker(brokerId, { title, body: body.slice(0, 150), url: "/m", badge });
+  await sendPushToBroker(brokerId, { title, body: body.slice(0, 150), url, badge });
 }
 
 // Same "Name (client - source)" → "Name" cleanup used for the inbox list's card title.
@@ -138,5 +176,6 @@ export async function notifyBrokerForLead(
   const icon = action === "replied" ? "\u{1F4AC}" : "\u{1F195}";
   const title = stage ? `${icon} ${label} · ${stage}` : `${icon} ${label}`;
 
-  await notifyBroker(brokerId, title, body);
+  // Deep-link straight to this lead instead of the general inbox list.
+  await notifyBroker(brokerId, title, body, `/m?lead=${encodeURIComponent(leadId)}`);
 }

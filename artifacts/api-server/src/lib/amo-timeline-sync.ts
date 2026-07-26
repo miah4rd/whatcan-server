@@ -11,7 +11,14 @@ import { eq, and, sql, isNotNull, not } from "drizzle-orm";
 import { createHash } from "crypto";
 import { logger } from "./logger";
 import { generateSuggestion } from "./generate-suggestion.js";
+// queueSuggestion persists the generated text into pending_suggestions (the
+// inbox) and fires the broker push notification. generateSuggestion alone only
+// RETURNS the text — without queueing, the suggestion silently evaporates.
+import { queueSuggestion } from "../routes/amocrm-webhook.js";
 import { getLastMessengerFieldId, updateLastMessengerField } from "./amo-messenger-field.js";
+// Coalesces this detection with the real-time webhook's — both can fire for
+// the same burst of WhatsApp messages, so both route through the same debounce.
+import { scheduleLiveReply } from "./live-reply-debounce.js";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
 const AMO_BASE = `https://${AMO_SUBDOMAIN}.amocrm.ru`;
@@ -104,6 +111,8 @@ interface TimelineEvent {
   id: string;
   type: number;
   created_at?: number;
+  date_create?: number;      // unix seconds — the field the ajax v3 endpoint ACTUALLY returns
+  msec_created_at?: number;  // unix seconds with fractional ms (despite the name)
   data?: {
     text?: string;
     message?: { type: string; text: string; media?: string };
@@ -128,6 +137,19 @@ interface TimelineResponse {
   _links?: { prev?: { href: string } };
 }
 
+// The ajax v3 events_timeline items do NOT carry `created_at` — the real event
+// time lives in `date_create` (unix seconds) / `msec_created_at` (unix seconds
+// with fractional ms, despite the name). Reading only `created_at` meant every
+// message was stored with "now" as its timestamp and incoming-reply detection
+// never fired (latestIncoming stayed 0), so LIVE suggestions were never
+// created from the timeline path. Returns unix SECONDS, 0 if undeterminable.
+function eventTs(ev: TimelineEvent): number {
+  if (typeof ev.created_at === "number" && ev.created_at > 0) return ev.created_at;
+  if (typeof ev.date_create === "number" && ev.date_create > 0) return ev.date_create;
+  if (typeof ev.msec_created_at === "number" && ev.msec_created_at > 0) return Math.floor(ev.msec_created_at);
+  return 0;
+}
+
 async function fetchTimeline(
   cookieStr: string,
   leadId: string,
@@ -142,6 +164,7 @@ async function fetchTimeline(
       Cookie: cookieStr,
       "Content-Type": "application/json",
     },
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!res.ok) {
@@ -234,8 +257,9 @@ function parseTimelineEvents(leadId: string, events: TimelineEvent[]): RawMessag
     }
 
     // Use event id as unique identifier
-    const amoMessageId = ev.id || messageId(leadId, ev.created_at ?? 0, senderId ?? "", text);
-    const sentAt = ev.created_at ? new Date(ev.created_at * 1000) : new Date();
+    const ts = eventTs(ev);
+    const amoMessageId = ev.id || messageId(leadId, ts, senderId ?? "", text);
+    const sentAt = ts ? new Date(ts * 1000) : new Date();
 
     messages.push({
       amoMessageId,
@@ -251,6 +275,15 @@ function parseTimelineEvents(leadId: string, events: TimelineEvent[]): RawMessag
       channelSourceName,
     });
   }
+
+  // The events_timeline endpoint returns events NEWEST-FIRST. Callers assume
+  // chronological order — `.pop()` for "the lead's latest message", joining
+  // into an oldest→newest conversation snippet for the AI. Consuming the raw
+  // order silently inverted both: the "latest" message was actually the OLDEST
+  // in the window (stale text in push notifications, replies addressed to old
+  // messages) and the AI read the dialog backwards. Sort ascending here so
+  // every consumer gets chronological order.
+  messages.sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
 
   return messages;
 }
@@ -342,8 +375,9 @@ export async function syncLeadMessagesFromTimeline(): Promise<{
 
             // Get oldest event timestamp for pagination
             const oldest = events[events.length - 1];
-            if (oldest?.created_at) {
-              beforeTs = oldest.created_at;
+            const oldestTs = oldest ? eventTs(oldest) : 0;
+            if (oldestTs) {
+              beforeTs = oldestTs;
             } else break;
 
             // If we got a full page, there might be more
@@ -403,6 +437,7 @@ async function loadSourceMap(cookieStr: string): Promise<void> {
   try {
     const res = await fetch(`${AMO_BASE}/ajax/v1/chats/origin/sources`, {
       headers: { Cookie: cookieStr },
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return;
     const data = await res.json() as { response: { sources: Array<{ id: number; name: string }> } };
@@ -446,6 +481,8 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
       pipeline: leadsSyncTable.pipeline,
       botExcluded: leadsSyncTable.botExcluded,
       responsibleUser: leadsSyncTable.responsibleUser,
+      content: leadsSyncTable.content,
+      leadNotes: leadsSyncTable.leadNotes,
     })
     .from(leadsSyncTable)
     .where(
@@ -489,8 +526,9 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
           let latestIncomingEvent: TimelineEvent | null = null;
 
           for (const ev of events) {
-            if (ev.type === 89 && ev.created_at && ev.created_at > latestIncoming) {
-              latestIncoming = ev.created_at;
+            const ts = eventTs(ev);
+            if (ev.type === 89 && ts && ts > latestIncoming) {
+              latestIncoming = ts;
               latestIncomingText = ev.data?.message?.text || "";
               latestIncomingEvent = ev;
             }
@@ -564,43 +602,66 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
               ),
             );
 
-          // Check if there's already a pending LIVE suggestion
-          const [existingLive] = await db
-            .select({ id: pendingSuggestionsTable.id })
-            .from(pendingSuggestionsTable)
-            .where(
-              and(
-                eq(pendingSuggestionsTable.leadId, lead.leadId),
-                eq(pendingSuggestionsTable.status, "pending"),
-                eq(pendingSuggestionsTable.kind, "live"),
-              ),
-            )
-            .limit(1);
-
+          // NOTE: no "existing pending LIVE → skip" check. A NEW incoming message
+          // must always refresh the suggestion (queueSuggestion replaces pending
+          // rows atomically) — otherwise a stale answer written for an older
+          // message sits in the inbox and the bot looks blind to newer replies.
+          // The knownTs comparison above runs this at most once per message.
           let liveCreated = false;
-          if (!existingLive && latestIncomingText) {
-            // Generate LIVE suggestion — fetch more context for the AI
-            try {
-              const fullEvents = await fetchTimeline(cookieStr, lead.leadId, 20);
-              const allMsgs = parseTimelineEvents(lead.leadId, fullEvents);
-              const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
-              const contentSnippet = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
+          if (latestIncomingText) {
+            liveCreated = true;
+            // Debounced + re-fetched fresh at fire time — this detection and the
+            // real-time webhook's can both fire for the same message burst; without
+            // coalescing, each fires its own generation and the lead sees near-
+            // duplicate replies a couple minutes apart.
+            scheduleLiveReply(lead.leadId, async () => {
+              try {
+                const [freshLead] = await db
+                  .select({
+                    content: leadsSyncTable.content,
+                    leadNotes: leadsSyncTable.leadNotes,
+                    leadStage: leadsSyncTable.leadStage,
+                    pipeline: leadsSyncTable.pipeline,
+                    responsibleUser: leadsSyncTable.responsibleUser,
+                  })
+                  .from(leadsSyncTable)
+                  .where(eq(leadsSyncTable.leadId, lead.leadId))
+                  .limit(1);
+                if (!freshLead) return;
 
-              if (lastLeadMsg) {
-                await generateSuggestion({
+                const fullEvents = await fetchTimeline(cookieStr, lead.leadId, 20);
+                const allMsgs = parseTimelineEvents(lead.leadId, fullEvents);
+                const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
+                const timelineTail = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
+                const contentSnippet = freshLead.content
+                  ? `${freshLead.content}\n\n[LATEST MESSAGES — may not be in the log above yet]\n${timelineTail.slice(-1500)}`
+                  : timelineTail;
+
+                if (!lastLeadMsg) return;
+                const { text, attachments } = await generateSuggestion({
                   leadId: lead.leadId,
-                  responsibleUser: lead.responsibleUser,
+                  responsibleUser: freshLead.responsibleUser,
                   kind: "live",
                   lastLeadMessage: lastLeadMsg.text,
-                  contentSnippet: contentSnippet.slice(0, 3000),
-                  leadStage: lead.leadStage,
-                  pipeline: lead.pipeline,
+                  contentSnippet,
+                  leadNotes: freshLead.leadNotes,
+                  leadStage: freshLead.leadStage,
+                  pipeline: freshLead.pipeline,
                 });
-                liveCreated = true;
+                if (text) {
+                  await queueSuggestion({
+                    leadId: lead.leadId,
+                    responsibleUser: freshLead.responsibleUser,
+                    kind: "live",
+                    text,
+                    attachments,
+                    leadMessageText: lastLeadMsg.text,
+                  });
+                }
+              } catch (err) {
+                logger.error({ leadId: lead.leadId, err }, "incoming detection: LIVE generation failed");
               }
-            } catch (err) {
-              logger.error({ leadId: lead.leadId, err }, "incoming detection: LIVE generation failed");
-            }
+            });
           }
 
           logger.info(
@@ -659,6 +720,7 @@ async function pollNewIncomingLeadIds(cookieStr: string, lookbackMs = 5 * 60 * 1
   try {
     const res = await fetch(url, {
       headers: { Cookie: cookieStr, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
       logger.warn({ status: res.status }, "poll incoming: v4 events failed");
@@ -695,7 +757,8 @@ async function processQuickPollLead(
     if (events.length === 0) break;
     allEvents.push(...events);
     const oldest = events[events.length - 1];
-    if (oldest?.created_at) beforeTs = oldest.created_at;
+    const oldestTs = oldest ? eventTs(oldest) : 0;
+    if (oldestTs) beforeTs = oldestTs;
     else break;
     if (events.length < 200) break;
   }
@@ -715,6 +778,8 @@ async function processQuickPollLead(
       pipeline: leadsSyncTable.pipeline,
       botExcluded: leadsSyncTable.botExcluded,
       responsibleUser: leadsSyncTable.responsibleUser,
+      content: leadsSyncTable.content,
+      leadNotes: leadsSyncTable.leadNotes,
     })
     .from(leadsSyncTable)
     .where(eq(leadsSyncTable.leadId, leadId))
@@ -727,8 +792,9 @@ async function processQuickPollLead(
   let latestIncomingText = "";
   let latestIncomingEvent: TimelineEvent | null = null;
   for (const ev of allEvents) {
-    if (ev.type === 89 && ev.created_at && ev.created_at > latestIncoming) {
-      latestIncoming = ev.created_at;
+    const ts = eventTs(ev);
+    if (ev.type === 89 && ts && ts > latestIncoming) {
+      latestIncoming = ts;
       latestIncomingText = ev.data?.message?.text || "";
       latestIncomingEvent = ev;
     }
@@ -778,47 +844,75 @@ async function processQuickPollLead(
       eq(pendingSuggestionsTable.kind, "push"),
     ));
 
-  // Check for existing LIVE suggestion
-  const [existingLive] = await db
-    .select({ id: pendingSuggestionsTable.id })
-    .from(pendingSuggestionsTable)
-    .where(and(
-      eq(pendingSuggestionsTable.leadId, leadId),
-      eq(pendingSuggestionsTable.status, "pending"),
-      eq(pendingSuggestionsTable.kind, "live"),
-    ))
-    .limit(1);
-
+  // NOTE: no "existing pending LIVE → skip" check here. Each NEW incoming
+  // message must refresh the suggestion — the previous behavior left a stale
+  // pending answer (written for an older message) sitting in the inbox, so
+  // from the broker's perspective the bot stopped seeing replies after the
+  // first exchange. queueSuggestion replaces any pending rows atomically.
+  // The knownTs comparison above guarantees this runs at most once per message.
   let liveCreated = false;
-  if (!existingLive && latestIncomingText) {
-    try {
-      const fullEvents = await fetchTimeline(cookieStr, leadId, 20);
-      const allMsgs = parseTimelineEvents(leadId, fullEvents);
-      const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
-      const contentSnippet = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
-      if (lastLeadMsg) {
-        await generateSuggestion({
+  if (latestIncomingText) {
+    liveCreated = true;
+    // Debounced + re-fetched fresh at fire time — see live-reply-debounce.ts.
+    // The real-time webhook can detect the same message burst independently;
+    // without coalescing, each fires its own generation.
+    scheduleLiveReply(leadId, async () => {
+      try {
+        const [freshLead] = await db
+          .select({
+            content: leadsSyncTable.content,
+            leadNotes: leadsSyncTable.leadNotes,
+            leadStage: leadsSyncTable.leadStage,
+            pipeline: leadsSyncTable.pipeline,
+            responsibleUser: leadsSyncTable.responsibleUser,
+          })
+          .from(leadsSyncTable)
+          .where(eq(leadsSyncTable.leadId, leadId))
+          .limit(1);
+        if (!freshLead) return;
+
+        const fullEvents = await fetchTimeline(cookieStr, leadId, 20);
+        const allMsgs = parseTimelineEvents(leadId, fullEvents);
+        const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
+        const timelineTail = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
+        // The webhook-fed content has the full formatted history; the timeline
+        // tail covers the newest messages the webhook may not have delivered yet.
+        const contentSnippet = freshLead.content
+          ? `${freshLead.content}\n\n[LATEST MESSAGES — may not be in the log above yet]\n${timelineTail.slice(-1500)}`
+          : timelineTail;
+        if (!lastLeadMsg) return;
+        const { text, attachments } = await generateSuggestion({
           leadId,
-          responsibleUser: leadRow.responsibleUser,
+          responsibleUser: freshLead.responsibleUser,
           kind: "live",
           lastLeadMessage: lastLeadMsg.text,
-          contentSnippet: contentSnippet.slice(0, 3000),
-          leadStage: leadRow.leadStage,
-          pipeline: leadRow.pipeline,
+          contentSnippet,
+          leadNotes: freshLead.leadNotes,
+          leadStage: freshLead.leadStage,
+          pipeline: freshLead.pipeline,
         });
-        liveCreated = true;
+        if (text) {
+          await queueSuggestion({
+            leadId,
+            responsibleUser: freshLead.responsibleUser,
+            kind: "live",
+            text,
+            attachments,
+            leadMessageText: lastLeadMsg.text,
+          });
+        }
+      } catch (err) {
+        logger.error({ leadId, err }, "quick poll: LIVE generation failed");
       }
-    } catch (err) {
-      logger.error({ leadId, err }, "quick poll: LIVE generation failed");
-    }
+    });
   }
 
-  logger.info({ leadId, incomingAt, liveCreated }, "quick poll: new incoming processed");
+  logger.info({ leadId, incomingAt, liveScheduled: liveCreated }, "quick poll: new incoming processed");
   return { stored, detected: true, liveCreated };
 }
 
 // ── Quick poll scheduler: check for new messages every 2 minutes ───────────────
-const QUICK_POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes (was 15s — overlapping runs piled up concurrent Puppeteer browsers and exhausted server memory)
+const QUICK_POLL_INTERVAL_MS = 45 * 1000; // 45 seconds
 const QUICK_POLL_LOOKBACK_MS = 60 * 1000; // look back 1 min (overlap for safety)
 
 let quickPollInFlight = false;
@@ -829,10 +923,24 @@ async function runQuickPoll(): Promise<void> {
     return;
   }
   quickPollInFlight = true;
+  const QUICK_POLL_TIMEOUT_MS = 60_000; // hard limit: 60 seconds max
+  const startMs = Date.now();
   try {
-    await runQuickPollInner();
+    await Promise.race([
+      runQuickPollInner(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("quick poll timed out after 60s")), QUICK_POLL_TIMEOUT_MS)
+      ),
+    ]);
+  } catch (err) {
+    if ((err as Error).message?.includes("timed out")) {
+      logger.error("quick poll: timed out after 60s — forcing reset");
+    } else {
+      logger.error({ err }, "quick poll error");
+    }
   } finally {
     quickPollInFlight = false;
+    logger.info({ durationMs: Date.now() - startMs }, "quick poll: finished (flag cleared)");
   }
 }
 
@@ -855,7 +963,17 @@ async function runQuickPollInner(): Promise<void> {
   for (let i = 0; i < leadIds.length; i += BATCH_SIZE) {
     const batch = leadIds.slice(i, i + BATCH_SIZE);
     const results = await Promise.allSettled(
-      batch.map((leadId) => processQuickPollLead(cookieStr, leadId)),
+      batch.map((leadId) =>
+        Promise.race([
+          processQuickPollLead(cookieStr, leadId),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`lead ${leadId} timed out`)), 20_000)
+          ),
+        ]).catch((err) => {
+          logger.warn({ leadId, err: (err as Error).message }, "quick poll: lead timed out or failed");
+          return { stored: 0, detected: false, liveCreated: false };
+        })
+      ),
     );
     for (const r of results) {
       if (r.status === "fulfilled" && r.value.detected) {

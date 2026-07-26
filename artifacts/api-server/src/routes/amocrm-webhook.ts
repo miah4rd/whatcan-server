@@ -13,6 +13,9 @@ import { getAmoLead } from "../lib/amo-client";
 import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
 import { buildRentalSystemPrompt } from "../lib/rental-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
+import { scheduleLiveReply } from "../lib/live-reply-debounce";
+import { classifyStage } from "../lib/stage-classifier";
+import { logger } from "../lib/logger";
 
 const router = Router();
 
@@ -338,6 +341,8 @@ export async function queueSuggestion(opts: {
   text: string;
   followupLevel?: number;
   attachments?: GeneratedSuggestion["attachments"];
+  /** The lead's own incoming message (kind "live" only) — shown in the push notification instead of our draft reply. */
+  leadMessageText?: string;
 }): Promise<void> {
   const brokerId = (opts.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
 
@@ -355,26 +360,69 @@ export async function queueSuggestion(opts: {
   });
 
   if (opts.kind === "live") {
-    // Lead replied — LIVE always wins. Replace any stale PUSH or LIVE suggestions.
+    // Lead replied — LIVE always wins over any pending PUSH.
     await db
       .delete(pendingSuggestionsTable)
       .where(
         and(
           eq(pendingSuggestionsTable.leadId, opts.leadId),
           eq(pendingSuggestionsTable.status, "pending"),
+          eq(pendingSuggestionsTable.kind, "push"),
         ),
       );
 
-    await db.insert(pendingSuggestionsTable).values({
-      leadId: opts.leadId,
-      responsibleUser: opts.responsibleUser,
-      kind: "live",
-      followupLevel: null,
-      suggestionText: opts.text,
-      status: "pending",
-      attachments: opts.attachments,
-    });
-    notifyBrokerForLead(opts.responsibleUser, opts.leadId, "replied", opts.text).catch(() => {});
+    // Update the EXISTING pending LIVE row in place rather than delete+insert.
+    // A broker can have this suggestion open on their phone when the lead sends
+    // a follow-up message that triggers a regeneration; delete+insert changed
+    // the row's id out from under them, so tapping "Approve" 404'd against an
+    // id that no longer existed. Same id survives a refresh → approve always
+    // resolves, worst case against text one message older than the newest.
+    const [existingLive] = await db
+      .select({ id: pendingSuggestionsTable.id })
+      .from(pendingSuggestionsTable)
+      .where(
+        and(
+          eq(pendingSuggestionsTable.leadId, opts.leadId),
+          eq(pendingSuggestionsTable.status, "pending"),
+          eq(pendingSuggestionsTable.kind, "live"),
+        ),
+      )
+      .limit(1);
+
+    let rowId = existingLive?.id ?? null;
+    if (existingLive) {
+      await db
+        .update(pendingSuggestionsTable)
+        .set({
+          suggestionText: opts.text,
+          attachments: opts.attachments,
+          createdAt: new Date(),
+          // Clear the previous classification — it described an older reply.
+          suggestedStage: null,
+          suggestedStageId: null,
+          suggestedStageReason: null,
+          suggestedStageTerminal: null,
+        })
+        .where(eq(pendingSuggestionsTable.id, existingLive.id));
+    } else {
+      const [inserted] = await db
+        .insert(pendingSuggestionsTable)
+        .values({
+          leadId: opts.leadId,
+          responsibleUser: opts.responsibleUser,
+          kind: "live",
+          followupLevel: null,
+          suggestionText: opts.text,
+          status: "pending",
+          attachments: opts.attachments,
+        })
+        .returning({ id: pendingSuggestionsTable.id });
+      rowId = inserted?.id ?? null;
+    }
+    // Notify BEFORE classifying the stage — the broker should hear about the
+    // lead's reply the moment it's ready, not after another AI round-trip.
+    notifyBrokerForLead(opts.responsibleUser, opts.leadId, "replied", opts.leadMessageText || opts.text).catch(() => {});
+    if (rowId) void classifyStageInBackground(rowId, opts.leadId, opts.text, opts.attachments?.length ?? 0);
   } else {
     // PUSH — only queue if no pending suggestion already exists
     const existing = await db
@@ -399,6 +447,59 @@ export async function queueSuggestion(opts: {
         attachments: opts.attachments,
       });
     }
+  }
+}
+
+/**
+ * Works out which funnel stage the conversation reaches once this reply is sent
+ * and stores it on the suggestion, so approving applies it without the broker
+ * dragging the card by hand. Runs AFTER the push notification deliberately —
+ * it's an extra AI round-trip and the stage isn't needed until the broker
+ * actually approves, which is seconds away at the earliest.
+ */
+async function classifyStageInBackground(
+  rowId: string,
+  leadId: string,
+  replyText: string,
+  attachmentsCount: number,
+): Promise<void> {
+  try {
+    const [lead] = await db
+      .select({
+        content: leadsSyncTable.content,
+        leadStage: leadsSyncTable.leadStage,
+        pipeline: leadsSyncTable.pipeline,
+      })
+      .from(leadsSyncTable)
+      .where(eq(leadsSyncTable.leadId, leadId))
+      .limit(1);
+    if (!lead) return;
+
+    const dialog = parseDialogContent(lead.content ?? "");
+    const classification = await classifyStage({
+      pipeline: lead.pipeline,
+      currentStage: lead.leadStage,
+      conversationText: formatDialogForAI(dialog.messages),
+      replyText,
+      attachmentsCount,
+    });
+    if (!classification) return;
+
+    await db
+      .update(pendingSuggestionsTable)
+      .set({
+        suggestedStage: classification.stage.name,
+        suggestedStageId: String(classification.stage.id),
+        suggestedStageReason: classification.reason,
+        suggestedStageTerminal: classification.terminal,
+      })
+      .where(eq(pendingSuggestionsTable.id, rowId));
+    logger.info(
+      { leadId, from: lead.leadStage, to: classification.stage.name, terminal: classification.terminal },
+      "stage classified for pending suggestion",
+    );
+  } catch (err) {
+    logger.error({ err, leadId }, "background stage classification failed (non-fatal)");
   }
 }
 
@@ -686,7 +787,6 @@ router.post("/amocrm/webhook", async (req, res) => {
       }
 
       if (isLive) {
-        // LIVE — generate AI suggestion right now
         const effectiveStage = leadStage ?? existing?.leadStage ?? null;
 
         // ── Stage whitelist (testing filter) ─────────────────────────────────
@@ -696,22 +796,54 @@ router.post("/amocrm/webhook", async (req, res) => {
             "live suggestion skipped — stage not in testing whitelist",
           );
         } else {
-          const lastLeadMsg = dialog.lastLeadMessage?.text ?? (content.slice(-400));
-          const { text, attachments } = await generateSuggestion({
-            leadId,
-            responsibleUser,
-            kind: "live",
-            lastLeadMessage: lastLeadMsg,
-            contentSnippet: content,
-            leadNotes,
-            leadStage: effectiveStage,
-            pipeline,
-          });
+          // Debounced: the timeline quick-poll can independently detect the
+          // same burst of WhatsApp messages a few seconds later. Without this,
+          // a lead sending 2-3 messages in a row triggered a separate
+          // generation per message, producing near-duplicate replies that
+          // looked like the bot answering something already two messages old.
+          // Re-reads the lead fresh at fire time so whichever trigger's timer
+          // actually runs still reflects the latest content, not a stale snapshot.
+          scheduleLiveReply(leadId, async () => {
+            const [freshLead] = await db
+              .select({
+                content: leadsSyncTable.content,
+                leadNotes: leadsSyncTable.leadNotes,
+                leadStage: leadsSyncTable.leadStage,
+                pipeline: leadsSyncTable.pipeline,
+                responsibleUser: leadsSyncTable.responsibleUser,
+              })
+              .from(leadsSyncTable)
+              .where(eq(leadsSyncTable.leadId, leadId))
+              .limit(1);
+            if (!freshLead) return;
 
-          if (text) {
-            await queueSuggestion({ leadId, responsibleUser, kind: "live", text, attachments });
-            req.log.info({ leadId }, "live suggestion queued");
-          }
+            const freshContent = freshLead.content ?? content;
+            const freshDialog = parseDialogContent(freshContent);
+            const lastLeadMsg = freshDialog.lastLeadMessage?.text ?? freshContent.slice(-400);
+
+            const { text, attachments } = await generateSuggestion({
+              leadId,
+              responsibleUser: freshLead.responsibleUser ?? responsibleUser,
+              kind: "live",
+              lastLeadMessage: lastLeadMsg,
+              contentSnippet: freshContent,
+              leadNotes: freshLead.leadNotes ?? leadNotes,
+              leadStage: freshLead.leadStage ?? effectiveStage,
+              pipeline: freshLead.pipeline ?? pipeline,
+            });
+
+            if (text) {
+              await queueSuggestion({
+                leadId,
+                responsibleUser: freshLead.responsibleUser ?? responsibleUser,
+                kind: "live",
+                text,
+                attachments,
+                leadMessageText: lastLeadMsg,
+              });
+              req.log.info({ leadId }, "live suggestion queued (debounced)");
+            }
+          });
         }
       }
       // PUSH / follow-ups are handled by the scheduler (not inline)
@@ -759,7 +891,7 @@ router.post("/amocrm/webhook", async (req, res) => {
     });
 
     if (text) {
-      await queueSuggestion({ leadId, responsibleUser, kind, text, attachments }).catch((err) =>
+      await queueSuggestion({ leadId, responsibleUser, kind, text, attachments, leadMessageText: content }).catch((err) =>
         req.log.error({ err }, "queue error"),
       );
     }
@@ -879,6 +1011,7 @@ router.post("/amocrm/regen-live", async (req, res) => {
       kind: "live",
       text,
       attachments,
+      leadMessageText: lastLeadMsg,
     });
 
     res.json({ ok: true, leadId, preview: text.slice(0, 100) });

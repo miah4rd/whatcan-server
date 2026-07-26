@@ -50,21 +50,27 @@ export function extractChannelFromSender(senderName: string): string | null {
 const GLOBAL_MSG_RE =
   /(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2}:\d{2})\s+(.+?)\s+(?:→|->)\s*(.*?)(?=\s*\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}:\d{2}|$)/gs;
 
+// amoCRM renders the timestamps inside `content` in the ACCOUNT's timezone —
+// Moscow (UTC+3) — NOT UTC. Parsing them as UTC stored every message 3 hours
+// in the future, which made the quick-poll dedupe check ("is this incoming
+// newer than what we already know?") discard genuinely new lead replies for
+// up to 3 hours after each message.
+const AMO_CONTENT_TZ_OFFSET_MS = 3 * 60 * 60 * 1000;
+
 function parseDate(dateStr: string, timeStr: string): Date | null {
   const [day, month, year] = dateStr.split(".");
   const [hour, min, sec] = timeStr.split(":");
   if (!day || !month || !year || !hour || !min || !sec) return null;
-  const d = new Date(
-    Date.UTC(
-      parseInt(year, 10),
-      parseInt(month, 10) - 1,
-      parseInt(day, 10),
-      parseInt(hour, 10),
-      parseInt(min, 10),
-      parseInt(sec, 10),
-    ),
+  const utcMs = Date.UTC(
+    parseInt(year, 10),
+    parseInt(month, 10) - 1,
+    parseInt(day, 10),
+    parseInt(hour, 10),
+    parseInt(min, 10),
+    parseInt(sec, 10),
   );
-  return isNaN(d.getTime()) ? null : d;
+  if (isNaN(utcMs)) return null;
+  return new Date(utcMs - AMO_CONTENT_TZ_OFFSET_MS);
 }
 
 function isOurSender(senderPart: string): boolean {

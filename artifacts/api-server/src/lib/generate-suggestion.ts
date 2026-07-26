@@ -4,6 +4,77 @@ import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { buildRentalSystemPrompt } from "./rental-prompt";
 import { matchProperties, type PropertyPick } from "./property-catalog";
+import { db, pendingSuggestionsTable } from "@workspace/db";
+import { eq, inArray, and } from "drizzle-orm";
+
+/**
+ * Every property this lead has ALREADY been shown, so a follow-up shortlist
+ * surfaces different listings instead of re-sending ones they've seen (and
+ * possibly already rejected).
+ *
+ * The conversation text is the authoritative source: whatever reached the lead
+ * appears there as a /property/<ID> link regardless of which code path sent it
+ * (mobile, extension, scheduler, Salesbot). Reading only pending_suggestions
+ * attachments missed links sent through the other paths, and those leaked back
+ * in via matchProperties' explicit-mention fast path — which sees a property ID
+ * in the conversation and treats our own earlier link as the lead asking about
+ * that listing, re-offering exactly what was just rejected.
+ */
+async function alreadySentPropertyIds(leadId: string, conversationText: string): Promise<string[]> {
+  const ids = new Set<string>();
+
+  for (const m of conversationText.matchAll(/\/property\/([A-Za-z0-9-]+)/gi)) {
+    if (m[1]) ids.add(m[1]);
+  }
+
+  try {
+    const rows = await db
+      .select({ attachments: pendingSuggestionsTable.attachments })
+      .from(pendingSuggestionsTable)
+      .where(and(eq(pendingSuggestionsTable.leadId, leadId), inArray(pendingSuggestionsTable.status, ["approved", "edited"])));
+    for (const r of rows) {
+      for (const att of r.attachments ?? []) {
+        if (att.type !== "link" || !att.url) continue;
+        const m = att.url.match(/\/property\/([A-Za-z0-9-]+)/i);
+        if (m?.[1]) ids.add(m[1]);
+      }
+    }
+  } catch {
+    // Conversation-derived ids above are enough to keep the shortlist fresh.
+  }
+
+  return [...ids];
+}
+
+/**
+ * Once the lead has picked out a specific villa, attaching a fresh batch talks
+ * straight over them at the most important moment in the conversation — so this
+ * is enforced in code rather than left to the matching model, which was asked
+ * not to and did it anyway.
+ *
+ * Two signals, both deterministic:
+ *  - the lead's own recent message references a listing we already sent them
+ *    (quoting the link back is how "I like this one" arrives over WhatsApp)
+ *  - the CRM stage already says the conversation is past browsing
+ */
+function shouldSkipNewListings(
+  messages: ReturnType<typeof parseDialogContent>["messages"],
+  alreadySentIds: string[],
+  leadStage: string | null | undefined,
+): boolean {
+  const stage = (leadStage ?? "").toLowerCase();
+  if (/viewing|zoom call|negotiat|reservation|contract signed|closed/.test(stage)) return true;
+
+  if (alreadySentIds.length === 0) return false;
+  const sent = new Set(alreadySentIds.map((id) => id.toUpperCase()));
+  const recentLeadText = messages
+    .filter((m) => m.from === "lead")
+    .slice(-3)
+    .map((m) => m.text)
+    .join("\n")
+    .toUpperCase();
+  return [...sent].some((id) => recentLeadText.includes(id));
+}
 
 export type GeneratedSuggestion = {
   text: string;
@@ -320,20 +391,36 @@ IMPORTANT: Do NOT include property links or listings in this follow-up. The brok
 
 Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
-  const completion = await chatCompletion({
-    model: "claude-sonnet-5",
-    system: systemPrompt,
-    messages: [{ role: "user", content: prompt }],
-    max_tokens: 400,
-  });
+  // Property matching only needs the conversation, not our reply — so it runs
+  // CONCURRENTLY with writing the reply instead of after it. Serialising these
+  // two AI round-trips was adding seconds of dead time before the broker's
+  // push notification could fire.
+  // Exclusion reads the RAW content too — formatDialogForAI truncates, and a
+  // link sent long ago still counts as "already shown to this lead".
+  const [completion, picks] = await Promise.all([
+    chatCompletion({
+      model: "claude-sonnet-5",
+      system: systemPrompt,
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 400,
+    }),
+    alreadySentPropertyIds(opts.leadId, `${opts.contentSnippet}\n${formattedDialog}`)
+      .then((excludeIds) => {
+        if (shouldSkipNewListings(dialog.messages, excludeIds, opts.leadStage)) {
+          return [] as PropertyPick[];
+        }
+        return matchProperties({
+          listingType: isRental ? "rent" : "sale",
+          conversationText: `${formattedDialog}\n${lastLeadText}`,
+          brokerId: opts.responsibleUser,
+          excludeIds,
+          seenCount: excludeIds.length,
+        });
+      })
+      .catch(() => [] as PropertyPick[]),
+  ]);
 
   const text = sanitizeSuggestion(completion.content);
-
-  const picks = await matchProperties({
-    listingType: isRental ? "rent" : "sale",
-    conversationText: `${formattedDialog}\n${lastLeadText}`,
-    brokerId: opts.responsibleUser,
-  }).catch(() => []);
 
   return { text, attachments: toAttachments(picks) };
 }

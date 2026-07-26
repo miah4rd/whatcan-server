@@ -96,6 +96,16 @@ pool.query(`
   .then(() => logger.info("startup migration: lead profile + discard columns ensured"))
   .catch((err) => logger.error({ err }, "startup migration: lead profile columns failed"));
 
+pool.query(`
+  ALTER TABLE pending_suggestions
+    ADD COLUMN IF NOT EXISTS suggested_stage TEXT,
+    ADD COLUMN IF NOT EXISTS suggested_stage_id TEXT,
+    ADD COLUMN IF NOT EXISTS suggested_stage_reason TEXT,
+    ADD COLUMN IF NOT EXISTS suggested_stage_terminal BOOLEAN
+`)
+  .then(() => logger.info("startup migration: pending_suggestions stage columns ensured"))
+  .catch((err) => logger.error({ err }, "startup migration: pending_suggestions stage columns failed"));
+
 pool.query(`ALTER TABLE lead_crm_tasks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open'`)
   .then(() => pool.query(`ALTER TABLE lead_crm_tasks ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ`))
   .then(() => logger.info("startup migration: lead_crm_tasks status/closed_at ensured"))

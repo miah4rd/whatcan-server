@@ -71,6 +71,8 @@ const PAGE_HTML = `<!doctype html>
   .badge.temp-warm { background: rgba(251,146,60,.16); color: #fdba74; }
   .badge.temp-cold { background: rgba(96,165,250,.14); color: #93c5fd; }
   .badge.discard { background: rgba(148,163,184,.16); color: #cbd5e1; }
+  .stage-hint { font-size: 11.5px; color: #7dd3fc; background: rgba(45,212,191,.08); border: 1px solid rgba(45,212,191,.2); border-radius: 8px; padding: 7px 10px; margin-bottom: 8px; }
+  .stage-hint .dim { color: #6b7488; }
   .card-preview { font-size: 13px; color: #b6bccd; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .card-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 10px; color: #7a8699; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
   .card-arrow { margin-left: auto; color: #2dd4bf; font-size: 13px; }
@@ -142,6 +144,11 @@ const PAGE_HTML = `<!doctype html>
   .att-img img { max-width: 140px; max-height: 100px; border-radius: 6px; display: block; }
   .attlbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attrm { width: 22px; height: 22px; border-radius: 6px; border: none; background: rgba(239,68,68,.15); color: #fca5a5; cursor: pointer; flex: none; }
+  .att-add-row { display: flex; gap: 6px; margin-top: 8px; }
+  .att-add-input { flex: 1; min-width: 0; background: #141827; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; font-family: inherit; }
+  .att-add-input:focus { outline: none; border-color: #2dd4bf; }
+  .att-add-btn { background: #23293b; color: #b6bccd; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; flex: none; }
+  .stage-toggle { background: none; border: none; color: #6b7488; font-size: 12px; padding: 6px 0; margin-bottom: 4px; cursor: pointer; text-decoration: underline; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #181d2e; border: 1px solid #2a3146; color: #e6e8ee; padding: 10px 18px; border-radius: 10px; font-size: 13px; z-index: 20; max-width: 90vw; text-align: center; }
   .setup { max-width: 340px; margin: 80px auto; padding: 24px; text-align: center; }
   .setup input { width: 100%; background: #181d2e; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 12px; font-size: 15px; margin: 14px 0; }
@@ -316,12 +323,16 @@ const PAGE_HTML = `<!doctype html>
     return (items[kind] || []).slice();
   }
 
-  function renderAttachments(item) {
+  // removable is only true in edit mode, where the remove buttons get wired up —
+  // rendering them in the read-only view would give the broker dead controls.
+  // Bot-picked property links are removable too: the broker needs to be able to
+  // drop or swap a listing they disagree with, not just the ones they added.
+  function renderAttachments(item, removable) {
     if (!item.attachments || !item.attachments.length) return "";
     var html = '<div class="atts">';
     for (var i = 0; i < item.attachments.length; i++) {
       var a = item.attachments[i];
-      var rm = a._broker ? '<button class="attrm" data-rmattach="' + i + '" title="Remove">\\u00d7</button>' : "";
+      var rm = removable ? '<button class="attrm" data-rmattach="' + i + '" title="Remove">\\u00d7</button>' : "";
       if (a.type === "reminder") {
         html += '<div class="att att-reminder"><span>\\ud83d\\udccc</span><span class="attlbl">' + esc(a.label) + '</span></div>';
       } else if (a.type === "image" && a.url) {
@@ -579,6 +590,10 @@ const PAGE_HTML = `<!doctype html>
           edited: finalText.trim() !== (item.original || "").trim(),
           originalText: item.original || "",
           brokerId: brokerName,
+          // Send the CURRENT attachment list — the broker may have removed or
+          // added property links while editing, and the server would otherwise
+          // fall back to the originally generated set.
+          attachments: (item.attachments || []).filter(function (a) { return a.type === "link" && a.url; }),
           newStage: (item.lead_stage && item.lead_stage !== item._originalStage) ? item.lead_stage : undefined,
           stageId: (item.lead_stage && item.lead_stage !== item._originalStage) ? (stageIdForName(item.lead_stage) || item.lead_stage_id || undefined) : (item.lead_stage_id || undefined),
         }),
@@ -652,8 +667,12 @@ const PAGE_HTML = `<!doctype html>
   }
 
   function openDetail(item, tabKind) {
-    var stageChecked = detectStageTransition(item.suggestion_text);
     var nextStages = stagesAfterCurrent(item.lead_stage || "");
+    // Non-terminal stages apply themselves server-side on approve, so the only
+    // thing that needs the broker's hand here is a closing stage (Closed
+    // won/lost): pre-filled and pre-checked so confirming is a single tap.
+    var termStage = item.suggested_stage_terminal ? (item.suggested_stage || "") : "";
+    var stageChecked = termStage ? true : detectStageTransition(item.suggestion_text);
     openItem = {
       id: item.id,
       lead_id: item.lead_id,
@@ -673,12 +692,16 @@ const PAGE_HTML = `<!doctype html>
       error: "",
       revisionChain: [],
       _stageChecked: stageChecked,
-      _selectedStage: stageChecked && nextStages.length > 0 ? nextStages[0] : "",
+      _selectedStage: termStage || (stageChecked && nextStages.length > 0 ? nextStages[0] : ""),
       _originalStage: item.lead_stage || null,
+      suggested_stage: item.suggested_stage || null,
+      suggested_stage_reason: item.suggested_stage_reason || null,
+      suggested_stage_terminal: !!item.suggested_stage_terminal,
       _skipExpanded: false,
       _skipTaskMode: false,
       _skipTaskVoice: "",
       _stageConfirm: null,
+      _stageExpanded: false,
       _approving: false,
     };
     editing = false;
@@ -747,7 +770,8 @@ const PAGE_HTML = `<!doctype html>
           html += '<div class="card-notes">' + esc(String(item.lead_notes).split("\\n")[0].trim().slice(0, 80)) + '</div>';
         }
         html += '<div class="badges">' + cardBadges(item) + "</div>";
-        html += '<div class="card-preview">' + esc((item.suggestion_text || "").slice(0, 160)) + "</div>";
+        var previewText = (item.kind === "live" && item.last_lead_text) ? item.last_lead_text : (item.suggestion_text || "");
+        html += '<div class="card-preview">' + esc(previewText.slice(0, 160)) + "</div>";
         var footLabel = item.responsible_user ? item.responsible_user : (activeTab === "live" ? "Live reply" : activeTab === "reach" ? "Reach follow-up" : "Push follow-up");
         html += '<div class="card-foot"><span>' + esc(footLabel) + '</span><span class="card-arrow">\\u203a</span></div>';
         html += "</div>";
@@ -781,7 +805,7 @@ const PAGE_HTML = `<!doctype html>
     html += '<button class="back-btn" id="back-btn">\\u2190 Back</button>';
     html += '<a class="openlead-btn" href="' + leadUrl + '" target="_blank" rel="noopener">\\u2197 Open Lead</a>';
     html += "</div>";
-    html += '<div class="lead-hdr"><span class="lead-hdr-name">' + (it.lead_name ? esc(it.lead_name) : "Lead " + esc(it.lead_id)) + '</span>' + taskStatusBadge(it.next_followup_at) + '</div>';
+    html += '<div class="lead-hdr"><span class="lead-hdr-name">' + (it.lead_name ? esc(it.lead_name) + ' <span style="opacity:.5;font-weight:400">#' + esc(it.lead_id) + '</span>' : "Lead " + esc(it.lead_id)) + '</span>' + taskStatusBadge(it.next_followup_at) + '</div>';
     html += "</header><main>";
 
     var msgs = it.recent_messages || [];
@@ -805,7 +829,8 @@ const PAGE_HTML = `<!doctype html>
     if (editing) {
       html += '<label class="section">Edit message</label>';
       html += '<textarea id="msg-text" placeholder="Edit message…">' + esc(editValue) + '</textarea>';
-      html += renderAttachments(it);
+      html += renderAttachments(it, true);
+      html += '<div class="att-add-row"><input class="att-add-input" id="att-add-url" placeholder="Paste a property link to add…"><button class="att-add-btn" id="att-add-btn">+ Add</button></div>';
       html += '<input type="file" id="file-input" accept="image/*" style="display:none">';
       html += '<div class="ai-input-wrap">';
       html += '<textarea class="aiinput" id="ai-input" placeholder="Tell AI what to change…" rows="2"></textarea>';
@@ -817,14 +842,31 @@ const PAGE_HTML = `<!doctype html>
     } else {
       html += '<label class="section">Suggested message</label>';
       html += '<div class="msg-text">' + esc(it.text) + '</div>';
-      html += renderAttachments(it);
+      html += renderAttachments(it, false);
     }
     if (it.error) html += '<div class="err-text">' + esc(it.error) + '</div>';
     html += '</div>';
 
     if (!editing) {
       var nextStages = stagesAfterCurrent(it.lead_stage);
-      html += '<div class="action-row">';
+      if (it.suggested_stage) {
+        html += '<div class="stage-hint">' +
+          (it.suggested_stage_terminal
+            ? '\\u26a0\\ufe0f Confirm to close: \\u201c' + esc(it.suggested_stage) + '\\u201d'
+            : '\\u2713 Stage moves to \\u201c' + esc(it.suggested_stage) + '\\u201d on send') +
+          (it.suggested_stage_reason ? ' <span class="dim">(' + esc(it.suggested_stage_reason) + ')</span>' : '') +
+          '</div>';
+      }
+      // The stage now follows the conversation on its own, so the manual picker
+      // is collapsed out of the way. It stays reachable for the cases the bot
+      // deliberately won't do itself: confirming a close, setting an
+      // administrative stage (Mailing, Long-Term Cycle — those describe work
+      // outside the chat), or overriding a misjudged classification.
+      var stageOpen = it._stageExpanded || it.suggested_stage_terminal || it._stageChecked;
+      if (!stageOpen) {
+        html += '<button class="stage-toggle" id="stage-toggle">Change stage \\u2304</button>';
+      }
+      html += '<div class="action-row"' + (stageOpen ? "" : ' style="display:none"') + '>';
       html += '<input type="checkbox" class="ext-cb" id="stage-cb" ' + (it._stageChecked ? "checked" : "") + '>';
       html += '<span class="action-row-lbl">Next step:</span>';
       html += '<select class="ext-select" id="stage-select" ' + (!it._stageChecked ? "disabled" : "") + '>';
@@ -880,7 +922,18 @@ const PAGE_HTML = `<!doctype html>
     html += "</main>";
     app.innerHTML = html;
 
+    // The conversation box scrolls internally and renders oldest→newest, so it
+    // opened parked on old history. Jump it to the bottom: the message the
+    // broker needs to see is the lead's latest one, the one being replied to.
+    var convEl = document.querySelector(".conv");
+    if (convEl) convEl.scrollTop = convEl.scrollHeight;
+
     $("#back-btn").onclick = function () { openItem = null; editing = false; render(); };
+
+    var stageToggle = $("#stage-toggle");
+    if (stageToggle) {
+      stageToggle.onclick = function () { it._stageExpanded = true; renderDetail(); };
+    }
 
     var stageCb = $("#stage-cb");
     var stageSelect = $("#stage-select");
@@ -908,6 +961,20 @@ const PAGE_HTML = `<!doctype html>
           renderDetail();
         };
       });
+      var attAddBtn = $("#att-add-btn");
+      if (attAddBtn) {
+        attAddBtn.onclick = function () {
+          var input = $("#att-add-url");
+          var url = (input.value || "").trim();
+          if (!url) return;
+          if (!/^https?:\\/\\//i.test(url)) { showToast("Needs to be a full link (https://…)"); return; }
+          it.attachments = it.attachments || [];
+          var idMatch = url.match(/\\/property\\/([A-Za-z0-9-]+)/i);
+          it.attachments.push({ type: "link", label: idMatch ? idMatch[1] : url, url: url, _broker: true });
+          input.value = "";
+          renderDetail();
+        };
+      }
       var fileInput = $("#file-input");
       fileInput.onchange = function (e) {
         var file = e.target.files && e.target.files[0];
@@ -986,8 +1053,10 @@ const PAGE_HTML = `<!doctype html>
       if (it.busy || it._approving) return;
       var shouldChangeStage = !!(stageCb && stageCb.checked && stageSelect.value);
       var newStageVal = stageSelect ? stageSelect.value : "";
-      var links = (it.attachments || []).filter(function (a) { return a.type === "link"; }).map(function (a) { return a.label + ": " + a.url; }).join("\\n");
-      var fullText = links ? (it.text + "\\n\\n" + links) : it.text;
+      // Property links are NOT appended to the text — the server sends each one
+      // as its own follow-up WhatsApp message so every listing gets its own
+      // link-preview banner instead of them all gluing into one message.
+      var fullText = it.text;
       if (shouldChangeStage && newStageVal) {
         it._stageConfirm = { text: fullText, newStage: newStageVal };
         render();
@@ -1062,9 +1131,23 @@ const PAGE_HTML = `<!doctype html>
     }
   }
 
+  function openDeepLinkedLead() {
+    var params = new URLSearchParams(location.search);
+    var targetLead = params.get("lead");
+    if (!targetLead) return;
+    history.replaceState(null, "", location.pathname);
+    var found = null, foundKind = null;
+    ["live", "reach", "push"].forEach(function (k) {
+      if (found) return;
+      var match = (items[k] || []).find(function (i) { return String(i.lead_id) === String(targetLead); });
+      if (match) { found = match; foundKind = k; }
+    });
+    if (found) { activeTab = foundKind; openDetail(found, foundKind); }
+  }
+
   render();
   fetchStageOptions();
-  if (brokerName) fetchInbox();
+  if (brokerName) fetchInbox().then(openDeepLinkedLead);
   setInterval(function () { if (!openItem) fetchInbox(); }, 20000);
 })();
 </script>
