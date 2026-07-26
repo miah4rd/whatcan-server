@@ -75,8 +75,14 @@ router.get("/suggestions", async (req, res) => {
       // Rental pipeline uses its own stage vocabulary (Qualified, New LEAD, Options sent,
       // N foolow up) that doesn't overlap with this Unicorn-oriented whitelist, so it's
       // exempted here the same way it's exempted during generation in followup-scheduler.ts.
+      // REACH-stage leads (1st/2nd/final follow up = qualification) are ALSO push-kind but
+      // live in the extension's REACH tab — they are never in the CE/NA/OS whitelist, so
+      // exempt them too (same bypass the scheduler uses), otherwise the REACH tab is empty.
       const isRentalLead = (sync?.pipeline ?? "").toLowerCase() === "rental";
-      if (r.kind === "push" && !isRentalLead && !isPushStageAllowed(pushWhitelist, stage)) return false;
+      const isReachStage = ["1st follow up", "2nd follow up", "final follow up"].some((k) =>
+        stage.toLowerCase().includes(k),
+      );
+      if (r.kind === "push" && !isRentalLead && !isReachStage && !isPushStageAllowed(pushWhitelist, stage)) return false;
 
       // Push tab: exclude Shanti Agencies pipeline — different business, not part of this copilot
       if (r.kind === "push" && sync?.pipeline === "Shanti Agencies") return false;
