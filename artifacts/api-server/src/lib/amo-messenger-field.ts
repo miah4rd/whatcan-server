@@ -194,19 +194,37 @@ async function scanLeadPageForChannel(leadId: string): Promise<string | null> {
 }
 
 /**
- * Ensure the messenger field is filled for a lead.
- * Called before Salesbot trigger — reads current value, fills via Puppeteer if empty.
- * Field 967477 stores the source ID (number), not the name.
+ * Ensure the messenger field is filled for a lead and contains a numeric source ID.
+ * Called before Salesbot trigger. Handles three cases:
+ * 1. Empty → scan Puppeteer, write source ID
+ * 2. Contains a name (e.g. "Robert") → map to source ID, overwrite
+ * 3. Already a number (e.g. "62249") → return as-is
  */
 export async function ensureMessengerField(leadId: string): Promise<string | null> {
-  // 1. Check if already filled
+  // 1. Check current value
   const current = await readMessengerField(leadId);
+
   if (current) {
-    logger.info({ leadId, value: current }, "messenger field already filled");
+    // Already numeric — nothing to do
+    if (/^\d+$/.test(current)) {
+      logger.info({ leadId, value: current }, "messenger field already numeric");
+      return current;
+    }
+
+    // Contains a name (legacy from bulk fill) — convert to source ID
+    const sourceId = mapNameToSourceId(current);
+    if (sourceId) {
+      const ok = await updateLastMessengerField(leadId, String(sourceId), 0, LAST_MESSENGER_FIELD_ID);
+      if (ok) {
+        logger.info({ leadId, oldName: current, sourceId }, "messenger field converted name → source ID");
+      }
+      return String(sourceId);
+    }
+    logger.warn({ leadId, value: current }, "messenger field has unknown name, cannot map to source ID");
     return current;
   }
 
-  // 2. Scan lead page
+  // 2. Empty — scan lead page
   logger.info({ leadId }, "messenger field empty — scanning lead page");
   const channelName = await scanLeadPageForChannel(leadId);
   if (!channelName) {
