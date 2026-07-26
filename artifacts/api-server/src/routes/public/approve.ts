@@ -155,21 +155,25 @@ async function autoCreateCrmTask(
         const clientNeverReplied = prevLastMessageFrom !== "lead";
 
         if (clientNeverReplied) {
-          // Close lead as Lost: Closed Lost + Not Responding + exclude from bot
-          try {
-            await closeLeadAsLost(leadId, LOSS_REASON_NOT_RESPONDING);
-            log.info({ leadId }, "auto-closed as Lost: Final Follow Up, client never replied");
-          } catch { /* non-fatal */ }
-
-          // Exclude from bot — no more suggestions needed
-          await db
-            .update(leadsSyncTable)
-            .set({ botExcluded: true, nextFollowupAt: null })
-            .where(eq(leadsSyncTable.leadId, leadId));
-
-          // No new task needed — lead is closed
-          log.info({ leadId }, "auto-close: skipping new task creation (lead archived)");
-          return;
+          // Close lead as Lost. This account has no loss reasons configured, so
+          // close on status alone (passing a phantom loss_reason_id made amoCRM
+          // 500 and silently failed every final-follow-up close).
+          const closed = await closeLeadAsLost(leadId);
+          if (closed) {
+            // Exclude from bot ONLY after the stage actually changed — otherwise
+            // the lead drops out of the bot while still sitting in Final Follow Up
+            // (the inconsistency that made a "closed" lead look untouched).
+            await db
+              .update(leadsSyncTable)
+              .set({ botExcluded: true, nextFollowupAt: null })
+              .where(eq(leadsSyncTable.leadId, leadId));
+            log.info({ leadId }, "auto-closed as Lost: Final Follow Up, client never replied — archived");
+            return;
+          }
+          // Close FAILED (amoCRM rejected the change). Do NOT archive — keep the
+          // lead active and fall through to create a follow-up task so it comes
+          // back for a retry instead of vanishing in a half-closed state.
+          log.error({ leadId }, "auto-close FAILED: amoCRM did not accept Closed Lost — lead kept active for retry");
         }
       } else {
         const nextStatusId = stageAdvanceMap[currentStatusId];

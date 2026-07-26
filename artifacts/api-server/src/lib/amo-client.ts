@@ -221,15 +221,21 @@ export async function getAmoLead(leadId: string): Promise<{ id: number; responsi
 /**
  * Close a lead as "Closed Lost" in amoCRM.
  * status_id 143 = system-level Closed Lost (works across all pipelines).
- * lossReasonId = the AmoCRM loss reason to attach.
+ *
+ * NOTE: this account has NO loss reasons configured (GET /api/v4/leads/loss_reasons
+ * returns 404). Sending a `loss_reason_id` that doesn't exist makes amoCRM reject
+ * the whole PATCH with a generic 500 — which silently failed every final-follow-up
+ * close. So we only attach a loss reason when a positive id is explicitly passed;
+ * by default we close on status alone.
  */
-export async function closeLeadAsLost(leadId: string, lossReasonId: number): Promise<boolean> {
-  const result = await amoPatch<unknown>(`/api/v4/leads/${leadId}`, {
-    status_id: 143,
-    loss_reason_id: lossReasonId,
-  });
+export async function closeLeadAsLost(leadId: string, lossReasonId?: number): Promise<boolean> {
+  const body: Record<string, unknown> = { status_id: 143 };
+  if (typeof lossReasonId === "number" && lossReasonId > 0) {
+    body["loss_reason_id"] = lossReasonId;
+  }
+  const result = await amoPatch<unknown>(`/api/v4/leads/${leadId}`, body);
   if (result !== null) {
-    logger.info({ leadId, lossReasonId }, "amoCRM: lead closed as lost");
+    logger.info({ leadId, lossReasonId: body["loss_reason_id"] ?? null }, "amoCRM: lead closed as lost");
   }
   return result !== null;
 }
