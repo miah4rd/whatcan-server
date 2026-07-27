@@ -347,7 +347,7 @@ const PAGE_HTML = `<!doctype html>
     return html;
   }
   // ── Voice dictation (Web Speech API — same as extension; gracefully absent on iOS Safari) ─
-  var _voiceEl = null, _voiceBtn = null, _directSR = null, _wakeLock = null;
+  var _voiceEl = null, _voiceBtn = null, _directSR = null, _wakeLock = null, _voiceWanted = false;
 
   // iOS dims and locks the screen on its idle timer even while the mic is live,
   // which kills the SpeechRecognition session mid-sentence. Holding a screen
@@ -370,6 +370,7 @@ const PAGE_HTML = `<!doctype html>
   });
 
   function stopVoiceDictation() {
+    _voiceWanted = false;
     releaseWakeLock();
     if (_voiceEl) {
       if (_directSR) { try { _directSR.stop(); } catch (e) {} _directSR = null; }
@@ -380,6 +381,7 @@ const PAGE_HTML = `<!doctype html>
   function startVoiceDictation(edEl, btnEl) {
     if (!edEl) return;
     if (_voiceEl) {
+      _voiceWanted = false;
       if (_directSR) { try { _directSR.stop(); } catch (e) {} _directSR = null; }
       return;
     }
@@ -389,6 +391,7 @@ const PAGE_HTML = `<!doctype html>
       return;
     }
     _voiceEl = edEl; _voiceBtn = btnEl;
+    _voiceWanted = true;
     if (btnEl) { btnEl.textContent = "\\u23f3"; btnEl.title = "Starting microphone…"; }
     var sr = new SR();
     sr.lang = navigator.language || "ru-RU";
@@ -413,6 +416,7 @@ const PAGE_HTML = `<!doctype html>
       }
     };
     sr.onerror = function (event) {
+      _voiceWanted = false;
       releaseWakeLock();
       _directSR = null;
       if (_voiceBtn) {
@@ -426,8 +430,18 @@ const PAGE_HTML = `<!doctype html>
       _voiceEl = null; _voiceBtn = null;
     };
     sr.onend = function () {
-      releaseWakeLock();
       _directSR = null;
+      // iOS ends recognition on any pause in speech. Re-tapping to continue
+      // costs a fresh mic permission prompt and breaks the broker's train of
+      // thought mid-sentence, so restart silently while they still intend to
+      // dictate — only a deliberate stop clears _voiceWanted.
+      if (_voiceWanted && _voiceEl) {
+        try {
+          sr.start();
+          return;
+        } catch (e) { /* fall through and end cleanly */ }
+      }
+      releaseWakeLock();
       if (_voiceEl) { _voiceEl.value = lastFinal.trim(); _voiceEl.dispatchEvent(new Event("input", { bubbles: true })); }
       if (_voiceBtn) { _voiceBtn.textContent = "\\ud83c\\udfa4 Dictate"; _voiceBtn.title = "Dictate your instruction"; _voiceBtn.classList.remove("recording"); }
       _voiceEl = null; _voiceBtn = null;
