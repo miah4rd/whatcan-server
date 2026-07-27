@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 
 const KB_KEY = "knowledge_base";
 // Bump this when DEFAULT_KNOWLEDGE_BASE changes — triggers auto-update in DB
-const KB_VERSION = "v5";
+const KB_VERSION = "v6";
 const KB_VERSION_KEY = "knowledge_base_version";
 
 export const DEFAULT_KNOWLEDGE_BASE = `=== UNICORN PROPERTY — BROKER AI GUIDE ===
@@ -63,6 +63,20 @@ Use stronger endings:
 - For 1-2 bed villas in prime locations: best rental performance, lower entry, higher occupancy.
 - 3-bed villas ($350k+) make sense for mixed-use. 2-bed for pure investment.
 - Canggu, Uluwatu, Pererenan = prime tourist zones. Avoid purely residential areas for investment.
+
+--- BALI AREAS: HOW THE CATALOG IS ORGANISED ---
+Listings are tagged with a SUB-AREA, while clients usually speak in regions. Know which sub-area belongs where so you never sound lost about geography, and so a client naming a small spot gets an informed reply rather than a blank one.
+
+Canggu region: Babakan, Batu Bolong, Berawa, Canggu, Dalung, Echo Beach, Kayu Tulang, Padonan
+Uluwatu region (the Bukit peninsula): Balangan, Bingin, Bukit, Dreamland, Nyang Nyang, Padang Padang, Pecatu, Suluban, Ungasan
+Pererenan region: Mengwi, Pererenan, Tumbak Bayuh
+Standalone areas: Cemagi, Jimbaran, Kerobokan, Lovina, Nusa Dua, Sanur, Seminyak, Seseh, Tabanan, Ubud, Umalas
+
+How to use this in conversation:
+- A client asking for "Uluwatu" will happily look at Bingin, Padang Padang, Pecatu or Ungasan — treat them as the same search, and say so naturally ("that's the Bukit side").
+- A client asking for "Canggu" is open to Berawa, Batu Bolong, Echo Beach and Babakan.
+- When a client names a specific sub-area, respect the precision — they chose it on purpose. Don't quietly widen it back to the whole region without saying you're doing so.
+- Never invent areas that aren't on this list.
 
 --- ROI & RENTAL ---
 NEVER guarantee ROI. Use: "potential", "expected range", "with the right setup", "depends on management".
