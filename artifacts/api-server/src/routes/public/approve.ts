@@ -6,7 +6,7 @@ import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-fo
 import { chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
-import { ensureMessengerField } from "../../lib/amo-messenger-field";
+import { resolveOutboundSource } from "../../lib/amo-messenger-field";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
 
@@ -355,8 +355,12 @@ router.post("/approve", async (req, res) => {
     // "Sent". That silent false success is worse than any delivery failure: the
     // broker moves on believing the client was answered.
     // So: no resolved channel, no send. Refuse loudly and keep the suggestion.
-    const messengerSource = await ensureMessengerField(sug.leadId).catch((e) => {
-      req.log.warn({ leadId: sug.leadId, err: e }, "ensureMessengerField threw");
+    // Resolved from data only — no Puppeteer. The old path scanned the lead page
+    // with a headless Chrome, whose memory spike tripped PM2's 512MB ceiling and
+    // restarted the process mid-request, so the broker got a bare "Webhook 502"
+    // and no message went out.
+    const messengerSource = await resolveOutboundSource(sug.leadId, sug.responsibleUser).catch((e) => {
+      req.log.warn({ leadId: sug.leadId, err: e }, "resolveOutboundSource threw");
       return null;
     });
 

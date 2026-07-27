@@ -58,6 +58,68 @@ function mapNameToSourceId(name: string): number | null {
   return null;
 }
 
+/**
+ * The WhatsApp line each broker replies from.
+ *
+ * When a lead's own channel can't be determined, replying from the responsible
+ * broker's own number is what a human would do — and it beats the alternatives
+ * of sending blind (lands in the wrong thread, amoCRM marks it Error) or
+ * scraping the lead page with Puppeteer, which spikes memory past PM2's 512MB
+ * ceiling and kills the request mid-send with a 502.
+ *
+ * HoS signs as "Nick" and their working leads route through 62249 — verified
+ * against leads where delivery succeeded.
+ */
+const BROKER_LINE: Record<string, number> = {
+  hos: 62249,
+  nick: 62249,
+  robert: 58745,
+  amelia: 56811,
+  sharon: 56951,
+  yudi: 59537,
+  saif: 59893,
+  kristo: 61161,
+  ferdian: 61191,
+};
+
+export function sourceIdForBroker(brokerName: string | null | undefined): number | null {
+  if (!brokerName) return null;
+  return BROKER_LINE[brokerName.trim().toLowerCase()] ?? null;
+}
+
+/**
+ * Resolve which line to send this lead's reply from, WITHOUT launching a
+ * browser — safe to call inside a request. Returns the numeric source ID, or
+ * null when it genuinely cannot be determined (caller must then refuse to send
+ * rather than fire blind).
+ */
+export async function resolveOutboundSource(
+  leadId: string,
+  responsibleUser: string | null,
+): Promise<string | null> {
+  const current = await readMessengerField(leadId);
+  if (current && /^\d+$/.test(current)) return current;
+
+  if (current) {
+    const mapped = mapNameToSourceId(current);
+    if (mapped) {
+      await updateLastMessengerField(leadId, String(mapped), 0, LAST_MESSENGER_FIELD_ID).catch(() => false);
+      logger.info({ leadId, from: current, sourceId: mapped }, "outbound source: name in field mapped to line");
+      return String(mapped);
+    }
+  }
+
+  const brokerLine = sourceIdForBroker(responsibleUser);
+  if (brokerLine) {
+    await updateLastMessengerField(leadId, String(brokerLine), 0, LAST_MESSENGER_FIELD_ID).catch(() => false);
+    logger.info({ leadId, responsibleUser, sourceId: brokerLine }, "outbound source: fell back to broker's own line");
+    return String(brokerLine);
+  }
+
+  logger.warn({ leadId, responsibleUser, fieldValue: current }, "outbound source unresolved — refusing to send");
+  return null;
+}
+
 export function getLastMessengerFieldId(): number {
   return LAST_MESSENGER_FIELD_ID;
 }
