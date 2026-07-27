@@ -97,6 +97,13 @@ router.get("/suggestions", async (req, res) => {
       items = items.filter((r) => (r.responsibleUser ?? "").trim().toLowerCase() === wanted);
     }
 
+    // Unicorn brokers see ONLY their Unicorn-pipeline leads — even if a lead of
+    // theirs sits in another pipeline (e.g. Rental), it must not surface here.
+    // Scoped to the adaptive (Unicorn) brokers so Rental brokers are unaffected.
+    if (isAdaptiveBroker(responsibleUser)) {
+      items = items.filter((r) => (syncByLeadId.get(r.leadId)?.pipeline ?? "").toUpperCase() === "UNICORN");
+    }
+
     items = dedupePushPerLead(items);
 
     const enrichedRaw = items.map((i) => {
