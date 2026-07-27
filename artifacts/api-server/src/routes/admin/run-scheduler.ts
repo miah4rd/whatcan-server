@@ -6,8 +6,22 @@ import { db, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
 import { and, eq, lt, inArray, isNotNull, sql } from "drizzle-orm";
 import { refreshLeadProfile } from "../../lib/lead-profile";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
+import { refreshLeadFromTimeline } from "../../lib/amo-timeline-sync";
 
 const router = Router();
+
+/**
+ * POST /admin/refresh-lead  { leadId }
+ * Re-reads ONE lead straight from the amoCRM timeline and, if the lead has
+ * replied since we last knew, queues a LIVE suggestion. Fixes a single
+ * out-of-sync lead without waiting on the ~12-minute full sweep.
+ */
+router.post("/admin/refresh-lead", async (req, res) => {
+  const { leadId } = req.body as { leadId?: string };
+  if (!leadId) return void res.status(400).json({ error: "leadId required" });
+  const result = await refreshLeadFromTimeline(String(leadId).trim());
+  res.json(result);
+});
 
 /**
  * POST /api/admin/backfill-profiles
