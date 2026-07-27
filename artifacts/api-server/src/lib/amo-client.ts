@@ -202,6 +202,31 @@ export async function amoPatch<T>(path: string, body: unknown): Promise<T | null
   return amoWrite<T>("PATCH", path, body);
 }
 
+// ── User resolution ───────────────────────────────────────────────────────────
+// /api/v4/users is admin-only in amoCRM — a regular broker's session gets 403,
+// so the extension can't map its own current_user_id → name client-side. The
+// server holds the admin token, so it resolves the id → broker first-name here
+// (cached 10 min) and the extension just asks us.
+let _amoUsersCache: { at: number; map: Map<number, string> } | null = null;
+
+export async function resolveAmoUserFirstName(userId: number): Promise<string | null> {
+  if (!userId || Number.isNaN(userId)) return null;
+  if (!_amoUsersCache || Date.now() - _amoUsersCache.at > 10 * 60 * 1000) {
+    const data = await amoFetch<{ _embedded?: { users?: Array<{ id: number; name?: string }> } }>(
+      "/api/v4/users?limit=250",
+    );
+    const map = new Map<number, string>();
+    for (const u of data?._embedded?.users ?? []) {
+      const first = u.name?.split(/\s+/)?.[0]?.trim();
+      if (first) map.set(u.id, first);
+    }
+    // Only cache a non-empty result so a transient failure doesn't stick.
+    if (map.size > 0) _amoUsersCache = { at: Date.now(), map };
+    else return null;
+  }
+  return _amoUsersCache.map.get(userId) ?? null;
+}
+
 // ── Lead operations ───────────────────────────────────────────────────────────
 
 /** Update lead status (stage) in amoCRM. statusId is the numeric pipeline status_id. */
