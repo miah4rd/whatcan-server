@@ -76,6 +76,55 @@ function shouldSkipNewListings(
   return [...sent].some((id) => recentLeadText.includes(id));
 }
 
+/**
+ * THE single place that decides which property links ride along with a reply.
+ *
+ * Exists because there are two generateSuggestion implementations (this lib and
+ * amocrm-webhook.ts's own copy — the main LIVE path). The webhook copy called
+ * matchProperties bare: no already-sent exclusion, no area/bedroom filter, no
+ * "lead already picked one" gate. Result: the explicit-mention fast path saw OUR
+ * OWN previously sent links quoted in the conversation and returned those exact
+ * two listings every time, regardless of what the lead now wanted — which is
+ * why every matching fix looked like it changed nothing. Both implementations
+ * now call this and cannot drift apart again.
+ */
+export async function pickPropertyAttachments(opts: {
+  leadId: string;
+  brokerId: string | null;
+  isRental: boolean;
+  contentSnippet: string;
+  dialogMessages: ReturnType<typeof parseDialogContent>["messages"];
+  formattedDialog: string;
+  lastLeadText: string;
+  leadStage?: string | null;
+}): Promise<GeneratedSuggestion["attachments"]> {
+  try {
+    const excludeIds = await alreadySentPropertyIds(
+      opts.leadId,
+      `${opts.contentSnippet}\n${opts.formattedDialog}`,
+    );
+    if (shouldSkipNewListings(opts.dialogMessages, excludeIds, opts.leadStage)) {
+      return [];
+    }
+    const picks = await matchProperties({
+      listingType: opts.isRental ? "rent" : "sale",
+      conversationText: `${opts.formattedDialog}\n${opts.lastLeadText}`,
+      brokerId: opts.brokerId,
+      excludeIds,
+      seenCount: excludeIds.length,
+      latestLeadMessage: opts.lastLeadText,
+      // newest first — the criteria filter takes the most recent area/bedroom pin
+      recentLeadMessages: [
+        opts.lastLeadText,
+        ...opts.dialogMessages.filter((m) => m.from === "lead").slice(-5).reverse().map((m) => m.text),
+      ].filter(Boolean),
+    });
+    return toAttachments(picks);
+  } catch {
+    return [];
+  }
+}
+
 export type GeneratedSuggestion = {
   text: string;
   attachments: Array<{ type: "link"; label: string; url: string }>;
@@ -397,36 +446,26 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   // push notification could fire.
   // Exclusion reads the RAW content too — formatDialogForAI truncates, and a
   // link sent long ago still counts as "already shown to this lead".
-  const [completion, picks] = await Promise.all([
+  const [completion, attachments] = await Promise.all([
     chatCompletion({
       model: "claude-sonnet-5",
       system: systemPrompt,
       messages: [{ role: "user", content: prompt }],
       max_tokens: 400,
     }),
-    alreadySentPropertyIds(opts.leadId, `${opts.contentSnippet}\n${formattedDialog}`)
-      .then((excludeIds) => {
-        if (shouldSkipNewListings(dialog.messages, excludeIds, opts.leadStage)) {
-          return [] as PropertyPick[];
-        }
-        return matchProperties({
-          listingType: isRental ? "rent" : "sale",
-          conversationText: `${formattedDialog}\n${lastLeadText}`,
-          brokerId: opts.responsibleUser,
-          excludeIds,
-          seenCount: excludeIds.length,
-          latestLeadMessage: lastLeadText,
-          // newest first — the filter takes the most recent area/bedroom pin
-          recentLeadMessages: [
-            lastLeadText,
-            ...dialog.messages.filter((m) => m.from === "lead").slice(-5).reverse().map((m) => m.text),
-          ].filter(Boolean),
-        });
-      })
-      .catch(() => [] as PropertyPick[]),
+    pickPropertyAttachments({
+      leadId: opts.leadId,
+      brokerId: opts.responsibleUser,
+      isRental,
+      contentSnippet: opts.contentSnippet,
+      dialogMessages: dialog.messages,
+      formattedDialog,
+      lastLeadText,
+      leadStage: opts.leadStage,
+    }),
   ]);
 
   const text = sanitizeSuggestion(completion.content);
 
-  return { text, attachments: toAttachments(picks) };
+  return { text, attachments };
 }

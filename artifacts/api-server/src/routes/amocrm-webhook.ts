@@ -13,6 +13,7 @@ import { getAmoLead } from "../lib/amo-client";
 import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
 import { buildRentalSystemPrompt } from "../lib/rental-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
+import { pickPropertyAttachments } from "../lib/generate-suggestion";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
 import { classifyStage } from "../lib/stage-classifier";
 import { logger } from "../lib/logger";
@@ -325,13 +326,22 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   const text = sanitizeSuggestion(completion.content);
 
-  const picks = await matchProperties({
-    listingType: isRental ? "rent" : "sale",
-    conversationText: `${formattedDialog}\n${lastLeadText}`,
+  // Shared picker — already-sent exclusion, current area/bedroom criteria, and
+  // the "lead already chose a villa" gate all live in ONE place. The bare
+  // matchProperties call that used to sit here is why this path kept
+  // re-attaching the same two already-sent listings whatever the lead asked.
+  const attachments = await pickPropertyAttachments({
+    leadId: opts.leadId,
     brokerId: opts.responsibleUser,
-  }).catch(() => []);
+    isRental,
+    contentSnippet: opts.contentSnippet,
+    dialogMessages: dialog.messages,
+    formattedDialog,
+    lastLeadText,
+    leadStage: opts.leadStage,
+  });
 
-  return { text, attachments: toAttachments(picks) };
+  return { text, attachments };
 }
 
 export async function queueSuggestion(opts: {
