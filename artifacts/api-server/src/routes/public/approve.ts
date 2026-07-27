@@ -305,8 +305,31 @@ router.post("/approve", async (req, res) => {
     return;
   }
   if (sug.status !== "pending") {
-    res.status(409).json({ error: "Already processed" });
-    return;
+    // The status is claimed BEFORE the send, so a crash between the two leaves a
+    // suggestion permanently marked "sent" that never actually went out — the
+    // broker then gets a bare 409 on a message the client never received.
+    // sent_messages is the record of an actual delivery attempt: no row means
+    // nothing left the building, so let the broker retry instead of blocking.
+    const [alreadySent] = await db
+      .select({ id: sentMessagesTable.id })
+      .from(sentMessagesTable)
+      .where(eq(sentMessagesTable.suggestionId, sug.id as any))
+      .limit(1);
+
+    if (alreadySent) {
+      res.status(409).json({ error: "Already processed" });
+      return;
+    }
+
+    req.log.warn(
+      { leadId: sug.leadId, suggestionId: sug.id, status: sug.status },
+      "suggestion was claimed but never sent (interrupted send) — reopening for retry",
+    );
+    await db
+      .update(pendingSuggestionsTable)
+      .set({ status: "pending", finalText: null })
+      .where(eq(pendingSuggestionsTable.id, sug.id));
+    sug.status = "pending";
   }
 
   // The broker's edited list wins when the client sent one; older clients that
