@@ -153,6 +153,12 @@ export async function matchProperties(opts: {
   /** How many listings this lead has already seen — drives the "give them
    * something genuinely different" instruction on follow-up shortlists. */
   seenCount?: number;
+  /** The lead's most recent message, weighted above the rest of the history.
+   * A revision ("actually, 3 bedrooms in Uluwatu") is one line against a long
+   * conversation about the old criteria, and the matcher used to be outvoted
+   * by the bulk — attaching Pererenan 2BRs to a reply that correctly said
+   * "switching gears to Uluwatu, 3 bedrooms". */
+  latestLeadMessage?: string | null;
 }): Promise<PropertyPick[]> {
   const limit = opts.limit ?? 2;
   const all = await fetchAllProperties();
@@ -177,7 +183,9 @@ export async function matchProperties(opts: {
       ? await getTopPicksForBroker(opts.brokerId, pool.map((p) => p.id))
       : [];
     const catalogBlock = pool.slice(0, 60).map(summaryLine).join("\n");
-    const brokerBlock = brokerTop.length > 0 ? `\n\nThis broker frequently recommends: ${brokerTop.join(", ")} — prefer these when they genuinely fit too, but never at the expense of actual fit.` : "";
+    // Deliberately weak wording: this hint kept resurfacing the same two
+    // listings regardless of what the lead asked for.
+    const brokerBlock = brokerTop.length > 0 ? `\n\nFYI, this broker has used these before: ${brokerTop.join(", ")}. Only pick one if it fits the lead's CURRENT criteria as well as any other candidate — never as a tie-breaker against a better fit.` : "";
 
     const result = await chatCompletionJSON<{ ids?: string[] }>({
       model: "claude-sonnet-5",
@@ -187,6 +195,8 @@ Return an EMPTY list when sending listings would be the wrong move:
 - The lead has just expressed interest in a SPECIFIC listing they were already shown ("I like this one", "this looks good", quoting one link approvingly). The conversation should now move toward a viewing or the practical next step on THAT property — pushing a fresh batch talks over them.
 - The lead is arranging a viewing, negotiating terms, or discussing a property they've already chosen.
 - The conversation gives truly nothing to go on (e.g. only a greeting).
+
+CRITERIA CAN CHANGE MID-CONVERSATION. When the lead revises what they want ("actually", "I wanna change my request", a new area, a different bedroom count), their NEWEST statement is the only one that counts — match against that and treat the earlier criteria as void, however much of the conversation was spent on them.
 
 Otherwise pick at most ${limit} listing IDs that fit what the lead described. You do NOT need every detail (area, budget, bedrooms, purpose, style) — one or two known criteria are enough to make a reasonable first pass. This is a shortlist for the lead to react to and refine, so approximate is fine.${
         (opts.seenCount ?? 0) > 0
@@ -198,7 +208,11 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
       messages: [
         {
           role: "user",
-          content: `Conversation:\n${opts.conversationText.slice(-3000)}\n\nCatalog:\n${catalogBlock}`,
+          content: `${
+            opts.latestLeadMessage
+              ? `LEAD'S LATEST MESSAGE — their current criteria, this overrides anything older:\n"${opts.latestLeadMessage.slice(0, 500)}"\n\n`
+              : ""
+          }Conversation (background):\n${opts.conversationText.slice(-3000)}\n\nCatalog:\n${catalogBlock}`,
         },
       ],
       max_tokens: 80,

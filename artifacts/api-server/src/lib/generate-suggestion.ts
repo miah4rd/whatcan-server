@@ -415,6 +415,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
           brokerId: opts.responsibleUser,
           excludeIds,
           seenCount: excludeIds.length,
+          latestLeadMessage: lastLeadText,
         });
       })
       .catch(() => [] as PropertyPick[]),
