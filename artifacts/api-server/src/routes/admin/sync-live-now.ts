@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { db, leadsSyncTable, pendingSuggestionsTable, leadMessagesTable } from "@workspace/db";
+import { eq, and, desc } from "drizzle-orm";
 import { syncOutgoingEvents } from "../../lib/amo-sync";
 import { parseDialogContent } from "../../lib/dialog-parser";
 import { logger } from "../../lib/logger";
@@ -50,11 +50,29 @@ router.post("/admin/sync-live-now", async (req, res) => {
 
       // If DB already marks broker replied, or content shows broker last — clear LIVE
       let shouldClear = sync.lastMessageFrom === "us";
-      if (!shouldClear && sync.content) {
+      let contentLastMs = 0;
+      if (sync.content) {
         try {
           const parsed = parseDialogContent(sync.content);
-          if (parsed.lastMessage?.from === "us") shouldClear = true;
+          contentLastMs = parsed.lastMessage?.at?.getTime() ?? 0;
+          if (!shouldClear && parsed.lastMessage?.from === "us") shouldClear = true;
         } catch { /* ignore */ }
+      }
+
+      // Both signals above come from leads_sync, which is webhook-fed and for
+      // some channels (Instagram) silently stops updating. If the timeline has a
+      // lead message newer than content knows about, the lead really is waiting
+      // on us — deleting their LIVE here would lose a valid suggestion.
+      if (shouldClear) {
+        const [newest] = await db
+          .select({ senderType: leadMessagesTable.senderType, sentAt: leadMessagesTable.sentAt })
+          .from(leadMessagesTable)
+          .where(eq(leadMessagesTable.leadId, row.leadId))
+          .orderBy(desc(leadMessagesTable.sentAt))
+          .limit(1);
+        if (newest && newest.senderType === "lead" && newest.sentAt.getTime() > contentLastMs + 60_000) {
+          shouldClear = false;
+        }
       }
 
       if (!shouldClear) continue;

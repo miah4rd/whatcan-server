@@ -347,8 +347,30 @@ const PAGE_HTML = `<!doctype html>
     return html;
   }
   // ── Voice dictation (Web Speech API — same as extension; gracefully absent on iOS Safari) ─
-  var _voiceEl = null, _voiceBtn = null, _directSR = null;
+  var _voiceEl = null, _voiceBtn = null, _directSR = null, _wakeLock = null;
+
+  // iOS dims and locks the screen on its idle timer even while the mic is live,
+  // which kills the SpeechRecognition session mid-sentence. Holding a screen
+  // wake lock for the duration of dictation keeps the thought intact.
+  async function acquireWakeLock() {
+    try {
+      if ("wakeLock" in navigator && !_wakeLock) {
+        _wakeLock = await navigator.wakeLock.request("screen");
+        _wakeLock.addEventListener("release", function () { _wakeLock = null; });
+      }
+    } catch (e) { /* not supported or refused — dictation still works */ }
+  }
+  function releaseWakeLock() {
+    if (_wakeLock) { try { _wakeLock.release(); } catch (e) {} _wakeLock = null; }
+  }
+  // iOS drops the lock whenever the tab is backgrounded; re-take it on return
+  // so a mid-dictation app switch doesn't silently lose the protection.
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && _voiceEl) acquireWakeLock();
+  });
+
   function stopVoiceDictation() {
+    releaseWakeLock();
     if (_voiceEl) {
       if (_directSR) { try { _directSR.stop(); } catch (e) {} _directSR = null; }
       if (_voiceBtn) { _voiceBtn.textContent = "\\ud83c\\udfa4 Dictate"; _voiceBtn.classList.remove("recording"); }
@@ -374,6 +396,7 @@ const PAGE_HTML = `<!doctype html>
     _directSR = sr;
     var lastFinal = edEl.value;
     sr.onstart = function () {
+      acquireWakeLock();
       if (_voiceBtn) { _voiceBtn.textContent = "\\u23f9"; _voiceBtn.title = "Recording… click to stop"; _voiceBtn.classList.add("recording"); }
     };
     sr.onresult = function (event) {
@@ -390,6 +413,7 @@ const PAGE_HTML = `<!doctype html>
       }
     };
     sr.onerror = function (event) {
+      releaseWakeLock();
       _directSR = null;
       if (_voiceBtn) {
         _voiceBtn.classList.remove("recording");
@@ -402,6 +426,7 @@ const PAGE_HTML = `<!doctype html>
       _voiceEl = null; _voiceBtn = null;
     };
     sr.onend = function () {
+      releaseWakeLock();
       _directSR = null;
       if (_voiceEl) { _voiceEl.value = lastFinal.trim(); _voiceEl.dispatchEvent(new Event("input", { bubbles: true })); }
       if (_voiceBtn) { _voiceBtn.textContent = "\\ud83c\\udfa4 Dictate"; _voiceBtn.title = "Dictate your instruction"; _voiceBtn.classList.remove("recording"); }
