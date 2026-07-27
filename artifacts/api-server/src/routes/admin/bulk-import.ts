@@ -514,22 +514,24 @@ router.post("/admin/bot-include", async (req, res) => {
     return void res.status(400).json({ error: "leadId required" });
   }
   const id = String(leadId).trim();
-  const now = new Date();
 
+  // nextFollowupAt stays NULL rather than `now`. Making a restored lead
+  // instantly due for a follow-up fires a "you haven't replied" nudge before
+  // anything has re-read the conversation — and a lead is often brought back
+  // precisely BECAUSE they just replied, so the nudge contradicts reality.
+  // The schedulers set a real due date once they've seen the current state.
   await db
     .update(leadsSyncTable)
-    .set({ botExcluded: false, nextFollowupAt: now })
+    .set({ botExcluded: false, nextFollowupAt: null })
     .where(eq(leadsSyncTable.leadId, id));
 
-  await db
-    .update(pendingSuggestionsTable)
-    .set({ status: "pending" })
-    .where(
-      and(
-        eq(pendingSuggestionsTable.leadId, id),
-        eq(pendingSuggestionsTable.status, "skipped"),
-      ),
-    );
+  // Deliberately does NOT un-skip old suggestions. Excluding a lead cancels its
+  // pending drafts, so the mirror-image restore used to resurrect them — but by
+  // the time a lead is brought back those drafts are days old and answer a
+  // message the lead has since moved past. (Seen live: a lead returned after
+  // replying today got a 3-day-old "Noticed the guide landed on your end" push.)
+  // The schedulers write a fresh suggestion from the current conversation, which
+  // is the only thing that can be correct here.
 
   res.json({ ok: true, leadId: id });
 });

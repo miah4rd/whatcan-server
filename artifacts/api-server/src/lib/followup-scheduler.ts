@@ -1,5 +1,5 @@
 import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable } from "@workspace/db";
-import { lt, isNotNull, eq, and, or, isNull, inArray, desc } from "drizzle-orm";
+import { lt, isNotNull, eq, and, or, isNull, inArray, desc, sql } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON } from "./ai-client";
 import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming } from "./dialog-parser";
 import { getFollowupSteps, getQualificationSteps } from "./settings";
@@ -942,6 +942,29 @@ export async function processUnansweredLive(): Promise<void> {
     );
   const alreadyHasLive = new Set(existingLive.map((r) => r.leadId));
 
+  // `content` only refreshes when an amoCRM webhook fires, and for some channels
+  // (Instagram especially) it silently doesn't. The timeline poll meanwhile
+  // writes every message straight into lead_messages, so that table can be hours
+  // ahead. The stale-check below used to trust content alone — which inverted it
+  // into a bug: for a lead who really HAD just replied, it flipped
+  // lastMessageFrom back to "us" and DELETED the correct pending LIVE, so the
+  // broker saw nothing and the push scheduler then nudged the lead to reply to a
+  // message they had already answered.
+  const newestByLead = new Map<string, { senderType: string; sentAt: Date }>();
+  try {
+    const rows = await db.execute<{ lead_id: string; sender_type: string; sent_at: Date }>(sql`
+      SELECT DISTINCT ON (lead_id) lead_id, sender_type, sent_at
+      FROM lead_messages
+      WHERE lead_id IN (${sql.join(unanswered.map((l) => sql`${l.leadId}`), sql`, `)})
+      ORDER BY lead_id, sent_at DESC
+    `);
+    for (const r of rows.rows ?? []) {
+      newestByLead.set(String(r.lead_id), { senderType: String(r.sender_type), sentAt: new Date(r.sent_at) });
+    }
+  } catch (err) {
+    logger.error({ err }, "unanswered-live: newest-message lookup failed (falling back to content only)");
+  }
+
   // PASS 1: Stale-check ALL leads (including those that already have a LIVE suggestion).
   // If the actual last message in the conversation is from us, the DB's lastMessageFrom
   // field is stale (e.g. SalesBot sent a brochure but the webhook didn't update the DB).
@@ -956,6 +979,18 @@ export async function processUnansweredLive(): Promise<void> {
         continue;
       }
       const parsed = parseDialogContent(content);
+
+      // If the timeline knows about a lead message newer than anything in
+      // content, content is the stale side — believe the timeline and leave the
+      // lead alone. 60s of slack absorbs clock/rounding differences between the
+      // two sources for what is really the same message.
+      const newest = newestByLead.get(lead.leadId);
+      const contentLastMs = parsed.lastMessage?.at?.getTime() ?? 0;
+      if (newest && newest.senderType === "lead" && newest.sentAt.getTime() > contentLastMs + 60_000) {
+        genuinelyUnanswered.push(lead);
+        continue;
+      }
+
       if (parsed.lastMessage?.from === "us") {
         await db
           .update(leadsSyncTable)
