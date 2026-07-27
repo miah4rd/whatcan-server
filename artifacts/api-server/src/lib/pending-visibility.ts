@@ -22,10 +22,19 @@ export interface SyncRowLike {
   content: string | null;
 }
 
+/** Newest row from lead_messages for a lead — see lib/conversation-state.ts. */
+export interface NewestTimelineMessage {
+  senderType: string;
+  sentAt: Date;
+}
+
 export function isPendingVisible(
   r: PendingRowLike,
   sync: SyncRowLike | undefined,
   pushWhitelist: string[],
+  /** Pass it whenever available: without it, a lead whose webhook stopped
+   * delivering has their LIVE hidden by the stale-content rule below. */
+  newestTimeline?: NewestTimelineMessage,
 ): boolean {
   // Never show bot-excluded leads
   if (sync?.botExcluded) return false;
@@ -69,20 +78,37 @@ export function isPendingVisible(
 
   if (r.kind !== "live") return true;
 
-  // Rule 1: if DB already knows broker replied last → LIVE is stale.
-  if (sync?.lastMessageFrom === "us") return false;
-
-  // Rule 2: real-time content check — catches the race condition where
-  // broker replied via SalesBot/external tool but the webhook hasn't arrived yet.
-  // Parse the actual dialog content and check who sent the last message.
+  // ── Is this LIVE stale (i.e. have we already answered the lead)? ───────────
+  // Both signals below read leads_sync, which is webhook-fed and for some
+  // channels (Instagram) silently stops updating. The timeline poll keeps
+  // writing to lead_messages regardless, so when the two disagree the timeline
+  // is the one telling the truth. Without this, a genuine reply produced a
+  // correct LIVE suggestion that these rules then hid from the broker — the
+  // inbox said "All caught up" while the client sat waiting.
+  let contentLastMs = 0;
+  let contentSaysWeReplied = false;
   if (sync?.content) {
     try {
       const parsed = parseDialogContent(sync.content);
-      if (parsed.lastMessage?.from === "us") return false;
+      contentLastMs = parsed.lastMessage?.at?.getTime() ?? 0;
+      contentSaysWeReplied = parsed.lastMessage?.from === "us";
     } catch {
       // ignore parse errors
     }
   }
+
+  const timelineSaysLeadReplied =
+    !!newestTimeline &&
+    newestTimeline.senderType === "lead" &&
+    newestTimeline.sentAt.getTime() > contentLastMs + 60_000;
+  if (timelineSaysLeadReplied) return true;
+
+  // Rule 1: DB says the broker spoke last → LIVE is stale.
+  if (sync?.lastMessageFrom === "us") return false;
+
+  // Rule 2: content says the broker spoke last — catches a reply sent via
+  // SalesBot or an external tool before its webhook lands.
+  if (contentSaysWeReplied) return false;
 
   return true;
 }

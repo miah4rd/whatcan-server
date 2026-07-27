@@ -89,7 +89,11 @@ router.get("/suggestions", async (req, res) => {
 
     // Visibility rules are shared with the push-notification badge counter
     // (lib/pending-visibility.ts) so the icon number always matches the inbox.
-    let items = allPending.filter((r) => isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist));
+    // timelineMsgsByLead is newest-first, so [0] is the newest message we know
+    // of from the timeline — the tie-breaker when webhook-fed content is stale.
+    let items = allPending.filter((r) =>
+      isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, timelineMsgsByLead.get(r.leadId)?.[0]),
+    );
 
     if (kind === "live" || kind === "push") items = items.filter((r) => r.kind === kind);
     if (responsibleUser) {

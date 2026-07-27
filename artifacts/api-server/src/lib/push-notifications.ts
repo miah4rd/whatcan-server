@@ -1,6 +1,6 @@
 import webpush from "web-push";
-import { db, pushSubscriptionsTable, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
-import { eq, and, sql, inArray } from "drizzle-orm";
+import { db, pushSubscriptionsTable, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable } from "@workspace/db";
+import { eq, and, sql, inArray, desc } from "drizzle-orm";
 import { logger } from "./logger";
 import { parseDialogContent } from "./dialog-parser";
 import { getPushStageWhitelist } from "./push-stage-whitelist";
@@ -118,7 +118,26 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
     const syncByLeadId = new Map(syncRows.map((r) => [r.leadId, r]));
     const whitelist = await getPushStageWhitelist();
 
-    const visible = dedupePushPerLead(rows.filter((r) => isPendingVisible(r, syncByLeadId.get(r.leadId), whitelist)));
+    // Same timeline tie-breaker the inbox uses — the badge must not count a
+    // suggestion the inbox hides, nor miss one it shows.
+    const newestByLead = new Map<string, { senderType: string; sentAt: Date }>();
+    try {
+      const msgRows = await db
+        .select({
+          leadId: leadMessagesTable.leadId,
+          senderType: leadMessagesTable.senderType,
+          sentAt: leadMessagesTable.sentAt,
+        })
+        .from(leadMessagesTable)
+        .where(inArray(leadMessagesTable.leadId, leadIds))
+        .orderBy(desc(leadMessagesTable.sentAt))
+        .limit(600);
+      for (const m of msgRows) if (!newestByLead.has(m.leadId)) newestByLead.set(m.leadId, m);
+    } catch { /* fall back to content-only rules */ }
+
+    const visible = dedupePushPerLead(
+      rows.filter((r) => isPendingVisible(r, syncByLeadId.get(r.leadId), whitelist, newestByLead.get(r.leadId))),
+    );
     return visible.length;
   } catch {
     return 0;
