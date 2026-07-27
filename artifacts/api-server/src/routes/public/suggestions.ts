@@ -3,7 +3,7 @@ import { db, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable } from "
 import { desc, inArray, eq, and, sql } from "drizzle-orm";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
-import { computePushPriority } from "../../lib/adaptive-followup";
+import { computePushPriority, isAdaptiveBroker } from "../../lib/adaptive-followup";
 import { isPendingVisible, dedupePushPerLead } from "../../lib/pending-visibility";
 
 const router = Router();
@@ -278,9 +278,9 @@ router.get("/suggestions", async (req, res) => {
         return 2; // overdue → middle
       };
 
-      // Adaptive priority ranking is Robert-only (rest of the adaptive system is
-      // gated to him too). Other brokers keep the original stage→task→warmth sort.
-      const useAdaptiveRanking = responsibleUser === "Robert";
+      // Adaptive priority ranking runs for the enabled adaptive brokers (see
+      // ADAPTIVE_BROKERS). Others keep the original stage→task→warmth sort.
+      const useAdaptiveRanking = isAdaptiveBroker(responsibleUser);
 
       if (useAdaptiveRanking) {
         const overdueDays = (item: (typeof enriched)[0]): number => {

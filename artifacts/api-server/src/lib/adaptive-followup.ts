@@ -15,6 +15,17 @@
 
 export type Temperature = "cold" | "warm" | "hot" | null | undefined;
 
+/**
+ * Brokers for whom the adaptive follow-up system (lead profiles, adaptive
+ * cadence, priority ranking, discard flags) is enabled. Roll out to a new
+ * broker by adding their exact amoCRM name here — every gate reads this set.
+ */
+export const ADAPTIVE_BROKERS = new Set<string>(["Robert", "Amelia"]);
+
+export function isAdaptiveBroker(user: string | null | undefined): boolean {
+  return !!user && ADAPTIVE_BROKERS.has(user);
+}
+
 // Base wait (days) indexed by silence streak = consecutive unanswered touches.
 // streak 0 (just entered / just re-warmed) is fastest; each ignored touch stretches.
 export const FOLLOWUP_INTERVAL_BY_STREAK_DAYS = [2, 4, 7, 14, 30];

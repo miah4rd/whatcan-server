@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db, pendingSuggestionsTable, sentMessagesTable, leadsSyncTable, stageEventsTable, brokerCorrectionsTable, leadCrmTasksTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
-import { computeNextFollowupDays } from "../../lib/adaptive-followup";
+import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-followup";
 import { chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
@@ -94,7 +94,7 @@ async function autoCreateCrmTask(
     const useAdaptiveCadence =
       kind === "push" &&
       !isRentalPipeline &&
-      pipelineRow?.responsibleUser === "Robert" &&
+      isAdaptiveBroker(pipelineRow?.responsibleUser) &&
       isActivePushStage;
 
     if (kind === "push" && useAdaptiveCadence) {

@@ -10,6 +10,7 @@ import { shouldSuppressPush, isStageWhitelisted } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
 import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
 import { generateSuggestion } from "./generate-suggestion";
+import { isAdaptiveBroker } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
 
@@ -476,12 +477,12 @@ export async function processFollowups(): Promise<void> {
 
         // TEMP (rollout gate): the push-stage-whitelist above was just corrected
         // from REACH stage names to the actual CE/Needs Assessed/Options Sent
-        // funnel stages. Restrict the newly-unlocked generation to Robert while
-        // he validates PUSH end-to-end, so other brokers' queues don't fill up
-        // with a backlog all at once. Does NOT touch nextFollowupAt, so once this
-        // gate is removed, all brokers' eligible leads pick up automatically on
-        // the next scheduler run. Remove this block to roll out to everyone.
-        if (lead.responsibleUser !== "Robert") {
+        // funnel stages. Roll out per broker via ADAPTIVE_BROKERS — only enabled
+        // brokers' active-stage leads get adaptive PUSH generation, so other
+        // brokers' queues don't fill up with a backlog all at once. Does NOT
+        // touch nextFollowupAt, so adding a broker there picks their eligible
+        // leads up automatically on the next scheduler run.
+        if (!isAdaptiveBroker(lead.responsibleUser)) {
           continue;
         }
       }
@@ -1006,9 +1007,9 @@ export async function processUnansweredLive(): Promise<void> {
       if (!lastLeadMessage) continue;
 
       // A lead that just replied is the highest-value moment to refresh its
-      // distilled profile. Robert-only (rest of adaptive system is gated to him);
+      // distilled profile. Gated to the adaptive brokers (see ADAPTIVE_BROKERS);
       // cached, so it only calls AI when the last lead message actually changed.
-      if (lead.responsibleUser === "Robert") {
+      if (isAdaptiveBroker(lead.responsibleUser)) {
         try {
           await refreshLeadProfile({
             leadId: lead.leadId,
