@@ -36,8 +36,15 @@ export function baseFollowupIntervalDays(streak: number): number {
   return FOLLOWUP_INTERVAL_BY_STREAK_DAYS[i]!;
 }
 
-/** A lead is "fresh" (activation window) if created within this many days. */
-export const FRESH_LEAD_MAX_AGE_DAYS = 21;
+/** A lead is "fresh" (activation window) if created within this many days.
+ * ~1 month = "came in this month" — leads created 22-30 days ago must still
+ * count as fresh (they were sinking under the old 21-day cutoff). */
+export const FRESH_LEAD_MAX_AGE_DAYS = 30;
+
+/** Max PUSH suggestions surfaced per broker at once (daily focus cap). The rest
+ * wait and rotate up as the top drains — keeps the list workable (WhatsApp-safe)
+ * instead of dumping the whole overdue backlog. */
+export const PUSH_DAILY_CAP = 30;
 
 /**
  * Days to wait before the next follow-up. `streak` should be the number of
@@ -91,40 +98,46 @@ export function computePushPriority(opts: {
   manualTask?: boolean | null;
 }): number {
   // "Cost of delay" ranking: score ≈ how much we lose by NOT touching today.
-  // Big, well-separated tier boosts make it behave like a clear hierarchy while
-  // the aging term keeps it smooth and starvation-free.
+  // Fresh leads must sit at the top (speed-to-lead is the #1 conversion lever);
+  // the aging term is deliberately SMALL so an old overdue backlog can't bury
+  // this month's leads (that inversion was the bug).
   let score = 0;
   const stage = (opts.leadStage ?? "").toLowerCase();
-  const isFresh = (opts.ageDays ?? 9999) <= FRESH_LEAD_MAX_AGE_DAYS;
+  const age = opts.ageDays ?? 9999;
   const isNearClosing = /zoom call|viewing|reservation|negotiat|feedback|handling objection/.test(stage);
 
-  // ── Top tiers (well separated so they dominate) ──────────────────────────
-  if (opts.manualTask) score += 100;        // broker explicitly said "work this today"
-  if (opts.temperature === "hot") score += 60;  // active buying intent — money on the table
-  if (isNearClosing) score += 55;               // deal in motion, momentum at risk
-  if (isFresh) score += 50;                      // speed-to-lead: freshness decays fastest
+  // ── Top boosts ────────────────────────────────────────────────────────────
+  if (opts.manualTask) score += 100;            // broker explicitly said "work this"
+  if (opts.temperature === "hot") score += 55;  // active buying intent — money on the table
+  if (isNearClosing) score += 50;               // deal in motion, momentum at risk
 
-  // ── Mid ──────────────────────────────────────────────────────────────────
-  if (opts.temperature === "warm") score += 25;
-  if (typeof opts.potential === "number") score += opts.potential * 0.2; // up to +20
+  // Freshness — smooth decay by age: brand-new decays fastest, so it ranks
+  // highest and fades over ~a month. day0 ≈ +55, day30 ≈ +1, older → 0.
+  score += Math.max(0, 55 - age * 1.8);
+
+  // Funnel intent — a lead who left a request / got options is more valuable
+  // than a cold intro (they engaged), so these outrank plain Contact Established.
+  if (stage.includes("options sent") || stage.includes("option send")) score += 30;
+  else if (stage.includes("needs assessed")) score += 25;
+  else if (stage.includes("contact established")) score += 10;
+
+  // ── Temperature / potential ───────────────────────────────────────────────
+  if (opts.temperature === "warm") score += 22;
+  if (typeof opts.potential === "number") score += opts.potential * 0.25; // up to +25
   if (opts.openQuestion) score += 8;            // an unanswered real question is waiting
 
-  // Task urgency: due today > overdue > none.
-  if (opts.taskGroup === 1) score += 20;
-  else if (opts.taskGroup === 2) score += 12;
+  // Task urgency — FLAT (was scaled by days-overdue, which floated ancient leads
+  // to the top). Today's tasks (incl. broker's near-term manual ones) rank high.
+  if (opts.taskGroup === 1) score += 25;        // due today
+  else if (opts.taskGroup === 2) score += 10;   // overdue — flat, no per-day pile-up
 
-  // Light funnel-progression bias (CE freshness already boosted above).
-  if (stage.includes("needs assessed")) score += 15;
-  else if (stage.includes("options sent")) score += 12;
-  else if (stage.includes("contact established")) score += 8;
+  // ── Penalties: low cost of delay (dormant, fine to wait / cull candidates) ─
+  if (opts.temperature === "cold" && age > 30) score -= 20;
+  score -= Math.min(20, Math.max(0, (opts.streak ?? 0) - 2) * 4); // many ignored touches
 
-  // ── Penalties: low cost of delay (fine to wait) ──────────────────────────
-  if (opts.temperature === "cold" && !isFresh) score -= 12; // dormant, decays slowly
-  score -= Math.min(15, Math.max(0, (opts.streak ?? 0) - 2) * 3); // many ignored touches
-
-  // ── Aging fairness: the longer a ready lead waits unserved, the higher it
-  // climbs — nothing starves at the bottom. ────────────────────────────────
-  score += Math.min(50, Math.max(0, opts.daysWaitingPastEligible ?? 0) * 3);
+  // ── Small aging nudge for fairness — prevents same-day starvation without
+  // dominating (max +10, so it can't outrank a fresh or hot lead). ──────────
+  score += Math.min(10, Math.max(0, opts.daysWaitingPastEligible ?? 0) * 0.3);
 
   return score;
 }
