@@ -1,6 +1,7 @@
 import { logger } from "./logger";
 import { chatCompletionJSON } from "./ai-client";
 import { getTopPicksForBroker } from "./broker-picks-tracker";
+import { allAreaNames, areaMatches } from "./bali-areas";
 
 const SUPABASE_URL = process.env["SUPABASE_URL"] ?? "";
 const SUPABASE_ANON_KEY = process.env["SUPABASE_ANON_KEY"] ?? "";
@@ -163,7 +164,13 @@ function extractLeadCriteria(
   recentLeadMessages: string[],
   pool: SupabaseProperty[],
 ): { areas: string[]; bedrooms: number | null } {
-  const areaVocab = [...new Set(pool.map((p) => (p.area ?? "").trim()).filter(Boolean))];
+  // Vocabulary is the site's own area list (parents AND sub-areas), not just the
+  // strings that happen to appear in the catalog — a lead saying "Uluwatu" must
+  // be understood even when every Uluwatu listing is tagged Pecatu or Bingin.
+  // Longest first so "Uluwatu / Suluban" wins over a bare "Uluwatu" substring.
+  const areaVocab = [...new Set([...allAreaNames(), ...pool.map((p) => (p.area ?? "").trim())])]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
   const areas: string[] = [];
   let bedrooms: number | null = null;
 
@@ -241,9 +248,7 @@ export async function matchProperties(opts: {
   const criteria = extractLeadCriteria(opts.recentLeadMessages ?? [], pool);
   let candidates = pool;
   if (criteria.areas.length > 0) {
-    const byArea = candidates.filter((p) =>
-      criteria.areas.some((a) => (p.area ?? "").toLowerCase() === a.toLowerCase()),
-    );
+    const byArea = candidates.filter((p) => areaMatches(p.area, criteria.areas));
     if (byArea.length > 0) candidates = byArea;
   }
   if (criteria.bedrooms !== null) {
