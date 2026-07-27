@@ -521,15 +521,13 @@ router.post("/admin/bot-include", async (req, res) => {
     .set({ botExcluded: false, nextFollowupAt: now })
     .where(eq(leadsSyncTable.leadId, id));
 
-  await db
-    .update(pendingSuggestionsTable)
-    .set({ status: "pending" })
-    .where(
-      and(
-        eq(pendingSuggestionsTable.leadId, id),
-        eq(pendingSuggestionsTable.status, "skipped"),
-      ),
-    );
+  // Deliberately does NOT un-skip old suggestions. Excluding a lead cancels its
+  // pending drafts, so the mirror-image restore used to resurrect them — but by
+  // the time a lead is brought back those drafts are days old and answer a
+  // message the lead has since moved past. (Seen live: a lead returned after
+  // replying today got a 3-day-old "Noticed the guide landed on your end" push.)
+  // The schedulers write a fresh suggestion from the current conversation, which
+  // is the only thing that can be correct here.
 
   res.json({ ok: true, leadId: id });
 });
