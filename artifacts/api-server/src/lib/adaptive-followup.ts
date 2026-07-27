@@ -52,13 +52,22 @@ export function computeNextFollowupDays(opts: {
   let days = baseFollowupIntervalDays(opts.streak);
   const stage = (opts.leadStage ?? "").toLowerCase();
   const isFresh = (opts.ageDays ?? 9999) <= FRESH_LEAD_MAX_AGE_DAYS;
+  const isNearClosing = /zoom call|viewing|reservation|negotiat|feedback|handling objection/.test(stage);
 
-  // Deal-progression stages stay tighter on the first touches — move it forward.
+  // Cadence mirrors "cost of delay": the faster a lead decays if untouched, the
+  // shorter the interval.
+  //   • Fresh lead → speed-to-lead is the #1 conversion lever; keep it tight
+  //     regardless of streak (activation window).
+  //   • Hot / near-closing → strike while the intent/momentum is there.
+  //   • Deal-progression stages → tight on the first touches.
+  //   • Cold AND old → decays slowly, don't burn sends → stretch.
   if (stage.includes("needs assessed") && opts.streak <= 1) days = Math.min(days, 2);
   else if (stage.includes("options sent") && opts.streak === 0) days = Math.min(days, 3);
 
-  // Cold AND old → stretch (stop wasting sends). But a FRESH lead is the
-  // activation window — never stretch it, even if terse/cold. Freshness wins.
+  if (isFresh) days = Math.min(days, 3);
+  if (opts.temperature === "hot" || isNearClosing) days = Math.min(days, 2);
+
+  // Cold + old → stretch. A FRESH lead is never stretched (freshness wins).
   if (opts.temperature === "cold" && !isFresh) days = Math.round(days * 1.5);
 
   return Math.max(1, Math.min(days, 35));
@@ -78,35 +87,44 @@ export function computePushPriority(opts: {
   ageDays?: number | null;
   /** days a ready lead has been waiting past its eligible date (aging fairness) */
   daysWaitingPastEligible?: number;
+  /** broker set this task by hand (not the bot) — strongest "work this now" signal */
+  manualTask?: boolean | null;
 }): number {
+  // "Cost of delay" ranking: score ≈ how much we lose by NOT touching today.
+  // Big, well-separated tier boosts make it behave like a clear hierarchy while
+  // the aging term keeps it smooth and starvation-free.
   let score = 0;
   const stage = (opts.leadStage ?? "").toLowerCase();
   const isFresh = (opts.ageDays ?? 9999) <= FRESH_LEAD_MAX_AGE_DAYS;
+  const isNearClosing = /zoom call|viewing|reservation|negotiat|feedback|handling objection/.test(stage);
 
-  // Stage value (funnel progression bias). Fresh Contact Established is the
-  // activation window and ranks high; stale CE ranks lower.
-  if (stage.includes("needs assessed")) score += 40;
-  else if (stage.includes("options sent")) score += 30;
-  else if (stage.includes("contact established")) score += isFresh ? 35 : 20;
-  else score += 15;
+  // ── Top tiers (well separated so they dominate) ──────────────────────────
+  if (opts.manualTask) score += 100;        // broker explicitly said "work this today"
+  if (opts.temperature === "hot") score += 60;  // active buying intent — money on the table
+  if (isNearClosing) score += 55;               // deal in motion, momentum at risk
+  if (isFresh) score += 50;                      // speed-to-lead: freshness decays fastest
 
-  // Temperature / latent potential (from the distilled profile).
-  if (opts.temperature === "hot") score += 25;
-  else if (opts.temperature === "warm") score += 12;
-  if (typeof opts.potential === "number") score += opts.potential * 0.15; // up to +15
+  // ── Mid ──────────────────────────────────────────────────────────────────
+  if (opts.temperature === "warm") score += 25;
+  if (typeof opts.potential === "number") score += opts.potential * 0.2; // up to +20
+  if (opts.openQuestion) score += 8;            // an unanswered real question is waiting
 
-  // Unanswered real question waiting → nudge up.
-  if (opts.openQuestion) score += 8;
+  // Task urgency: due today > overdue > none.
+  if (opts.taskGroup === 1) score += 20;
+  else if (opts.taskGroup === 2) score += 12;
 
-  // Task urgency.
-  if (opts.taskGroup === 1) score += 15;
-  else if (opts.taskGroup === 2) score += 10;
+  // Light funnel-progression bias (CE freshness already boosted above).
+  if (stage.includes("needs assessed")) score += 15;
+  else if (stage.includes("options sent")) score += 12;
+  else if (stage.includes("contact established")) score += 8;
 
-  // Warmer streak (fewer ignored) ranks slightly higher.
-  score += Math.max(0, 6 - opts.streak);
+  // ── Penalties: low cost of delay (fine to wait) ──────────────────────────
+  if (opts.temperature === "cold" && !isFresh) score -= 12; // dormant, decays slowly
+  score -= Math.min(15, Math.max(0, (opts.streak ?? 0) - 2) * 3); // many ignored touches
 
-  // Aging fairness: the longer a ready lead waits unserved, the higher it climbs.
-  score += Math.min(40, Math.max(0, opts.daysWaitingPastEligible ?? 0) * 2);
+  // ── Aging fairness: the longer a ready lead waits unserved, the higher it
+  // climbs — nothing starves at the bottom. ────────────────────────────────
+  score += Math.min(50, Math.max(0, opts.daysWaitingPastEligible ?? 0) * 3);
 
   return score;
 }
