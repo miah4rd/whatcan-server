@@ -416,6 +416,11 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
           excludeIds,
           seenCount: excludeIds.length,
           latestLeadMessage: lastLeadText,
+          // newest first — the filter takes the most recent area/bedroom pin
+          recentLeadMessages: [
+            lastLeadText,
+            ...dialog.messages.filter((m) => m.from === "lead").slice(-5).reverse().map((m) => m.text),
+          ].filter(Boolean),
         });
       })
       .catch(() => [] as PropertyPick[]),

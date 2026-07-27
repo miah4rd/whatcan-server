@@ -142,6 +142,59 @@ function toPick(p: SupabaseProperty): PropertyPick {
  *    this broker's historically frequent picks (personalization, not a hard override).
  * Never mixes listing_type — sale and rent are filtered apart before any matching.
  */
+
+const WORD_NUMBERS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  один: 1, одна: 1, две: 2, два: 2, три: 3, четыре: 4, пять: 5,
+};
+
+/**
+ * Pull the lead's CURRENT area / bedroom requirements out of their own recent
+ * messages, newest first, so a mid-conversation change wins outright.
+ *
+ * This is deliberately code and not a prompt instruction: the matching model was
+ * told twice, in increasingly explicit terms, that the newest message overrides
+ * the rest — and both times it still attached 2BR Pererenan listings to a lead
+ * who had just asked for 3 bedrooms in Uluwatu, because the old criteria fill
+ * most of the transcript. Filtering the candidate list before the model ever
+ * sees it removes the chance to get this wrong.
+ */
+function extractLeadCriteria(
+  recentLeadMessages: string[],
+  pool: SupabaseProperty[],
+): { areas: string[]; bedrooms: number | null } {
+  const areaVocab = [...new Set(pool.map((p) => (p.area ?? "").trim()).filter(Boolean))];
+  const areas: string[] = [];
+  let bedrooms: number | null = null;
+
+  for (const raw of recentLeadMessages) {
+    const lower = (raw ?? "").toLowerCase();
+    if (!lower) continue;
+
+    for (const a of areaVocab) {
+      if (lower.includes(a.toLowerCase()) && !areas.some((x) => x.toLowerCase() === a.toLowerCase())) {
+        areas.push(a);
+      }
+    }
+
+    if (bedrooms === null) {
+      const digit = lower.match(/(\d+)\s*-?\s*(?:bed\b|beds\b|br\b|bedroom|bedrooms|спал)/);
+      if (digit?.[1]) {
+        bedrooms = parseInt(digit[1], 10);
+      } else {
+        // No \b here: JS word boundaries are ASCII-only, so \bтри never matched.
+        const word = lower.match(/(one|two|three|four|five|six|один|одна|две|два|три|четыре|пять)\s+(?:bed|bedroom|спал)/);
+        if (word?.[1]) bedrooms = WORD_NUMBERS[word[1]] ?? null;
+      }
+    }
+
+    // Stop at the newest message that pinned both — older ones are superseded.
+    if (areas.length > 0 && bedrooms !== null) break;
+  }
+
+  return { areas, bedrooms };
+}
+
 export async function matchProperties(opts: {
   listingType: ListingType;
   conversationText: string;
@@ -159,6 +212,9 @@ export async function matchProperties(opts: {
    * by the bulk — attaching Pererenan 2BRs to a reply that correctly said
    * "switching gears to Uluwatu, 3 bedrooms". */
   latestLeadMessage?: string | null;
+  /** The lead's own recent messages, NEWEST FIRST — used to hard-filter the
+   * candidate list by their current area / bedroom requirements. */
+  recentLeadMessages?: string[];
 }): Promise<PropertyPick[]> {
   const limit = opts.limit ?? 2;
   const all = await fetchAllProperties();
@@ -178,11 +234,34 @@ export async function matchProperties(opts: {
   // Too little conversation to infer real criteria from — skip the AI call.
   if (opts.conversationText.trim().length < 20) return [];
 
+  // ── Hard filter on the lead's CURRENT requirements ────────────────────────
+  // Applied before the model sees anything, so an outdated area or bedroom
+  // count is not even on the menu. Each filter is skipped when it would leave
+  // nothing — an imperfect suggestion beats an empty one.
+  const criteria = extractLeadCriteria(opts.recentLeadMessages ?? [], pool);
+  let candidates = pool;
+  if (criteria.areas.length > 0) {
+    const byArea = candidates.filter((p) =>
+      criteria.areas.some((a) => (p.area ?? "").toLowerCase() === a.toLowerCase()),
+    );
+    if (byArea.length > 0) candidates = byArea;
+  }
+  if (criteria.bedrooms !== null) {
+    const byBeds = candidates.filter((p) => p.bedrooms === criteria.bedrooms);
+    if (byBeds.length > 0) candidates = byBeds;
+  }
+  if (criteria.areas.length > 0 || criteria.bedrooms !== null) {
+    logger.info(
+      { areas: criteria.areas, bedrooms: criteria.bedrooms, poolSize: pool.length, candidates: candidates.length },
+      "matchProperties: filtered to the lead's current criteria",
+    );
+  }
+
   try {
     const brokerTop = opts.brokerId
-      ? await getTopPicksForBroker(opts.brokerId, pool.map((p) => p.id))
+      ? await getTopPicksForBroker(opts.brokerId, candidates.map((p) => p.id))
       : [];
-    const catalogBlock = pool.slice(0, 60).map(summaryLine).join("\n");
+    const catalogBlock = candidates.slice(0, 60).map(summaryLine).join("\n");
     // Deliberately weak wording: this hint kept resurfacing the same two
     // listings regardless of what the lead asked for.
     const brokerBlock = brokerTop.length > 0 ? `\n\nFYI, this broker has used these before: ${brokerTop.join(", ")}. Only pick one if it fits the lead's CURRENT criteria as well as any other candidate — never as a tie-breaker against a better fit.` : "";
@@ -220,7 +299,7 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
     });
 
     const ids = new Set((result.ids ?? []).map((id) => id.toUpperCase()));
-    const picked = pool.filter((p) => ids.has(p.id.toUpperCase()));
+    const picked = candidates.filter((p) => ids.has(p.id.toUpperCase()));
     return picked.slice(0, limit).map(toPick);
   } catch (err) {
     logger.error({ err }, "matchProperties: AI matching failed (non-fatal)");
