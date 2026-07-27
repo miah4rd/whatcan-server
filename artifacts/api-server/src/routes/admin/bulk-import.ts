@@ -514,11 +514,15 @@ router.post("/admin/bot-include", async (req, res) => {
     return void res.status(400).json({ error: "leadId required" });
   }
   const id = String(leadId).trim();
-  const now = new Date();
 
+  // nextFollowupAt stays NULL rather than `now`. Making a restored lead
+  // instantly due for a follow-up fires a "you haven't replied" nudge before
+  // anything has re-read the conversation — and a lead is often brought back
+  // precisely BECAUSE they just replied, so the nudge contradicts reality.
+  // The schedulers set a real due date once they've seen the current state.
   await db
     .update(leadsSyncTable)
-    .set({ botExcluded: false, nextFollowupAt: now })
+    .set({ botExcluded: false, nextFollowupAt: null })
     .where(eq(leadsSyncTable.leadId, id));
 
   // Deliberately does NOT un-skip old suggestions. Excluding a lead cancels its
