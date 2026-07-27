@@ -14,6 +14,32 @@ import { isAdaptiveBroker } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
 
+/**
+ * True when the timeline (lead_messages) holds a message FROM THE LEAD that is
+ * newer than anything in leads_sync.content.
+ *
+ * The two stores disagree by design: content is webhook-fed and can silently
+ * stop updating for a channel, while the 45s timeline poll keeps writing. When
+ * they disagree about who spoke last, the timeline is the one telling the truth.
+ * 60s of slack absorbs clock differences between the sources for what is really
+ * the same message.
+ */
+async function hasNewerLeadMessage(leadId: string, contentLastMs: number): Promise<boolean> {
+  try {
+    const [row] = await db
+      .select({ senderType: leadMessagesTable.senderType, sentAt: leadMessagesTable.sentAt })
+      .from(leadMessagesTable)
+      .where(eq(leadMessagesTable.leadId, leadId))
+      .orderBy(desc(leadMessagesTable.sentAt))
+      .limit(1);
+    if (!row || row.senderType !== "lead") return false;
+    return row.sentAt.getTime() > contentLastMs + 60_000;
+  } catch {
+    // Never let this check be the reason a follow-up silently stops working.
+    return false;
+  }
+}
+
 async function classifyObjection(
   conversationSnippet: string,
   brokerName: string,
@@ -540,17 +566,29 @@ export async function processFollowups(): Promise<void> {
         continue;
       }
 
-      // Defensive check: re-parse content to confirm lead hasn't actually replied.
-      // Guards against stale lastMessageFrom in DB.
-      if (lead.content) {
+      // Defensive check: confirm the lead hasn't actually replied before nudging
+      // them. Guards against a stale lastMessageFrom in the DB.
+      {
         const { parseDialogContent } = await import("./dialog-parser");
-        const parsed = parseDialogContent(lead.content);
-        if (parsed.lastMessage?.from === "lead") {
+        const parsed = lead.content ? parseDialogContent(lead.content) : null;
+        const contentLastMs = parsed?.lastMessage?.at?.getTime() ?? 0;
+
+        // content only refreshes on an amoCRM webhook, which for some channels
+        // (Instagram especially) never arrives — so it can sit hours behind while
+        // the timeline poll has already written the reply into lead_messages.
+        // Checking content alone sent "you haven't replied" nudges to leads who
+        // were sitting there waiting on US, which is the worst possible message.
+        const repliedPerTimeline = await hasNewerLeadMessage(lead.leadId, contentLastMs);
+
+        if (repliedPerTimeline || parsed?.lastMessage?.from === "lead") {
           await db
             .update(leadsSyncTable)
             .set({ lastMessageFrom: "lead", nextFollowupAt: null })
             .where(eq(leadsSyncTable.leadId, lead.leadId));
-          logger.info({ leadId: lead.leadId }, "scheduler: skipping push — content shows lead replied last");
+          logger.info(
+            { leadId: lead.leadId, source: repliedPerTimeline ? "timeline" : "content" },
+            "scheduler: skipping push — lead replied last",
+          );
           continue;
         }
       }

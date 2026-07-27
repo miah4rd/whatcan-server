@@ -745,6 +745,30 @@ async function pollNewIncomingLeadIds(cookieStr: string, lookbackMs = 5 * 60 * 1
  * Process a single lead: fetch timeline, store new messages, detect incoming,
  * generate LIVE suggestion if needed. Same as the full sync but for ONE lead.
  */
+/**
+ * Run the quick-poll pipeline for ONE lead, on demand.
+ *
+ * The scheduled paths are all-or-nothing: the quick poll only looks at leads
+ * with amoCRM activity in the last minute, and the full sweep walks every lead
+ * (~12 min) so a single restart aborts it. When one specific lead is known to be
+ * out of sync — a lead just restored from bot-exclusion, or a reply the webhook
+ * never delivered — there was no way to just fix that one. Now there is.
+ */
+export async function refreshLeadFromTimeline(
+  leadId: string,
+): Promise<{ ok: boolean; stored?: number; detected?: boolean; liveCreated?: boolean; error?: string }> {
+  const cookieStr = await getAmoCookies();
+  if (!cookieStr) return { ok: false, error: "no amoCRM cookies" };
+  try {
+    const r = await processQuickPollLead(cookieStr, leadId);
+    logger.info({ leadId, ...r }, "refreshLeadFromTimeline: done");
+    return { ok: true, ...r };
+  } catch (err) {
+    logger.error({ err, leadId }, "refreshLeadFromTimeline failed");
+    return { ok: false, error: String(err).slice(0, 200) };
+  }
+}
+
 async function processQuickPollLead(
   cookieStr: string,
   leadId: string,
