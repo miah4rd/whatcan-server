@@ -3,7 +3,7 @@ import { db, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable } from "
 import { desc, inArray, eq, and, sql } from "drizzle-orm";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
-import { computePushPriority, isAdaptiveBroker } from "../../lib/adaptive-followup";
+import { computePushPriority, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
 import { isPendingVisible, dedupePushPerLead } from "../../lib/pending-visibility";
 
 const router = Router();
@@ -225,7 +225,7 @@ router.get("/suggestions", async (req, res) => {
       };
     });
 
-    const enriched = enrichedRaw.filter((i) => !i._brokerReplied);
+    let enriched = enrichedRaw.filter((i) => !i._brokerReplied);
 
     // ── Stage priority map ───────────────────────────────────────────────────
     // Everything BEFORE "Needs Assessed" = unqualified = highest priority (1–20).
@@ -318,6 +318,21 @@ router.get("/suggestions", async (req, res) => {
           if (sa !== sb) return sb - sa; // higher score first
           try { return Number(BigInt(b.lead_id) - BigInt(a.lead_id)); } catch { return 0; }
         });
+
+        // Daily focus cap: surface only the top N ACTIVE-push items so the list
+        // stays workable (WhatsApp-safe) instead of dumping the whole overdue
+        // backlog. LIVE and REACH are never capped. The rest wait and rotate up
+        // as the top drains (approved leads reschedule out of "due").
+        if (PUSH_DAILY_CAP > 0) {
+          const isReachStage = (s: string | null) =>
+            ["1st follow up", "2nd follow up", "final follow up"].some((k) => (s ?? "").toLowerCase().includes(k));
+          let activePushShown = 0;
+          enriched = enriched.filter((i) => {
+            if (i.kind !== "push" || isReachStage(i.lead_stage)) return true; // LIVE + REACH always
+            activePushShown++;
+            return activePushShown <= PUSH_DAILY_CAP;
+          });
+        }
       } else {
         enriched.sort((a, b) => {
           // 1) funnel stage (unqualified stages first — see STAGE_RANK above)
