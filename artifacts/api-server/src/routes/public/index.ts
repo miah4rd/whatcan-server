@@ -17,6 +17,7 @@ import botExcludeRouter from "./bot-exclude";
 import userSettingsRouter from "./user-settings";
 import responsibleUsersRouter from "./responsible-users";
 import pushRouter from "./push";
+import whoamiRouter from "./whoami";
 
 const router = Router();
 
@@ -38,5 +39,6 @@ router.use(botExcludeRouter);
 router.use(userSettingsRouter);
 router.use(responsibleUsersRouter);
 router.use(pushRouter);
+router.use(whoamiRouter);
 
 export default router;

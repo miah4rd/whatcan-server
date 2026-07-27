@@ -17,14 +17,15 @@ const router = Router();
  * (default 80). refreshLeadProfile is cached, so re-running is cheap.
  */
 router.post("/admin/backfill-profiles", async (req, res) => {
-  const limit = Math.min(200, Math.max(1, Number(req.query["limit"]) || 80));
+  const limit = Math.min(300, Math.max(1, Number(req.query["limit"]) || 80));
+  const broker = (req.query["broker"] as string | undefined)?.trim() || "Robert";
   try {
     const rows = await db
       .select()
       .from(leadsSyncTable)
       .where(
         and(
-          eq(leadsSyncTable.responsibleUser, "Robert"),
+          eq(leadsSyncTable.responsibleUser, broker),
           eq(leadsSyncTable.botExcluded, false),
           isNotNull(leadsSyncTable.content),
         ),
@@ -73,8 +74,8 @@ router.post("/admin/backfill-profiles", async (req, res) => {
         logger.error({ err, leadId: lead.leadId }, "backfill-profiles: lead failed (non-fatal)");
       }
     }
-    logger.info({ scanned: active.length, profiled, flagged }, "admin: backfill-profiles complete");
-    res.json({ ok: true, scanned: active.length, profiled, flagged });
+    logger.info({ broker, scanned: active.length, profiled, flagged }, "admin: backfill-profiles complete");
+    res.json({ ok: true, broker, scanned: active.length, profiled, flagged });
   } catch (err) {
     logger.error({ err }, "admin: backfill-profiles error");
     res.status(500).json({ error: String(err) });
