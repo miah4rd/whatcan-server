@@ -625,7 +625,12 @@ const PAGE_HTML = `<!doctype html>
       });
       var json = await res.json().catch(function () { return {}; });
       if (!res.ok || !json.ok) {
-        item.error = "Webhook " + (json.hookStatus != null ? json.hookStatus : res.status);
+        // The server refuses to send when it can't resolve the outbound channel —
+        // say so in plain words instead of a bare status code, because the action
+        // the broker must take (send it by hand) is completely different.
+        item.error = json.message
+          ? json.message
+          : "Webhook " + (json.hookStatus != null ? json.hookStatus : res.status);
         item.busy = false; item._approving = false; render();
         return;
       }

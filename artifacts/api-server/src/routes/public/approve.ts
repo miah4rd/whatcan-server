@@ -347,6 +347,42 @@ router.post("/approve", async (req, res) => {
       msgPreview: body.message.slice(0, 120).replace(/\n/g, "↵"),
     }, "approve: message received");
 
+    // ── Resolve the outbound channel BEFORE sending ───────────────────────────
+    // Salesbot reads the "last messenger" field to decide which line/thread to
+    // send through. With that field empty it still accepts the trigger and
+    // returns 200, then delivers into the wrong conversation (or not at all) —
+    // amoCRM shows the message with a red "Error" while the broker's inbox says
+    // "Sent". That silent false success is worse than any delivery failure: the
+    // broker moves on believing the client was answered.
+    // So: no resolved channel, no send. Refuse loudly and keep the suggestion.
+    const messengerSource = await ensureMessengerField(sug.leadId).catch((e) => {
+      req.log.warn({ leadId: sug.leadId, err: e }, "ensureMessengerField threw");
+      return null;
+    });
+
+    const botId = COMPANION_ROBERT_BOT_ID;
+
+    if (!messengerSource) {
+      // Hand the suggestion back to the broker — it was claimed above, so
+      // release it or it would sit "approved" while nothing was delivered.
+      await db
+        .update(pendingSuggestionsTable)
+        .set({ status: "pending", finalText: null })
+        .where(eq(pendingSuggestionsTable.id, sug.id));
+
+      req.log.error(
+        { leadId: sug.leadId },
+        "approve aborted — outbound channel unresolved, refusing to send blind",
+      );
+      res.status(409).json({
+        ok: false,
+        error: "channel_unresolved",
+        message:
+          "Не удалось определить канал отправки для этого лида — сообщение НЕ отправлено. Отправьте вручную из amoCRM (подсказка осталась в инбоксе).",
+      });
+      return;
+    }
+
     // ── Update leads_sync BEFORE sending message ────────────────────────────
     const [prevSyncRow] = await db
       .select({ lastMessageFrom: leadsSyncTable.lastMessageFrom })
@@ -382,15 +418,9 @@ router.post("/approve", async (req, res) => {
         .where(eq(leadsSyncTable.leadId, sug.leadId));
     }
 
-    // ── Ensure messenger field is filled before Salesbot ──────────────────────
-    await ensureMessengerField(sug.leadId).catch((e) => {
-      req.log.warn({ leadId: sug.leadId, err: e }, "ensureMessengerField failed (non-fatal)");
-    });
-
     // ── Send via Salesbot (replaces F5 hook) ──────────────────────────────────
     // 1. Write message to custom field "companion massage"
     // 2. Trigger Salesbot "Companion Robert" which reads the field and sends via WhatsApp
-    const botId = COMPANION_ROBERT_BOT_ID;
     try {
       const fieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, body.message);
       if (fieldOk) {
@@ -407,7 +437,7 @@ router.post("/approve", async (req, res) => {
       hookStatus = 500;
       hookBody = String(e).slice(0, 1000);
     }
-    req.log.info({ leadId: sug.leadId, hookStatus, chatSent, hookBody }, "Salesbot response");
+    req.log.info({ leadId: sug.leadId, messengerSource, hookStatus, chatSent, hookBody }, "Salesbot response");
 
     // Send each property link as its OWN follow-up WhatsApp message — glued
     // into one message, WhatsApp only unfurls a rich preview banner for the

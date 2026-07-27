@@ -220,8 +220,11 @@ export async function ensureMessengerField(leadId: string): Promise<string | nul
       }
       return String(sourceId);
     }
+    // Salesbot needs the numeric source ID; an unmappable name is not a channel
+    // it can route on. Returning it anyway let callers treat this as "resolved"
+    // and send blind, which lands the message in the wrong thread.
     logger.warn({ leadId, value: current }, "messenger field has unknown name, cannot map to source ID");
-    return current;
+    return null;
   }
 
   // 2. Empty — scan lead page
