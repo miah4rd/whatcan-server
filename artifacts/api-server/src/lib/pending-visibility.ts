@@ -1,5 +1,5 @@
 import { parseDialogContent } from "./dialog-parser";
-import { shouldSuppressPush } from "./stage-routing";
+import { shouldSuppressPush, isClosedWonStage } from "./stage-routing";
 import { isPushStageAllowed } from "./push-stage-whitelist";
 
 // Shared visibility rules for pending suggestions. This is the single source of
@@ -41,8 +41,14 @@ export function isPendingVisible(
 
   // Never show leads on dead stages — closed, lost, incorrect information, incoming leads, etc.
   // Uses the same suppression list as the push scheduler for consistency.
+  // EXCEPTION: a Closed-WON lead (deal done) is finished for proactive PUSH, but
+  // if that past client writes again it should still surface in LIVE — a warm
+  // client reaching out. Everything else dead (lost / not active / incorrect /
+  // incoming) stays hidden in every tab.
   const stage = sync?.leadStage ?? "";
-  if (stage && shouldSuppressPush(stage)) return false;
+  if (stage && shouldSuppressPush(stage)) {
+    if (!(r.kind === "live" && isClosedWonStage(stage))) return false;
+  }
 
   // Push tab: only show stages in the dynamic whitelist (configurable via /api/admin/push-stages).
   // Rental pipeline uses its own stage vocabulary (Qualified, New LEAD, Options sent,

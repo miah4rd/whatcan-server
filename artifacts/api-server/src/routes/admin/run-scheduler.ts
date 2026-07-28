@@ -49,7 +49,18 @@ router.post("/admin/backfill-profiles", async (req, res) => {
 
     const active = rows.filter((r) => {
       const s = (r.leadStage ?? "").toLowerCase();
-      return s.includes("contact established") || s.includes("needs assessed") || s.includes("options sent") || s.includes("option send");
+      // All active-funnel stages (CE → Negotiation), not just the first three.
+      // Mirrors the expanded push whitelist so the later stages (Zoom / Viewing /
+      // Feedback / Contract / Reservation / Negotiation) also get profiles.
+      return (
+        s.includes("contact established") ||
+        s.includes("needs assessed") ||
+        s.includes("options sent") || s.includes("option send") ||
+        s.includes("zoom call") ||
+        s.includes("viewing") ||
+        s.includes("feedback") || s.includes("handling objection") ||
+        s.includes("reservation") || s.includes("negotiation") || s.includes("contract")
+      );
     });
 
     let profiled = 0;
