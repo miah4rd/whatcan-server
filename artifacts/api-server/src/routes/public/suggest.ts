@@ -114,6 +114,10 @@ router.post("/suggest", async (req, res) => {
       // it suggest based on a stale, truncated thread). Merge + dedupe by
       // text+minute, then sort — so nothing recent is missed.
       type MMsg = { at: Date; from: "us" | "lead"; senderName: string; text: string; channel: string | null };
+      // Dedupe by NORMALISED TEXT only, not text+time: the same message carries
+      // different timestamps in content (Moscow UTC+3) vs lead_messages, so a
+      // time-based key left visible duplicates of every message.
+      const norm = (s: string) => (s ?? "").trim().replace(/\s+/g, " ").toLowerCase().slice(0, 160);
       let merged: MMsg[] = [];
       if (sync?.content) {
         const dialog = parseDialogContent(sync.content);
@@ -124,13 +128,12 @@ router.post("/suggest", async (req, res) => {
           .select({ senderType: leadMessagesTable.senderType, text: leadMessagesTable.text, sentAt: leadMessagesTable.sentAt, channel: leadMessagesTable.channel })
           .from(leadMessagesTable)
           .where(eq(leadMessagesTable.leadId, body.leadId));
-        const seen = new Set(merged.map((m) => `${m.text}|${Math.floor(m.at.getTime() / 60000)}`));
+        const seen = new Set(merged.map((m) => norm(m.text)));
         for (const t of tl) {
-          const at = t.sentAt ?? new Date(0);
-          const key = `${t.text ?? ""}|${Math.floor(at.getTime() / 60000)}`;
-          if (seen.has(key)) continue;
+          const key = norm(t.text ?? "");
+          if (!key || seen.has(key)) continue;
           seen.add(key);
-          merged.push({ at, from: t.senderType === "lead" ? "lead" : "us", senderName: t.senderType === "lead" ? "Lead" : "Us", text: t.text ?? "", channel: t.channel ?? null });
+          merged.push({ at: t.sentAt ?? new Date(0), from: t.senderType === "lead" ? "lead" : "us", senderName: t.senderType === "lead" ? "Lead" : "Us", text: t.text ?? "", channel: t.channel ?? null });
         }
       } catch {
         // content-only fallback
