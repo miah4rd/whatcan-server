@@ -91,13 +91,28 @@ router.get("/suggestions", async (req, res) => {
     // (lib/pending-visibility.ts) so the icon number always matches the inbox.
     // timelineMsgsByLead is newest-first, so [0] is the newest message we know
     // of from the timeline — the tie-breaker when webhook-fed content is stale.
+    // Reply signal per lead computed in SQL (max inbound vs max outbound). MUST be
+    // a per-lead aggregate, not the capped row fetch above — that global LIMIT can
+    // miss an older lead's messages entirely, which is exactly why answered leads
+    // stayed stuck in LIVE (and why their conversation looked truncated).
+    const signalRows =
+      allLeadIds.length > 0
+        ? await db
+            .select({
+              leadId: leadMessagesTable.leadId,
+              lastLeadMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} = 'lead')) * 1000, 0)`,
+              lastOursMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} <> 'lead')) * 1000, 0)`,
+            })
+            .from(leadMessagesTable)
+            .where(inArray(leadMessagesTable.leadId, allLeadIds))
+            .groupBy(leadMessagesTable.leadId)
+        : [];
+    const signalByLead = new Map(
+      signalRows.map((r) => [r.leadId, { lastLeadAt: Number(r.lastLeadMs) || 0, lastOursAt: Number(r.lastOursMs) || 0 }]),
+    );
+
     let items = allPending.filter((r) =>
-      isPendingVisible(
-        r,
-        syncByLeadId.get(r.leadId),
-        pushWhitelist,
-        repliedSignalFromTimeline(timelineMsgsByLead.get(r.leadId) ?? []),
-      ),
+      isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, signalByLead.get(r.leadId)),
     );
 
     if (kind === "live" || kind === "push") items = items.filter((r) => r.kind === kind);
