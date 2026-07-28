@@ -2,7 +2,7 @@ import { Router } from "express";
 import { randomUUID } from "crypto";
 import { eq, desc } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON, type ChatMessage } from "../../lib/ai-client";
-import { db, leadsSyncTable, brokerCorrectionsTable } from "@workspace/db";
+import { db, leadsSyncTable, brokerCorrectionsTable, leadMessagesTable } from "@workspace/db";
 import { parseDialogContent, formatDialogForAI } from "../../lib/dialog-parser";
 import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing";
 import { getQualificationSteps } from "../../lib/settings";
@@ -104,16 +104,45 @@ router.post("/suggest", async (req, res) => {
         .where(eq(leadsSyncTable.leadId, body.leadId))
         .limit(1);
       const sync = syncRows[0];
+
+      // Build the conversation from BOTH sources and merge them:
+      //   • leads_sync.content — webhook-fed, but for WhatsApp / replies sent
+      //     manually from the phone it FREEZES and stops recording new messages;
+      //   • lead_messages — the timeline poll, which DOES capture our outgoing
+      //     WhatsApp replies and the latest incoming.
+      // Reading content alone left the bot blind to the newest messages (and made
+      // it suggest based on a stale, truncated thread). Merge + dedupe by
+      // text+minute, then sort — so nothing recent is missed.
+      type MMsg = { at: Date; from: "us" | "lead"; senderName: string; text: string; channel: string | null };
+      let merged: MMsg[] = [];
       if (sync?.content) {
         const dialog = parseDialogContent(sync.content);
-        // Full history, not a recency window — losing the lead's original
-        // ask from early in a long conversation produces worse suggestions.
-        fullTranscript = formatDialogForAI(dialog.messages, 500);
-        // Return last 30 messages to extension for conversation history display
-        recentMessages = dialog.messages.slice(-30).map((m) => ({
-          from: m.from === "us" ? "us" : "lead",
-          text: m.text,
-        }));
+        merged = dialog.messages.map((m) => ({ at: m.at, from: m.from, senderName: m.senderName, text: m.text, channel: m.channel }));
+      }
+      try {
+        const tl = await db
+          .select({ senderType: leadMessagesTable.senderType, text: leadMessagesTable.text, sentAt: leadMessagesTable.sentAt, channel: leadMessagesTable.channel })
+          .from(leadMessagesTable)
+          .where(eq(leadMessagesTable.leadId, body.leadId));
+        const seen = new Set(merged.map((m) => `${m.text}|${Math.floor(m.at.getTime() / 60000)}`));
+        for (const t of tl) {
+          const at = t.sentAt ?? new Date(0);
+          const key = `${t.text ?? ""}|${Math.floor(at.getTime() / 60000)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push({ at, from: t.senderType === "lead" ? "lead" : "us", senderName: t.senderType === "lead" ? "Lead" : "Us", text: t.text ?? "", channel: t.channel ?? null });
+        }
+      } catch {
+        // content-only fallback
+      }
+      merged.sort((a, b) => a.at.getTime() - b.at.getTime());
+
+      if (merged.length > 0) {
+        // Full history, not a recency window — losing the lead's original ask
+        // from early in a long conversation produces worse suggestions.
+        fullTranscript = formatDialogForAI(merged, 500);
+        // Last 30 messages for the extension's conversation display.
+        recentMessages = merged.slice(-30).map((m) => ({ from: m.from === "us" ? "us" : "lead", text: m.text }));
       }
       if (sync?.leadStage) dbLeadStage = sync.leadStage;
       if (sync?.lastMessageFrom) dbLastMessageFrom = sync.lastMessageFrom;
