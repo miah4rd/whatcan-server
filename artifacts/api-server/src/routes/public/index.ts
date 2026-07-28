@@ -20,6 +20,7 @@ import pushRouter from "./push";
 import whoamiRouter from "./whoami";
 import setTemperatureRouter from "./set-temperature";
 import rescheduleTaskRouter from "./reschedule-task";
+import noReplyNeededRouter from "./no-reply-needed";
 
 const router = Router();
 
@@ -44,5 +45,6 @@ router.use(pushRouter);
 router.use(whoamiRouter);
 router.use(setTemperatureRouter);
 router.use(rescheduleTaskRouter);
+router.use(noReplyNeededRouter);
 
 export default router;
