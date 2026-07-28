@@ -1,8 +1,47 @@
 import { db, leadsSyncTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, and, isNotNull, desc } from "drizzle-orm";
 import { chatCompletionJSON } from "./ai-client";
 import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
 import { logger } from "./logger";
+
+/**
+ * Build a calibration block from this broker's past manual temperature
+ * corrections (leads where they overrode the bot's read). Fed into the profile
+ * prompt so the AI gradually learns THIS broker's judgment — the "bot learns
+ * from the broker" loop the owner asked for. Cheap: one bounded query, only when
+ * a fresh distillation is actually happening.
+ */
+async function fetchTemperatureCalibration(broker: string | null): Promise<string> {
+  if (!broker) return "";
+  try {
+    const rows = await db
+      .select({
+        ai: leadsSyncTable.profileTemperatureAi,
+        eff: leadsSyncTable.profileTemperature,
+        summary: leadsSyncTable.profileSummary,
+      })
+      .from(leadsSyncTable)
+      .where(
+        and(
+          eq(leadsSyncTable.responsibleUser, broker),
+          eq(leadsSyncTable.profileTemperatureSource, "broker"),
+          isNotNull(leadsSyncTable.profileTemperatureAi),
+        ),
+      )
+      .orderBy(desc(leadsSyncTable.profileTemperatureOverrideAt))
+      .limit(12);
+    const disagreements = rows.filter((r) => r.ai && r.eff && r.ai !== r.eff).slice(0, 8);
+    if (disagreements.length === 0) return "";
+    return (
+      `\n\nBROKER CALIBRATION — this broker has manually corrected your temperature read on the leads below (they may know things not in the chat: phone calls, meetings, offline context). Study the pattern and apply the SAME judgment here, leaning toward the broker's calls when the signals are similar:\n` +
+      disagreements
+        .map((d, i) => `${i + 1}. You read "${d.ai}", broker set "${d.eff}". Lead: ${d.summary || "(no summary)"}`)
+        .join("\n")
+    );
+  } catch {
+    return "";
+  }
+}
 
 /**
  * The distilled "lead profile" — a small, structured summary the bot maintains
@@ -112,6 +151,8 @@ export async function refreshLeadProfile(opts: {
   // already capped by formatDialogForAI's default. Keep it modest here.
   const dialog = formatDialogForAI(parsed.messages.slice(-40), 40, true);
 
+  const calibrationBlock = await fetchTemperatureCalibration(opts.responsibleUser);
+
   let profile: LeadProfile;
   try {
     const raw = await chatCompletionJSON<Partial<LeadProfile>>({
@@ -131,7 +172,7 @@ Fields:
 - alive: "alive" | "dead_candidate" (per the rule above).
 - summary: 1-2 lines capturing the essence of this lead (who they are, what they want, where it stands).
 
-Respond with ONLY the JSON object.`,
+Respond with ONLY the JSON object.${calibrationBlock}`,
       messages: [
         {
           role: "user",
@@ -146,24 +187,52 @@ Respond with ONLY the JSON object.`,
     return opts.stored ? readStoredProfile(opts.stored) : null;
   }
 
+  // Respect a broker's manual temperature override: their call is sticky (they
+  // may have offline context the chat doesn't show). We still refresh the AI's
+  // OWN reading into profile_temperature_ai every time so drift and the
+  // calibration signal above stay current — we just don't let it overwrite the
+  // effective value the broker set.
+  let brokerOverridden = false;
+  let effectiveTemp = profile.temperature;
   try {
-    await db
-      .update(leadsSyncTable)
-      .set({
-        profileTemperature: profile.temperature,
-        profilePotential: profile.potential,
-        profileIntent: profile.intent,
-        profileTimeframe: profile.timeframe,
-        profileOpenQuestion: profile.openQuestion,
-        profileAlive: profile.alive,
-        profileSummary: profile.summary,
-        profileUpdatedAt: new Date(),
-        profileSourceMsgAt: lastLeadAt,
+    const [cur] = await db
+      .select({
+        src: leadsSyncTable.profileTemperatureSource,
+        temp: leadsSyncTable.profileTemperature,
       })
-      .where(eq(leadsSyncTable.leadId, opts.leadId));
+      .from(leadsSyncTable)
+      .where(eq(leadsSyncTable.leadId, opts.leadId))
+      .limit(1);
+    brokerOverridden = cur?.src === "broker";
+    if (brokerOverridden && TEMP_VALUES.has(String(cur?.temp))) {
+      effectiveTemp = cur!.temp as LeadProfile["temperature"];
+    }
+  } catch {
+    // non-fatal — fall back to AI temperature
+  }
+
+  try {
+    const setObj: Partial<typeof leadsSyncTable.$inferInsert> = {
+      profilePotential: profile.potential,
+      profileIntent: profile.intent,
+      profileTimeframe: profile.timeframe,
+      profileOpenQuestion: profile.openQuestion,
+      profileAlive: profile.alive,
+      profileSummary: profile.summary,
+      profileUpdatedAt: new Date(),
+      profileSourceMsgAt: lastLeadAt,
+      profileTemperatureAi: profile.temperature, // always store the AI's raw read
+    };
+    if (!brokerOverridden) {
+      setObj.profileTemperature = profile.temperature;
+      setObj.profileTemperatureSource = "ai";
+    }
+    await db.update(leadsSyncTable).set(setObj).where(eq(leadsSyncTable.leadId, opts.leadId));
   } catch (err) {
     logger.error({ err, leadId: opts.leadId }, "lead-profile: persist failed (non-fatal)");
   }
 
-  return profile;
+  // Return the EFFECTIVE profile so callers (ranking, generation) act on the
+  // broker's corrected temperature, not the AI's superseded read.
+  return { ...profile, temperature: effectiveTemp };
 }

@@ -82,6 +82,9 @@ pool.query(`ALTER TABLE leads_sync ADD COLUMN IF NOT EXISTS amo_created_at TIMES
 pool.query(`
   ALTER TABLE leads_sync
     ADD COLUMN IF NOT EXISTS profile_temperature TEXT,
+    ADD COLUMN IF NOT EXISTS profile_temperature_source TEXT,
+    ADD COLUMN IF NOT EXISTS profile_temperature_ai TEXT,
+    ADD COLUMN IF NOT EXISTS profile_temperature_override_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS profile_potential INTEGER,
     ADD COLUMN IF NOT EXISTS profile_intent TEXT,
     ADD COLUMN IF NOT EXISTS profile_timeframe TEXT,

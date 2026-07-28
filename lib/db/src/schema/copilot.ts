@@ -86,7 +86,14 @@ export const leadsSyncTable = pgTable("leads_sync", {
   // ── Distilled lead profile (see lib/lead-profile.ts) — maintained on new lead
   // activity, read for free by the daily ranking so it stays context-aware
   // without re-reading conversations every day. ─────────────────────────────
-  profileTemperature: text("profile_temperature"),        // cold | warm | hot
+  profileTemperature: text("profile_temperature"),        // cold | warm | hot — EFFECTIVE value (broker override wins over AI)
+  // Broker temperature override: the broker can correct the bot's read in the
+  // extension. When source = "broker" the value above is sticky (refreshLeadProfile
+  // won't overwrite it) and profileTemperatureAi keeps the AI's latest reading so
+  // the disagreement can be fed back as calibration. See lib/lead-profile.ts.
+  profileTemperatureSource: text("profile_temperature_source"), // ai | broker
+  profileTemperatureAi: text("profile_temperature_ai"),         // AI's latest raw read (for drift/learning)
+  profileTemperatureOverrideAt: timestamp("profile_temperature_override_at", { withTimezone: true }),
   profilePotential: integer("profile_potential"),         // 0-100 latent potential
   profileIntent: text("profile_intent"),                  // short phrase of what they want
   profileTimeframe: text("profile_timeframe"),            // implied timing for next step, or null

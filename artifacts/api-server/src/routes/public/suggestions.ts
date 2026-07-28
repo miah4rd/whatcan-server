@@ -3,7 +3,7 @@ import { db, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable } from "
 import { desc, inArray, eq, and, sql } from "drizzle-orm";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
-import { computePushPriority, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
+import { computePushPriority, computeNextFollowupDays, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
 import { isPendingVisible, dedupePushPerLead } from "../../lib/pending-visibility";
 
 const router = Router();
@@ -212,6 +212,24 @@ router.get("/suggestions", async (req, res) => {
         suggested_stage_terminal: i.suggestedStageTerminal ?? false,
         // Distilled profile (for adaptive ranking + surfaced to the client UI)
         profile_temperature: sync?.profileTemperature ?? null,
+        // Whether the temperature was set by the broker (sticky) or the AI — the
+        // extension shows a ✎ marker so the broker knows it's their call.
+        profile_temperature_source: sync?.profileTemperatureSource ?? null,
+        // Adaptive suggested date for the NEXT follow-up (cost-of-delay cadence:
+        // fresh/hot → tight, cold+old → stretched). The bot proposes this as the
+        // default when the broker reschedules the task from the chip.
+        suggested_followup_at: new Date(
+          Date.now() +
+            computeNextFollowupDays({
+              streak: trailingUnanswered,
+              leadStage: sync?.leadStage,
+              temperature: (sync?.profileTemperature as "cold" | "warm" | "hot" | null) ?? undefined,
+              ageDays: sync?.amoCreatedAt
+                ? Math.floor((Date.now() - sync.amoCreatedAt.getTime()) / 86400000)
+                : null,
+            }) *
+              86400000,
+        ).toISOString(),
         profile_potential: sync?.profilePotential ?? null,
         profile_open_question: sync?.profileOpenQuestion ?? null,
         profile_alive: sync?.profileAlive ?? null,
