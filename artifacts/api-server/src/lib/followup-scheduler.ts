@@ -8,6 +8,7 @@ import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestio
 import { OBJECTION_PLAYBOOK, type PlaybookEntry } from "./objection-playbook";
 import { shouldSuppressPush, isStageWhitelisted } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
+import { getMergedConversation } from "./merged-conversation";
 import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
 import { generateSuggestion } from "./generate-suggestion";
 import { isAdaptiveBroker } from "./adaptive-followup";
@@ -156,6 +157,7 @@ Write the follow-up message.`,
  */
 export async function generatePushFollowup(opts: {
   responsibleUser: string | null;
+  leadId: string;
   leadStage: string;
   lastContent: string;
   leadNotes?: string | null;
@@ -163,10 +165,12 @@ export async function generatePushFollowup(opts: {
   correctionsBlock?: string;
 }): Promise<{ text: string; rationale: string }> {
   const brokerName = opts.responsibleUser ?? "Broker";
-  const parsedDialog = parseDialogContent(opts.lastContent);
+  // Merge content + lead_messages so a push is never built from a frozen,
+  // truncated thread (see lib/merged-conversation.ts).
+  const mergedMessages = await getMergedConversation(opts.leadId, opts.lastContent);
   const now = new Date();
-  const formattedDialog = formatDialogForAI(parsedDialog.messages, 500, true);
-  const timingSummary = describeConversationTiming(parsedDialog.messages, now);
+  const formattedDialog = formatDialogForAI(mergedMessages, 500, true);
+  const timingSummary = describeConversationTiming(mergedMessages, now);
   const isCold = opts.trailingUnanswered >= 3;
 
   const leadContext = opts.leadNotes?.trim()
@@ -804,6 +808,7 @@ export async function processFollowups(): Promise<void> {
         const pushCorrections = await buildBrokerCorrectionsBlock(pushBrokerIdKey, correctionsCache);
         const generated = await generatePushFollowup({
           responsibleUser: lead.responsibleUser,
+          leadId: lead.leadId,
           leadStage: lead.leadStage ?? "",
           lastContent: lead.content ?? "",
           leadNotes: lead.leadNotes,
