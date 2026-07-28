@@ -1034,14 +1034,12 @@ const PAGE_HTML = `<!doctype html>
       $("#voice-btn").onclick = function () { startVoiceDictation($("#ai-input"), $("#voice-btn")); };
       $("#save-edit-btn").onclick = function () {
         stopVoiceDictation();
-        var aiInstr = $("#ai-input").value.trim();
-        if (aiInstr) {
-          if (editValue && editValue !== it.text) it.text = editValue;
-          rewriteServer(it, aiInstr);
-          editing = false; editValue = "";
-        } else {
-          it.text = editValue; editing = false; render();
-        }
+        // The checkmark ALWAYS saves the broker's manual edit verbatim. AI
+        // rewriting is a separate, explicit action (the Send button next to the
+        // AI box, or Enter inside it). Save must never regenerate the message:
+        // a stray word left in the AI box would otherwise silently throw away
+        // everything the broker just typed.
+        it.text = editValue; editing = false; render();
       };
       $("#cancel-edit-btn").onclick = function () { stopVoiceDictation(); editing = false; render(); };
       $("#ai-input").onkeydown = function (e) {
