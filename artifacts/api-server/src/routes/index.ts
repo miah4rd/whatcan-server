@@ -29,8 +29,14 @@ import pipelinesRouter from "./admin/pipelines";
 import syncTimelineRouter from "./admin/sync-timeline";
 import amocrmChatWebhookRouter from "./amocrm-chat-webhook";
 import sendChatMessageRouter from "./public/send-chat-message";
+import { adminAuth } from "../lib/admin-auth";
 
 const router: IRouter = Router();
+
+// Guard internal /admin/* and /debug/* endpoints (see lib/admin-auth.ts). Must be
+// first so it runs before any admin router. amoCRM webhooks, /public (extension),
+// health, downloads, dashboard and the amo-oauth callback are NOT affected.
+router.use(adminAuth);
 
 router.use(healthRouter);
 router.use("/public", publicRouter);

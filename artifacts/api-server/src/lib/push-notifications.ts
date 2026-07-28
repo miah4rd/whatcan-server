@@ -118,9 +118,9 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
     const syncByLeadId = new Map(syncRows.map((r) => [r.leadId, r]));
     const whitelist = await getPushStageWhitelist();
 
-    // Same timeline tie-breaker the inbox uses — the badge must not count a
-    // suggestion the inbox hides, nor miss one it shows.
-    const newestByLead = new Map<string, { senderType: string; sentAt: Date }>();
+    // Same reply signal the inbox uses — the badge must not count a suggestion the
+    // inbox hides, nor miss one it shows (max inbound vs max outbound per lead).
+    const signalByLead = new Map<string, { lastLeadAt: number; lastOursAt: number }>();
     try {
       const msgRows = await db
         .select({
@@ -132,11 +132,17 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
         .where(inArray(leadMessagesTable.leadId, leadIds))
         .orderBy(desc(leadMessagesTable.sentAt))
         .limit(600);
-      for (const m of msgRows) if (!newestByLead.has(m.leadId)) newestByLead.set(m.leadId, m);
+      for (const m of msgRows) {
+        const s = signalByLead.get(m.leadId) ?? { lastLeadAt: 0, lastOursAt: 0 };
+        const t = m.sentAt?.getTime?.() ?? 0;
+        if (m.senderType === "lead") s.lastLeadAt = Math.max(s.lastLeadAt, t);
+        else s.lastOursAt = Math.max(s.lastOursAt, t);
+        signalByLead.set(m.leadId, s);
+      }
     } catch { /* fall back to content-only rules */ }
 
     const visible = dedupePushPerLead(
-      rows.filter((r) => isPendingVisible(r, syncByLeadId.get(r.leadId), whitelist, newestByLead.get(r.leadId))),
+      rows.filter((r) => isPendingVisible(r, syncByLeadId.get(r.leadId), whitelist, signalByLead.get(r.leadId))),
     );
     return visible.length;
   } catch {

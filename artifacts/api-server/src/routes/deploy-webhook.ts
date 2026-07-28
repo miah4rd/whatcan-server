@@ -6,12 +6,15 @@ import { logger } from "../lib/logger";
 const execAsync = promisify(exec);
 const router = Router();
 
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "whatcan-deploy-2026";
+// Fail CLOSED: no hardcoded fallback. If WEBHOOK_SECRET is unset the webhook is
+// disabled (401), instead of accepting a default secret that lives in the source
+// and would let anyone trigger a prod deploy (git pull + build + pm2 restart).
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 router.post("/webhook/deploy", async (req, res) => {
   const secret = req.headers["x-webhook-secret"] as string;
-  
-  if (secret !== WEBHOOK_SECRET) {
+
+  if (!WEBHOOK_SECRET || secret !== WEBHOOK_SECRET) {
     res.status(401).json({ error: "unauthorized" });
     return;
   }

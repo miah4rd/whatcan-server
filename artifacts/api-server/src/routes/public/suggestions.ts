@@ -4,7 +4,7 @@ import { desc, inArray, eq, and, sql } from "drizzle-orm";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
 import { computePushPriority, computeNextFollowupDays, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
-import { isPendingVisible, dedupePushPerLead } from "../../lib/pending-visibility";
+import { isPendingVisible, dedupePushPerLead, repliedSignalFromTimeline } from "../../lib/pending-visibility";
 
 const router = Router();
 
@@ -92,7 +92,12 @@ router.get("/suggestions", async (req, res) => {
     // timelineMsgsByLead is newest-first, so [0] is the newest message we know
     // of from the timeline — the tie-breaker when webhook-fed content is stale.
     let items = allPending.filter((r) =>
-      isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, timelineMsgsByLead.get(r.leadId)?.[0]),
+      isPendingVisible(
+        r,
+        syncByLeadId.get(r.leadId),
+        pushWhitelist,
+        repliedSignalFromTimeline(timelineMsgsByLead.get(r.leadId) ?? []),
+      ),
     );
 
     if (kind === "live" || kind === "push") items = items.filter((r) => r.kind === kind);
@@ -243,7 +248,11 @@ router.get("/suggestions", async (req, res) => {
       };
     });
 
-    let enriched = enrichedRaw.filter((i) => !i._brokerReplied);
+    // LIVE staleness is now decided authoritatively upstream by isPendingVisible
+    // (max inbound vs max outbound across content + lead_messages), so no second,
+    // weaker filter here — that older last-element check could re-hide a genuine
+    // LIVE that the robust rule correctly kept.
+    let enriched = enrichedRaw;
 
     // ── Stage priority map ───────────────────────────────────────────────────
     // Everything BEFORE "Needs Assessed" = unqualified = highest priority (1–20).
