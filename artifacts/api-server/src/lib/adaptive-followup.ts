@@ -20,10 +20,15 @@ export type Temperature = "cold" | "warm" | "hot" | null | undefined;
  * cadence, priority ranking, discard flags) is enabled. Roll out to a new
  * broker by adding their exact amoCRM name here — every gate reads this set.
  */
-export const ADAPTIVE_BROKERS = new Set<string>(["Robert", "Amelia"]);
+// Rolled out from the initial Robert+Amelia pilot to ALL brokers. The only
+// carve-out is HoS: that account runs the Rental pipeline (its leads would be
+// wrongly Unicorn-filtered by the adaptive path), and it already has its own
+// handling in pending-visibility. Every other broker is ~100% Unicorn, so the
+// adaptive follow-up / ranking / temperature system is safe and on for them.
+const NON_ADAPTIVE_BROKERS = new Set<string>(["HoS"]);
 
 export function isAdaptiveBroker(user: string | null | undefined): boolean {
-  return !!user && ADAPTIVE_BROKERS.has(user);
+  return !!user && !NON_ADAPTIVE_BROKERS.has(user);
 }
 
 // Base wait (days) indexed by silence streak = consecutive unanswered touches.
