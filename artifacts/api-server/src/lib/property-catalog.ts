@@ -250,6 +250,14 @@ export async function availabilityForCriteria(opts: {
   return { areas, bedrooms, matching: matching.length, nearbyAreas: nearby.slice(0, 6) };
 }
 
+/** A shortlist of one is a take-it-or-leave-it, not a choice. Never send fewer. */
+const MIN_SHORTLIST = 2;
+
+function bedroomDistance(p: SupabaseProperty, wanted: number | null): number {
+  if (wanted === null || p.bedrooms === null) return 99;
+  return Math.abs(p.bedrooms - wanted);
+}
+
 export async function matchProperties(opts: {
   listingType: ListingType;
   conversationText: string;
@@ -302,8 +310,19 @@ export async function matchProperties(opts: {
     if (byArea.length > 0) candidates = byArea;
   }
   if (criteria.bedrooms !== null) {
-    const byBeds = candidates.filter((p) => p.bedrooms === criteria.bedrooms);
-    if (byBeds.length > 0) candidates = byBeds;
+    const exact = candidates.filter((p) => p.bedrooms === criteria.bedrooms);
+    // A filter that leaves a single survivor makes a shortlist impossible — and
+    // the broker asked for two or three options every time. Widen by one bedroom
+    // (a 3BR seeker will happily look at a 4BR) before accepting a pool of one.
+    if (exact.length >= MIN_SHORTLIST) {
+      candidates = exact;
+    } else {
+      const near = candidates.filter(
+        (p) => p.bedrooms !== null && Math.abs(p.bedrooms - criteria.bedrooms!) <= 1,
+      );
+      if (near.length >= MIN_SHORTLIST) candidates = near;
+      else if (exact.length > 0) candidates = exact;
+    }
   }
   if (criteria.areas.length > 0 || criteria.bedrooms !== null) {
     logger.info(
@@ -332,7 +351,7 @@ Return an EMPTY list when sending listings would be the wrong move:
 
 CRITERIA CAN CHANGE MID-CONVERSATION. When the lead revises what they want ("actually", "I wanna change my request", a new area, a different bedroom count), their NEWEST statement is the only one that counts — match against that and treat the earlier criteria as void, however much of the conversation was spent on them.
 
-Otherwise pick at most ${limit} listing IDs that fit what the lead described. You do NOT need every detail (area, budget, bedrooms, purpose, style) — one or two known criteria are enough to make a reasonable first pass. This is a shortlist for the lead to react to and refine, so approximate is fine.${
+Otherwise pick ${limit} listing IDs that fit what the lead described — ${MIN_SHORTLIST} is the absolute minimum. A single link is not a shortlist: it reads as take-it-or-leave-it and gives the lead nothing to compare, so only ever return one ID if the catalog below genuinely contains only one plausible fit. If their exact area has no stock, pick the closest areas instead of returning nothing — the reply text says honestly where these actually are. You do NOT need every detail (area, budget, bedrooms, purpose, style) — one or two known criteria are enough to make a reasonable first pass. This is a shortlist for the lead to react to and refine, so approximate is fine.${
         (opts.seenCount ?? 0) > 0
           ? `\n\nThis lead has already been shown ${opts.seenCount} listing(s) and those are excluded from the catalog below. Anything you pick is new to them — favour genuine variety (different areas, price points, layouts) over near-duplicates of what they already saw.`
           : ""
@@ -355,6 +374,21 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
 
     const ids = new Set((result.ids ?? []).map((id) => id.toUpperCase()));
     const picked = candidates.filter((p) => ids.has(p.id.toUpperCase()));
+
+    // An empty list is a real decision (the lead already chose a villa, or is
+    // arranging a viewing) — respect it. But once the model has decided to send
+    // options at all, one is never enough: top the shortlist up to the floor
+    // from the same filtered candidates, closest bedroom count first.
+    if (picked.length > 0 && picked.length < MIN_SHORTLIST) {
+      const rest = candidates
+        .filter((p) => !ids.has(p.id.toUpperCase()))
+        .sort((a, b) => bedroomDistance(a, criteria.bedrooms) - bedroomDistance(b, criteria.bedrooms));
+      picked.push(...rest.slice(0, MIN_SHORTLIST - picked.length));
+      logger.info(
+        { requested: ids.size, final: picked.length },
+        "matchProperties: topped the shortlist up to the minimum — one link is not a choice",
+      );
+    }
     return picked.slice(0, limit).map(toPick);
   } catch (err) {
     logger.error({ err }, "matchProperties: AI matching failed (non-fatal)");
