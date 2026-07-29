@@ -29,6 +29,9 @@ type Body = {
   model?: string;
   // Language override from extension settings. "auto" = detect from lead messages.
   outputLanguage?: string;
+  // Optional screenshot (data URL) the broker pasted as ground-truth context —
+  // e.g. the real amoCRM chat when the stored history is stale/out of order.
+  image?: string;
 };
 
 const OBJECTION_KEYWORDS = [
@@ -278,6 +281,15 @@ Broker: ${body.brokerName ?? "Alex"}
 Full conversation history:
 ${transcript || "(no messages yet)"}`;
 
+  // Parse an optional pasted screenshot (data URL) into an image content block.
+  const imageBlock = (() => {
+    if (!body.image || typeof body.image !== "string") return null;
+    const m = body.image.match(/^data:(image\/(?:png|jpeg|jpg|gif|webp));base64,([A-Za-z0-9+/=\s]+)$/i);
+    if (!m) return null;
+    const media = m[1]!.toLowerCase() === "image/jpg" ? "image/jpeg" : m[1]!.toLowerCase();
+    return { type: "image" as const, source: { type: "base64" as const, media_type: media, data: m[2]!.replace(/\s/g, "") } };
+  })();
+
   // ── 4. Build Anthropic messages (system is separate parameter) ──────────────
   const aiMessages: ChatMessage[] = [];
 
@@ -313,9 +325,28 @@ ${transcript || "(no messages yet)"}`;
     });
   }
 
+  // ── 4a. Broker screenshot as ground-truth context ──────────────────────────
+  // Attach the pasted screenshot to the LAST user turn and tell the model to
+  // treat it as the source of truth — this is how the broker corrects a stale or
+  // out-of-order stored history ("here's what's actually in the chat"), so the
+  // bot re-reads the whole situation instead of tweaking wording.
+  if (imageBlock) {
+    const last = aiMessages[aiMessages.length - 1]!;
+    const baseText = typeof last.content === "string" ? last.content : "";
+    last.content = [
+      {
+        type: "text",
+        text:
+          baseText +
+          `\n\n[THE BROKER ATTACHED A SCREENSHOT of the actual amoCRM chat. Treat it as the SOURCE OF TRUTH for the real conversation, its order, and the lead's current state — the stored history above may be missing messages or have them out of order. Re-read the whole situation from the screenshot AND the broker's note (which may be correcting what you saw or your judgment), then write the best next message. Do not just tweak wording — fix your understanding first.]`,
+      },
+      imageBlock,
+    ];
+  }
+
   // ── 4b. PUSH shortcut: if this is a follow-up stage and we sent last,
   // return the script template directly — no OpenAI needed. ─────────────────
-  if (!hasRevisions && body.leadId) {
+  if (!hasRevisions && !imageBlock && body.leadId) {
     const stageLower = leadStage.toLowerCase();
     const isFollowupStage =
       stageLower.includes("follow") || stageLower.includes("followup");

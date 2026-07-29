@@ -11,7 +11,11 @@ export function getAnthropic(): Anthropic {
   return _client;
 }
 
-export type ChatMessage = { role: "user" | "assistant"; content: string };
+export type ChatTextBlock = { type: "text"; text: string };
+export type ChatImageBlock = { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+// content is a plain string OR a mix of text/image blocks (multimodal — lets the
+// broker paste a screenshot of the amoCRM chat as ground-truth context).
+export type ChatMessage = { role: "user" | "assistant"; content: string | Array<ChatTextBlock | ChatImageBlock> };
 
 interface ChatCompletionOpts {
   model: string;
@@ -44,7 +48,7 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatComp
   const params: Anthropic.MessageCreateParamsNonStreaming = {
     model: opts.model,
     system: opts.system,
-    messages: opts.messages,
+    messages: opts.messages as Anthropic.MessageParam[],
     max_tokens: opts.max_tokens ?? 400,
     // Some models (e.g. claude-sonnet-5) use extended thinking by default. For
     // these short, latency-sensitive chat-suggestion calls we want the direct
