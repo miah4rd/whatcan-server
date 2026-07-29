@@ -131,9 +131,19 @@ export type PropertyPick = { id: string; title: string; url: string; label: stri
 // Matches known catalog ID formats seen in production: "UP-1001", "R-SAI-023", "R-YUD-2026"
 const PROPERTY_ID_REGEX = /\b([A-Z]{1,4}-[A-Z0-9-]+)\b/g;
 
+/**
+ * Rentals on Bali are priced and paid in rupiah — a rental link opening in USD
+ * makes the client convert in their head and quietly misstates the price they
+ * will actually be asked for. Sales are quoted in USD, so they keep it.
+ */
+function propertyUrl(p: SupabaseProperty): string {
+  const currency = p.listing_type === "rent" ? "IDR" : "USD";
+  return `${SITE_BASE}/${p.id}?currency=${currency}`;
+}
+
 function toPick(p: SupabaseProperty): PropertyPick {
   const priceBit = summaryLine(p).split(" | ").slice(1, -1).join(", ");
-  return { id: p.id, title: p.title, url: `${SITE_BASE}/${p.id}`, label: `${p.title} (${priceBit})`.slice(0, 140) };
+  return { id: p.id, title: p.title, url: propertyUrl(p), label: `${p.title} (${priceBit})`.slice(0, 140) };
 }
 
 /**
@@ -261,7 +271,9 @@ export async function matchProperties(opts: {
    * candidate list by their current area / bedroom requirements. */
   recentLeadMessages?: string[];
 }): Promise<PropertyPick[]> {
-  const limit = opts.limit ?? 2;
+  // A shortlist of one isn't a choice, and two is thin. Three is what a broker
+  // would actually send; the matcher may still return fewer if stock is short.
+  const limit = opts.limit ?? 3;
   const all = await fetchAllProperties();
   const exclude = new Set((opts.excludeIds ?? []).map((id) => id.toUpperCase()));
   const pool = all.filter((p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()));
