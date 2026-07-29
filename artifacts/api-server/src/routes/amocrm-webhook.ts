@@ -8,7 +8,7 @@ import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "../lib/sanitize-sugg
 import { getPropertyCatalogSummary, fetchAllPropertiesForPriceLookup, matchProperties, type PropertyPick } from "../lib/property-catalog";
 import { getBrokerPicks } from "../lib/settings";
 import { isStageWhitelisted, shouldSuppressPush } from "../lib/stage-routing";
-import { syncLeadContent } from "../lib/amo-message-sync";
+
 import { getAmoLead } from "../lib/amo-client";
 import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
 import { buildRentalSystemPrompt } from "../lib/rental-prompt";
@@ -769,11 +769,6 @@ router.post("/amocrm/webhook", async (req, res) => {
         { leadId, leadRepliedAfterUs: dialog.leadRepliedAfterUs, brokerRepliedFresh, followupLevel, nextFollowupAt },
         "dialog analyzed",
       );
-
-      // ── Parse content into lead_messages immediately ────────────────────────
-      syncLeadContent(leadId, content, responsibleUser)
-        .then((count) => { if (count > 0) req.log.info({ leadId, count }, "webhook: messages parsed into lead_messages"); })
-        .catch((err) => req.log.error({ err, leadId }, "webhook: message parse failed"));
 
       // ── Dead-stage cleanup ────────────────────────────────────────────────────
       // If the lead just moved to a closed/lost/incorrect-information stage,
