@@ -153,6 +153,22 @@ const PAGE_HTML = `<!doctype html>
   .setup { max-width: 340px; margin: 80px auto; padding: 24px; text-align: center; }
   .setup input { width: 100%; background: #181d2e; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 12px; font-size: 15px; margin: 14px 0; }
   .setup button { width: 100%; background: #2dd4bf; color: #06121a; border: none; border-radius: 8px; padding: 12px; font-size: 15px; font-weight: 700; cursor: pointer; }
+  .temp-ctl { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -4px 0 14px; }
+  .temp-ctl-lbl { font-size: 11.5px; color: #6b7488; font-weight: 600; margin-right: 2px; }
+  .temp-btn { font-size: 11.5px; font-weight: 700; padding: 4px 9px; border-radius: 7px; border: 1px solid #2a3146; background: transparent; color: #8a93a8; cursor: pointer; }
+  .temp-btn.temp-hot.active { border-color: rgba(239,68,68,.5); background: rgba(239,68,68,.16); color: #fca5a5; }
+  .temp-btn.temp-warm.active { border-color: rgba(251,146,60,.5); background: rgba(251,146,60,.16); color: #fdba74; }
+  .temp-btn.temp-cold.active { border-color: rgba(96,165,250,.5); background: rgba(96,165,250,.14); color: #93c5fd; }
+  .ctx-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .ctx-btn { background: #23293b; color: #b6bccd; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .ctx-attached { font-size: 12px; color: #6ee7b7; display: inline-flex; align-items: center; gap: 6px; }
+  .ctx-x { width: 20px; height: 20px; border-radius: 5px; border: none; background: rgba(239,68,68,.15); color: #fca5a5; cursor: pointer; }
+  .resched-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .resched-toggle { background: none; border: none; color: #6b7488; font-size: 12px; padding: 4px 0; cursor: pointer; text-decoration: underline; }
+  .resched-date { background: #141827; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 7px 10px; font-size: 12.5px; font-family: inherit; }
+  .conv-resize { height: 12px; margin: -6px 0 8px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; touch-action: none; }
+  .conv-resize::before { content: ""; width: 44px; height: 4px; border-radius: 3px; background: #2a3146; }
+  .conv-resize:hover::before { background: #3b445e; }
 </style>
 </head>
 <body>
@@ -204,6 +220,7 @@ const PAGE_HTML = `<!doctype html>
   var editValue = "";
   var toastMsg = "";
   var toastTimer = null;
+  var convSplit = Number(localStorage.getItem("copilot_convsplit")) || 0;
 
   var PIPELINE_STAGES = [
     "NEW LEAD","IN PROGRESS","1ST FOLLOW UP (NEXT DAY)","2ND FOLLOW UP (3 DAYS AFTER)",
@@ -697,12 +714,21 @@ const PAGE_HTML = `<!doctype html>
           brokerId: brokerName,
           leadId: item.lead_id,
           revisionChain: item.revisionChain,
+          image: item._contextImage || undefined,
           outputLanguage: "English",
         }),
       });
       if (!res.ok) throw new Error("API " + res.status);
       var json = await res.json();
       if (json && json.text) item.text = json.text;
+      // The bot re-read the temperature from the pasted screenshot — apply it so
+      // the follow-up cadence and the chip reflect ground truth, not stale sync.
+      if (json && json.reassessed_temperature) {
+        item.profile_temperature = json.reassessed_temperature;
+        item.profile_temperature_source = "ai";
+        showToast("Temperature re-assessed: " + json.reassessed_temperature);
+      }
+      item._contextImage = null;
     } catch (e) {
       item.error = (e && e.message) || "AI rewrite failed";
     } finally {
@@ -727,8 +753,11 @@ const PAGE_HTML = `<!doctype html>
       lead_stage: item.lead_stage || null,
       lead_stage_id: item.lead_stage_id || null,
       next_followup_at: item.next_followup_at || null,
+      profile_temperature: item.profile_temperature || null,
+      profile_temperature_source: item.profile_temperature_source || null,
       text: item.suggestion_text || "",
       original: item.suggestion_text || "",
+      _contextImage: null,
       recent_messages: Array.isArray(item.recent_messages) ? item.recent_messages : [],
       attachments: Array.isArray(item.attachments) ? item.attachments.slice() : [],
       loading: false,
@@ -852,6 +881,18 @@ const PAGE_HTML = `<!doctype html>
     html += '<div class="lead-hdr"><span class="lead-hdr-name">' + (it.lead_name ? esc(it.lead_name) + ' <span style="opacity:.5;font-weight:400">#' + esc(it.lead_id) + '</span>' : "Lead " + esc(it.lead_id)) + '</span>' + taskStatusBadge(it.next_followup_at) + '</div>';
     html += "</header><main>";
 
+    // Broker-editable temperature. Their pick is authoritative and sticky
+    // (source "broker"); the bot's own read shows as "(AI)". Feeds the adaptive
+    // follow-up cadence — hot → sooner, cold → stretched.
+    html += '<div class="temp-ctl">';
+    html += '<span class="temp-ctl-lbl">Temp' + (it.profile_temperature_source === "broker" ? " \\u2713" : (it.profile_temperature_source === "ai" ? " (AI)" : "")) + '</span>';
+    var _temps = [["hot", "\\ud83d\\udd25 Hot"], ["warm", "\\ud83c\\udf24 Warm"], ["cold", "\\u2744\\ufe0f Cold"]];
+    for (var _ti = 0; _ti < _temps.length; _ti++) {
+      var _tk = _temps[_ti][0];
+      html += '<button class="temp-btn temp-' + _tk + (it.profile_temperature === _tk ? " active" : "") + '" data-settemp="' + _tk + '">' + _temps[_ti][1] + '</button>';
+    }
+    html += '</div>';
+
     var msgs = it.recent_messages || [];
     html += '<div class="thread-lbl">\\ud83d\\udcac Conversation</div>';
     html += '<div class="conv">';
@@ -868,6 +909,7 @@ const PAGE_HTML = `<!doctype html>
       }
     }
     html += '</div>';
+    html += '<div class="conv-resize" id="conv-resize" title="Drag to resize"></div>';
 
     html += '<div class="body-block">';
     if (editing) {
@@ -880,6 +922,14 @@ const PAGE_HTML = `<!doctype html>
       html += '<textarea class="aiinput" id="ai-input" placeholder="Tell AI what to change…" rows="2"></textarea>';
       html += '<div class="ai-btn-row"><button class="ai-mic-btn" id="voice-btn" title="Voice input">\\ud83c\\udfa4 Dictate</button><button class="ai-send-btn" id="rewrite-btn" title="Send"' + (it.loading ? " disabled" : "") + '>\\u2191 Send</button></div>';
       html += '</div>';
+      // Screenshot AS CONTEXT (not an attachment to send): the broker pastes or
+      // picks a screenshot of the real chat; the bot reads it as ground truth,
+      // bypassing any stale CRM sync, and re-assesses the reply + temperature.
+      html += '<div class="ctx-row">';
+      html += '<button class="ctx-btn" id="ctx-shot-btn">\\ud83d\\uddbc\\ufe0f Screenshot as context</button>';
+      if (it._contextImage) html += '<span class="ctx-attached">\\u2713 screenshot attached <button class="ctx-x" id="ctx-clear" title="Remove">\\u2715</button></span>';
+      html += '</div>';
+      html += '<input type="file" id="ctx-file" accept="image/*" style="display:none">';
     } else if (it.loading) {
       html += '<label class="section">Suggested message</label>';
       html += '<div class="skel"><div></div><div></div><div></div><div></div></div>';
@@ -944,6 +994,16 @@ const PAGE_HTML = `<!doctype html>
     }
     html += '</div>';
 
+    if (!editing && !it._stageConfirm) {
+      html += '<div class="resched-row">';
+      html += '<button class="resched-toggle" id="resched-toggle">\\ud83d\\udcc5 ' + (it._reschedOpen ? "Cancel reschedule" : "Reschedule follow-up") + '</button>';
+      if (it._reschedOpen) {
+        html += '<input type="date" id="resched-date" class="resched-date" value="' + (it._reschedDate || "") + '">';
+        html += '<button class="mini" id="resched-confirm">\\u2713 Set date</button>';
+      }
+      html += '</div>';
+    }
+
     if (it._skipExpanded && it.kind !== "live") {
       html += '<div class="skip-panel">';
       if (!it._skipTaskMode) {
@@ -973,6 +1033,46 @@ const PAGE_HTML = `<!doctype html>
     if (convEl) convEl.scrollTop = convEl.scrollHeight;
 
     $("#back-btn").onclick = function () { openItem = null; editing = false; render(); };
+
+    // Temperature chip — sticky broker override, POSTs /set-temperature.
+    document.querySelectorAll("[data-settemp]").forEach(function (btn) {
+      btn.onclick = async function () {
+        var t = btn.getAttribute("data-settemp");
+        if (it.profile_temperature === t) return;
+        var prev = it.profile_temperature, prevSrc = it.profile_temperature_source;
+        it.profile_temperature = t; it.profile_temperature_source = "broker";
+        renderDetail();
+        try {
+          await fetch(API + "/set-temperature", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: String(it.lead_id), temperature: t, brokerId: brokerName }) });
+          showToast("Temperature set: " + t);
+        } catch (e) {
+          it.profile_temperature = prev; it.profile_temperature_source = prevSrc; renderDetail();
+          showToast("Failed to set temperature");
+        }
+      };
+    });
+
+    // Draggable divider — resize the conversation box vs the message block.
+    var _resizeEl = $("#conv-resize");
+    var _convBox = document.querySelector(".conv");
+    if (_resizeEl && _convBox) {
+      if (convSplit) { _convBox.style.maxHeight = convSplit + "px"; _convBox.style.height = convSplit + "px"; }
+      _resizeEl.onpointerdown = function (e) {
+        e.preventDefault();
+        var startY = e.clientY, startH = _convBox.offsetHeight;
+        function mv(ev) {
+          var h = Math.max(90, Math.min(640, startH + (ev.clientY - startY)));
+          _convBox.style.maxHeight = h + "px"; _convBox.style.height = h + "px"; convSplit = h;
+        }
+        function up() {
+          document.removeEventListener("pointermove", mv);
+          document.removeEventListener("pointerup", up);
+          try { localStorage.setItem("copilot_convsplit", String(convSplit)); } catch (e2) {}
+        }
+        document.addEventListener("pointermove", mv);
+        document.addEventListener("pointerup", up);
+      };
+    }
 
     var stageToggle = $("#stage-toggle");
     if (stageToggle) {
@@ -1054,6 +1154,36 @@ const PAGE_HTML = `<!doctype html>
         rewriteServer(it, fb);
         editing = false; editValue = "";
       };
+      // Screenshot-as-context: pick a file, or paste an image into the AI box.
+      var ctxBtn = $("#ctx-shot-btn"), ctxFile = $("#ctx-file");
+      if (ctxBtn && ctxFile) {
+        ctxBtn.onclick = function () { ctxFile.click(); };
+        ctxFile.onchange = function (e) {
+          var f = e.target.files && e.target.files[0];
+          if (!f) return;
+          var r = new FileReader();
+          r.onload = function () { it._contextImage = r.result; renderDetail(); showToast("Screenshot added as context"); };
+          r.readAsDataURL(f);
+        };
+      }
+      var ctxClear = $("#ctx-clear");
+      if (ctxClear) ctxClear.onclick = function () { it._contextImage = null; renderDetail(); };
+      var aiInEl = $("#ai-input");
+      if (aiInEl) aiInEl.onpaste = function (e) {
+        var cbItems = (e.clipboardData && e.clipboardData.items) || [];
+        for (var pi = 0; pi < cbItems.length; pi++) {
+          if (cbItems[pi].type && cbItems[pi].type.indexOf("image") === 0) {
+            var file = cbItems[pi].getAsFile();
+            if (file) {
+              var r2 = new FileReader();
+              r2.onload = function () { it._contextImage = r2.result; renderDetail(); showToast("Screenshot pasted as context"); };
+              r2.readAsDataURL(file);
+              e.preventDefault();
+              return;
+            }
+          }
+        }
+      };
       return;
     }
 
@@ -1113,6 +1243,21 @@ const PAGE_HTML = `<!doctype html>
       $("#skip-btn").onclick = function () { it._skipExpanded = !it._skipExpanded; it._skipTaskMode = false; render(); };
     }
     $("#edit-btn").onclick = function () { editing = true; editValue = it.text; render(); };
+
+    var reschedToggle = $("#resched-toggle");
+    if (reschedToggle) reschedToggle.onclick = function () { it._reschedOpen = !it._reschedOpen; renderDetail(); };
+    var reschedConfirm = $("#resched-confirm");
+    if (reschedConfirm) reschedConfirm.onclick = async function () {
+      var dEl = $("#resched-date"); var d = dEl ? dEl.value : "";
+      if (!d) { showToast("Pick a date first"); return; }
+      it._reschedDate = d; it.busy = true; render();
+      try {
+        var iso = new Date(d + "T09:00:00").toISOString();
+        await fetch(API + "/reschedule-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: String(it.lead_id), taskDate: iso }) });
+        showToast("Follow-up moved to " + d);
+        openItem = null; await fetchInbox();
+      } catch (e) { showToast("Reschedule failed"); it.busy = false; render(); }
+    };
 
     if (it._skipExpanded && it.kind !== "live") {
       if (!it._skipTaskMode) {
