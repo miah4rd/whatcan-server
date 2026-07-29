@@ -14,7 +14,7 @@ import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental
 import { buildRentalSystemPrompt } from "../lib/rental-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
-import { pickPropertyAttachments, buildPromptAdditions } from "../lib/generate-suggestion";
+import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments } from "../lib/generate-suggestion";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
 import { classifyStage } from "../lib/stage-classifier";
 import { logger } from "../lib/logger";
@@ -333,7 +333,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     max_tokens: 400,
   });
 
-  const text = sanitizeSuggestion(completion.content);
+  const draft = sanitizeSuggestion(completion.content);
 
   // Shared picker — already-sent exclusion, current area/bedroom criteria, and
   // the "lead already chose a villa" gate all live in ONE place. The bare
@@ -349,6 +349,10 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     lastLeadText,
     leadStage: opts.leadStage,
   });
+
+  // The draft was written without knowing which listings the matcher would
+  // choose — make the two agree before this reaches the broker.
+  const text = await reconcileTextWithAttachments(draft, attachments);
 
   return { text, attachments };
 }

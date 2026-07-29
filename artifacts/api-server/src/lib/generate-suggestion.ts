@@ -1,4 +1,5 @@
 import { chatCompletion } from "./ai-client";
+import { logger } from "./logger";
 import { parseDialogContent, formatDialogForAI, describeConversationTiming } from "./dialog-parser";
 import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
@@ -170,6 +171,58 @@ export function buildLeadNameRule(
  * check. Both call this now, so a rule added here cannot go missing on the
  * other path.
  */
+/**
+ * Makes the message agree with the links actually attached to it.
+ *
+ * The reply and the property matching run concurrently (serialising them cost
+ * seconds on the broker's push), so the writer never knows what got picked. No
+ * amount of prompt wording fixed this reliably: the draft kept ending in "want
+ * me to send them over?" with three links already attached, or promised "a
+ * solid option" in the singular. So the invariant is checked in code, and only
+ * a message that actually contradicts its attachments pays for a rewrite —
+ * the normal case costs nothing.
+ */
+const ASKS_TO_SEND =
+  /(want me to|shall i|should i|do you want me to)[^?]*\?|send (them|it|these|those) over|отправ(ить|лю|им)[^?]*\?|присл(ать|ю)[^?]*\?|скину[^?]*\?|хотите[, ]+(я )?(при|от)шл/i;
+const PROMISES_ONE = /\b(a|one) (solid |good |strong )?option\b|\bодин вариант\b/i;
+
+export async function reconcileTextWithAttachments(
+  text: string,
+  attachments: GeneratedSuggestion["attachments"],
+): Promise<string> {
+  if (attachments.length === 0) return text;
+  const contradicts = ASKS_TO_SEND.test(text) || (attachments.length > 1 && PROMISES_ONE.test(text));
+  if (!contradicts) return text;
+
+  const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");
+  try {
+    const fixed = await chatCompletion({
+      model: "claude-sonnet-5",
+      system: `You correct one specific inconsistency in a WhatsApp message a broker is about to send.
+
+These ${attachments.length} property links are attached to that exact message and will arrive with it:
+${list}
+
+Rewrite the message so it matches that reality:
+- Present the listings as being right here, and say which area each one is in — the areas above are the truth, never a place the client asked for but that isn't on the list.
+- Delete any question asking permission to send them, and any promise to send something later.
+- Change NOTHING else: same language, same voice, same length, same closing question if it isn't about sending links.
+
+Output only the corrected message.`,
+      messages: [{ role: "user", content: text }],
+      max_tokens: 400,
+    });
+    const out = sanitizeSuggestion(fixed.content);
+    if (out.trim().length > 20) {
+      logger.info({ attachments: attachments.length }, "reconciled the reply with its attachments");
+      return out;
+    }
+  } catch (err) {
+    logger.warn({ err }, "attachment reconciliation failed (non-fatal, keeping the draft)");
+  }
+  return text;
+}
+
 export async function buildPromptAdditions(opts: {
   isRental: boolean;
   dialogMessages: ReturnType<typeof parseDialogContent>["messages"];
@@ -541,7 +594,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     }),
   ]);
 
-  const text = sanitizeSuggestion(completion.content);
+  const text = await reconcileTextWithAttachments(sanitizeSuggestion(completion.content), attachments);
 
   return { text, attachments };
 }
