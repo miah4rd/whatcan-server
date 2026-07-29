@@ -324,6 +324,22 @@ function spreadByPrice(
   return [...picked.slice(0, -1), swapIn];
 }
 
+/**
+ * Two listings with the same title are not a choice — the client sees the same
+ * villa twice at two prices and reads it as a mistake. The catalog genuinely
+ * holds same-named units (different units in one complex), so the best-ranked
+ * one represents them and the rest step aside.
+ */
+function dedupeByTitle(list: SupabaseProperty[]): SupabaseProperty[] {
+  const seen = new Set<string>();
+  return list.filter((p) => {
+    const key = (p.title ?? p.id).trim().toLowerCase().replace(/\s+/g, " ");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /** A shortlist of one is a take-it-or-leave-it, not a choice. Never send fewer. */
 const MIN_SHORTLIST = 2;
 
@@ -386,7 +402,7 @@ export async function matchProperties(opts: {
         const byArea = sameArea(a) - sameArea(b);
         return byArea !== 0 ? byArea : rankForShortlist(a, b);
       });
-    const shortlist = [...anchors, ...similar].slice(0, limit);
+    const shortlist = dedupeByTitle([...anchors, ...similar]).slice(0, limit);
     logger.info(
       { anchor: anchor.id, total: shortlist.length },
       "matchProperties: built the shortlist around the listing the lead came in on",
@@ -435,7 +451,7 @@ export async function matchProperties(opts: {
   }
   // Best first: priced, then most-viewed. The model sees them in this order and
   // the top-up follows it, so popularity ranks without needing to be explained.
-  candidates = [...candidates].sort(rankForShortlist);
+  candidates = dedupeByTitle([...candidates].sort(rankForShortlist));
 
   if (criteria.areas.length > 0 || criteria.bedrooms !== null) {
     logger.info(
