@@ -14,6 +14,7 @@ import { generateSuggestion } from "./generate-suggestion";
 import { isAdaptiveBroker } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
+import { isBroker, brokerKey } from "./broker-identity";
 import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
 
 /**
@@ -465,7 +466,7 @@ export async function processFollowups(): Promise<void> {
 
       // HoS is also responsible for leads outside the Rental pipeline (e.g. a
       // separate hiring/HR track) — this bot only handles Rental for that account.
-      if (lead.responsibleUser === "HoS" && (lead.pipeline ?? "").toLowerCase() !== "rental") {
+      if (isBroker(lead.responsibleUser, "HoS") && (lead.pipeline ?? "").toLowerCase() !== "rental") {
         await db
           .update(leadsSyncTable)
           .set({ nextFollowupAt: null })
@@ -669,7 +670,7 @@ export async function processFollowups(): Promise<void> {
             "warmup: using follow-up message (not brochure)",
           );
         } else {
-          const warmupBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+          const warmupBrokerIdKey = brokerKey(lead.responsibleUser);
           const warmupCorrections = await buildBrokerCorrectionsBlock(warmupBrokerIdKey, correctionsCache);
           const warmupAI = await generateFollowup({
             leadId: lead.leadId,
@@ -689,7 +690,7 @@ export async function processFollowups(): Promise<void> {
           continue;
         }
 
-        const warmupBrokerId = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+        const warmupBrokerId = brokerKey(lead.responsibleUser);
 
         await db.insert(aiSuggestionsTable).values({
           brokerId: warmupBrokerId,
@@ -809,7 +810,7 @@ export async function processFollowups(): Promise<void> {
           }
         } catch { /* non-fatal */ }
 
-        const pushBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+        const pushBrokerIdKey = brokerKey(lead.responsibleUser);
         const pushCorrections = await buildBrokerCorrectionsBlock(pushBrokerIdKey, correctionsCache);
         const generated = await generatePushFollowup({
           responsibleUser: lead.responsibleUser,
@@ -867,7 +868,7 @@ export async function processFollowups(): Promise<void> {
           );
         } else {
           // ── No template — generate context-aware follow-up via AI ───────────
-          const genBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+          const genBrokerIdKey = brokerKey(lead.responsibleUser);
           const genCorrections = await buildBrokerCorrectionsBlock(genBrokerIdKey, correctionsCache);
           const generated = await generateFollowup({
             leadId: lead.leadId,
@@ -890,7 +891,7 @@ export async function processFollowups(): Promise<void> {
         continue;
       }
 
-      const brokerId = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+      const brokerId = brokerKey(lead.responsibleUser);
 
       await db.insert(aiSuggestionsTable).values({
         brokerId,
@@ -1072,7 +1073,7 @@ export async function processUnansweredLive(): Promise<void> {
     // HoS is also responsible for leads outside the Rental pipeline (e.g. a
     // separate hiring/HR track) — this bot only handles Rental for that account,
     // so skip generation entirely rather than burning an AI call just to hide it later.
-    if (l.responsibleUser === "HoS" && (l.pipeline ?? "").toLowerCase() !== "rental") return false;
+    if (isBroker(l.responsibleUser, "HoS") && (l.pipeline ?? "").toLowerCase() !== "rental") return false;
     return true;
   });
   if (toProcess.length === 0) return;
@@ -1106,7 +1107,7 @@ export async function processUnansweredLive(): Promise<void> {
         } catch { /* non-fatal */ }
       }
 
-      const liveBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+      const liveBrokerIdKey = brokerKey(lead.responsibleUser);
       const liveCorrections = await buildBrokerCorrectionsBlock(liveBrokerIdKey, unansweredCorrectionsCache);
       const { text, attachments } = await generateSuggestion({
         leadId: lead.leadId,

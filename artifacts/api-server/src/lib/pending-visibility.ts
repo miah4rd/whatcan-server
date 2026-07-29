@@ -1,6 +1,7 @@
 import { parseDialogContent } from "./dialog-parser";
 import { shouldSuppressPush, isClosedWonStage } from "./stage-routing";
 import { isPushStageAllowed } from "./push-stage-whitelist";
+import { isBroker, brokerKey } from "./broker-identity";
 
 // Shared visibility rules for pending suggestions. This is the single source of
 // truth used both by the /suggestions inbox route AND the push-notification
@@ -86,7 +87,7 @@ export function isPendingVisible(
 
   // HoS account: scoped to Rental pipeline only — leads from other pipelines
   // (e.g. Unicorn) are excluded entirely for this broker, live and push alike.
-  if (r.responsibleUser === "HoS" && (sync?.pipeline ?? "").toLowerCase() !== "rental") return false;
+  if (isBroker(r.responsibleUser, "HoS") && (sync?.pipeline ?? "").toLowerCase() !== "rental") return false;
 
   // Push tab: hide if lead has a FUTURE task — broker has already scheduled it.
   // amo-sync Pass 0 deletes these, but there's a 0–5 min window. This real-time
