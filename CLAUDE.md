@@ -81,6 +81,24 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   from `/property/<ID>` links **in the conversation text**, which covers every
   send path. Reading only `pending_suggestions.attachments` missed links sent
   elsewhere, and they leaked back via the explicit-mention fast path.
+- **There are TWO `generateSuggestion` implementations** — `lib/generate-suggestion.ts`
+  and a copy inside `routes/amocrm-webhook.ts` (which serves regen and the live
+  webhook). Every rule added to only one of them silently did nothing on the main
+  path: first the attachment picker, then the client's name, then the inventory
+  check. Anything that shapes the prompt goes in **`buildPromptAdditions`**, which
+  both call.
+- **Always a real choice: 2-3 listings, never one.** A hard filter that leaves a
+  single survivor is widened (bedrooms ±1) before it's accepted, and the shortlist
+  is topped up in code — the model's "at most 3" was read as permission to send one.
+- **The reply text is written CONCURRENTLY with property matching**, so it cannot
+  know what got attached. Don't try to fix that with prompt wording alone — it kept
+  ending in "want me to send them over?" with three links already attached.
+  `reconcileTextWithAttachments` checks the invariant after both finish and only
+  pays for a rewrite when the text actually contradicts the links.
+- **A truncated AI answer is not a failed one.** `chatCompletionJSON` repairs a
+  JSON object cut off by `max_tokens` — the matcher explained its reasoning first,
+  ran out of room mid-array, and three chosen villas became an empty shortlist.
+- **Rental links must open in rupiah** (`?currency=IDR`); sales stay in USD.
 - **Each property link is sent as its own WhatsApp message** — glued together,
   WhatsApp only unfurls a preview banner for the first one.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
