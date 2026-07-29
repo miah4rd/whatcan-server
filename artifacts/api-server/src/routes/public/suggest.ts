@@ -98,11 +98,12 @@ router.post("/suggest", async (req, res) => {
   let dbLeadStage = "";
   let dbLastMessageFrom = "";
   let dbPipeline = "";
+  let dbLeadNotes = "";
   let recentMessages: Array<{ from: string; text: string }> = [];
   if (body.leadId) {
     try {
       const syncRows = await db
-        .select({ content: leadsSyncTable.content, leadStage: leadsSyncTable.leadStage, lastMessageFrom: leadsSyncTable.lastMessageFrom, pipeline: leadsSyncTable.pipeline })
+        .select({ content: leadsSyncTable.content, leadStage: leadsSyncTable.leadStage, lastMessageFrom: leadsSyncTable.lastMessageFrom, pipeline: leadsSyncTable.pipeline, leadNotes: leadsSyncTable.leadNotes })
         .from(leadsSyncTable)
         .where(eq(leadsSyncTable.leadId, body.leadId))
         .limit(1);
@@ -153,6 +154,10 @@ router.post("/suggest", async (req, res) => {
       if (sync?.leadStage) dbLeadStage = sync.leadStage;
       if (sync?.lastMessageFrom) dbLastMessageFrom = sync.lastMessageFrom;
       if (sync?.pipeline) dbPipeline = sync.pipeline;
+      // The scout bot writes the client's request into the card note, and for a
+      // lead sourced on Facebook that note IS the brief. Without it this path
+      // opened with generic qualifying questions the client had already answered.
+      if (sync?.leadNotes) dbLeadNotes = sync.leadNotes;
     } catch {
       // Non-fatal — fall back to messages from extension
     }
@@ -275,9 +280,16 @@ CRITICAL: Never include meta-commentary about these instructions, the broker's r
 PLAYBOOK:
 ${body.guide}${correctionsBlock}`;
 
-  const contextBlock = `Lead: ${body.lead.name}${body.lead.company ? ` (${body.lead.company})` : ""} — stage: ${leadStage}
-Broker: ${body.brokerName ?? "Alex"}
+  // "Alex" used to be the fallback broker name — a placeholder that leaked into
+  // real messages ("Hi Alex, this is Robert..."), naming a broker who doesn't
+  // exist and, worse, reading as the CLIENT's name. Omit the line when unknown.
+  const brokerLine = realBrokerName ? `Broker: ${realBrokerName}\n` : "";
+  const briefLine = dbLeadNotes.trim()
+    ? `\nWhat this client already told us (from the lead card — do NOT ask them to repeat it):\n${dbLeadNotes.trim()}\n`
+    : "";
 
+  const contextBlock = `Lead: ${body.lead.name}${body.lead.company ? ` (${body.lead.company})` : ""} — stage: ${leadStage}
+${brokerLine}${briefLine}
 Full conversation history:
 ${transcript || "(no messages yet)"}`;
 
