@@ -145,18 +145,24 @@ export function computePushPriority(opts: {
   if (typeof opts.potential === "number") score += opts.potential * 0.25; // up to +25
   if (opts.openQuestion) score += 8;            // an unanswered real question is waiting
 
-  // Task urgency — FLAT (was scaled by days-overdue, which floated ancient leads
-  // to the top). Today's tasks (incl. broker's near-term manual ones) rank high.
-  if (opts.taskGroup === 1) score += 25;        // due today
-  else if (opts.taskGroup === 2) score += 10;   // overdue — flat, no per-day pile-up
+  // Task urgency is the broker's COMMITTED work — it must dominate. Due today is
+  // top; recently overdue (yesterday / 2 days ago) is nearly as urgent and decays
+  // as it ages, so an ancient overdue backlog can't bury today's and fresh leads
+  // (that inversion — old dormant leads floating to the top — was the reported bug).
+  const daysOverdue = Math.max(0, opts.daysWaitingPastEligible ?? 0);
+  if (opts.taskGroup === 1) score += 50;                              // due today
+  else if (opts.taskGroup === 2) score += Math.max(8, 45 - daysOverdue * 4); // overdue, recent first
 
   // ── Penalties: low cost of delay (dormant, fine to wait / cull candidates) ─
   if (opts.temperature === "cold" && age > 30) score -= 20;
   score -= Math.min(20, Math.max(0, (opts.streak ?? 0) - 2) * 4); // many ignored touches
+  // Long-dormant lead with no live task is the lowest cost of delay — push it down
+  // so this month's leads and today's tasks sit above it.
+  if (age > 45 && opts.taskGroup === 3) score -= 15;
 
-  // ── Small aging nudge for fairness — prevents same-day starvation without
-  // dominating (max +10, so it can't outrank a fresh or hot lead). ──────────
-  score += Math.min(10, Math.max(0, opts.daysWaitingPastEligible ?? 0) * 0.3);
+  // NOTE: the old "aging nudge" (+score the longer a lead waited) is deliberately
+  // GONE — it rewarded staleness and floated the ancient backlog above today's
+  // leads. Recent-overdue weighting above gives fairness without that inversion.
 
   return score;
 }
