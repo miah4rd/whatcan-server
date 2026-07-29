@@ -207,7 +207,7 @@ These ${attachments.length} property links are attached to that exact message an
 ${list}
 
 Rewrite the message so it matches that reality:
-- Present the listings as being right here, and say which area each one is in — the areas above are the truth, never a place the client asked for but that isn't on the list.
+- Present the listings as being right here. Name each one as it is written above and say which area it is in — the names and areas above are the truth, never a place the client asked for but that isn't on the list. "a villa in Canggu, another villa in Canggu" is not naming them.
 - Delete any question asking permission to send them, and any promise to send something later.
 - Change NOTHING else: same language, same voice, same length, same closing question if it isn't about sending links.
 

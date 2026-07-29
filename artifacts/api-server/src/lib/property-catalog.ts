@@ -303,6 +303,34 @@ function rankForShortlist(a: SupabaseProperty, b: SupabaseProperty): number {
   return (b.views ?? 0) - (a.views ?? 0);
 }
 
+/**
+ * The lead's monthly budget in rupiah, from how people actually write it:
+ * "30 million", "30jt", "30 juta", "Rp 30.000.000", "30 млн". Only meaningful
+ * for rentals, and only now that the catalog carries the rupiah price — before
+ * that there was nothing to compare a budget against, which is how a client who
+ * said 30 million was shown villas at 55.
+ */
+export function extractBudgetIdr(messages: string[]): number | null {
+  for (const raw of messages) {
+    const m = raw.toLowerCase();
+
+    // "30 million" / "30jt" / "30 juta" / "30 млн"
+    const short = m.match(/(\d[\d.,]*)\s*(jt\b|juta|million|mio|млн|миллион)/);
+    if (short?.[1]) {
+      const n = parseFloat(short[1].replace(/[.,](?=\d{3}\b)/g, "").replace(",", "."));
+      if (n > 0 && n < 10000) return Math.round(n * 1_000_000);
+    }
+
+    // "Rp 30.000.000" / "30 000 000 idr"
+    const full = m.match(/(?:rp\.?\s*|idr\s*)?(\d[\d\s.,]{6,})\s*(?:idr|rupiah|rp\b)?/);
+    if (full?.[1] && /rp|idr|rupiah/.test(m)) {
+      const n = parseInt(full[1].replace(/[^\d]/g, ""), 10);
+      if (n >= 1_000_000 && n < 10_000_000_000) return n;
+    }
+  }
+  return null;
+}
+
 /** Has the lead said anything about money at all? */
 function mentionsBudget(messages: string[]): boolean {
   return messages.some((m) =>
@@ -473,9 +501,29 @@ export async function matchProperties(opts: {
     }
     candidates = priced;
   }
+  // Their budget, now that there is a rupiah price to hold it against. A little
+  // headroom, because a villa slightly over budget is still worth showing — one
+  // at double is not, and that is what went out before.
+  const budgetIdr = opts.listingType === "rent" ? extractBudgetIdr(opts.recentLeadMessages ?? []) : null;
+  if (budgetIdr) {
+    const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetIdr * 1.15);
+    if (within.length >= MIN_SHORTLIST) {
+      logger.info(
+        { budgetIdr, within: within.length, of: candidates.length },
+        "matchProperties: filtered to the lead's budget",
+      );
+      candidates = within;
+    } else {
+      // Nothing fits — lead with the closest, so the reply can say so honestly
+      // instead of pretending the budget was met.
+      candidates = [...candidates].sort((a, b) => priceOf(a) - priceOf(b));
+      logger.info({ budgetIdr }, "matchProperties: nothing inside the budget, offering the closest");
+    }
+  }
+
   // Best first: priced, then most-viewed. The model sees them in this order and
   // the top-up follows it, so popularity ranks without needing to be explained.
-  candidates = dedupeByTitle([...candidates].sort(rankForShortlist));
+  candidates = dedupeByTitle([...candidates].sort(budgetIdr ? (a, b) => priceOf(a) - priceOf(b) : rankForShortlist));
 
   if (criteria.areas.length > 0 || criteria.bedrooms !== null) {
     logger.info(
