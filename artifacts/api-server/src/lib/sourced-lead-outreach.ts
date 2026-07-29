@@ -110,10 +110,19 @@ export async function processSourcedLeadOutreach(): Promise<void> {
   for (const lead of candidates) {
     try {
       // Someone already worked this lead — don't rewrite history under them.
+      // Only a live card (pending) or a real send (approved/edited) counts.
+      // Matching ANY row also caught `skipped` ones, which is how leads that had
+      // a suggestion cancelled — including by an earlier version of this very
+      // pass — became permanently unseedable.
       const [everQueued] = await db
         .select({ id: pendingSuggestionsTable.id })
         .from(pendingSuggestionsTable)
-        .where(eq(pendingSuggestionsTable.leadId, lead.leadId))
+        .where(
+          and(
+            eq(pendingSuggestionsTable.leadId, lead.leadId),
+            sql`${pendingSuggestionsTable.status} IN ('pending','approved','edited')`,
+          ),
+        )
         .limit(1);
       if (everQueued) continue;
 
