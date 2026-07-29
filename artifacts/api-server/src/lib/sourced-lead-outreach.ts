@@ -58,6 +58,9 @@ async function fetchLeadName(leadId: string): Promise<string> {
  */
 function looksLikeClientRequest(note: string): boolean {
   const t = note.toLowerCase();
+  // A lead who answered a listing ad brings a link instead of a description —
+  // that link IS the request, and the matcher builds the shortlist around it.
+  if (/\/property\/|unicorn-property/.test(t)) return true;
   if (t.length < 40) return false;
   return /request:|looking for|ищет|запрос|villa|bedroom|budget|move-in/.test(t);
 }

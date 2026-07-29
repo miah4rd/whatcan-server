@@ -250,6 +250,80 @@ export async function availabilityForCriteria(opts: {
   return { areas, bedrooms, matching: matching.length, nearbyAreas: nearby.slice(0, 6) };
 }
 
+/**
+ * A listing with no price can't be judged by the client and can't answer the
+ * question a shortlist exists to answer. It's held back from the first
+ * shortlist entirely — priced stock goes out first, and an unpriced villa only
+ * appears when there genuinely isn't enough priced stock to offer a choice.
+ */
+function hasPrice(p: SupabaseProperty): boolean {
+  return p.listing_type === "rent"
+    ? (p.monthly_price_usd ?? 0) > 0 || (p.yearly_price_usd ?? 0) > 0
+    : (p.price_usd ?? 0) > 0 || (p.leasehold_price_usd ?? 0) > 0;
+}
+
+/** Comparable monthly figure for rentals, headline price for sales. */
+function priceOf(p: SupabaseProperty): number {
+  if (p.listing_type === "rent") {
+    if ((p.monthly_price_usd ?? 0) > 0) return p.monthly_price_usd!;
+    if ((p.yearly_price_usd ?? 0) > 0) return Math.round(p.yearly_price_usd! / 12);
+    return 0;
+  }
+  return p.price_usd || p.leasehold_price_usd || 0;
+}
+
+/** Priced first, then what other clients actually look at. */
+function rankForShortlist(a: SupabaseProperty, b: SupabaseProperty): number {
+  const byPrice = (hasPrice(a) ? 0 : 1) - (hasPrice(b) ? 0 : 1);
+  if (byPrice !== 0) return byPrice;
+  return (b.views ?? 0) - (a.views ?? 0);
+}
+
+/** Has the lead said anything about money at all? */
+function mentionsBudget(messages: string[]): boolean {
+  return messages.some((m) =>
+    /budget|бюджет|\$\s?\d|\d[\d\s.,]*\s*(k\b|jt\b|juta|mil|million|млн|idr|rp\b|usd)|per month|a month|в месяц|per year/i.test(m),
+  );
+}
+
+/**
+ * When the budget is unknown, three villas at the same price tell us nothing.
+ * Three at clearly different price points do: the client reacts to one of them
+ * and the budget answers itself, without an interrogating question. So if every
+ * pick landed in the same third of the price range, the last one is swapped for
+ * the best-ranked candidate from the furthest tier.
+ */
+function spreadByPrice(
+  picked: SupabaseProperty[],
+  candidates: SupabaseProperty[],
+): SupabaseProperty[] {
+  if (picked.length < 2) return picked;
+  const priced = candidates.filter((p) => priceOf(p) > 0).sort((a, b) => priceOf(a) - priceOf(b));
+  if (priced.length < picked.length + 1) return picked;
+
+  const tierOf = (p: SupabaseProperty): number => {
+    const idx = priced.findIndex((c) => c.id === p.id);
+    if (idx === -1) return -1;
+    return Math.min(2, Math.floor((idx / priced.length) * 3));
+  };
+  const tiers = new Set(picked.map(tierOf).filter((t) => t >= 0));
+  if (tiers.size !== 1) return picked;
+
+  const only = [...tiers][0]!;
+  const chosen = new Set(picked.map((p) => p.id));
+  const farthest = only === 0 ? 2 : 0; // cheapest picks → show a premium one, and vice versa
+  const swapIn =
+    priced.filter((p) => !chosen.has(p.id) && tierOf(p) === farthest).sort(rankForShortlist)[0] ??
+    priced.filter((p) => !chosen.has(p.id) && tierOf(p) === 1).sort(rankForShortlist)[0];
+  if (!swapIn) return picked;
+
+  logger.info(
+    { swappedOut: picked[picked.length - 1]!.id, swappedIn: swapIn.id },
+    "matchProperties: budget unknown — spread the shortlist across price points to read the reaction",
+  );
+  return [...picked.slice(0, -1), swapIn];
+}
+
 /** A shortlist of one is a take-it-or-leave-it, not a choice. Never send fewer. */
 const MIN_SHORTLIST = 2;
 
@@ -287,13 +361,37 @@ export async function matchProperties(opts: {
   const pool = all.filter((p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()));
   if (pool.length === 0) return [];
 
-  // 1. Explicit mention fast-path — deterministic, no AI call.
-  const mentioned = new Set(
-    Array.from(opts.conversationText.matchAll(PROPERTY_ID_REGEX)).map((m) => m[1].toUpperCase()),
+  // 1. Anchor listing — the lead arrived FROM a specific listing (clicked its ad)
+  // or named one themselves. Read only from what the LEAD wrote: matching any
+  // mention in the whole conversation meant our own previously sent links came
+  // straight back as "the answer". Anything already sent is out of `pool`, so a
+  // lead quoting a link we sent cannot become an anchor either.
+  const anchorIds = new Set(
+    (opts.recentLeadMessages ?? [])
+      .flatMap((m) => Array.from(m.matchAll(PROPERTY_ID_REGEX)).map((x) => x[1].toUpperCase())),
   );
-  if (mentioned.size > 0) {
-    const explicit = pool.filter((p) => mentioned.has(p.id.toUpperCase()));
-    if (explicit.length > 0) return explicit.slice(0, limit).map(toPick);
+  const anchors = anchorIds.size > 0 ? pool.filter((p) => anchorIds.has(p.id.toUpperCase())) : [];
+  if (anchors.length > 0) {
+    // Their own pick tells us the criteria better than any question would. Send
+    // it back WITH comparable alternatives, so they still get a real choice.
+    const anchor = anchors[0]!;
+    const similar = pool
+      .filter(
+        (p) =>
+          !anchorIds.has(p.id.toUpperCase()) &&
+          (anchor.bedrooms === null || p.bedrooms === null || Math.abs((p.bedrooms ?? 0) - anchor.bedrooms) <= 1),
+      )
+      .sort((a, b) => {
+        const sameArea = (x: SupabaseProperty) => (areaMatches(x.area, [anchor.area ?? ""]) ? 0 : 1);
+        const byArea = sameArea(a) - sameArea(b);
+        return byArea !== 0 ? byArea : rankForShortlist(a, b);
+      });
+    const shortlist = [...anchors, ...similar].slice(0, limit);
+    logger.info(
+      { anchor: anchor.id, total: shortlist.length },
+      "matchProperties: built the shortlist around the listing the lead came in on",
+    );
+    return shortlist.map(toPick);
   }
 
   // Too little conversation to infer real criteria from — skip the AI call.
@@ -324,12 +422,29 @@ export async function matchProperties(opts: {
       else if (exact.length > 0) candidates = exact;
     }
   }
+  // Priced stock first — see hasPrice. Dropped only while a real choice remains.
+  const priced = candidates.filter(hasPrice);
+  if (priced.length >= MIN_SHORTLIST) {
+    if (priced.length < candidates.length) {
+      logger.info(
+        { dropped: candidates.length - priced.length, kept: priced.length },
+        "matchProperties: held back listings with no price",
+      );
+    }
+    candidates = priced;
+  }
+  // Best first: priced, then most-viewed. The model sees them in this order and
+  // the top-up follows it, so popularity ranks without needing to be explained.
+  candidates = [...candidates].sort(rankForShortlist);
+
   if (criteria.areas.length > 0 || criteria.bedrooms !== null) {
     logger.info(
       { areas: criteria.areas, bedrooms: criteria.bedrooms, poolSize: pool.length, candidates: candidates.length },
       "matchProperties: filtered to the lead's current criteria",
     );
   }
+
+  const budgetKnown = mentionsBudget(opts.recentLeadMessages ?? []);
 
   try {
     const brokerTop = opts.brokerId
@@ -356,6 +471,12 @@ Otherwise pick ${limit} listing IDs that fit what the lead described — ${MIN_S
           ? `\n\nThis lead has already been shown ${opts.seenCount} listing(s) and those are excluded from the catalog below. Anything you pick is new to them — favour genuine variety (different areas, price points, layouts) over near-duplicates of what they already saw.`
           : ""
       }${brokerBlock}
+
+${
+        budgetKnown
+          ? ""
+          : `\n\nTHE LEAD HAS NOT NAMED A BUDGET. Deliberately spread the shortlist across clearly different price points — one affordable, one mid, one premium — so their reaction tells us the budget without having to ask. The catalog is ordered best-first (priced and most viewed first); everything in it is a reasonable fit.`
+      }
 
 Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
       messages: [
@@ -391,7 +512,8 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
         "matchProperties: topped the shortlist up to the minimum — one link is not a choice",
       );
     }
-    return picked.slice(0, limit).map(toPick);
+    const final = budgetKnown ? picked : spreadByPrice(picked.slice(0, limit), candidates);
+    return final.slice(0, limit).map(toPick);
   } catch (err) {
     logger.error({ err }, "matchProperties: AI matching failed (non-fatal)");
     return [];
