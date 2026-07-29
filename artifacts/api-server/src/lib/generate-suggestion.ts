@@ -143,10 +143,6 @@ export async function generateSuggestion(opts: {
   leadNotes?: string | null;
   leadStage?: string | null;
   isFirstContact?: boolean;
-  /** The lead already told us what they want (e.g. a scouting bot captured the
-   * request on Facebook and wrote it into the card). The opener must build on
-   * that instead of asking them to explain themselves again. */
-  requestAlreadyKnown?: boolean;
   /** Pre-built corrections block to inject into system prompt */
   correctionsBlock?: string;
   /** "rental" swaps in the villa-rental prompt/qualifying logic instead of the Sales one */
@@ -377,19 +373,7 @@ ${kb}${brokerPicksBlock ? `\n\nBROKER'S HANDPICKED PROPERTIES (use FIRST when th
     : "";
 
   const prompt =
-    opts.isFirstContact && opts.requestAlreadyKnown
-      ? `${leadContext}
-SITUATION: This person already told us what they are looking for — the details above came from a real exchange with them on another channel (found in a Facebook group, replied in DM, shared their WhatsApp). This is your first WhatsApp message to them, but it is NOT a cold approach: they are expecting to hear from you.
-
-Broker: ${opts.responsibleUser ?? "Broker"}
-
-Task: Write the opening WhatsApp message.
-- Open by referencing where you're coming from, briefly and naturally, so it doesn't read as a stranger messaging out of nowhere.
-- Play back the key points of what they asked for, so it's obvious you actually read it. Do NOT ask them to repeat anything already stated above.
-- Ask ONE question, and only about something genuinely missing from their request (budget is usually the gap). If nothing is missing, propose the concrete next step instead.
-- Do NOT list properties yet.
-- Warm and direct, under 80 words.${AVOID_PHRASES_REMINDER}`
-      : opts.isFirstContact
+    opts.isFirstContact
       ? `${leadContext}
 SITUATION: This lead was just assigned to you. You have not spoken with them before. No prior conversation.
 

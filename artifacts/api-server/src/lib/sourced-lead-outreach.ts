@@ -1,28 +1,27 @@
 /**
- * First outreach for leads that arrive with their request already known.
+ * Seeds the conversation for leads that arrive with their request already known.
  *
  * A separate scouting bot works Facebook groups: it finds people looking for a
  * villa, gets their WhatsApp in DM, and creates the amoCRM card with a note
- * describing exactly what they asked for. So the conversation genuinely started
- * — just somewhere else — and these leads were falling into a gap:
+ * describing exactly what they asked for. The conversation genuinely started —
+ * just on another channel — but these leads fell into a gap: no LIVE (nothing
+ * "incoming" to answer) and no PUSH (a new lead waits 24h for an amoCRM welcome
+ * automation that never fires for cards created this way). The card sat in
+ * "New LEAD" with a detailed request nobody acted on.
  *
- *   - no LIVE, because LIVE answers an incoming message and there is none here;
- *   - no PUSH, because a brand-new lead deliberately waits 24h for amoCRM's own
- *     welcome automation, which never fires for cards created this way.
+ * Rather than bolt on a parallel outreach path, this writes the request into the
+ * conversation AS the lead's first message — which is what it actually is. From
+ * there every existing mechanism works untouched: LIVE detection, reply
+ * generation, property matching against their stated criteria, stage
+ * classification. One entry point instead of two.
  *
- * So the card sat in "New LEAD" with a detailed request nobody acted on.
- *
- * The note itself lives only in amoCRM, so it's pulled in here — leads_sync
- * never carried notes for these leads, which is why the request was invisible
- * to every prompt even once a suggestion was generated.
+ * RENTAL ONLY. The Unicorn/sales pipeline already has a working welcome and
+ * qualification flow; a second way in would fight it.
  */
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, isNull, isNotNull, or, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch } from "./amo-client";
-import { generateSuggestion } from "./generate-suggestion";
-import { queueSuggestion } from "../routes/amocrm-webhook.js";
-import { shouldSuppressPush } from "./stage-routing";
 
 type AmoNote = { note_type?: string; params?: { text?: string } };
 
@@ -32,17 +31,24 @@ async function fetchLeadNote(leadId: string): Promise<string | null> {
     const data = await amoFetch<{ _embedded?: { notes?: AmoNote[] } }>(
       `/api/v4/leads/${leadId}/notes?limit=25`,
     );
-    const notes = data?._embedded?.notes ?? [];
-    const texts = notes
+    const texts = (data?._embedded?.notes ?? [])
       .map((n) => (n.params?.text ?? "").trim())
       .filter((t) => t.length > 20);
-    if (texts.length === 0) return null;
-    // Newest note last in amoCRM's ordering; keep them all, the request may be
-    // split across a couple of lines.
-    return texts.join("\n").slice(0, 2000);
+    return texts.length > 0 ? texts.join("\n").slice(0, 2000) : null;
   } catch (err) {
     logger.warn({ err, leadId }, "sourced-lead: notes fetch failed");
     return null;
+  }
+}
+
+async function fetchLeadName(leadId: string): Promise<string> {
+  try {
+    const lead = await amoFetch<{ name?: string }>(`/api/v4/leads/${leadId}`);
+    // Scout cards are named "FB Lead: Nathan Craig" — keep just the person.
+    const raw = (lead?.name ?? "").replace(/^\s*(fb\s*lead|lead)\s*:\s*/i, "").trim();
+    return raw || "Lead";
+  } catch {
+    return "Lead";
   }
 }
 
@@ -56,116 +62,91 @@ function looksLikeClientRequest(note: string): boolean {
   return /request:|looking for|ищет|запрос|villa|bedroom|budget|move-in/.test(t);
 }
 
+/**
+ * Render one line in the exact shape amoCRM's `content` uses, so the existing
+ * parser reads it as a normal inbound message.
+ *
+ * The timestamp is written +3h because parseDialogContent treats these stamps as
+ * Moscow time (that's how amoCRM renders them) and subtracts the offset — so
+ * this round-trips back to the real time instead of landing 3 hours early.
+ */
+function formatAsLeadMessage(at: Date, leadName: string, text: string): string {
+  const shifted = new Date(at.getTime() + 3 * 60 * 60 * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp =
+    `${p(shifted.getUTCDate())}.${p(shifted.getUTCMonth() + 1)}.${shifted.getUTCFullYear()} ` +
+    `${p(shifted.getUTCHours())}:${p(shifted.getUTCMinutes())}:${p(shifted.getUTCSeconds())}`;
+  const oneLine = text.replace(/\s*\n+\s*/g, " ").trim();
+  return `${stamp} ${leadName} (клиент - Facebook) → ${oneLine}`;
+}
+
 export async function processSourcedLeadOutreach(): Promise<void> {
-  // Candidates: no conversation has happened yet, and nothing is queued for the
-  // broker. Anything with content is a normal lead handled by the other passes.
   const candidates = await db
     .select({
       leadId: leadsSyncTable.leadId,
       responsibleUser: leadsSyncTable.responsibleUser,
       leadStage: leadsSyncTable.leadStage,
-      pipeline: leadsSyncTable.pipeline,
       leadNotes: leadsSyncTable.leadNotes,
-      botExcluded: leadsSyncTable.botExcluded,
+      amoCreatedAt: leadsSyncTable.amoCreatedAt,
     })
     .from(leadsSyncTable)
     .where(
       and(
+        sql`lower(coalesce(${leadsSyncTable.pipeline}, '')) = 'rental'`,
         or(isNull(leadsSyncTable.content), eq(leadsSyncTable.content, "")),
         or(eq(leadsSyncTable.botExcluded, false), isNull(leadsSyncTable.botExcluded)),
-        // RECENT leads only. Without this the pass reached back through every
-        // conversation-less lead in the CRM and queued cold outreach for cards
-        // from 2024 sitting in Long-Term Cycle — other brokers' dormant leads,
-        // deliberately parked. A lead sourced elsewhere is acted on within days
-        // or not at all.
+        // Recent cards only. Without this the pass reached back through every
+        // conversation-less lead in the CRM and touched 2024 cards parked in
+        // Long-Term Cycle. A lead sourced elsewhere is acted on within days.
         isNotNull(leadsSyncTable.amoCreatedAt),
         sql`${leadsSyncTable.amoCreatedAt} > now() - interval '7 days'`,
-        // Only stages that mean "nobody has started talking to them yet".
-        // Long-Term Cycle / Mailing / TAKEN TO WORK / Viewing Scheduled all
-        // describe work already in progress or deliberately paused.
         sql`lower(coalesce(${leadsSyncTable.leadStage}, '')) LIKE '%new lead%'`,
       ),
     );
 
   if (candidates.length === 0) return;
 
-  let queued = 0;
+  let seeded = 0;
   for (const lead of candidates) {
     try {
-      if (lead.leadStage && shouldSuppressPush(lead.leadStage)) continue;
-
-      // Already waiting on the broker — don't stack another card.
-      const [existing] = await db
+      // Someone already worked this lead — don't rewrite history under them.
+      const [everQueued] = await db
         .select({ id: pendingSuggestionsTable.id })
         .from(pendingSuggestionsTable)
-        .where(
-          and(
-            eq(pendingSuggestionsTable.leadId, lead.leadId),
-            eq(pendingSuggestionsTable.status, "pending"),
-          ),
-        )
+        .where(eq(pendingSuggestionsTable.leadId, lead.leadId))
         .limit(1);
-      if (existing) continue;
-
-      // Nothing was ever sent for this lead either — a sent message means the
-      // outreach already happened and the lead is simply quiet.
-      const [everSent] = await db
-        .select({ id: pendingSuggestionsTable.id })
-        .from(pendingSuggestionsTable)
-        .where(
-          and(
-            eq(pendingSuggestionsTable.leadId, lead.leadId),
-            sql`${pendingSuggestionsTable.status} IN ('approved','edited')`,
-          ),
-        )
-        .limit(1);
-      if (everSent) continue;
+      if (everQueued) continue;
 
       let note = lead.leadNotes?.trim() || "";
-      if (!note) {
-        note = (await fetchLeadNote(lead.leadId)) ?? "";
-        if (note) {
-          await db
-            .update(leadsSyncTable)
-            .set({ leadNotes: note })
-            .where(eq(leadsSyncTable.leadId, lead.leadId));
-        }
-      }
+      if (!note) note = (await fetchLeadNote(lead.leadId)) ?? "";
       if (!note || !looksLikeClientRequest(note)) continue;
 
-      const { text, attachments } = await generateSuggestion({
-        leadId: lead.leadId,
-        responsibleUser: lead.responsibleUser,
-        kind: "push",
-        lastLeadMessage: "",
-        contentSnippet: "",
-        leadNotes: note,
-        leadStage: lead.leadStage,
-        pipeline: lead.pipeline,
-        isFirstContact: true,
-        // The request came from a real exchange on another channel — the opener
-        // must build on it, not interrogate the client from zero.
-        requestAlreadyKnown: true,
-      });
+      const leadName = await fetchLeadName(lead.leadId);
+      const at = lead.amoCreatedAt ?? new Date();
+      const content = formatAsLeadMessage(at, leadName, note);
 
-      if (!text) continue;
+      await db
+        .update(leadsSyncTable)
+        .set({
+          content,
+          leadNotes: note,
+          // It IS an inbound message — say so, and the normal LIVE pass takes over.
+          lastMessageFrom: "lead",
+          lastMessageAt: at,
+          nextFollowupAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(leadsSyncTable.leadId, lead.leadId));
 
-      await queueSuggestion({
-        leadId: lead.leadId,
-        responsibleUser: lead.responsibleUser,
-        kind: "push",
-        text,
-        attachments,
-      });
-      queued++;
+      seeded++;
       logger.info(
-        { leadId: lead.leadId, stage: lead.leadStage, pipeline: lead.pipeline },
-        "sourced-lead: first outreach queued from the card's request note",
+        { leadId: lead.leadId, leadName, stage: lead.leadStage },
+        "sourced-lead: request note seeded as the lead's first message — LIVE will pick it up",
       );
     } catch (err) {
-      logger.error({ err, leadId: lead.leadId }, "sourced-lead outreach failed");
+      logger.error({ err, leadId: lead.leadId }, "sourced-lead seeding failed");
     }
   }
 
-  if (queued > 0) logger.info({ queued }, "sourced-lead outreach pass complete");
+  if (seeded > 0) logger.info({ seeded }, "sourced-lead seeding pass complete");
 }
