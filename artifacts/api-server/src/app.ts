@@ -35,7 +35,7 @@ app.use(
   }),
 );
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "12mb" })); // large enough for a pasted screenshot (base64) as ground-truth context
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
