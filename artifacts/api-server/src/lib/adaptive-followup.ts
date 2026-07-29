@@ -25,10 +25,18 @@ export type Temperature = "cold" | "warm" | "hot" | null | undefined;
 // wrongly Unicorn-filtered by the adaptive path), and it already has its own
 // handling in pending-visibility. Every other broker is ~100% Unicorn, so the
 // adaptive follow-up / ranking / temperature system is safe and on for them.
-const NON_ADAPTIVE_BROKERS = new Set<string>(["HoS"]);
+const NON_ADAPTIVE_BROKERS = new Set<string>(["hos"]);
 
+/**
+ * Case-insensitive on purpose. The broker name arrives spelled differently
+ * depending on the surface: the extension reads it from amoCRM ("HoS"), the
+ * mobile page from whatever the broker typed once ("Hos"). An exact match made
+ * the same person adaptive on one device and not the other — which, via the
+ * Unicorn-only filter downstream, silently emptied their Rental inbox on mobile
+ * while the extension showed it fine.
+ */
 export function isAdaptiveBroker(user: string | null | undefined): boolean {
-  return !!user && !NON_ADAPTIVE_BROKERS.has(user);
+  return !!user && !NON_ADAPTIVE_BROKERS.has(user.trim().toLowerCase());
 }
 
 // Base wait (days) indexed by silence streak = consecutive unanswered touches.
