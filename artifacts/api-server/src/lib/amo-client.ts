@@ -244,6 +244,35 @@ export async function getAmoLead(leadId: string): Promise<{ id: number; responsi
 }
 
 /**
+ * How many DISTINCT active (in_work) WhatsApp chat threads a lead has.
+ *
+ * A lead should have exactly one live conversation. When WAhelp registers the
+ * same number twice (e.g. "+61…" and "61…" as two chat_ids), a single Salesbot
+ * send fans out to BOTH threads and the client receives the message twice.
+ * amoCRM's Talks API is the one place this is visible: each talk carries a
+ * `chat_id` and `is_in_work`. Counting distinct chat_ids among the in-work talks
+ * tells us, before sending, whether this lead is a duplicate-delivery risk.
+ *
+ * Returns the count (0/1 = safe, >=2 = risk). Returns 1 on any API error so a
+ * transient amoCRM hiccup never blocks a normal send — fail open, not closed.
+ */
+export async function countActiveWhatsappChats(leadId: string): Promise<number> {
+  try {
+    const data = await amoFetch<{
+      _embedded?: { talks?: Array<{ chat_id?: string; is_in_work?: boolean; status?: string }> };
+    }>(`/api/v4/talks?filter[entity_id]=${leadId}&filter[entity_type]=lead`);
+    const talks = data?._embedded?.talks ?? [];
+    const activeChatIds = new Set<string>();
+    for (const t of talks) {
+      if (t.is_in_work && t.chat_id) activeChatIds.add(t.chat_id);
+    }
+    return activeChatIds.size;
+  } catch {
+    return 1;
+  }
+}
+
+/**
  * Close a lead as "Closed Lost" in amoCRM.
  * status_id 143 = system-level Closed Lost (works across all pipelines).
  *

@@ -4,7 +4,7 @@ import { eq, and } from "drizzle-orm";
 import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-followup";
 import { chatCompletionJSON } from "../../lib/ai-client.js";
-import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
+import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost, countActiveWhatsappChats } from "../../lib/amo-client.js";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
 import { resolveOutboundSource } from "../../lib/amo-messenger-field";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL } from "../../lib/rental-followup.js";
@@ -400,6 +400,36 @@ router.post("/approve", async (req, res) => {
           "Не удалось определить канал отправки для этого лида — сообщение НЕ отправлено. Отправьте вручную из amoCRM (подсказка осталась в инбоксе).",
       });
       return;
+    }
+
+    // ── Duplicate-thread guard ────────────────────────────────────────────────
+    // If a lead has two active WhatsApp chat threads (WAhelp registered the same
+    // number twice — e.g. "+61…" and "61…"), a single Salesbot send fans out to
+    // BOTH and the client gets the message twice. We can't pick one thread from
+    // here (addressing is line-level, not chat-level), so the safe move is to
+    // NOT send blind: release the suggestion and tell the broker to send this
+    // one manually into the main thread. Normal single-thread leads (the vast
+    // majority) are unaffected. Skip the check when the broker is only moving the
+    // stage (skipMessage) — nothing is being sent.
+    if (!skipMessage) {
+      const activeChats = await countActiveWhatsappChats(sug.leadId);
+      if (activeChats >= 2) {
+        await db
+          .update(pendingSuggestionsTable)
+          .set({ status: "pending", finalText: null })
+          .where(eq(pendingSuggestionsTable.id, sug.id));
+        req.log.warn(
+          { leadId: sug.leadId, activeChats },
+          "approve aborted — lead has multiple active WhatsApp threads, refusing to avoid duplicate delivery",
+        );
+        res.status(409).json({
+          ok: false,
+          error: "multiple_chat_threads",
+          message:
+            "У этого лида в WhatsApp сейчас 2 активные беседы на один номер — авто-отправка ушла бы клиенту дважды. Сообщение НЕ отправлено. Отправьте его вручную из amoCRM в основную переписку (подсказка осталась в инбоксе). Причина — дубль-тред в WAhelp, чинится на стороне интеграции.",
+        });
+        return;
+      }
     }
 
     // ── Update leads_sync BEFORE sending message ────────────────────────────
