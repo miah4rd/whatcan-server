@@ -257,17 +257,13 @@ export async function buildPromptAdditions(opts: {
       : `\n\nINVENTORY CHECK (true right now): NOTHING in the catalog is${stock.areas.length ? ` in ${stock.areas.join("/")}` : " a match for their criteria"}${stock.bedrooms ? ` at ${stock.bedrooms} bedrooms` : ""}. Say that plainly — do not imply we have what they asked for.${stock.nearbyAreas.length ? ` The same size IS available in ${stock.nearbyAreas.join(", ")}, and those are the listings attached here: name the area each one is actually in, and let them decide. Being straight about it is what keeps their trust.` : ""}`
     : "";
 
-  // The catalog stores rental prices in USD while the links open in rupiah. A
-  // lead who budgets in juta and reads "$3400/mo" has to convert in their head
-  // to check it against their own number — and we have no rate to convert with,
-  // so inventing a rupiah figure would be worse than saying none.
-  const speaksRupiah = /rupiah|idr|\brp\b|juta|\bjt\b|млн\s*(рупий|idr)/i.test(
-    recentLeadMessages.join(" "),
-  );
-  const currencyRule =
-    opts.isRental && speaksRupiah
-      ? `\n\nTHIS CLIENT TALKS IN RUPIAH. Do not quote a dollar figure as the price — the link opens in rupiah and shows it correctly. Say whether it sits inside the budget they named, and let the link carry the number. Never convert a price yourself.`
-      : "";
+  // Bali rents in rupiah — the catalog now carries the rupiah figure itself, so
+  // there is nothing to convert and nothing to hedge about. The bot used to
+  // quote dollars at a client budgeting in juta purely because the code read
+  // only the *_usd columns.
+  const currencyRule = opts.isRental
+    ? `\n\nPRICES ARE IN RUPIAH. The catalog figures for rentals are already the real rupiah price (shown as "Rp 88 jt/mo" — 88 million per month). Quote them exactly as given, in rupiah. Never convert to dollars, never state a dollar figure, and never invent a price for a listing that has none.`
+    : "";
 
   return buildLeadNameRule(opts.dialogMessages) + attachedRule + stockLine + currencyRule;
 }

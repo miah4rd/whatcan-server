@@ -20,6 +20,12 @@ export type SupabaseProperty = {
   leasehold_price_usd: number | null;
   monthly_price_usd: number | null;
   yearly_price_usd: number | null;
+  // Rentals on Bali are priced IN rupiah — this is the real number, not a
+  // conversion of the dollar one. Reading only the *_usd columns is why the bot
+  // quoted dollars for a rupiah listing and treated rupiah-priced villas as
+  // having no price at all.
+  monthly_price_idr: number | null;
+  yearly_price_idr: number | null;
   ownership: string | null;
   status: string | null;
   zone: string | null;
@@ -56,7 +62,7 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
 
   const url =
     `${SUPABASE_URL}/rest/v1/properties` +
-    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,ownership,status,zone,views,purpose,listing_type` +
+    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type` +
     `&is_draft=eq.false` +
     `&status=neq.sold` +
     `&order=views.desc`;
@@ -97,8 +103,20 @@ function formatPrice(p: SupabaseProperty): string | null {
 function summaryLine(p: SupabaseProperty): string {
   const freePrice = p.price_usd && p.price_usd > 1000 ? `freehold $${Math.round(p.price_usd / 1000)}K` : null;
   const leasePrice = p.leasehold_price_usd && p.leasehold_price_usd > 1000 ? `leasehold $${Math.round(p.leasehold_price_usd / 1000)}K` : null;
-  const monthlyPrice = p.monthly_price_usd && p.monthly_price_usd > 0 ? `$${Math.round(p.monthly_price_usd)}/mo` : null;
-  const yearlyPrice = p.yearly_price_usd && p.yearly_price_usd > 0 ? `$${Math.round(p.yearly_price_usd)}/yr` : null;
+  // Rentals are quoted in rupiah — the same number the site and the owner use.
+  const jt = (v: number) => `Rp ${(v / 1_000_000).toFixed(v >= 100_000_000 ? 0 : 1)} jt`;
+  const monthlyPrice =
+    p.monthly_price_idr && p.monthly_price_idr > 0
+      ? `${jt(p.monthly_price_idr)}/mo`
+      : p.monthly_price_usd && p.monthly_price_usd > 0
+        ? `$${Math.round(p.monthly_price_usd)}/mo`
+        : null;
+  const yearlyPrice =
+    p.yearly_price_idr && p.yearly_price_idr > 0
+      ? `${jt(p.yearly_price_idr)}/yr`
+      : p.yearly_price_usd && p.yearly_price_usd > 0
+        ? `$${Math.round(p.yearly_price_usd)}/yr`
+        : null;
   const priceStr = [freePrice, leasePrice, monthlyPrice, yearlyPrice].filter(Boolean).join(" / ") || null;
   const parts: string[] = [
     `[${p.id}]`,
@@ -132,13 +150,14 @@ export type PropertyPick = { id: string; title: string; url: string; label: stri
 const PROPERTY_ID_REGEX = /\b([A-Z]{1,4}-[A-Z0-9-]+)\b/g;
 
 /**
- * Rentals on Bali are priced and paid in rupiah — a rental link opening in USD
- * makes the client convert in their head and quietly misstates the price they
- * will actually be asked for. Sales are quoted in USD, so they keep it.
+ * The site already shows every listing in rupiah by default — that is the
+ * currency Bali rents in, and it's what the page renders with no parameter at
+ * all (verified: R-CGU-002 shows "Rp 88M / month" on a bare URL). The bot used
+ * to append ?currency=IDR, which was noise; the dollars the broker saw came
+ * from OUR OWN label, built from the *_usd columns, not from the site.
  */
 function propertyUrl(p: SupabaseProperty): string {
-  const currency = p.listing_type === "rent" ? "IDR" : "USD";
-  return `${SITE_BASE}/${p.id}?currency=${currency}`;
+  return `${SITE_BASE}/${p.id}`;
 }
 
 function toPick(p: SupabaseProperty): PropertyPick {
@@ -258,15 +277,20 @@ export async function availabilityForCriteria(opts: {
  */
 function hasPrice(p: SupabaseProperty): boolean {
   return p.listing_type === "rent"
-    ? (p.monthly_price_usd ?? 0) > 0 || (p.yearly_price_usd ?? 0) > 0
+    ? (p.monthly_price_idr ?? 0) > 0 ||
+        (p.yearly_price_idr ?? 0) > 0 ||
+        (p.monthly_price_usd ?? 0) > 0 ||
+        (p.yearly_price_usd ?? 0) > 0
     : (p.price_usd ?? 0) > 0 || (p.leasehold_price_usd ?? 0) > 0;
 }
 
 /** Comparable monthly figure for rentals, headline price for sales. */
 function priceOf(p: SupabaseProperty): number {
   if (p.listing_type === "rent") {
-    if ((p.monthly_price_usd ?? 0) > 0) return p.monthly_price_usd!;
-    if ((p.yearly_price_usd ?? 0) > 0) return Math.round(p.yearly_price_usd! / 12);
+    // Rupiah only — every rental that carries a dollar figure carries the rupiah
+    // one too, so the tiers compare like with like and nothing is converted.
+    if ((p.monthly_price_idr ?? 0) > 0) return p.monthly_price_idr!;
+    if ((p.yearly_price_idr ?? 0) > 0) return Math.round(p.yearly_price_idr! / 12);
     return 0;
   }
   return p.price_usd || p.leasehold_price_usd || 0;
