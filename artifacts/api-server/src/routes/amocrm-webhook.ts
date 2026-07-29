@@ -14,7 +14,7 @@ import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental
 import { buildRentalSystemPrompt } from "../lib/rental-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
-import { pickPropertyAttachments, buildLeadNameRule } from "../lib/generate-suggestion";
+import { pickPropertyAttachments, buildPromptAdditions } from "../lib/generate-suggestion";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
 import { classifyStage } from "../lib/stage-classifier";
 import { logger } from "../lib/logger";
@@ -318,10 +318,18 @@ IMPORTANT: Do NOT include property links or listings in this follow-up. The brok
 
 Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
+  // Name, inventory truth and the "links ride along with this message" rule —
+  // shared with lib/generate-suggestion so this copy can't drift again.
+  const promptAdditions = await buildPromptAdditions({
+    isRental,
+    dialogMessages: dialog.messages,
+    lastLeadText,
+  });
+
   const completion = await chatCompletion({
     model: "claude-sonnet-5",
     system: systemPrompt,
-    messages: [{ role: "user", content: prompt + buildLeadNameRule(dialog.messages) }],
+    messages: [{ role: "user", content: prompt + promptAdditions }],
     max_tokens: 400,
   });
 

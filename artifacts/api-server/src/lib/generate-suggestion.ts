@@ -160,6 +160,50 @@ export function buildLeadNameRule(
     : `\n\nYou do NOT know this client's name. Do not invent one and do not use a placeholder — just open without a name.`;
 }
 
+/**
+ * Every rule that has to be true of the final message but can't live in the
+ * static system prompt: who the client is, what we actually have in stock, and
+ * the fact that links ride along with this very message.
+ *
+ * Shared because there are two generateSuggestion implementations and each new
+ * rule kept landing in only one of them — the name rule, then the inventory
+ * check. Both call this now, so a rule added here cannot go missing on the
+ * other path.
+ */
+export async function buildPromptAdditions(opts: {
+  isRental: boolean;
+  dialogMessages: ReturnType<typeof parseDialogContent>["messages"];
+  lastLeadText?: string | null;
+}): Promise<string> {
+  const recentLeadMessages = [
+    opts.lastLeadText ?? "",
+    ...opts.dialogMessages.filter((m) => m.from === "lead").slice(-5).reverse().map((m) => m.text),
+  ].filter(Boolean);
+
+  // What we can actually offer for what they asked — computed from the cached
+  // catalog with no AI call, so the reply is written KNOWING the answer instead
+  // of promising a shortlist that doesn't exist. (A lead asking "Seminyak only"
+  // got "I've got a few in mind" while the catalog held zero Seminyak listings:
+  // the matcher knew, the message didn't, because the two run in parallel.)
+  const stock = await availabilityForCriteria({
+    listingType: opts.isRental ? "rent" : "sale",
+    recentLeadMessages,
+  }).catch(() => null);
+
+  // The links are attached to THIS message, so asking "want me to send them?"
+  // sends the question and the answer together and makes the bot look broken.
+  const attachedRule =
+    `\n\nTHE LINKS GO OUT WITH THIS MESSAGE. When a shortlist is being sent, two or three property links are attached to this exact message automatically — they are already below your text. So present them ("here are three that fit"), never ask permission to send them and never promise them for later. The one exception is when the client has already settled on a specific villa: then no options are sent and you move to the viewing instead.`;
+
+  const stockLine = stock
+    ? stock.matching > 0
+      ? `\n\nINVENTORY CHECK (true right now): ${stock.matching} listing(s) match what they asked for${stock.areas.length ? ` in ${stock.areas.join("/")}` : ""}.`
+      : `\n\nINVENTORY CHECK (true right now): NOTHING in the catalog is${stock.areas.length ? ` in ${stock.areas.join("/")}` : " a match for their criteria"}${stock.bedrooms ? ` at ${stock.bedrooms} bedrooms` : ""}. Say that plainly — do not imply we have what they asked for.${stock.nearbyAreas.length ? ` The same size IS available in ${stock.nearbyAreas.join(", ")}, and those are the listings attached here: name the area each one is actually in, and let them decide. Being straight about it is what keeps their trust.` : ""}`
+    : "";
+
+  return buildLeadNameRule(opts.dialogMessages) + attachedRule + stockLine;
+}
+
 export async function generateSuggestion(opts: {
   leadId: string;
   responsibleUser: string | null;
@@ -466,25 +510,11 @@ IMPORTANT: Do NOT include property links or listings in this follow-up. The brok
 
 Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
-  // What we can actually offer for what they asked — computed from the cached
-  // catalog with no AI call, so the reply is written KNOWING the answer instead
-  // of promising a shortlist that doesn't exist. (A lead asking "Seminyak only"
-  // got "I've got a few in mind" while the catalog held zero Seminyak listings:
-  // the matcher knew, the message didn't, because the two run in parallel.)
-  const recentLeadMessagesForStock = [
+  const promptAdditions = await buildPromptAdditions({
+    isRental,
+    dialogMessages: dialog.messages,
     lastLeadText,
-    ...dialog.messages.filter((m) => m.from === "lead").slice(-5).reverse().map((m) => m.text),
-  ].filter(Boolean);
-  const stock = await availabilityForCriteria({
-    listingType: isRental ? "rent" : "sale",
-    recentLeadMessages: recentLeadMessagesForStock,
-  }).catch(() => null);
-
-  const stockLine = stock
-    ? stock.matching > 0
-      ? `\n\nINVENTORY CHECK (true right now): ${stock.matching} listing(s) match what they asked for${stock.areas.length ? ` in ${stock.areas.join("/")}` : ""}. You can genuinely offer to send options.`
-      : `\n\nINVENTORY CHECK (true right now): NOTHING in the catalog matches${stock.areas.length ? ` ${stock.areas.join("/")}` : " their criteria"}${stock.bedrooms ? ` at ${stock.bedrooms} bedrooms` : ""}. Do NOT promise a shortlist you cannot send. Say plainly that this exact combination has nothing available at the moment${stock.nearbyAreas.length ? `, and offer the nearest realistic alternative — the same size is available in: ${stock.nearbyAreas.join(", ")}` : ""}. Being straight about it is what keeps their trust.`
-    : "";
+  });
 
   // Property matching only needs the conversation, not our reply — so it runs
   // CONCURRENTLY with writing the reply instead of after it. Serialising these
@@ -496,7 +526,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     chatCompletion({
       model: "claude-sonnet-5",
       system: systemPrompt,
-      messages: [{ role: "user", content: prompt + buildLeadNameRule(dialog.messages) + stockLine }],
+      messages: [{ role: "user", content: prompt + promptAdditions }],
       max_tokens: 400,
     }),
     pickPropertyAttachments({
