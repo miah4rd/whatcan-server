@@ -519,9 +519,22 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
     // options at all, one is never enough: top the shortlist up to the floor
     // from the same filtered candidates, closest bedroom count first.
     if (picked.length > 0 && picked.length < MIN_SHORTLIST) {
-      const rest = candidates
-        .filter((p) => !ids.has(p.id.toUpperCase()))
-        .sort((a, b) => bedroomDistance(a, criteria.bedrooms) - bedroomDistance(b, criteria.bedrooms));
+      // Their exact area may simply not hold two priced villas of that size.
+      // Widening the map beats both alternatives: a listing with no price can't
+      // be judged, and a shortlist of one isn't a shortlist. The reply names the
+      // area each villa is actually in, so nothing is passed off as local.
+      const chosenTitles = new Set(picked.map((p) => (p.title ?? p.id).trim().toLowerCase()));
+      const rest = dedupeByTitle([...candidates, ...pool.filter(hasPrice).sort(rankForShortlist)])
+        .filter(
+          (p) => !ids.has(p.id.toUpperCase()) && !chosenTitles.has((p.title ?? p.id).trim().toLowerCase()),
+        )
+        .sort((a, b) => {
+          const byArea =
+            (areaMatches(a.area, criteria.areas) ? 0 : 1) - (areaMatches(b.area, criteria.areas) ? 0 : 1);
+          if (criteria.areas.length > 0 && byArea !== 0) return byArea;
+          const byBeds = bedroomDistance(a, criteria.bedrooms) - bedroomDistance(b, criteria.bedrooms);
+          return byBeds !== 0 ? byBeds : rankForShortlist(a, b);
+        });
       picked.push(...rest.slice(0, MIN_SHORTLIST - picked.length));
       logger.info(
         { requested: ids.size, final: picked.length },
