@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { logger } from "./logger";
 
 let _client: Anthropic | null = null;
 
@@ -97,6 +98,64 @@ IMPORTANT: Respond with valid JSON only. No markdown, no code fences, no extra t
     if (match) {
       return JSON.parse(match[0]) as T;
     }
+    // No closing brace at all — the reply ran into max_tokens mid-object. This
+    // is not a broken model, it's a truncated one, and throwing here threw away
+    // a perfectly good answer: the property matcher explained its reasoning
+    // before the JSON, ran out of tokens, and the caller's catch turned three
+    // chosen villas into an empty shortlist. Salvage what did arrive.
+    const repaired = repairTruncatedJson(result.content);
+    if (repaired) {
+      logger.warn(
+        { preview: result.content.slice(0, 120) },
+        "chatCompletionJSON: response was truncated, parsed the salvaged object",
+      );
+      return repaired as T;
+    }
     throw new Error(`Failed to parse JSON from AI response: ${result.content.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Closes a JSON object that was cut off mid-flight: drops an unterminated
+ * trailing string or dangling comma, then closes every bracket still open.
+ * Returns null if there is nothing recoverable.
+ */
+function repairTruncatedJson(raw: string): unknown | null {
+  const start = raw.indexOf("{");
+  if (start === -1) return null;
+
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  let lastSafe = -1; // end of the last complete value, for trimming a partial one
+
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') {
+        inString = false;
+        lastSafe = i;
+      }
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{" || ch === "[") stack.push(ch === "{" ? "}" : "]");
+    else if (ch === "}" || ch === "]") {
+      stack.pop();
+      lastSafe = i;
+    } else if (ch === "," || /\d/.test(ch) || ch === "e" || ch === "l") lastSafe = i;
+  }
+
+  // Cut off any half-written value, then close what is still open.
+  let body = raw.slice(start, lastSafe + 1).replace(/,\s*$/, "");
+  if (body.length === 0) return null;
+  body += stack.reverse().join("");
+
+  try {
+    return JSON.parse(body);
+  } catch {
+    return null;
   }
 }

@@ -368,7 +368,9 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
           }Conversation (background):\n${opts.conversationText.slice(-3000)}\n\nCatalog:\n${catalogBlock}`,
         },
       ],
-      max_tokens: 80,
+      // Room for three IDs plus whatever reasoning the model writes first —
+      // at 80 the answer was cut off mid-array and the shortlist came back empty.
+      max_tokens: 400,
       temperature: 0,
     });
 
