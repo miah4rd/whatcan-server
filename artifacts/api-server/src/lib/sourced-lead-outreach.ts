@@ -17,7 +17,7 @@
  * to every prompt even once a suggestion was generated.
  */
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
-import { eq, and, isNull, or, sql } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, or, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch } from "./amo-client";
 import { generateSuggestion } from "./generate-suggestion";
@@ -73,12 +73,17 @@ export async function processSourcedLeadOutreach(): Promise<void> {
       and(
         or(isNull(leadsSyncTable.content), eq(leadsSyncTable.content, "")),
         or(eq(leadsSyncTable.botExcluded, false), isNull(leadsSyncTable.botExcluded)),
-        sql`${leadsSyncTable.leadId} IN (
-          SELECT lead_id FROM leads_sync
-          WHERE (content IS NULL OR content = '')
-          ORDER BY amo_created_at DESC NULLS LAST
-          LIMIT 40
-        )`,
+        // RECENT leads only. Without this the pass reached back through every
+        // conversation-less lead in the CRM and queued cold outreach for cards
+        // from 2024 sitting in Long-Term Cycle — other brokers' dormant leads,
+        // deliberately parked. A lead sourced elsewhere is acted on within days
+        // or not at all.
+        isNotNull(leadsSyncTable.amoCreatedAt),
+        sql`${leadsSyncTable.amoCreatedAt} > now() - interval '7 days'`,
+        // Only stages that mean "nobody has started talking to them yet".
+        // Long-Term Cycle / Mailing / TAKEN TO WORK / Viewing Scheduled all
+        // describe work already in progress or deliberately paused.
+        sql`lower(coalesce(${leadsSyncTable.leadStage}, '')) LIKE '%new lead%'`,
       ),
     );
 
