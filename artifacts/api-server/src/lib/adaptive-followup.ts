@@ -63,24 +63,38 @@ export function computeNextFollowupDays(opts: {
 }): number {
   let days = baseFollowupIntervalDays(opts.streak);
   const stage = (opts.leadStage ?? "").toLowerCase();
-  const isFresh = (opts.ageDays ?? 9999) <= FRESH_LEAD_MAX_AGE_DAYS;
+  const age = opts.ageDays ?? 9999;
+  const isFresh = age <= FRESH_LEAD_MAX_AGE_DAYS;
   const isNearClosing = /zoom call|viewing|reservation|negotiat|feedback|handling objection/.test(stage);
+  // A lead that's been in the funnel well past the activation window and is NOT
+  // in a deal-progression stage: any "hot"/"warm" label it still carries is very
+  // likely stale (nobody re-profiled it). Re-engaging such a lead every 2 days is
+  // exactly what looked "non-adaptive" — a lead untouched for ~2 months should be
+  // spaced out, not machine-gunned. So we (a) don't let a stale hot label collapse
+  // the interval, and (b) give it real breathing room.
+  const isStaleOld = age > 45 && !isFresh && !isNearClosing;
 
   // Cadence mirrors "cost of delay": the faster a lead decays if untouched, the
   // shorter the interval.
   //   • Fresh lead → speed-to-lead is the #1 conversion lever; keep it tight
   //     regardless of streak (activation window).
-  //   • Hot / near-closing → strike while the intent/momentum is there.
+  //   • Hot / near-closing → strike while the intent/momentum is there — but only
+  //     when the signal is credible (not a months-stale "hot" on a dormant lead).
   //   • Deal-progression stages → tight on the first touches.
   //   • Cold AND old → decays slowly, don't burn sends → stretch.
-  if (stage.includes("needs assessed") && opts.streak <= 1) days = Math.min(days, 2);
-  else if (stage.includes("options sent") && opts.streak === 0) days = Math.min(days, 3);
+  if (stage.includes("needs assessed") && opts.streak <= 1 && !isStaleOld) days = Math.min(days, 2);
+  else if (stage.includes("options sent") && opts.streak === 0 && !isStaleOld) days = Math.min(days, 3);
 
   if (isFresh) days = Math.min(days, 3);
-  if (opts.temperature === "hot" || isNearClosing) days = Math.min(days, 2);
+  if (isNearClosing || (opts.temperature === "hot" && !isStaleOld)) days = Math.min(days, 2);
 
   // Cold + old → stretch. A FRESH lead is never stretched (freshness wins).
   if (opts.temperature === "cold" && !isFresh) days = Math.round(days * 1.5);
+
+  // Long-dormant, non-progressing lead: give it a real gap (≥1 week) so a stale
+  // warm/hot label can't keep it on a 2-3 day drip. Streak still stretches it
+  // further from here (7 → 14 → 30) if it keeps ignoring us.
+  if (isStaleOld) days = Math.max(days, 7);
 
   return Math.max(1, Math.min(days, 35));
 }
