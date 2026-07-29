@@ -202,6 +202,44 @@ function extractLeadCriteria(
   return { areas, bedrooms };
 }
 
+/**
+ * How much stock actually exists for what the lead just asked for.
+ *
+ * Deterministic and cheap (cached catalog, no AI), so the reply can be written
+ * KNOWING the answer instead of promising a shortlist that doesn't exist. A
+ * lead asking for "Seminyak only" got "I've got a few in mind" while the
+ * catalog held zero Seminyak listings — the matcher knew, the message didn't,
+ * because the two run in parallel.
+ */
+export async function availabilityForCriteria(opts: {
+  listingType: ListingType;
+  recentLeadMessages: string[];
+}): Promise<{ areas: string[]; bedrooms: number | null; matching: number; nearbyAreas: string[] } | null> {
+  const all = await fetchAllProperties();
+  const pool = all.filter((p) => p.listing_type === opts.listingType);
+  if (pool.length === 0) return null;
+
+  const { areas, bedrooms } = extractLeadCriteria(opts.recentLeadMessages, pool);
+  if (areas.length === 0 && bedrooms === null) return null;
+
+  let matching = pool;
+  if (areas.length > 0) {
+    // Hierarchy-aware: "Uluwatu" must count listings tagged Pecatu, Bingin, etc.
+    matching = matching.filter((p) => areaMatches(p.area, areas));
+  }
+  if (bedrooms !== null) {
+    matching = matching.filter((p) => p.bedrooms === bedrooms);
+  }
+
+  // What we could honestly offer instead when their area comes up empty.
+  const nearby =
+    matching.length === 0 && bedrooms !== null
+      ? [...new Set(pool.filter((p) => p.bedrooms === bedrooms).map((p) => p.area ?? "").filter(Boolean))]
+      : [];
+
+  return { areas, bedrooms, matching: matching.length, nearbyAreas: nearby.slice(0, 6) };
+}
+
 export async function matchProperties(opts: {
   listingType: ListingType;
   conversationText: string;

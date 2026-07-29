@@ -3,7 +3,7 @@ import { parseDialogContent, formatDialogForAI, describeConversationTiming } fro
 import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { buildRentalSystemPrompt } from "./rental-prompt";
-import { matchProperties, type PropertyPick } from "./property-catalog";
+import { matchProperties, availabilityForCriteria, type PropertyPick } from "./property-catalog";
 import { db, pendingSuggestionsTable } from "@workspace/db";
 import { eq, inArray, and } from "drizzle-orm";
 
@@ -440,6 +440,26 @@ IMPORTANT: Do NOT include property links or listings in this follow-up. The brok
 
 Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
+  // What we can actually offer for what they asked — computed from the cached
+  // catalog with no AI call, so the reply is written KNOWING the answer instead
+  // of promising a shortlist that doesn't exist. (A lead asking "Seminyak only"
+  // got "I've got a few in mind" while the catalog held zero Seminyak listings:
+  // the matcher knew, the message didn't, because the two run in parallel.)
+  const recentLeadMessagesForStock = [
+    lastLeadText,
+    ...dialog.messages.filter((m) => m.from === "lead").slice(-5).reverse().map((m) => m.text),
+  ].filter(Boolean);
+  const stock = await availabilityForCriteria({
+    listingType: isRental ? "rent" : "sale",
+    recentLeadMessages: recentLeadMessagesForStock,
+  }).catch(() => null);
+
+  const stockLine = stock
+    ? stock.matching > 0
+      ? `\n\nINVENTORY CHECK (true right now): ${stock.matching} listing(s) match what they asked for${stock.areas.length ? ` in ${stock.areas.join("/")}` : ""}. You can genuinely offer to send options.`
+      : `\n\nINVENTORY CHECK (true right now): NOTHING in the catalog matches${stock.areas.length ? ` ${stock.areas.join("/")}` : " their criteria"}${stock.bedrooms ? ` at ${stock.bedrooms} bedrooms` : ""}. Do NOT promise a shortlist you cannot send. Say plainly that this exact combination has nothing available at the moment${stock.nearbyAreas.length ? `, and offer the nearest realistic alternative — the same size is available in: ${stock.nearbyAreas.join(", ")}` : ""}. Being straight about it is what keeps their trust.`
+    : "";
+
   // Property matching only needs the conversation, not our reply — so it runs
   // CONCURRENTLY with writing the reply instead of after it. Serialising these
   // two AI round-trips was adding seconds of dead time before the broker's
@@ -450,7 +470,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     chatCompletion({
       model: "claude-sonnet-5",
       system: systemPrompt,
-      messages: [{ role: "user", content: prompt }],
+      messages: [{ role: "user", content: prompt + stockLine }],
       max_tokens: 400,
     }),
     pickPropertyAttachments({
