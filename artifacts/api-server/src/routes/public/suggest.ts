@@ -427,8 +427,29 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     return null;
   }
 
+  // When the broker pasted a screenshot, also RE-ASSESS the lead temperature from
+  // it (the screenshot may reveal the lead is hotter/colder than the stale data
+  // suggested). Returned so the extension can apply it — one of the downstream
+  // things that was wrong when the bot couldn't see the real conversation.
+  const reassessTemp = async (): Promise<string | null> => {
+    if (!imageBlock) return null;
+    try {
+      const lastFb = body.feedback || body.revisionChain?.[body.revisionChain.length - 1]?.feedback || "";
+      const tj = await chatCompletionJSON<{ temperature?: string }>({
+        model: "claude-sonnet-5",
+        system: `You re-assess a real-estate lead's temperature from the conversation AND the attached screenshot (the SOURCE OF TRUTH). Output JSON {"temperature":"hot|warm|cold"}. hot = active buying intent / positive signals; warm = genuine engagement; cold = minimal / terse / no real signal.`,
+        messages: [{ role: "user", content: [{ type: "text", text: `Conversation (stored, may be stale):\n${transcript.slice(-3000)}\n\nBroker note: ${lastFb || "(none)"}` }, imageBlock] }],
+        max_tokens: 30,
+      });
+      const t = String(tj.temperature || "").toLowerCase().trim();
+      return ["hot", "warm", "cold"].includes(t) ? t : null;
+    } catch {
+      return null;
+    }
+  };
+
   try {
-    const [completion, taskHint] = await Promise.all([
+    const [completion, taskHint, reassessedTemp] = await Promise.all([
       chatCompletion({
         model,
         system,
@@ -436,6 +457,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         max_tokens: 500,
       }),
       detectTaskHint(transcript),
+      reassessTemp(),
     ]);
 
     const text = sanitizeSuggestion(completion.content);
@@ -462,7 +484,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     ];
     const stageHint = _stageHintKeywords.some(kw => text.toLowerCase().includes(kw));
 
-    res.json({ text, rationale, suggestionId: randomUUID(), task_hint: taskHint ?? null, stage_hint: stageHint, kind: "live", recent_messages: recentMessages });
+    res.json({ text, rationale, suggestionId: randomUUID(), task_hint: taskHint ?? null, stage_hint: stageHint, kind: "live", recent_messages: recentMessages, reassessed_temperature: reassessedTemp ?? null });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     req.log.error({ err }, "ai error");
