@@ -102,6 +102,10 @@ export const leadsSyncTable = pgTable("leads_sync", {
   profileSummary: text("profile_summary"),                // 1-2 line essence
   profileUpdatedAt: timestamp("profile_updated_at", { withTimezone: true }),
   profileSourceMsgAt: timestamp("profile_source_msg_at", { withTimezone: true }), // lead-msg time the profile reflects (cache key)
+  // Broker explicitly dismissed the LIVE ("No reply needed" / "Already replied"):
+  // the lead's last message needs no answer. LIVE stays hidden while this is >=
+  // the lead's last inbound time; a NEW incoming after it re-raises LIVE.
+  liveDismissedAt: timestamp("live_dismissed_at", { withTimezone: true }),
   // ── Discard-review flag (funnel cleaning) — set when a lead becomes a
   // content-based discard candidate; surfaced for BROKER confirmation, never auto-acted.
   discardFlaggedAt: timestamp("discard_flagged_at", { withTimezone: true }),

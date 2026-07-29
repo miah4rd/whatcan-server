@@ -61,7 +61,7 @@ router.post("/no-reply-needed", async (req, res) => {
         .where(and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending"))),
       db
         .update(leadsSyncTable)
-        .set({ lastMessageFrom: "us", nextFollowupAt: taskDate })
+        .set({ lastMessageFrom: "us", nextFollowupAt: taskDate, liveDismissedAt: new Date() })
         .where(eq(leadsSyncTable.leadId, leadId)),
     ]);
 

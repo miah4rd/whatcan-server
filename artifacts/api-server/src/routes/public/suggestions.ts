@@ -42,6 +42,7 @@ router.get("/suggestions", async (req, res) => {
               lastMessageFrom: leadsSyncTable.lastMessageFrom,
               lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
               nextFollowupAt: leadsSyncTable.nextFollowupAt,
+              liveDismissedAt: leadsSyncTable.liveDismissedAt,
               updatedAt: leadsSyncTable.updatedAt,
               botExcluded: leadsSyncTable.botExcluded,
               pipeline: leadsSyncTable.pipeline,
@@ -433,7 +434,7 @@ router.post("/broker-replied", async (req, res) => {
       // Mark broker as last sender in leads_sync so future polls skip this LIVE
       db
         .update(leadsSyncTable)
-        .set({ lastMessageFrom: "us", nextFollowupAt: null })
+        .set({ lastMessageFrom: "us", nextFollowupAt: null, liveDismissedAt: new Date() })
         .where(eq(leadsSyncTable.leadId, leadId)),
       // Delete ALL pending suggestions for this lead (both live and push)
       db

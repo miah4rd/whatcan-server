@@ -112,6 +112,7 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
         nextFollowupAt: leadsSyncTable.nextFollowupAt,
         lastMessageFrom: leadsSyncTable.lastMessageFrom,
         content: leadsSyncTable.content,
+        liveDismissedAt: leadsSyncTable.liveDismissedAt,
       })
       .from(leadsSyncTable)
       .where(inArray(leadsSyncTable.leadId, leadIds));

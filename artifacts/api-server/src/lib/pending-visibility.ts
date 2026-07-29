@@ -20,6 +20,7 @@ export interface SyncRowLike {
   nextFollowupAt: Date | null;
   lastMessageFrom: string | null;
   content: string | null;
+  liveDismissedAt?: Date | null;
 }
 
 /** Max timestamps per side, derived from lead_messages (the timeline poll, which
@@ -129,6 +130,14 @@ export function isPendingVisible(
   const lastOursMs = Math.max(cOursMs, timeline?.lastOursAt ?? 0);
 
   if (lastLeadMs === 0) return true;    // never saw a lead message → don't hide
+
+  // Broker explicitly dismissed this LIVE ("No reply needed" / "Already replied").
+  // Honour it until a NEWER lead message arrives — otherwise the max-timestamp
+  // rule below would keep re-raising a lead that genuinely spoke last but that
+  // the broker already decided needs no answer.
+  const dismissedMs = sync?.liveDismissedAt ? sync.liveDismissedAt.getTime() : 0;
+  if (dismissedMs >= lastLeadMs) return false;
+
   return lastLeadMs > lastOursMs;        // show only if the lead genuinely spoke last
 }
 
