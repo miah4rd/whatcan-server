@@ -1,4 +1,4 @@
-import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable } from "@workspace/db";
+import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable, leadMessagesTable } from "@workspace/db";
 import { lt, isNotNull, eq, and, or, isNull, inArray, desc, sql } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON } from "./ai-client";
 import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming } from "./dialog-parser";
@@ -13,6 +13,7 @@ import { generateSuggestion } from "./generate-suggestion";
 import { isAdaptiveBroker } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
+import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
 
 /**
  * True when the timeline (lead_messages) holds a message FROM THE LEAD that is
@@ -34,8 +35,12 @@ async function hasNewerLeadMessage(leadId: string, contentLastMs: number): Promi
       .limit(1);
     if (!row || row.senderType !== "lead") return false;
     return row.sentAt.getTime() > contentLastMs + 60_000;
-  } catch {
-    // Never let this check be the reason a follow-up silently stops working.
+  } catch (err) {
+    // Never let this check be the reason a follow-up stops working — but say so.
+    // A bare `catch {}` here hid a missing import for hours: the helper threw on
+    // every call and silently reported "no newer message", so the guard it
+    // implements was inert while looking deployed.
+    logger.error({ err, leadId }, "hasNewerLeadMessage failed — falling back to content-only");
     return false;
   }
 }
@@ -1151,10 +1156,12 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
   setTimeout(() => {
     processFollowups().catch((err) => logger.error({ err }, "followup scheduler error"));
     processUnansweredLive().catch((err) => logger.error({ err }, "unanswered live error"));
+    processSourcedLeadOutreach().catch((err) => logger.error({ err }, "sourced lead outreach error"));
   }, 10_000);
   schedulerHandle = setInterval(() => {
     processFollowups().catch((err) => logger.error({ err }, "followup scheduler error"));
     processUnansweredLive().catch((err) => logger.error({ err }, "unanswered live error"));
+    processSourcedLeadOutreach().catch((err) => logger.error({ err }, "sourced lead outreach error"));
   }, intervalMs);
 }
 
