@@ -182,16 +182,19 @@ export function buildLeadNameRule(
  * a message that actually contradicts its attachments pays for a rewrite —
  * the normal case costs nothing.
  */
-const ASKS_TO_SEND =
-  /(want me to|shall i|should i|do you want me to)[^?]*\?|send (them|it|these|those) over|отправ(ить|лю|им)[^?]*\?|присл(ать|ю)[^?]*\?|скину[^?]*\?|хотите[, ]+(я )?(при|от)шл/i;
-const PROMISES_ONE = /\b(a|one) (solid |good |strong )?option\b|\bодин вариант\b/i;
+const ASKS_OR_PROMISES_TO_SEND =
+  /(want me to|shall i|should i|do you want me to)[^?]*\?|send (them|it|these|those) over|i(?:'ll| will| can| could|'d)\s+(send|pull|line up|put together|share|forward|dig out|get you)|отправ(лю|им|ить)|пришл(ю|ем|ать)|скину|подберу|могу подобрать/i;
+/** "I have one villa that fits" — said while two or three links are attached. */
+const CLAIMS_ONLY_ONE =
+  /\b(one|a single|just one|1)\s+(villa|property|option|place|match|listing)\b|\b(a|one) (solid|good|strong)? ?option\b|\bодн[ау] (виллу|опци|вариант)/i;
 
 export async function reconcileTextWithAttachments(
   text: string,
   attachments: GeneratedSuggestion["attachments"],
 ): Promise<string> {
   if (attachments.length === 0) return text;
-  const contradicts = ASKS_TO_SEND.test(text) || (attachments.length > 1 && PROMISES_ONE.test(text));
+  const contradicts =
+    ASKS_OR_PROMISES_TO_SEND.test(text) || (attachments.length > 1 && CLAIMS_ONLY_ONE.test(text));
   if (!contradicts) return text;
 
   const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");
