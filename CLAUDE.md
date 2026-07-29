@@ -109,7 +109,15 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
 - **A lead who arrives on a specific listing anchors the shortlist**: that listing
   plus comparable alternatives. The anchor is read ONLY from what the LEAD wrote —
   reading the whole conversation fed our own sent links back as "the answer".
-- **Rental links must open in rupiah** (`?currency=IDR`); sales stay in USD.
+- **Rentals are priced in rupiah, and the catalog says so** — `monthly_price_idr` /
+  `yearly_price_idr`. The code originally selected only the `*_usd` columns, so the
+  bot quoted dollars at clients budgeting in juta and counted rupiah-priced villas
+  as having no price at all. Never convert a currency: read the rupiah column.
+  The site already renders rupiah by default, so property links carry no
+  `?currency` parameter (verified on a bare URL: "Rp 88M / month").
+- **The lead's stated budget filters the shortlist** (`extractBudgetIdr`, +15%
+  headroom). When nothing fits, the closest are offered and the reply says so
+  rather than pretending the budget was met.
 - **Each property link is sent as its own WhatsApp message** — glued together,
   WhatsApp only unfurls a preview banner for the first one.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
