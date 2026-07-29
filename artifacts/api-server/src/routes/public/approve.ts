@@ -5,6 +5,7 @@ import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "
 import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-followup";
 import { chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost, countActiveWhatsappChats } from "../../lib/amo-client.js";
+import { stripEmojiForDelivery } from "../../lib/message-delivery.js";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
 import { resolveOutboundSource } from "../../lib/amo-messenger-field";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL } from "../../lib/rental-followup.js";
@@ -470,8 +471,11 @@ router.post("/approve", async (req, res) => {
     // ── Send via Salesbot (replaces F5 hook) ──────────────────────────────────
     // 1. Write message to custom field "companion massage"
     // 2. Trigger Salesbot "Companion Robert" which reads the field and sends via WhatsApp
+    // Strip emoji first: the Salesbot/WAhelp delivery truncates the message at the
+    // first emoji (astral-plane char), so the client was getting only the greeting.
+    const deliveryText = stripEmojiForDelivery(body.message);
     try {
-      const fieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, body.message);
+      const fieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, deliveryText);
       if (fieldOk) {
         const botTriggered = await triggerSalesbot(sug.leadId, botId);
         chatSent = botTriggered;
@@ -509,7 +513,7 @@ router.post("/approve", async (req, res) => {
       leadId: sug.leadId,
       suggestionId: sug.id as any,
       kind: sug.kind,
-      messageText: body.message,
+      messageText: deliveryText,
       responsibleUser: sug.responsibleUser,
       webhookStatus: hookStatus,
       webhookResponse: hookBody,
