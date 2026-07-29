@@ -134,6 +134,32 @@ function toAttachments(picks: PropertyPick[]): GeneratedSuggestion["attachments"
   return picks.map((p) => ({ type: "link" as const, label: p.label, url: p.url }));
 }
 
+/**
+ * States the client's name as a fact for the prompt.
+ *
+ * Exported because there are two generateSuggestion implementations (this lib
+ * and amocrm-webhook.ts's own copy, which serves regen and several webhook
+ * paths). Adding the rule to only one meant replies still opened "Hi there" —
+ * exactly how the property-matching fixes silently missed the main path.
+ */
+export function buildLeadNameRule(
+  messages: ReturnType<typeof parseDialogContent>["messages"],
+): string {
+  const raw = messages.find(
+    (m) => m.from === "lead" && m.senderName && m.senderName.trim().length > 1,
+  )?.senderName;
+
+  // "Nathan Craig (клиент - Facebook)" → "Nathan"
+  const cleaned = (raw ?? "").replace(/\s*\([^)]*\)\s*$/, "").trim();
+  const first = cleaned.split(/\s+/)[0] ?? "";
+  const isPlaceholder = /^(lead|client|клиент|guest|user|wahelp|whatsapp|telegram|instagram)$/i.test(first);
+  const name = !first || isPlaceholder ? "" : first;
+
+  return name
+    ? `\n\nTHE CLIENT'S NAME IS ${name}. Address them by it naturally — greet them by name, or use it once early in the message. Never open with "Hi there" or any nameless greeting when you have their name.`
+    : `\n\nYou do NOT know this client's name. Do not invent one and do not use a placeholder — just open without a name.`;
+}
+
 export async function generateSuggestion(opts: {
   leadId: string;
   responsibleUser: string | null;
@@ -368,27 +394,6 @@ ${kb}${brokerPicksBlock ? `\n\nBROKER'S HANDPICKED PROPERTIES (use FIRST when th
 - If it has been weeks or months: acknowledge the gap honestly ("it's been a while") instead of pretending no time passed. Do not reference dates, trips, seasons or deadlines from old messages as if still current — they may have passed.
 - Judge whether the lead's last message actually needed a reply: a bare closer ("ok thanks", "see you", 👍) did not, so don't over-apologize; but a real unanswered question or expressed interest left hanging for a long time should be addressed gracefully — light acknowledgment of the delay, then real value.`;
 
-  // The lead's own name, stated as a fact rather than left to be spotted inside
-  // the transcript. Without this the model opened with "Hi there" even when the
-  // card clearly carried a name — a complaint raised repeatedly, and already
-  // sitting in the brokers' saved corrections in almost these words.
-  const leadFirstName = (() => {
-    const raw = dialog.messages.find(
-      (m) => m.from === "lead" && m.senderName && m.senderName.trim().length > 1,
-    )?.senderName;
-    if (!raw) return "";
-    // "Nathan Craig (клиент - Facebook)" → "Nathan"
-    const cleaned = raw.replace(/\s*\([^)]*\)\s*$/, "").trim();
-    const first = cleaned.split(/\s+/)[0] ?? "";
-    // Skip channel/bot placeholders that aren't a person's name.
-    if (/^(lead|client|клиент|guest|user|wahelp|whatsapp|telegram|instagram)$/i.test(first)) return "";
-    return first;
-  })();
-
-  const nameRule = leadFirstName
-    ? `\n\nTHE CLIENT'S NAME IS ${leadFirstName}. Address them by it naturally — greet them by name, or use it once early in the message. Never open with "Hi there" or any nameless greeting when you have their name.`
-    : `\n\nYou do NOT know this client's name. Do not invent one and do not use a placeholder — just open without a name.`;
-
   const leadContext = opts.leadNotes?.trim()
     ? `\nLEAD CARD INFO (name, budget, notes from broker):\n${opts.leadNotes.trim()}\n`
     : "";
@@ -491,7 +496,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     chatCompletion({
       model: "claude-sonnet-5",
       system: systemPrompt,
-      messages: [{ role: "user", content: prompt + nameRule + stockLine }],
+      messages: [{ role: "user", content: prompt + buildLeadNameRule(dialog.messages) + stockLine }],
       max_tokens: 400,
     }),
     pickPropertyAttachments({

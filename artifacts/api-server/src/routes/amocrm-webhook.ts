@@ -14,7 +14,7 @@ import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental
 import { buildRentalSystemPrompt } from "../lib/rental-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
-import { pickPropertyAttachments } from "../lib/generate-suggestion";
+import { pickPropertyAttachments, buildLeadNameRule } from "../lib/generate-suggestion";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
 import { classifyStage } from "../lib/stage-classifier";
 import { logger } from "../lib/logger";
@@ -321,7 +321,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   const completion = await chatCompletion({
     model: "claude-sonnet-5",
     system: systemPrompt,
-    messages: [{ role: "user", content: prompt }],
+    messages: [{ role: "user", content: prompt + buildLeadNameRule(dialog.messages) }],
     max_tokens: 400,
   });
 
