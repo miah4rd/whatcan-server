@@ -671,10 +671,10 @@ const PAGE_HTML = `<!doctype html>
   async function brokerReplied(item) {
     item.busy = true; render();
     try {
-      await fetch(API + "/broker-replied", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: item.lead_id }) });
+      await fetch(API + "/no-reply-needed", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: item.lead_id }) });
     } catch (e) {}
     openItem = null; editing = false;
-    showToast("Marked as replied");
+    showToast("No reply needed - will follow up later");
     await fetchInbox();
   }
 
@@ -936,7 +936,7 @@ const PAGE_HTML = `<!doctype html>
     } else {
       html += '<button class="act approve" id="approve-btn" ' + ((it.busy || it.loading) ? "disabled" : "") + '>' + (it.busy ? "Sending…" : "\\u2713 Approve &amp; Send") + '</button>';
       if (it.kind === "live") {
-        html += '<button class="act replied" id="replied-btn" ' + (it.busy ? "disabled" : "") + '>\\u2713 Already replied</button>';
+        html += '<button class="act replied" id="replied-btn" ' + (it.busy ? "disabled" : "") + '>\\ud83d\\udeab No reply needed</button>';
       } else {
         html += '<button class="act skip" id="skip-btn" ' + (it.busy ? "disabled" : "") + '>\\u2715 Skip</button>';
       }

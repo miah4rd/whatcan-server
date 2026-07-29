@@ -81,23 +81,15 @@ async function autoCreateCrmTask(
     let taskDate: Date;
     let nextActionNote: string;
 
-    // Adaptive cadence applies only to Robert's active-funnel PUSH leads
-    // (Contact Established / Needs Assessed / Options Sent). Everything else —
-    // qualification/Reach, Rental, other brokers — keeps the original fixed
-    // [1,3,5] cadence untouched.
-    const stageLower = (pipelineRow?.leadStage ?? "").toLowerCase();
-    const isActivePushStage =
-      stageLower.includes("contact established") ||
-      stageLower.includes("needs assessed") ||
-      stageLower.includes("options sent") ||
-      stageLower.includes("option send");
+    // Adaptive cadence now applies to EVERY approval (LIVE replies included) for
+    // adaptive brokers — the follow-up date must reflect the lead's temperature /
+    // stage / freshness, not a flat "tomorrow". A hot lead → soon; a cold, old
+    // lead → stretched to a week/two/month. Only Rental keeps its own fixed flow.
     const useAdaptiveCadence =
-      kind === "push" &&
       !isRentalPipeline &&
-      isAdaptiveBroker(pipelineRow?.responsibleUser) &&
-      isActivePushStage;
+      isAdaptiveBroker(pipelineRow?.responsibleUser);
 
-    if (kind === "push" && useAdaptiveCadence) {
+    if (useAdaptiveCadence) {
       // Silence streak = consecutive unanswered touches, +1 for the one we're
       // sending now (the lead hasn't replied, so this send extends the streak).
       let streak = 1;
