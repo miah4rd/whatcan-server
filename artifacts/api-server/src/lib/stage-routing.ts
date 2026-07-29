@@ -172,6 +172,23 @@ export function shouldSuppressPush(rawStage: string): boolean {
 }
 
 /**
+ * True ONLY for the terminal WON stage (deal closed & paid) — never for LOST.
+ * Note: this cannot rely on resolveStageGroup, which lumps "Closed - lost" into
+ * the "won" group (it matches on the word "closed"). We check the words
+ * directly: "won" present AND "lost" absent.
+ *
+ * Used so a past won client's NEW incoming message still surfaces in the LIVE
+ * tab (a warm client reaching out) while staying out of the proactive PUSH
+ * follow-up queue. Everything else on a dead stage stays hidden everywhere.
+ */
+export function isClosedWonStage(rawStage: string | null | undefined): boolean {
+  if (!rawStage) return false;
+  const s = rawStage.toLowerCase();
+  if (s.includes("lost")) return false;
+  return s.includes("won");
+}
+
+/**
  * Returns a focused stage-specific prompt block to prepend to the system prompt.
  * This overrides the generic playbook defaults — the AI must follow this block first.
  */

@@ -86,7 +86,14 @@ export const leadsSyncTable = pgTable("leads_sync", {
   // ── Distilled lead profile (see lib/lead-profile.ts) — maintained on new lead
   // activity, read for free by the daily ranking so it stays context-aware
   // without re-reading conversations every day. ─────────────────────────────
-  profileTemperature: text("profile_temperature"),        // cold | warm | hot
+  profileTemperature: text("profile_temperature"),        // cold | warm | hot — EFFECTIVE value (broker override wins over AI)
+  // Broker temperature override: the broker can correct the bot's read in the
+  // extension. When source = "broker" the value above is sticky (refreshLeadProfile
+  // won't overwrite it) and profileTemperatureAi keeps the AI's latest reading so
+  // the disagreement can be fed back as calibration. See lib/lead-profile.ts.
+  profileTemperatureSource: text("profile_temperature_source"), // ai | broker
+  profileTemperatureAi: text("profile_temperature_ai"),         // AI's latest raw read (for drift/learning)
+  profileTemperatureOverrideAt: timestamp("profile_temperature_override_at", { withTimezone: true }),
   profilePotential: integer("profile_potential"),         // 0-100 latent potential
   profileIntent: text("profile_intent"),                  // short phrase of what they want
   profileTimeframe: text("profile_timeframe"),            // implied timing for next step, or null
@@ -95,6 +102,10 @@ export const leadsSyncTable = pgTable("leads_sync", {
   profileSummary: text("profile_summary"),                // 1-2 line essence
   profileUpdatedAt: timestamp("profile_updated_at", { withTimezone: true }),
   profileSourceMsgAt: timestamp("profile_source_msg_at", { withTimezone: true }), // lead-msg time the profile reflects (cache key)
+  // Broker explicitly dismissed the LIVE ("No reply needed" / "Already replied"):
+  // the lead's last message needs no answer. LIVE stays hidden while this is >=
+  // the lead's last inbound time; a NEW incoming after it re-raises LIVE.
+  liveDismissedAt: timestamp("live_dismissed_at", { withTimezone: true }),
   // ── Discard-review flag (funnel cleaning) — set when a lead becomes a
   // content-based discard candidate; surfaced for BROKER confirmation, never auto-acted.
   discardFlaggedAt: timestamp("discard_flagged_at", { withTimezone: true }),

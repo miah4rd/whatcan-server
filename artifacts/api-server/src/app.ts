@@ -35,7 +35,7 @@ app.use(
   }),
 );
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "12mb" })); // large enough for a pasted screenshot (base64) as ground-truth context
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
@@ -82,6 +82,9 @@ pool.query(`ALTER TABLE leads_sync ADD COLUMN IF NOT EXISTS amo_created_at TIMES
 pool.query(`
   ALTER TABLE leads_sync
     ADD COLUMN IF NOT EXISTS profile_temperature TEXT,
+    ADD COLUMN IF NOT EXISTS profile_temperature_source TEXT,
+    ADD COLUMN IF NOT EXISTS profile_temperature_ai TEXT,
+    ADD COLUMN IF NOT EXISTS profile_temperature_override_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS profile_potential INTEGER,
     ADD COLUMN IF NOT EXISTS profile_intent TEXT,
     ADD COLUMN IF NOT EXISTS profile_timeframe TEXT,
@@ -91,7 +94,8 @@ pool.query(`
     ADD COLUMN IF NOT EXISTS profile_updated_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS profile_source_msg_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS discard_flagged_at TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS discard_reason TEXT
+    ADD COLUMN IF NOT EXISTS discard_reason TEXT,
+    ADD COLUMN IF NOT EXISTS live_dismissed_at TIMESTAMPTZ
 `)
   .then(() => logger.info("startup migration: lead profile + discard columns ensured"))
   .catch((err) => logger.error({ err }, "startup migration: lead profile columns failed"));

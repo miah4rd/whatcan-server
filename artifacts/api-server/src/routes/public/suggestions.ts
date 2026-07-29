@@ -1,10 +1,10 @@
 import { Router } from "express";
-import { db, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable } from "@workspace/db";
+import { db, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable, brokerSettingsTable } from "@workspace/db";
 import { desc, inArray, eq, and, sql } from "drizzle-orm";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
-import { computePushPriority, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
-import { isPendingVisible, dedupePushPerLead } from "../../lib/pending-visibility";
+import { computePushPriority, computeNextFollowupDays, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
+import { isPendingVisible, dedupePushPerLead, repliedSignalFromTimeline } from "../../lib/pending-visibility";
 
 const router = Router();
 
@@ -42,6 +42,7 @@ router.get("/suggestions", async (req, res) => {
               lastMessageFrom: leadsSyncTable.lastMessageFrom,
               lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
               nextFollowupAt: leadsSyncTable.nextFollowupAt,
+              liveDismissedAt: leadsSyncTable.liveDismissedAt,
               updatedAt: leadsSyncTable.updatedAt,
               botExcluded: leadsSyncTable.botExcluded,
               pipeline: leadsSyncTable.pipeline,
@@ -91,8 +92,28 @@ router.get("/suggestions", async (req, res) => {
     // (lib/pending-visibility.ts) so the icon number always matches the inbox.
     // timelineMsgsByLead is newest-first, so [0] is the newest message we know
     // of from the timeline — the tie-breaker when webhook-fed content is stale.
+    // Reply signal per lead computed in SQL (max inbound vs max outbound). MUST be
+    // a per-lead aggregate, not the capped row fetch above — that global LIMIT can
+    // miss an older lead's messages entirely, which is exactly why answered leads
+    // stayed stuck in LIVE (and why their conversation looked truncated).
+    const signalRows =
+      allLeadIds.length > 0
+        ? await db
+            .select({
+              leadId: leadMessagesTable.leadId,
+              lastLeadMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} = 'lead')) * 1000, 0)`,
+              lastOursMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} <> 'lead')) * 1000, 0)`,
+            })
+            .from(leadMessagesTable)
+            .where(inArray(leadMessagesTable.leadId, allLeadIds))
+            .groupBy(leadMessagesTable.leadId)
+        : [];
+    const signalByLead = new Map(
+      signalRows.map((r) => [r.leadId, { lastLeadAt: Number(r.lastLeadMs) || 0, lastOursAt: Number(r.lastOursMs) || 0 }]),
+    );
+
     let items = allPending.filter((r) =>
-      isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, timelineMsgsByLead.get(r.leadId)?.[0]),
+      isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, signalByLead.get(r.leadId)),
     );
 
     if (kind === "live" || kind === "push") items = items.filter((r) => r.kind === kind);
@@ -212,6 +233,24 @@ router.get("/suggestions", async (req, res) => {
         suggested_stage_terminal: i.suggestedStageTerminal ?? false,
         // Distilled profile (for adaptive ranking + surfaced to the client UI)
         profile_temperature: sync?.profileTemperature ?? null,
+        // Whether the temperature was set by the broker (sticky) or the AI — the
+        // extension shows a ✎ marker so the broker knows it's their call.
+        profile_temperature_source: sync?.profileTemperatureSource ?? null,
+        // Adaptive suggested date for the NEXT follow-up (cost-of-delay cadence:
+        // fresh/hot → tight, cold+old → stretched). The bot proposes this as the
+        // default when the broker reschedules the task from the chip.
+        suggested_followup_at: new Date(
+          Date.now() +
+            computeNextFollowupDays({
+              streak: trailingUnanswered,
+              leadStage: sync?.leadStage,
+              temperature: (sync?.profileTemperature as "cold" | "warm" | "hot" | null) ?? undefined,
+              ageDays: sync?.amoCreatedAt
+                ? Math.floor((Date.now() - sync.amoCreatedAt.getTime()) / 86400000)
+                : null,
+            }) *
+              86400000,
+        ).toISOString(),
         profile_potential: sync?.profilePotential ?? null,
         profile_open_question: sync?.profileOpenQuestion ?? null,
         profile_alive: sync?.profileAlive ?? null,
@@ -225,7 +264,11 @@ router.get("/suggestions", async (req, res) => {
       };
     });
 
-    let enriched = enrichedRaw.filter((i) => !i._brokerReplied);
+    // LIVE staleness is now decided authoritatively upstream by isPendingVisible
+    // (max inbound vs max outbound across content + lead_messages), so no second,
+    // weaker filter here — that older last-element check could re-hide a genuine
+    // LIVE that the robust rule correctly kept.
+    let enriched = enrichedRaw;
 
     // ── Stage priority map ───────────────────────────────────────────────────
     // Everything BEFORE "Needs Assessed" = unqualified = highest priority (1–20).
@@ -319,19 +362,43 @@ router.get("/suggestions", async (req, res) => {
           try { return Number(BigInt(b.lead_id) - BigInt(a.lead_id)); } catch { return 0; }
         });
 
-        // Daily focus cap: surface only the top N ACTIVE-push items so the list
-        // stays workable (WhatsApp-safe) instead of dumping the whole overdue
-        // backlog. LIVE and REACH are never capped. The rest wait and rotate up
-        // as the top drains (approved leads reschedule out of "due").
+        // Hard daily focus cap across EVERYTHING (live + reach + push = 30 total).
+        // LIVE (new client replies) are event-driven: always kept, on top, and they
+        // count toward the cap. The follow-up backlog (reach + push) is a set
+        // LOCKED at the first load of the day; it only DRAINS as the broker works
+        // it — new follow-ups do NOT backfill the same day, they wait for the next
+        // day's fresh snapshot. `enriched` is already priority-sorted here.
         if (PUSH_DAILY_CAP > 0) {
-          const isReachStage = (s: string | null) =>
-            ["1st follow up", "2nd follow up", "final follow up"].some((k) => (s ?? "").toLowerCase().includes(k));
-          let activePushShown = 0;
-          enriched = enriched.filter((i) => {
-            if (i.kind !== "push" || isReachStage(i.lead_stage)) return true; // LIVE + REACH always
-            activePushShown++;
-            return activePushShown <= PUSH_DAILY_CAP;
-          });
+          const liveItems = enriched.filter((i) => i.kind !== "push");
+          const followups = enriched.filter((i) => i.kind === "push"); // reach + active push
+          const brokerKey = (responsibleUser ?? "").trim().toLowerCase();
+          if (brokerKey) {
+            const baliDay = new Date(nowMs + BALI_OFFSET_MS).toISOString().slice(0, 10);
+            const focusKey = `daily_focus:${brokerKey}`;
+            let lockedIds: string[] | null = null;
+            try {
+              const [row] = await db.select().from(brokerSettingsTable).where(eq(brokerSettingsTable.key, focusKey));
+              if (row?.value) {
+                const parsed = JSON.parse(row.value) as { day?: string; leadIds?: string[] };
+                if (parsed.day === baliDay && Array.isArray(parsed.leadIds)) lockedIds = parsed.leadIds;
+              }
+            } catch { /* fail open → treat as first load of the day */ }
+            if (!lockedIds) {
+              // First load today → snapshot today's follow-up set (top N by ranking).
+              lockedIds = followups.slice(0, PUSH_DAILY_CAP).map((i) => i.lead_id);
+              const payload = JSON.stringify({ day: baliDay, leadIds: lockedIds });
+              try {
+                await db.insert(brokerSettingsTable)
+                  .values({ key: focusKey, value: payload })
+                  .onConflictDoUpdate({ target: brokerSettingsTable.key, set: { value: payload } });
+              } catch { /* non-fatal — degrades to no-lock, never blocks the inbox */ }
+            }
+            const lockedSet = new Set(lockedIds);
+            const lockedFollowups = followups.filter((i) => lockedSet.has(i.lead_id));
+            enriched = [...liveItems, ...lockedFollowups].slice(0, PUSH_DAILY_CAP);
+          } else {
+            enriched = enriched.slice(0, PUSH_DAILY_CAP); // no broker context → plain hard cap
+          }
         }
       } else {
         enriched.sort((a, b) => {
@@ -391,7 +458,7 @@ router.post("/broker-replied", async (req, res) => {
       // Mark broker as last sender in leads_sync so future polls skip this LIVE
       db
         .update(leadsSyncTable)
-        .set({ lastMessageFrom: "us", nextFollowupAt: null })
+        .set({ lastMessageFrom: "us", nextFollowupAt: null, liveDismissedAt: new Date() })
         .where(eq(leadsSyncTable.leadId, leadId)),
       // Delete ALL pending suggestions for this lead (both live and push)
       db

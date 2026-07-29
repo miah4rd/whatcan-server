@@ -20,10 +20,15 @@ export type Temperature = "cold" | "warm" | "hot" | null | undefined;
  * cadence, priority ranking, discard flags) is enabled. Roll out to a new
  * broker by adding their exact amoCRM name here — every gate reads this set.
  */
-export const ADAPTIVE_BROKERS = new Set<string>(["Robert", "Amelia"]);
+// Rolled out from the initial Robert+Amelia pilot to ALL brokers. The only
+// carve-out is HoS: that account runs the Rental pipeline (its leads would be
+// wrongly Unicorn-filtered by the adaptive path), and it already has its own
+// handling in pending-visibility. Every other broker is ~100% Unicorn, so the
+// adaptive follow-up / ranking / temperature system is safe and on for them.
+const NON_ADAPTIVE_BROKERS = new Set<string>(["HoS"]);
 
 export function isAdaptiveBroker(user: string | null | undefined): boolean {
-  return !!user && ADAPTIVE_BROKERS.has(user);
+  return !!user && !NON_ADAPTIVE_BROKERS.has(user);
 }
 
 // Base wait (days) indexed by silence streak = consecutive unanswered touches.
@@ -58,24 +63,38 @@ export function computeNextFollowupDays(opts: {
 }): number {
   let days = baseFollowupIntervalDays(opts.streak);
   const stage = (opts.leadStage ?? "").toLowerCase();
-  const isFresh = (opts.ageDays ?? 9999) <= FRESH_LEAD_MAX_AGE_DAYS;
+  const age = opts.ageDays ?? 9999;
+  const isFresh = age <= FRESH_LEAD_MAX_AGE_DAYS;
   const isNearClosing = /zoom call|viewing|reservation|negotiat|feedback|handling objection/.test(stage);
+  // A lead that's been in the funnel well past the activation window and is NOT
+  // in a deal-progression stage: any "hot"/"warm" label it still carries is very
+  // likely stale (nobody re-profiled it). Re-engaging such a lead every 2 days is
+  // exactly what looked "non-adaptive" — a lead untouched for ~2 months should be
+  // spaced out, not machine-gunned. So we (a) don't let a stale hot label collapse
+  // the interval, and (b) give it real breathing room.
+  const isStaleOld = age > 45 && !isFresh && !isNearClosing;
 
   // Cadence mirrors "cost of delay": the faster a lead decays if untouched, the
   // shorter the interval.
   //   • Fresh lead → speed-to-lead is the #1 conversion lever; keep it tight
   //     regardless of streak (activation window).
-  //   • Hot / near-closing → strike while the intent/momentum is there.
+  //   • Hot / near-closing → strike while the intent/momentum is there — but only
+  //     when the signal is credible (not a months-stale "hot" on a dormant lead).
   //   • Deal-progression stages → tight on the first touches.
   //   • Cold AND old → decays slowly, don't burn sends → stretch.
-  if (stage.includes("needs assessed") && opts.streak <= 1) days = Math.min(days, 2);
-  else if (stage.includes("options sent") && opts.streak === 0) days = Math.min(days, 3);
+  if (stage.includes("needs assessed") && opts.streak <= 1 && !isStaleOld) days = Math.min(days, 2);
+  else if (stage.includes("options sent") && opts.streak === 0 && !isStaleOld) days = Math.min(days, 3);
 
   if (isFresh) days = Math.min(days, 3);
-  if (opts.temperature === "hot" || isNearClosing) days = Math.min(days, 2);
+  if (isNearClosing || (opts.temperature === "hot" && !isStaleOld)) days = Math.min(days, 2);
 
   // Cold + old → stretch. A FRESH lead is never stretched (freshness wins).
   if (opts.temperature === "cold" && !isFresh) days = Math.round(days * 1.5);
+
+  // Long-dormant, non-progressing lead: give it a real gap (≥1 week) so a stale
+  // warm/hot label can't keep it on a 2-3 day drip. Streak still stretches it
+  // further from here (7 → 14 → 30) if it keeps ignoring us.
+  if (isStaleOld) days = Math.max(days, 7);
 
   return Math.max(1, Math.min(days, 35));
 }
@@ -126,18 +145,24 @@ export function computePushPriority(opts: {
   if (typeof opts.potential === "number") score += opts.potential * 0.25; // up to +25
   if (opts.openQuestion) score += 8;            // an unanswered real question is waiting
 
-  // Task urgency — FLAT (was scaled by days-overdue, which floated ancient leads
-  // to the top). Today's tasks (incl. broker's near-term manual ones) rank high.
-  if (opts.taskGroup === 1) score += 25;        // due today
-  else if (opts.taskGroup === 2) score += 10;   // overdue — flat, no per-day pile-up
+  // Task urgency is the broker's COMMITTED work — it must dominate. Due today is
+  // top; recently overdue (yesterday / 2 days ago) is nearly as urgent and decays
+  // as it ages, so an ancient overdue backlog can't bury today's and fresh leads
+  // (that inversion — old dormant leads floating to the top — was the reported bug).
+  const daysOverdue = Math.max(0, opts.daysWaitingPastEligible ?? 0);
+  if (opts.taskGroup === 1) score += 50;                              // due today
+  else if (opts.taskGroup === 2) score += Math.max(8, 45 - daysOverdue * 4); // overdue, recent first
 
   // ── Penalties: low cost of delay (dormant, fine to wait / cull candidates) ─
   if (opts.temperature === "cold" && age > 30) score -= 20;
   score -= Math.min(20, Math.max(0, (opts.streak ?? 0) - 2) * 4); // many ignored touches
+  // Long-dormant lead with no live task is the lowest cost of delay — push it down
+  // so this month's leads and today's tasks sit above it.
+  if (age > 45 && opts.taskGroup === 3) score -= 15;
 
-  // ── Small aging nudge for fairness — prevents same-day starvation without
-  // dominating (max +10, so it can't outrank a fresh or hot lead). ──────────
-  score += Math.min(10, Math.max(0, opts.daysWaitingPastEligible ?? 0) * 0.3);
+  // NOTE: the old "aging nudge" (+score the longer a lead waited) is deliberately
+  // GONE — it rewarded staleness and floated the ancient backlog above today's
+  // leads. Recent-overdue weighting above gives fairness without that inversion.
 
   return score;
 }

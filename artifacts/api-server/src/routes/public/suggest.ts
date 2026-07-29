@@ -2,7 +2,7 @@ import { Router } from "express";
 import { randomUUID } from "crypto";
 import { eq, desc } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON, type ChatMessage } from "../../lib/ai-client";
-import { db, leadsSyncTable, brokerCorrectionsTable } from "@workspace/db";
+import { db, leadsSyncTable, brokerCorrectionsTable, leadMessagesTable } from "@workspace/db";
 import { parseDialogContent, formatDialogForAI } from "../../lib/dialog-parser";
 import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing";
 import { getQualificationSteps } from "../../lib/settings";
@@ -29,6 +29,9 @@ type Body = {
   model?: string;
   // Language override from extension settings. "auto" = detect from lead messages.
   outputLanguage?: string;
+  // Optional screenshot (data URL) the broker pasted as ground-truth context —
+  // e.g. the real amoCRM chat when the stored history is stale/out of order.
+  image?: string;
 };
 
 const OBJECTION_KEYWORDS = [
@@ -104,16 +107,48 @@ router.post("/suggest", async (req, res) => {
         .where(eq(leadsSyncTable.leadId, body.leadId))
         .limit(1);
       const sync = syncRows[0];
+
+      // Build the conversation from BOTH sources and merge them:
+      //   • leads_sync.content — webhook-fed, but for WhatsApp / replies sent
+      //     manually from the phone it FREEZES and stops recording new messages;
+      //   • lead_messages — the timeline poll, which DOES capture our outgoing
+      //     WhatsApp replies and the latest incoming.
+      // Reading content alone left the bot blind to the newest messages (and made
+      // it suggest based on a stale, truncated thread). Merge + dedupe by
+      // text+minute, then sort — so nothing recent is missed.
+      type MMsg = { at: Date; from: "us" | "lead"; senderName: string; text: string; channel: string | null };
+      // Dedupe by NORMALISED TEXT only, not text+time: the same message carries
+      // different timestamps in content (Moscow UTC+3) vs lead_messages, so a
+      // time-based key left visible duplicates of every message.
+      const norm = (s: string) => (s ?? "").trim().replace(/\s+/g, " ").toLowerCase().slice(0, 160);
+      let merged: MMsg[] = [];
       if (sync?.content) {
         const dialog = parseDialogContent(sync.content);
-        // Full history, not a recency window — losing the lead's original
-        // ask from early in a long conversation produces worse suggestions.
-        fullTranscript = formatDialogForAI(dialog.messages, 500);
-        // Return last 30 messages to extension for conversation history display
-        recentMessages = dialog.messages.slice(-30).map((m) => ({
-          from: m.from === "us" ? "us" : "lead",
-          text: m.text,
-        }));
+        merged = dialog.messages.map((m) => ({ at: m.at, from: m.from, senderName: m.senderName, text: m.text, channel: m.channel }));
+      }
+      try {
+        const tl = await db
+          .select({ senderType: leadMessagesTable.senderType, text: leadMessagesTable.text, sentAt: leadMessagesTable.sentAt, channel: leadMessagesTable.channel })
+          .from(leadMessagesTable)
+          .where(eq(leadMessagesTable.leadId, body.leadId));
+        const seen = new Set(merged.map((m) => norm(m.text)));
+        for (const t of tl) {
+          const key = norm(t.text ?? "");
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          merged.push({ at: t.sentAt ?? new Date(0), from: t.senderType === "lead" ? "lead" : "us", senderName: t.senderType === "lead" ? "Lead" : "Us", text: t.text ?? "", channel: t.channel ?? null });
+        }
+      } catch {
+        // content-only fallback
+      }
+      merged.sort((a, b) => a.at.getTime() - b.at.getTime());
+
+      if (merged.length > 0) {
+        // Full history, not a recency window — losing the lead's original ask
+        // from early in a long conversation produces worse suggestions.
+        fullTranscript = formatDialogForAI(merged, 500);
+        // Last 30 messages for the extension's conversation display.
+        recentMessages = merged.slice(-30).map((m) => ({ from: m.from === "us" ? "us" : "lead", text: m.text }));
       }
       if (sync?.leadStage) dbLeadStage = sync.leadStage;
       if (sync?.lastMessageFrom) dbLastMessageFrom = sync.lastMessageFrom;
@@ -246,6 +281,15 @@ Broker: ${body.brokerName ?? "Alex"}
 Full conversation history:
 ${transcript || "(no messages yet)"}`;
 
+  // Parse an optional pasted screenshot (data URL) into an image content block.
+  const imageBlock = (() => {
+    if (!body.image || typeof body.image !== "string") return null;
+    const m = body.image.match(/^data:(image\/(?:png|jpeg|jpg|gif|webp));base64,([A-Za-z0-9+/=\s]+)$/i);
+    if (!m) return null;
+    const media = m[1]!.toLowerCase() === "image/jpg" ? "image/jpeg" : m[1]!.toLowerCase();
+    return { type: "image" as const, source: { type: "base64" as const, media_type: media, data: m[2]!.replace(/\s/g, "") } };
+  })();
+
   // ── 4. Build Anthropic messages (system is separate parameter) ──────────────
   const aiMessages: ChatMessage[] = [];
 
@@ -281,9 +325,28 @@ ${transcript || "(no messages yet)"}`;
     });
   }
 
+  // ── 4a. Broker screenshot as ground-truth context ──────────────────────────
+  // Attach the pasted screenshot to the LAST user turn and tell the model to
+  // treat it as the source of truth — this is how the broker corrects a stale or
+  // out-of-order stored history ("here's what's actually in the chat"), so the
+  // bot re-reads the whole situation instead of tweaking wording.
+  if (imageBlock) {
+    const last = aiMessages[aiMessages.length - 1]!;
+    const baseText = typeof last.content === "string" ? last.content : "";
+    last.content = [
+      {
+        type: "text",
+        text:
+          baseText +
+          `\n\n[THE BROKER ATTACHED A SCREENSHOT of the actual amoCRM chat. Treat it as the SOURCE OF TRUTH for the real conversation, its order, and the lead's current state — the stored history above may be missing messages or have them out of order. Re-read the whole situation from the screenshot AND the broker's note (which may be correcting what you saw or your judgment), then write the best next message. Do not just tweak wording — fix your understanding first.]`,
+      },
+      imageBlock,
+    ];
+  }
+
   // ── 4b. PUSH shortcut: if this is a follow-up stage and we sent last,
   // return the script template directly — no OpenAI needed. ─────────────────
-  if (!hasRevisions && body.leadId) {
+  if (!hasRevisions && !imageBlock && body.leadId) {
     const stageLower = leadStage.toLowerCase();
     const isFollowupStage =
       stageLower.includes("follow") || stageLower.includes("followup");
@@ -364,8 +427,29 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     return null;
   }
 
+  // When the broker pasted a screenshot, also RE-ASSESS the lead temperature from
+  // it (the screenshot may reveal the lead is hotter/colder than the stale data
+  // suggested). Returned so the extension can apply it — one of the downstream
+  // things that was wrong when the bot couldn't see the real conversation.
+  const reassessTemp = async (): Promise<string | null> => {
+    if (!imageBlock) return null;
+    try {
+      const lastFb = body.feedback || body.revisionChain?.[body.revisionChain.length - 1]?.feedback || "";
+      const tj = await chatCompletionJSON<{ temperature?: string }>({
+        model: "claude-sonnet-5",
+        system: `You re-assess a real-estate lead's temperature from the conversation AND the attached screenshot (the SOURCE OF TRUTH). Output JSON {"temperature":"hot|warm|cold"}. hot = active buying intent / positive signals; warm = genuine engagement; cold = minimal / terse / no real signal.`,
+        messages: [{ role: "user", content: [{ type: "text", text: `Conversation (stored, may be stale):\n${transcript.slice(-3000)}\n\nBroker note: ${lastFb || "(none)"}` }, imageBlock] }],
+        max_tokens: 30,
+      });
+      const t = String(tj.temperature || "").toLowerCase().trim();
+      return ["hot", "warm", "cold"].includes(t) ? t : null;
+    } catch {
+      return null;
+    }
+  };
+
   try {
-    const [completion, taskHint] = await Promise.all([
+    const [completion, taskHint, reassessedTemp] = await Promise.all([
       chatCompletion({
         model,
         system,
@@ -373,6 +457,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         max_tokens: 500,
       }),
       detectTaskHint(transcript),
+      reassessTemp(),
     ]);
 
     const text = sanitizeSuggestion(completion.content);
@@ -399,7 +484,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     ];
     const stageHint = _stageHintKeywords.some(kw => text.toLowerCase().includes(kw));
 
-    res.json({ text, rationale, suggestionId: randomUUID(), task_hint: taskHint ?? null, stage_hint: stageHint, kind: "live", recent_messages: recentMessages });
+    res.json({ text, rationale, suggestionId: randomUUID(), task_hint: taskHint ?? null, stage_hint: stageHint, kind: "live", recent_messages: recentMessages, reassessed_temperature: reassessedTemp ?? null });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     req.log.error({ err }, "ai error");

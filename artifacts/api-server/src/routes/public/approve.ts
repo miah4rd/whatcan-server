@@ -4,7 +4,8 @@ import { eq, and } from "drizzle-orm";
 import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-followup";
 import { chatCompletionJSON } from "../../lib/ai-client.js";
-import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
+import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost, countActiveWhatsappChats } from "../../lib/amo-client.js";
+import { stripEmojiForDelivery } from "../../lib/message-delivery.js";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
 import { resolveOutboundSource } from "../../lib/amo-messenger-field";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL } from "../../lib/rental-followup.js";
@@ -81,23 +82,15 @@ async function autoCreateCrmTask(
     let taskDate: Date;
     let nextActionNote: string;
 
-    // Adaptive cadence applies only to Robert's active-funnel PUSH leads
-    // (Contact Established / Needs Assessed / Options Sent). Everything else —
-    // qualification/Reach, Rental, other brokers — keeps the original fixed
-    // [1,3,5] cadence untouched.
-    const stageLower = (pipelineRow?.leadStage ?? "").toLowerCase();
-    const isActivePushStage =
-      stageLower.includes("contact established") ||
-      stageLower.includes("needs assessed") ||
-      stageLower.includes("options sent") ||
-      stageLower.includes("option send");
+    // Adaptive cadence now applies to EVERY approval (LIVE replies included) for
+    // adaptive brokers — the follow-up date must reflect the lead's temperature /
+    // stage / freshness, not a flat "tomorrow". A hot lead → soon; a cold, old
+    // lead → stretched to a week/two/month. Only Rental keeps its own fixed flow.
     const useAdaptiveCadence =
-      kind === "push" &&
       !isRentalPipeline &&
-      isAdaptiveBroker(pipelineRow?.responsibleUser) &&
-      isActivePushStage;
+      isAdaptiveBroker(pipelineRow?.responsibleUser);
 
-    if (kind === "push" && useAdaptiveCadence) {
+    if (useAdaptiveCadence) {
       // Silence streak = consecutive unanswered touches, +1 for the one we're
       // sending now (the lead hasn't replied, so this send extends the streak).
       let streak = 1;
@@ -410,6 +403,36 @@ router.post("/approve", async (req, res) => {
       return;
     }
 
+    // ── Duplicate-thread guard ────────────────────────────────────────────────
+    // If a lead has two active WhatsApp chat threads (WAhelp registered the same
+    // number twice — e.g. "+61…" and "61…"), a single Salesbot send fans out to
+    // BOTH and the client gets the message twice. We can't pick one thread from
+    // here (addressing is line-level, not chat-level), so the safe move is to
+    // NOT send blind: release the suggestion and tell the broker to send this
+    // one manually into the main thread. Normal single-thread leads (the vast
+    // majority) are unaffected. Skip the check when the broker is only moving the
+    // stage (skipMessage) — nothing is being sent.
+    if (!skipMessage) {
+      const activeChats = await countActiveWhatsappChats(sug.leadId);
+      if (activeChats >= 2) {
+        await db
+          .update(pendingSuggestionsTable)
+          .set({ status: "pending", finalText: null })
+          .where(eq(pendingSuggestionsTable.id, sug.id));
+        req.log.warn(
+          { leadId: sug.leadId, activeChats },
+          "approve aborted — lead has multiple active WhatsApp threads, refusing to avoid duplicate delivery",
+        );
+        res.status(409).json({
+          ok: false,
+          error: "multiple_chat_threads",
+          message:
+            "У этого лида в WhatsApp сейчас 2 активные беседы на один номер — авто-отправка ушла бы клиенту дважды. Сообщение НЕ отправлено. Отправьте его вручную из amoCRM в основную переписку (подсказка осталась в инбоксе). Причина — дубль-тред в WAhelp, чинится на стороне интеграции.",
+        });
+        return;
+      }
+    }
+
     // ── Update leads_sync BEFORE sending message ────────────────────────────
     const [prevSyncRow] = await db
       .select({ lastMessageFrom: leadsSyncTable.lastMessageFrom })
@@ -448,8 +471,11 @@ router.post("/approve", async (req, res) => {
     // ── Send via Salesbot (replaces F5 hook) ──────────────────────────────────
     // 1. Write message to custom field "companion massage"
     // 2. Trigger Salesbot "Companion Robert" which reads the field and sends via WhatsApp
+    // Strip emoji first: the Salesbot/WAhelp delivery truncates the message at the
+    // first emoji (astral-plane char), so the client was getting only the greeting.
+    const deliveryText = stripEmojiForDelivery(body.message);
     try {
-      const fieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, body.message);
+      const fieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, deliveryText);
       if (fieldOk) {
         const botTriggered = await triggerSalesbot(sug.leadId, botId);
         chatSent = botTriggered;
@@ -487,7 +513,7 @@ router.post("/approve", async (req, res) => {
       leadId: sug.leadId,
       suggestionId: sug.id as any,
       kind: sug.kind,
-      messageText: body.message,
+      messageText: deliveryText,
       responsibleUser: sug.responsibleUser,
       webhookStatus: hookStatus,
       webhookResponse: hookBody,

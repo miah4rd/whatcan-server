@@ -306,7 +306,13 @@ async function storeMessages(messages: RawMessage[]): Promise<number> {
           direction: msg.direction,
           sentAt: msg.sentAt,
         })
-        .onConflictDoNothing({ target: leadMessagesTable.amoMessageId });
+        // Update the timestamp (and text/channel) on re-read: a past bulk import
+        // stamped a batch of messages with one wrong time, and DoNothing kept it
+        // frozen. Re-syncing a lead now corrects the real time from amoCRM.
+        .onConflictDoUpdate({
+          target: leadMessagesTable.amoMessageId,
+          set: { sentAt: msg.sentAt, text: msg.text, channel: msg.channel, senderType: msg.senderType },
+        });
       inserted++;
     } catch {
       // Duplicate — non-fatal

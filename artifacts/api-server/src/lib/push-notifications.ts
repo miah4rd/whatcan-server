@@ -1,6 +1,6 @@
 import webpush from "web-push";
 import { db, pushSubscriptionsTable, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable } from "@workspace/db";
-import { eq, and, sql, inArray, desc } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { logger } from "./logger";
 import { parseDialogContent } from "./dialog-parser";
 import { getPushStageWhitelist } from "./push-stage-whitelist";
@@ -112,31 +112,34 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
         nextFollowupAt: leadsSyncTable.nextFollowupAt,
         lastMessageFrom: leadsSyncTable.lastMessageFrom,
         content: leadsSyncTable.content,
+        liveDismissedAt: leadsSyncTable.liveDismissedAt,
       })
       .from(leadsSyncTable)
       .where(inArray(leadsSyncTable.leadId, leadIds));
     const syncByLeadId = new Map(syncRows.map((r) => [r.leadId, r]));
     const whitelist = await getPushStageWhitelist();
 
-    // Same timeline tie-breaker the inbox uses — the badge must not count a
-    // suggestion the inbox hides, nor miss one it shows.
-    const newestByLead = new Map<string, { senderType: string; sentAt: Date }>();
+    // Same reply signal the inbox uses (max inbound vs max outbound per lead),
+    // computed as a per-lead SQL aggregate so it can't miss an older lead's
+    // messages the way a global row LIMIT would.
+    const signalByLead = new Map<string, { lastLeadAt: number; lastOursAt: number }>();
     try {
-      const msgRows = await db
+      const signalRows = await db
         .select({
           leadId: leadMessagesTable.leadId,
-          senderType: leadMessagesTable.senderType,
-          sentAt: leadMessagesTable.sentAt,
+          lastLeadMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} = 'lead')) * 1000, 0)`,
+          lastOursMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} <> 'lead')) * 1000, 0)`,
         })
         .from(leadMessagesTable)
         .where(inArray(leadMessagesTable.leadId, leadIds))
-        .orderBy(desc(leadMessagesTable.sentAt))
-        .limit(600);
-      for (const m of msgRows) if (!newestByLead.has(m.leadId)) newestByLead.set(m.leadId, m);
+        .groupBy(leadMessagesTable.leadId);
+      for (const r of signalRows) {
+        signalByLead.set(r.leadId, { lastLeadAt: Number(r.lastLeadMs) || 0, lastOursAt: Number(r.lastOursMs) || 0 });
+      }
     } catch { /* fall back to content-only rules */ }
 
     const visible = dedupePushPerLead(
-      rows.filter((r) => isPendingVisible(r, syncByLeadId.get(r.leadId), whitelist, newestByLead.get(r.leadId))),
+      rows.filter((r) => isPendingVisible(r, syncByLeadId.get(r.leadId), whitelist, signalByLead.get(r.leadId))),
     );
     return visible.length;
   } catch {

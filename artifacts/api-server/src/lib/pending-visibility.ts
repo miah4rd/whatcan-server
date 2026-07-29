@@ -1,5 +1,5 @@
 import { parseDialogContent } from "./dialog-parser";
-import { shouldSuppressPush } from "./stage-routing";
+import { shouldSuppressPush, isClosedWonStage } from "./stage-routing";
 import { isPushStageAllowed } from "./push-stage-whitelist";
 
 // Shared visibility rules for pending suggestions. This is the single source of
@@ -20,29 +20,53 @@ export interface SyncRowLike {
   nextFollowupAt: Date | null;
   lastMessageFrom: string | null;
   content: string | null;
+  liveDismissedAt?: Date | null;
 }
 
-/** Newest row from lead_messages for a lead — see lib/conversation-state.ts. */
-export interface NewestTimelineMessage {
-  senderType: string;
-  sentAt: Date;
+/** Max timestamps per side, derived from lead_messages (the timeline poll, which
+ * — unlike webhook-fed content — DOES capture our outgoing WhatsApp replies,
+ * including ones a broker sent manually from the phone). */
+export interface RepliedSignal {
+  lastLeadAt: number; // ms; newest inbound (lead) message
+  lastOursAt: number; // ms; newest outbound (broker/bot/us) message
+}
+
+/** Fold a lead's timeline rows into the max inbound/outbound timestamps. */
+export function repliedSignalFromTimeline(
+  msgs: Array<{ senderType: string; sentAt: Date }>,
+): RepliedSignal {
+  let lastLeadAt = 0;
+  let lastOursAt = 0;
+  for (const m of msgs) {
+    const t = m.sentAt?.getTime?.() ?? 0;
+    if (m.senderType === "lead") lastLeadAt = Math.max(lastLeadAt, t);
+    else lastOursAt = Math.max(lastOursAt, t);
+  }
+  return { lastLeadAt, lastOursAt };
 }
 
 export function isPendingVisible(
   r: PendingRowLike,
   sync: SyncRowLike | undefined,
   pushWhitelist: string[],
-  /** Pass it whenever available: without it, a lead whose webhook stopped
-   * delivering has their LIVE hidden by the stale-content rule below. */
-  newestTimeline?: NewestTimelineMessage,
+  /** Newest inbound/outbound timestamps from lead_messages. Pass it whenever
+   * available — it's the only source that sees our outgoing WhatsApp replies
+   * when the webhook-fed `content` has frozen. */
+  timeline?: RepliedSignal,
 ): boolean {
   // Never show bot-excluded leads
   if (sync?.botExcluded) return false;
 
   // Never show leads on dead stages — closed, lost, incorrect information, incoming leads, etc.
   // Uses the same suppression list as the push scheduler for consistency.
+  // EXCEPTION: a Closed-WON lead (deal done) is finished for proactive PUSH, but
+  // if that past client writes again it should still surface in LIVE — a warm
+  // client reaching out. Everything else dead (lost / not active / incorrect /
+  // incoming) stays hidden in every tab.
   const stage = sync?.leadStage ?? "";
-  if (stage && shouldSuppressPush(stage)) return false;
+  if (stage && shouldSuppressPush(stage)) {
+    if (!(r.kind === "live" && isClosedWonStage(stage))) return false;
+  }
 
   // Push tab: only show stages in the dynamic whitelist (configurable via /api/admin/push-stages).
   // Rental pipeline uses its own stage vocabulary (Qualified, New LEAD, Options sent,
@@ -78,39 +102,43 @@ export function isPendingVisible(
 
   if (r.kind !== "live") return true;
 
-  // ── Is this LIVE stale (i.e. have we already answered the lead)? ───────────
-  // Both signals below read leads_sync, which is webhook-fed and for some
-  // channels (Instagram) silently stops updating. The timeline poll keeps
-  // writing to lead_messages regardless, so when the two disagree the timeline
-  // is the one telling the truth. Without this, a genuine reply produced a
-  // correct LIVE suggestion that these rules then hid from the broker — the
-  // inbox said "All caught up" while the client sat waiting.
-  let contentLastMs = 0;
-  let contentSaysWeReplied = false;
+  // ── Has the broker already answered this LIVE? ────────────────────────────
+  // Decide from WHO SPOKE LAST, using the most complete view we have:
+  //   • leads_sync.content — webhook-fed, but for WhatsApp/manual-from-phone
+  //     replies it FREEZES and never records our outgoing message;
+  //   • lead_messages (timeline poll) — DOES capture our outgoing WhatsApp reply.
+  // Take the newest inbound vs newest outbound across BOTH sources. Using max()
+  // per side is robust to the bulk-import timestamp collapse (equal ties → treat
+  // as answered), which is exactly the owner's complaint: answered leads that
+  // were stuck in LIVE forever because the bot never saw our reply.
+  let cLeadMs = 0;
+  let cOursMs = 0;
   if (sync?.content) {
     try {
       const parsed = parseDialogContent(sync.content);
-      contentLastMs = parsed.lastMessage?.at?.getTime() ?? 0;
-      contentSaysWeReplied = parsed.lastMessage?.from === "us";
+      for (const m of parsed.messages) {
+        const t = m.at?.getTime?.() ?? 0;
+        if (m.from === "us") cOursMs = Math.max(cOursMs, t);
+        else cLeadMs = Math.max(cLeadMs, t);
+      }
     } catch {
       // ignore parse errors
     }
   }
 
-  const timelineSaysLeadReplied =
-    !!newestTimeline &&
-    newestTimeline.senderType === "lead" &&
-    newestTimeline.sentAt.getTime() > contentLastMs + 60_000;
-  if (timelineSaysLeadReplied) return true;
+  const lastLeadMs = Math.max(cLeadMs, timeline?.lastLeadAt ?? 0);
+  const lastOursMs = Math.max(cOursMs, timeline?.lastOursAt ?? 0);
 
-  // Rule 1: DB says the broker spoke last → LIVE is stale.
-  if (sync?.lastMessageFrom === "us") return false;
+  if (lastLeadMs === 0) return true;    // never saw a lead message → don't hide
 
-  // Rule 2: content says the broker spoke last — catches a reply sent via
-  // SalesBot or an external tool before its webhook lands.
-  if (contentSaysWeReplied) return false;
+  // Broker explicitly dismissed this LIVE ("No reply needed" / "Already replied").
+  // Honour it until a NEWER lead message arrives — otherwise the max-timestamp
+  // rule below would keep re-raising a lead that genuinely spoke last but that
+  // the broker already decided needs no answer.
+  const dismissedMs = sync?.liveDismissedAt ? sync.liveDismissedAt.getTime() : 0;
+  if (dismissedMs >= lastLeadMs) return false;
 
-  return true;
+  return lastLeadMs > lastOursMs;        // show only if the lead genuinely spoke last
 }
 
 // Deduplicate push suggestions by leadId — keep only the first pending push per
