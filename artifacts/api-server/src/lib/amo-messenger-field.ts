@@ -98,18 +98,41 @@ export async function resolveOutboundSource(
   responsibleUser: string | null,
 ): Promise<string | null> {
   const current = await readMessengerField(leadId);
-  if (current && /^\d+$/.test(current)) return current;
+  const brokerLine = sourceIdForBroker(responsibleUser); // CURRENT responsible broker's line
+  const respLower = (responsibleUser || "").trim().toLowerCase();
 
-  if (current) {
-    const mapped = mapNameToSourceId(current);
-    if (mapped) {
-      await updateLastMessengerField(leadId, String(mapped), 0, LAST_MESSENGER_FIELD_ID).catch(() => false);
-      logger.info({ leadId, from: current, sourceId: mapped }, "outbound source: name in field mapped to line");
-      return String(mapped);
-    }
+  // Reassignment guard: if the stored "last active messenger" points to a line
+  // that belongs to a DIFFERENT broker than the lead's CURRENT responsible user,
+  // the lead was handed over (e.g. Robert → Amelia). Send from the current
+  // responsible user's OWN line — not the previous broker's number — and rewrite
+  // the field so it stays consistent. This is exactly the owner's rule: follow
+  // whoever is responsible NOW; only a reassignment changes the sending number.
+  const fieldSourceId =
+    current && /^\d+$/.test(current)
+      ? Number(current)
+      : current
+      ? mapNameToSourceId(current)
+      : null;
+  const fieldBroker = fieldSourceId ? SOURCE_MAP[fieldSourceId] : null;
+
+  if (brokerLine && fieldBroker && fieldBroker.toLowerCase() !== respLower) {
+    await updateLastMessengerField(leadId, String(brokerLine), 0, LAST_MESSENGER_FIELD_ID).catch(() => false);
+    logger.info(
+      { leadId, responsibleUser, wasBroker: fieldBroker, wasSource: fieldSourceId, nowSource: brokerLine },
+      "outbound source: lead reassigned → switched to the current responsible user's line",
+    );
+    return String(brokerLine);
   }
 
-  const brokerLine = sourceIdForBroker(responsibleUser);
+  // Not reassigned (or the field's broker is unknown/Damian-style) → keep the
+  // lead's own detected channel.
+  if (current && /^\d+$/.test(current)) return current;
+  if (fieldSourceId) {
+    await updateLastMessengerField(leadId, String(fieldSourceId), 0, LAST_MESSENGER_FIELD_ID).catch(() => false);
+    logger.info({ leadId, from: current, sourceId: fieldSourceId }, "outbound source: name in field mapped to line");
+    return String(fieldSourceId);
+  }
+
   if (brokerLine) {
     await updateLastMessengerField(leadId, String(brokerLine), 0, LAST_MESSENGER_FIELD_ID).catch(() => false);
     logger.info({ leadId, responsibleUser, sourceId: brokerLine }, "outbound source: fell back to broker's own line");
