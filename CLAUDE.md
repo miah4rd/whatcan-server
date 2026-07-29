@@ -98,6 +98,17 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
 - **A truncated AI answer is not a failed one.** `chatCompletionJSON` repairs a
   JSON object cut off by `max_tokens` — the matcher explained its reasoning first,
   ran out of room mid-array, and three chosen villas became an empty shortlist.
+- **A listing with no price is held back from the first shortlist** — the client
+  can't judge it. Priced and most-viewed rank first. If the lead's own area holds
+  fewer than two priced villas of that size, the map widens; unpriced stock is not
+  what fills the gap.
+- **Two listings with the same title are not a choice** — the catalog holds
+  same-named units and the client reads the repeat as a mistake (`dedupeByTitle`).
+- **Budget unknown → spread the three across price points** rather than asking.
+  The reaction names the budget for us (`spreadByPrice`).
+- **A lead who arrives on a specific listing anchors the shortlist**: that listing
+  plus comparable alternatives. The anchor is read ONLY from what the LEAD wrote —
+  reading the whole conversation fed our own sent links back as "the answer".
 - **Rental links must open in rupiah** (`?currency=IDR`); sales stay in USD.
 - **Each property link is sent as its own WhatsApp message** — glued together,
   WhatsApp only unfurls a preview banner for the first one.
