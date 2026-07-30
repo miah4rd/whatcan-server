@@ -32,6 +32,10 @@ export const pendingSuggestionsTable = pgTable("pending_suggestions", {
   responsibleUser: text("responsible_user"),
   kind: text("kind").notNull(),
   followupLevel: integer("followup_level"),
+  /** Set when a BROKER asked for this draft by hand (regen), rather than the
+   * scheduler producing it. Such a draft must never be snoozed or deleted by the
+   * "the broker already has a task, don't nag" rules — it IS what they asked for. */
+  requestedAt: timestamp("requested_at", { withTimezone: true }),
   suggestionText: text("suggestion_text").notNull(),
   triggeredByMessageAt: timestamp("triggered_by_message_at", { withTimezone: true }),
   status: text("status").notNull().default("pending"),

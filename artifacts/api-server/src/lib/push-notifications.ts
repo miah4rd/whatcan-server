@@ -89,6 +89,10 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
         leadId: pendingSuggestionsTable.leadId,
         kind: pendingSuggestionsTable.kind,
         responsibleUser: pendingSuggestionsTable.responsibleUser,
+        // Must be selected here too: the badge count and the inbox share
+        // isPendingVisible, and omitting a field it reads makes the number on the
+        // app icon disagree with what the broker sees.
+        requestedAt: pendingSuggestionsTable.requestedAt,
       })
       .from(pendingSuggestionsTable)
       .where(

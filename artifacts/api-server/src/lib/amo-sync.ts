@@ -383,6 +383,12 @@ export async function syncTaskSchedule(): Promise<void> {
             inArray(pendingSuggestionsTable.leadId, ids),
             eq(pendingSuggestionsTable.kind, "push"),
             eq(pendingSuggestionsTable.status, "pending"),
+            // Never delete a draft the broker asked for by hand. This rule exists
+            // to stop the bot NAGGING when a task is already scheduled — but the
+            // bot's own follow-up task then deleted the very draft the broker had
+            // just requested, every 5 minutes, so the lead kept vanishing from the
+            // app seconds after it appeared.
+            isNull(pendingSuggestionsTable.requestedAt),
           ),
         );
     }

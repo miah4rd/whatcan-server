@@ -366,6 +366,8 @@ export async function queueSuggestion(opts: {
   attachments?: GeneratedSuggestion["attachments"];
   /** The lead's own incoming message (kind "live" only) — shown in the push notification instead of our draft reply. */
   leadMessageText?: string;
+  /** True when a broker asked for this draft by hand — see requestedAt on the table. */
+  requestedByBroker?: boolean;
 }): Promise<void> {
   const brokerId = brokerKey(opts.responsibleUser);
 
@@ -465,10 +467,32 @@ export async function queueSuggestion(opts: {
         responsibleUser: opts.responsibleUser,
         kind: "push",
         followupLevel: opts.followupLevel ?? null,
+        requestedAt: opts.requestedByBroker ? new Date() : null,
         suggestionText: opts.text,
         status: "pending",
         attachments: opts.attachments,
       });
+    } else if (opts.requestedByBroker) {
+      // The lead already had a pending row, so the insert above was skipped and
+      // the broker's request quietly did nothing: the row stayed kind="live" and
+      // the inbox kept hiding it behind "we already answered". Upgrade it in
+      // place instead — same id, so a card open on the broker's screen keeps
+      // working (a delete+reinsert is what once made approve 404).
+      await db
+        .update(pendingSuggestionsTable)
+        .set({
+          kind: "push",
+          followupLevel: opts.followupLevel ?? null,
+          requestedAt: new Date(),
+          suggestionText: opts.text,
+          attachments: opts.attachments,
+          createdAt: new Date(),
+          suggestedStage: null,
+          suggestedStageId: null,
+          suggestedStageReason: null,
+          suggestedStageTerminal: null,
+        })
+        .where(eq(pendingSuggestionsTable.id, existing[0]!.id));
     }
   }
 }
@@ -1041,6 +1065,7 @@ router.post("/amocrm/regen-live", async (req, res) => {
       attachments,
       leadMessageText: lastLeadMsg,
       followupLevel: weSpokeLast ? 1 : undefined,
+      requestedByBroker: true,
     });
 
     if (weSpokeLast) {
