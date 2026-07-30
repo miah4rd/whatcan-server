@@ -1,7 +1,7 @@
 import { logger } from "./logger";
 import { chatCompletionJSON } from "./ai-client";
 import { getTopPicksForBroker } from "./broker-picks-tracker";
-import { allAreaNames, areaMatches } from "./bali-areas";
+import { allAreaNames, areaMatches, areaNamesInText } from "./bali-areas";
 
 const SUPABASE_URL = process.env["SUPABASE_URL"] ?? "";
 const SUPABASE_ANON_KEY = process.env["SUPABASE_ANON_KEY"] ?? "";
@@ -255,6 +255,12 @@ function extractLeadCriteria(
         areas.push(a);
       }
     }
+    // Same again for Russian spellings — the broker dictates by voice in Russian,
+    // and "поменяй район на Чангу" matched nothing at all while every name in the
+    // vocabulary is Latin.
+    for (const a of areaNamesInText(lower)) {
+      if (!areas.some((x) => x.toLowerCase() === a.toLowerCase())) areas.push(a);
+    }
 
     if (bedrooms === null) {
       const digit = lower.match(/(\d+)\s*-?\s*(?:bed\b|beds\b|br\b|bedroom|bedrooms|спал)/);
@@ -392,6 +398,76 @@ export function extractBudgetIdr(messages: string[]): number | null {
  */
 const BROKER_RELEASES_AREA =
   /(other|another|different|wider|any)\s+(area|areas|location|locations|zone)|elsewhere|anywhere else|(drop|forget|ignore|beyond|outside)[^.]{0,20}(area|location)|не фокусируйся|в других районах|другие районы|другой район|другом районе|не важен район|шире по район|расширь.{0,15}район|посмотри.{0,20}других/i;
+
+/**
+ * Reads the broker's revision into a structured intent.
+ *
+ * Every phrasing used to be matched by regex, which meant a command only worked
+ * if the broker happened to use the expected words: "look in other areas" was
+ * honoured, "don't focus on this area" was silently ignored. That reads as the
+ * bot refusing to listen, and no amount of added patterns fixes the next
+ * phrasing. So the instruction is PARSED, and the code then applies it — the
+ * broker's own words outrank the criteria derived from the lead.
+ *
+ * Falls back to the regexes when the call fails; a broken parse must not mean a
+ * broken shortlist.
+ */
+export type BrokerIntent = {
+  releaseArea: boolean;
+  areas: string[];
+  bedrooms: number | null;
+  budgetIdrMonthly: number | null;
+  listingsUnchanged: boolean;
+};
+
+export async function parseBrokerIntent(
+  instruction: string,
+  knownAreas: string[],
+): Promise<BrokerIntent | null> {
+  try {
+    const result = await chatCompletionJSON<{
+      release_area?: boolean;
+      areas?: string[];
+      bedrooms?: number | null;
+      budget_idr_monthly?: number | null;
+      listings_unchanged?: boolean;
+    }>({
+      model: "claude-sonnet-5",
+      system: `You read one instruction a real-estate broker just gave about the property links attached to a draft message, and turn it into a filter. The instruction may be in any language, often dictated by voice, and may be untidy.
+
+Valid area names (use these spellings, nothing else):
+${knownAreas.join(", ")}
+
+Return JSON with exactly these keys:
+- "release_area": true when the broker wants the search to STOP being restricted to the area the client named (e.g. "don't focus on this area", "nothing fits there, look elsewhere", "widen the search"). False otherwise.
+- "areas": the areas they want searched, as an array of names from the list above. Empty when they named none.
+- "bedrooms": the bedroom count they asked for, or null.
+- "budget_idr_monthly": the monthly budget in RUPIAH as a plain number, or null. "40 million" → 40000000. A yearly figure divided by 12. Never a dollar amount.
+- "listings_unchanged": true ONLY when the instruction is purely about wording (shorter, warmer, friendlier, fix the grammar) and says nothing about which properties to send.
+
+Be literal. Do not infer a preference the broker did not express.`,
+      messages: [{ role: "user", content: instruction.slice(0, 500) }],
+      max_tokens: 200,
+      temperature: 0,
+    });
+
+    const areas = (result.areas ?? [])
+      .map((a) => knownAreas.find((k) => k.toLowerCase() === String(a).toLowerCase()))
+      .filter((a): a is string => !!a);
+    const budget = Number(result.budget_idr_monthly);
+
+    return {
+      releaseArea: result.release_area === true,
+      areas,
+      bedrooms: typeof result.bedrooms === "number" && result.bedrooms > 0 ? result.bedrooms : null,
+      budgetIdrMonthly: Number.isFinite(budget) && budget >= 1_000_000 ? Math.round(budget) : null,
+      listingsUnchanged: result.listings_unchanged === true,
+    };
+  } catch (err) {
+    logger.warn({ err }, "parseBrokerIntent failed — falling back to pattern matching");
+    return null;
+  }
+}
 
 /** Has the lead said anything about money at all? */
 function mentionsBudget(messages: string[]): boolean {
@@ -542,16 +618,32 @@ export async function matchProperties(opts: {
   // statement of what should be attached.
   const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
   const criteria = extractLeadCriteria(criteriaSource, pool);
-  // An explicit "look outside that area" from the broker outranks the area the
-  // lead named — and unlike a prompt hint, this actually widens the candidates.
-  const releaseArea = !!opts.brokerInstruction && BROKER_RELEASES_AREA.test(opts.brokerInstruction);
-  if (releaseArea && criteria.areas.length > 0) {
+
+  // The broker's own instruction, parsed rather than pattern-matched, and applied
+  // over the criteria taken from the lead. Their words win for this one message.
+  let brokerIntent: BrokerIntent | null = null;
+  if (opts.brokerInstruction) {
+    const vocab = [...new Set([...allAreaNames(), ...pool.map((p) => (p.area ?? "").trim())])].filter(Boolean);
+    brokerIntent = await parseBrokerIntent(opts.brokerInstruction, vocab);
+  }
+  const releaseArea = brokerIntent
+    ? brokerIntent.releaseArea
+    : !!opts.brokerInstruction && BROKER_RELEASES_AREA.test(opts.brokerInstruction);
+
+  if (brokerIntent?.areas.length) {
+    logger.info(
+      { was: criteria.areas, now: brokerIntent.areas },
+      "matchProperties: broker named the areas — replacing the lead's",
+    );
+    criteria.areas = brokerIntent.areas;
+  } else if (releaseArea && criteria.areas.length > 0) {
     logger.info(
       { droppedAreas: criteria.areas, instruction: opts.brokerInstruction!.slice(0, 80) },
       "matchProperties: broker asked to look beyond that area — area filter released",
     );
     criteria.areas = [];
   }
+  if (brokerIntent?.bedrooms) criteria.bedrooms = brokerIntent.bedrooms;
   let candidates = pool;
   if (criteria.areas.length > 0) {
     const byArea = candidates.filter((p) => areaMatches(p.area, criteria.areas));
@@ -596,7 +688,10 @@ export async function matchProperties(opts: {
   // Their budget, now that there is a rupiah price to hold it against. A little
   // headroom, because a villa slightly over budget is still worth showing — one
   // at double is not, and that is what went out before.
-  const budgetIdr = opts.listingType === "rent" ? extractBudgetIdr(criteriaSource) : null;
+  const budgetIdr =
+    opts.listingType === "rent"
+      ? brokerIntent?.budgetIdrMonthly ?? extractBudgetIdr(criteriaSource)
+      : null;
   const budgetCeiling = budgetIdr ? Math.round(budgetIdr * 1.15) : null;
   let withinBudgetCount = 0;
   if (budgetCeiling) {
