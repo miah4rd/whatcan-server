@@ -8,7 +8,7 @@ import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing"
 import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
-import { pickPropertyAttachments, reconcileTextWithAttachments } from "../../lib/generate-suggestion";
+import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage } from "../../lib/generate-suggestion";
 import { extractBudgetIdr, describePropertiesByIds } from "../../lib/property-catalog";
 
 const router = Router();
@@ -614,6 +614,10 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         newAttachments = null;
       }
     }
+
+    // Last gate before the broker sees it: the message must be in the language the
+    // CLIENT reads, whatever language the broker dictated the edit in.
+    if (outputLang !== "auto") finalText = await enforceLanguage(finalText, outputLang);
 
     res.json({ text: finalText, rationale, suggestionId: randomUUID(), task_hint: taskHint ?? null, stage_hint: stageHint, kind: "live", recent_messages: recentMessages, reassessed_temperature: reassessedTemp ?? null, attachments: newAttachments });
   } catch (err) {

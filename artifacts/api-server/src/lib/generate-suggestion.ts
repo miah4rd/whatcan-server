@@ -213,6 +213,45 @@ const ASKS_OR_PROMISES_TO_SEND =
 const CLAIMS_ONLY_ONE =
   /\b(one|a single|just one|1)\s+(villa|property|option|place|match|listing)\b|\b(a|one) (solid|good|strong)? ?option\b|\bодн[ау] (виллу|опци|вариант)/i;
 
+/**
+ * Hard guarantee on the output language.
+ *
+ * Prompt instructions were not enough, however absolute the wording: dictating an
+ * edit in Russian still handed an English-speaking client a Russian message about
+ * one run in two. So the invariant is checked in code — cheap, deterministic —
+ * and only a message that actually came out in the wrong script pays for a fix.
+ */
+export async function enforceLanguage(text: string, required: string | null | undefined): Promise<string> {
+  const want = (required ?? "").trim().toLowerCase();
+  if (!want || !text) return text;
+
+  const letters = (text.match(/[a-zA-Z\u0400-\u04FF]/g) ?? []).length;
+  if (letters < 20) return text;
+  const cyrillic = (text.match(/[\u0400-\u04FF]/g) ?? []).length;
+  const cyrillicShare = cyrillic / letters;
+
+  const wantsCyrillic = want.startsWith("rus") || want.startsWith("рус");
+  const wrong = wantsCyrillic ? cyrillicShare < 0.3 : cyrillicShare > 0.15;
+  if (!wrong) return text;
+
+  try {
+    const fixed = await chatCompletion({
+      model: "claude-sonnet-5",
+      system: `Rewrite the WhatsApp message below in ${required}. Keep the meaning, the tone, the line breaks, the names, the numbers and the links EXACTLY as they are — only the language changes. Property names stay as written. Output only the rewritten message, nothing else.`,
+      messages: [{ role: "user", content: text }],
+      max_tokens: 500,
+    });
+    const out = sanitizeSuggestion(fixed.content);
+    if (out.trim().length > 20) {
+      logger.warn({ required, cyrillicShare: Number(cyrillicShare.toFixed(2)) }, "reply came out in the wrong language — translated back");
+      return out;
+    }
+  } catch (err) {
+    logger.warn({ err }, "language enforcement failed (keeping the draft)");
+  }
+  return text;
+}
+
 export async function reconcileTextWithAttachments(
   text: string,
   attachments: GeneratedSuggestion["attachments"],
