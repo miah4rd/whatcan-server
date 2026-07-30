@@ -366,6 +366,8 @@ export async function queueSuggestion(opts: {
   attachments?: GeneratedSuggestion["attachments"];
   /** The lead's own incoming message (kind "live" only) — shown in the push notification instead of our draft reply. */
   leadMessageText?: string;
+  /** True when a broker asked for this draft by hand — see requestedAt on the table. */
+  requestedByBroker?: boolean;
 }): Promise<void> {
   const brokerId = brokerKey(opts.responsibleUser);
 
@@ -465,6 +467,7 @@ export async function queueSuggestion(opts: {
         responsibleUser: opts.responsibleUser,
         kind: "push",
         followupLevel: opts.followupLevel ?? null,
+        requestedAt: opts.requestedByBroker ? new Date() : null,
         suggestionText: opts.text,
         status: "pending",
         attachments: opts.attachments,
@@ -1041,6 +1044,7 @@ router.post("/amocrm/regen-live", async (req, res) => {
       attachments,
       leadMessageText: lastLeadMsg,
       followupLevel: weSpokeLast ? 1 : undefined,
+      requestedByBroker: true,
     });
 
     if (weSpokeLast) {

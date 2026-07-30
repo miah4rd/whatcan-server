@@ -12,6 +12,10 @@ export interface PendingRowLike {
   leadId: string;
   kind: string;
   responsibleUser: string | null;
+  /** Set when a broker asked for this draft by hand — it bypasses the
+   * "a future task is already scheduled, don't prompt" snooze, which otherwise
+   * hid the draft they had just requested. */
+  requestedAt?: Date | null;
 }
 
 export interface SyncRowLike {
@@ -98,7 +102,7 @@ export function isPendingVisible(
     const endOfTodayBali = new Date(
       Date.UTC(nowBali.getUTCFullYear(), nowBali.getUTCMonth(), nowBali.getUTCDate() + 1) - BALI_OFFSET_MS,
     );
-    if (sync?.nextFollowupAt && sync.nextFollowupAt > endOfTodayBali) return false;
+    if (!r.requestedAt && sync?.nextFollowupAt && sync.nextFollowupAt > endOfTodayBali) return false;
   }
 
   if (r.kind !== "live") return true;
