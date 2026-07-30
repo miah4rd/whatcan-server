@@ -524,11 +524,21 @@ export async function matchProperties(opts: {
     if (exact.length >= MIN_SHORTLIST) {
       candidates = exact;
     } else {
-      const near = candidates.filter(
-        (p) => p.bedrooms !== null && Math.abs(p.bedrooms - criteria.bedrooms!) <= 1,
+      // Widen UPWARDS first. A client who asked for 3 bedrooms will look at a 4,
+      // but showing them a 2 reads as not having listened — and it happened:
+      // Josua asked for 2-4BR, ideally 3-4, and got a 2BR in the shortlist.
+      const bigger = candidates.filter(
+        (p) => p.bedrooms !== null && p.bedrooms >= criteria.bedrooms! && p.bedrooms <= criteria.bedrooms! + 1,
       );
-      if (near.length >= MIN_SHORTLIST) candidates = near;
-      else if (exact.length > 0) candidates = exact;
+      if (bigger.length >= MIN_SHORTLIST) {
+        candidates = bigger;
+      } else {
+        const near = candidates.filter(
+          (p) => p.bedrooms !== null && Math.abs(p.bedrooms - criteria.bedrooms!) <= 1,
+        );
+        if (near.length >= MIN_SHORTLIST) candidates = near;
+        else if (exact.length > 0) candidates = exact;
+      }
     }
   }
   // Priced stock first — see hasPrice. Dropped only while a real choice remains.
