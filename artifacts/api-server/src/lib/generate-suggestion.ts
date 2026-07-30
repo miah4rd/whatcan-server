@@ -198,10 +198,15 @@ const CLAIMS_ONLY_ONE =
 export async function reconcileTextWithAttachments(
   text: string,
   attachments: GeneratedSuggestion["attachments"],
+  /** Set when the links have just CHANGED under an existing draft (a broker
+   * revision). The text was written against the old ones, so it has to be
+   * re-checked whether or not it trips a pattern — it claimed three villas
+   * "all sit around your 30 million budget" after they had been swapped. */
+  force = false,
 ): Promise<string> {
   if (attachments.length === 0) return text;
   const contradicts =
-    ASKS_OR_PROMISES_TO_SEND.test(text) || (attachments.length > 1 && CLAIMS_ONLY_ONE.test(text));
+    force || ASKS_OR_PROMISES_TO_SEND.test(text) || (attachments.length > 1 && CLAIMS_ONLY_ONE.test(text));
   if (!contradicts) return text;
 
   const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");
@@ -216,6 +221,7 @@ ${list}
 Rewrite the message so it matches that reality:
 - Present the listings as being right here. Name each one as it is written above and say which area it is in — the names and areas above are the truth, never a place the client asked for but that isn't on the list. "a villa in Canggu, another villa in Canggu" is not naming them.
 - Delete any question asking permission to send them, and any promise to send something later.
+- The prices above are the real ones. Never say these fit a budget they exceed — if they are over what the client named, say so plainly instead.
 - Change NOTHING else: same language, same voice, same length, same closing question if it isn't about sending links.
 
 Output only the corrected message.`,

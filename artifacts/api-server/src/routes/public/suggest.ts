@@ -546,7 +546,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           brokerInstruction: revision,
           currentAttachmentIds: currentIds,
         });
-        finalText = await reconcileTextWithAttachments(text, newAttachments);
+        finalText = await reconcileTextWithAttachments(text, newAttachments, true);
         req.log.info(
           { leadId: body.leadId, was: currentIds.length, now: newAttachments.length, revision: revision.slice(0, 80) },
           "suggest: revision changed the property links too",

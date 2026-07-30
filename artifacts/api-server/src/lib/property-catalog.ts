@@ -639,25 +639,36 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
         "matchProperties: topped the shortlist up to the minimum — one link is not a choice",
       );
     }
-    // Enforced, not requested: when enough listings fit the budget, none of the
-    // picks may exceed it. The model was handed an affordable-first catalog and
-    // still chose villas at nearly double the figure the broker named.
-    if (budgetCeiling && withinBudgetCount >= MIN_SHORTLIST) {
-      const overBudget = picked.filter((p) => priceOf(p) > budgetCeiling);
-      if (overBudget.length > 0) {
-        const affordable = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
-        const keep = picked.filter((p) => priceOf(p) <= budgetCeiling);
-        const chosen = new Set(keep.map((p) => p.id));
-        for (const p of affordable) {
-          if (keep.length >= Math.max(MIN_SHORTLIST, picked.length)) break;
-          if (!chosen.has(p.id)) {
-            keep.push(p);
-            chosen.add(p.id);
-          }
+    // Enforced, not requested. Two separate failures made this necessary: the
+    // model was handed an affordable-first catalog and still picked villas at
+    // nearly double the figure, and when told the broker objected to the current
+    // links it dropped ALL of them — including the one that was cheapest. Price
+    // is not a preference the model gets to trade away, so it is applied here.
+    if (budgetCeiling) {
+      const affordable = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
+      const target = Math.min(limit, Math.max(MIN_SHORTLIST, picked.length));
+      const keep = affordable.length > 0 ? picked.filter((p) => priceOf(p) <= budgetCeiling) : [];
+      const chosen = new Set(keep.map((p) => p.id));
+      // `candidates` is already ordered affordable-first, then cheapest-above, so
+      // this fills with the best available answer either way.
+      for (const p of affordable.length > 0 ? affordable : candidates) {
+        if (keep.length >= target) break;
+        if (!chosen.has(p.id)) {
+          keep.push(p);
+          chosen.add(p.id);
         }
+      }
+      const changed =
+        keep.length !== picked.length || keep.some((p, i) => p.id !== picked[i]?.id);
+      if (keep.length > 0 && changed) {
         logger.info(
-          { dropped: overBudget.map((p) => p.id), ceiling: budgetCeiling },
-          "matchProperties: replaced over-budget picks with affordable ones",
+          {
+            ceiling: budgetCeiling,
+            affordableStock: affordable.length,
+            before: picked.map((p) => `${p.id}:${priceOf(p)}`),
+            after: keep.map((p) => `${p.id}:${priceOf(p)}`),
+          },
+          "matchProperties: enforced the budget on the final shortlist",
         );
         picked.length = 0;
         picked.push(...keep);
