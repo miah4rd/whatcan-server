@@ -716,11 +716,19 @@ const PAGE_HTML = `<!doctype html>
           revisionChain: item.revisionChain,
           image: item._contextImage || undefined,
           outputLanguage: "English",
+          attachments: (item.attachments || []).filter(function (a) { return a.type === "link" && a.url; }),
         }),
       });
       if (!res.ok) throw new Error("API " + res.status);
       var json = await res.json();
       if (json && json.text) item.text = json.text;
+      // A revision about the listings re-picks them server-side. Links the
+      // broker added by hand stay — they overrode the bot on purpose.
+      if (json && Array.isArray(json.attachments)) {
+        var keep = (item.attachments || []).filter(function (a) { return a._broker; });
+        item.attachments = json.attachments.concat(keep);
+        showToast("Options updated: " + json.attachments.length + " link(s)");
+      }
       // The bot re-read the temperature from the pasted screenshot — apply it so
       // the follow-up cadence and the chip reflect ground truth, not stale sync.
       if (json && json.reassessed_temperature) {

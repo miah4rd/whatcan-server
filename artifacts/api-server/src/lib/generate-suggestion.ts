@@ -98,13 +98,18 @@ export async function pickPropertyAttachments(opts: {
   formattedDialog: string;
   lastLeadText: string;
   leadStage?: string | null;
+  /** Set when the broker is revising an existing draft — see matchProperties. */
+  brokerInstruction?: string | null;
+  currentAttachmentIds?: string[];
 }): Promise<GeneratedSuggestion["attachments"]> {
   try {
     const excludeIds = await alreadySentPropertyIds(
       opts.leadId,
       `${opts.contentSnippet}\n${opts.formattedDialog}`,
     );
-    if (shouldSkipNewListings(opts.dialogMessages, excludeIds, opts.leadStage)) {
+    // A broker asking for different links has overruled the "don't send more
+    // options" gate — they are looking at the draft and telling us what to send.
+    if (!opts.brokerInstruction && shouldSkipNewListings(opts.dialogMessages, excludeIds, opts.leadStage)) {
       return [];
     }
     const picks = await matchProperties({
@@ -114,6 +119,8 @@ export async function pickPropertyAttachments(opts: {
       excludeIds,
       seenCount: excludeIds.length,
       latestLeadMessage: opts.lastLeadText,
+      brokerInstruction: opts.brokerInstruction ?? null,
+      currentAttachmentIds: opts.currentAttachmentIds ?? [],
       // newest first — the criteria filter takes the most recent area/bedroom pin
       recentLeadMessages: [
         opts.lastLeadText,

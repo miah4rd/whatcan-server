@@ -420,6 +420,13 @@ export async function matchProperties(opts: {
   /** The lead's own recent messages, NEWEST FIRST — used to hard-filter the
    * candidate list by their current area / bedroom requirements. */
   recentLeadMessages?: string[];
+  /** What the BROKER just said while revising the draft ("these are too
+   * expensive, show me something around 40jt"). Editing the text used to leave
+   * the links untouched, which made the broker fix them by hand. Read first, so
+   * a price or area they name overrides what the lead said earlier. */
+  brokerInstruction?: string | null;
+  /** Listings currently attached to the draft the broker is revising. */
+  currentAttachmentIds?: string[];
 }): Promise<PropertyPick[]> {
   // A shortlist of one isn't a choice, and two is thin. Three is what a broker
   // would actually send; the matcher may still return fewer if stock is short.
@@ -434,7 +441,7 @@ export async function matchProperties(opts: {
   // mention in the whole conversation meant our own previously sent links came
   // straight back as "the answer". Anything already sent is out of `pool`, so a
   // lead quoting a link we sent cannot become an anchor either.
-  const anchorIds = new Set(
+  const anchorIds = opts.brokerInstruction ? new Set<string>() : new Set(
     (opts.recentLeadMessages ?? [])
       .flatMap((m) => Array.from(m.matchAll(PROPERTY_ID_REGEX)).map((x) => x[1].toUpperCase())),
   );
@@ -469,7 +476,10 @@ export async function matchProperties(opts: {
   // Applied before the model sees anything, so an outdated area or bedroom
   // count is not even on the menu. Each filter is skipped when it would leave
   // nothing — an imperfect suggestion beats an empty one.
-  const criteria = extractLeadCriteria(opts.recentLeadMessages ?? [], pool);
+  // The broker's revision comes first: it is the newest and most authoritative
+  // statement of what should be attached.
+  const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
+  const criteria = extractLeadCriteria(criteriaSource, pool);
   let candidates = pool;
   if (criteria.areas.length > 0) {
     const byArea = candidates.filter((p) => areaMatches(p.area, criteria.areas));
@@ -504,7 +514,7 @@ export async function matchProperties(opts: {
   // Their budget, now that there is a rupiah price to hold it against. A little
   // headroom, because a villa slightly over budget is still worth showing — one
   // at double is not, and that is what went out before.
-  const budgetIdr = opts.listingType === "rent" ? extractBudgetIdr(opts.recentLeadMessages ?? []) : null;
+  const budgetIdr = opts.listingType === "rent" ? extractBudgetIdr(criteriaSource) : null;
   if (budgetIdr) {
     const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetIdr * 1.15);
     if (within.length >= MIN_SHORTLIST) {
@@ -532,7 +542,7 @@ export async function matchProperties(opts: {
     );
   }
 
-  const budgetKnown = mentionsBudget(opts.recentLeadMessages ?? []);
+  const budgetKnown = mentionsBudget(criteriaSource);
 
   try {
     const brokerTop = opts.brokerId
@@ -542,6 +552,12 @@ export async function matchProperties(opts: {
     // Deliberately weak wording: this hint kept resurfacing the same two
     // listings regardless of what the lead asked for.
     const brokerBlock = brokerTop.length > 0 ? `\n\nFYI, this broker has used these before: ${brokerTop.join(", ")}. Only pick one if it fits the lead's CURRENT criteria as well as any other candidate — never as a tie-breaker against a better fit.` : "";
+
+    const brokerRevision = opts.brokerInstruction
+      ? `\n\nTHE BROKER IS REVISING THIS DRAFT AND SAID: "${opts.brokerInstruction.slice(0, 400)}"\nThis outranks everything else. It is feedback on the listings currently attached${
+          opts.currentAttachmentIds?.length ? ` (${opts.currentAttachmentIds.join(", ")})` : ""
+        }, so change the selection to match what they asked for — drop the ones they objected to, keep only those that still fit. If their instruction says nothing about which listings to send, keep the current selection.`
+      : "";
 
     const result = await chatCompletionJSON<{ ids?: string[] }>({
       model: "claude-sonnet-5",
