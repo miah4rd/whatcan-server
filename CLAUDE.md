@@ -12,13 +12,21 @@ tap. Two surfaces, one server:
 - **Mobile web** `/m` — a single-file PWA served from
   `artifacts/api-server/src/routes/mobile.ts` (page HTML lives in one big
   template literal). Updates the moment the server restarts; nothing to install.
-- **Chrome extension** — plain unbundled files, **source is NOT in this repo**
-  (Alexander builds it separately). Prebuilt zips live in
-  `artifacts/landing/public/ext*.zip` and are served at
-  `https://copilot.globalapplab.ru/extNN.zip`. Current: **ext71.zip (1.0.71)**.
-  To change it: unzip the newest, edit, bump `manifest.json` version, rezip,
-  copy to BOTH `artifacts/landing/public/` and (on the VPS)
-  `artifacts/landing/dist/public/` — only `dist/public` is actually served.
+- **Chrome extension** — plain unbundled files. **The source now lives IN this
+  repo at `copilot-extension/`** — this is the SINGLE source of truth. Everyone
+  (owner, Nikita, Alexander) edits there and commits, so every change is shared
+  and versioned; no more parallel local copies. (History: two lines had forked —
+  Nikita's served `ext71` and the owner's local `v85` that the brokers actually
+  ran; `v86` reconciles them, see `copilot-extension/CHANGELOG.md`.) Current:
+  **ext86.zip (1.0.86)**.
+  To release a change: edit files in `copilot-extension/`, bump
+  `manifest.json` version + add a `CHANGELOG.md` line, rebuild the zip **with the
+  files at the archive ROOT** (`Compress-Archive -Path copilot-extension/* -Dest
+  artifacts/landing/public/extNN.zip`), commit, then on the VPS copy it to
+  `artifacts/landing/dist/public/` — only `dist/public` is actually served at
+  `https://copilot.globalapplab.ru/extNN.zip`. The extension does NOT auto-update;
+  brokers reinstall the new zip (see the open auto-update decision: Chrome Web
+  Store vs self-host).
 
 ## Deploy
 
