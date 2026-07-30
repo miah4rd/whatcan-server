@@ -37,6 +37,11 @@ type Body = {
   /** Listings currently attached to the draft being revised, so a revision can
    * change them instead of leaving the broker to swap links by hand. */
   attachments?: Array<{ type?: string; url?: string; label?: string }>;
+  /** True once the broker has removed or added a link by hand. Their selection
+   * then wins outright: re-picking put the removed listings straight back and
+   * appended the broker's own on top, so a curated shortlist of two came back as
+   * five. Nothing overrules a person who has just chosen. */
+  attachmentsCurated?: boolean;
 };
 
 /**
@@ -537,7 +542,26 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
       ""
     ).trim();
 
-    if (
+    if (revision && body.attachmentsCurated) {
+      // Hands off the listings — but the words still have to match them, so the
+      // message names the villas the broker chose rather than the ones we picked.
+      const curated = (body.attachments ?? [])
+        .filter((a) => !!a.url)
+        .map((a) => ({ type: "link" as const, url: a.url!, label: a.label ?? a.url! }));
+      if (curated.length > 0) {
+        const leadWords = (body.messages ?? []).filter((m) => m.from === "lead").map((m) => m.text);
+        finalText = await reconcileTextWithAttachments(
+          text,
+          curated,
+          true,
+          extractBudgetIdr([...leadWords.reverse(), transcript]),
+        );
+      }
+      req.log.info(
+        { leadId: body.leadId, kept: body.attachments?.length ?? 0 },
+        "suggest: broker curated the links by hand — kept them, only the text was rewritten",
+      );
+    } else if (
       revision &&
       body.leadId &&
       (REVISION_TOUCHES_LISTINGS.test(revision) || REVISION_IS_A_FULL_REDO.test(revision))

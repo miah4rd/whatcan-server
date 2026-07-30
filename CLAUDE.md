@@ -17,8 +17,7 @@ tap. Two surfaces, one server:
   (owner, Nikita, Alexander) edits there and commits, so every change is shared
   and versioned; no more parallel local copies. (History: two lines had forked —
   Nikita's served `ext71` and the owner's local `v85` that the brokers actually
-  ran; `v86` reconciles them, see `copilot-extension/CHANGELOG.md`.) Current:
-  **ext86.zip (1.0.86)**.
+  ran; `v86` reconciles them, see `copilot-extension/CHANGELOG.md`.) Current: **ext87.zip (1.0.87)**.
   To release a change: edit files in `copilot-extension/`, bump
   `manifest.json` version + add a `CHANGELOG.md` line, rebuild the zip **with the
   files at the archive ROOT** (`Compress-Archive -Path copilot-extension/* -Dest
@@ -134,6 +133,10 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   (`brokerInstruction`), and a price or area named in it outranks the lead's
   earlier words. A style-only edit ("shorter, warmer") leaves the links alone —
   `REVISION_TOUCHES_LISTINGS` decides, so a good shortlist is never churned.
+- **A broker who curates the links by hand wins outright.** A revision used to
+  re-pick from scratch and append their additions, so removing two listings and
+  adding one came back as four. The surfaces send `attachmentsCurated` and the
+  server then rewrites only the words.
 - **A stated budget is enforced in code, not asked of the model.** Handed an
   affordable-first catalog it still picked villas at double the figure; told the
   broker objected to the current links it dropped even the cheapest. The ceiling

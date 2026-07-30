@@ -630,6 +630,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
           // property links while editing. The server sends each link as its own
           // WhatsApp message so every listing gets its own preview banner.
           attachments: (item.attachments || []).filter((a) => a.type === "link" && a.url),
+          attachmentsCurated: !!item._attachmentsCurated,
           newStage: (item.lead_stage && item.lead_stage !== item._originalStage) ? item.lead_stage : undefined,
           stageId: (item.lead_stage && item.lead_stage !== item._originalStage) ? (stageIdForName(item.lead_stage) || item.lead_stage_id || undefined) : (item.lead_stage_id || undefined),
         }),
@@ -675,6 +676,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
           // property links while editing. The server sends each link as its own
           // WhatsApp message so every listing gets its own preview banner.
           attachments: (item.attachments || []).filter((a) => a.type === "link" && a.url),
+          attachmentsCurated: !!item._attachmentsCurated,
           newStage: (item.lead_stage && item.lead_stage !== item._originalStage) ? item.lead_stage : undefined,
           stageId: (item.lead_stage && item.lead_stage !== item._originalStage) ? (stageIdForName(item.lead_stage) || item.lead_stage_id || undefined) : (item.lead_stage_id || undefined),
         }),
@@ -1043,6 +1045,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
           // Send current links so the server can re-pick them when the revision
           // is about the listings (merged from Nikita's ext71 fix).
           attachments: (item.attachments || []).filter((a) => a.type === "link" && a.url),
+          attachmentsCurated: !!item._attachmentsCurated,
         }),
       });
       if (!res.ok) throw new Error(`API ${res.status}`);
@@ -1937,6 +1940,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
         btn.addEventListener("click", () => {
           const idx = Number(btn.getAttribute("data-rmattach"));
           it.attachments.splice(idx, 1);
+          it._attachmentsCurated = true;
           render();
         });
       });
@@ -1948,6 +1952,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
         it.attachments = it.attachments || [];
         const _m = _url.match(/\/property\/([A-Za-z0-9-]+)/i);
         it.attachments.push({ type: "link", label: _m ? _m[1] : _url, url: _url, _broker: true });
+        it._attachmentsCurated = true;
         if (_inp) _inp.value = "";
         render();
       });
@@ -2185,6 +2190,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
       btn.addEventListener("click", () => {
         const idx = Number(btn.getAttribute("data-rmattach"));
         item.attachments.splice(idx, 1);
+        item._attachmentsCurated = true;
         render();
       });
     });
@@ -2196,6 +2202,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
         item.attachments = item.attachments || [];
         const _m = _url.match(/\/property\/([A-Za-z0-9-]+)/i);
         item.attachments.push({ type: "link", label: _m ? _m[1] : _url, url: _url, _broker: true });
+        item._attachmentsCurated = true;
         if (_inp) _inp.value = "";
         render();
       });

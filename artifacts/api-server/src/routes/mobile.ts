@@ -650,6 +650,7 @@ const PAGE_HTML = `<!doctype html>
           // added property links while editing, and the server would otherwise
           // fall back to the originally generated set.
           attachments: (item.attachments || []).filter(function (a) { return a.type === "link" && a.url; }),
+          attachmentsCurated: !!item._attachmentsCurated,
           newStage: (item.lead_stage && item.lead_stage !== item._originalStage) ? item.lead_stage : undefined,
           stageId: (item.lead_stage && item.lead_stage !== item._originalStage) ? (stageIdForName(item.lead_stage) || item.lead_stage_id || undefined) : (item.lead_stage_id || undefined),
         }),
@@ -1110,6 +1111,9 @@ const PAGE_HTML = `<!doctype html>
         btn.onclick = function () {
           var idx = Number(btn.getAttribute("data-rmattach"));
           it.attachments.splice(idx, 1);
+          // The broker curated the list by hand — from now on the server must not
+          // re-pick and resurrect what they just removed.
+          it._attachmentsCurated = true;
           renderDetail();
         };
       });
@@ -1123,6 +1127,7 @@ const PAGE_HTML = `<!doctype html>
           it.attachments = it.attachments || [];
           var idMatch = url.match(/\\/property\\/([A-Za-z0-9-]+)/i);
           it.attachments.push({ type: "link", label: idMatch ? idMatch[1] : url, url: url, _broker: true });
+          it._attachmentsCurated = true;
           input.value = "";
           renderDetail();
         };

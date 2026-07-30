@@ -6,6 +6,14 @@ release, so all changes are shared and visible. Build: zip the folder CONTENTS
 (files at the archive root) to `artifacts/landing/public/extNN.zip`, then copy to
 the VPS `artifacts/landing/dist/public/` (only that is served).
 
+## 1.0.87
+
+- Links the broker curated by hand are no longer overwritten. Removing the bot's
+  listings and adding your own, then asking for a rewrite, used to bring the
+  removed ones straight back and append yours on top — a chosen shortlist of two
+  came back as five. The panel now tells the server the list was curated, and the
+  server rewrites only the words, leaving the links exactly as chosen.
+
 ## 1.0.86 — 2026-07-29 — reconcile the two forked lines + fixes
 
 Before this, the extension had **forked into two lines that never merged**:
