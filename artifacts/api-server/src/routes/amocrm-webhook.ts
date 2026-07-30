@@ -472,6 +472,27 @@ export async function queueSuggestion(opts: {
         status: "pending",
         attachments: opts.attachments,
       });
+    } else if (opts.requestedByBroker) {
+      // The lead already had a pending row, so the insert above was skipped and
+      // the broker's request quietly did nothing: the row stayed kind="live" and
+      // the inbox kept hiding it behind "we already answered". Upgrade it in
+      // place instead — same id, so a card open on the broker's screen keeps
+      // working (a delete+reinsert is what once made approve 404).
+      await db
+        .update(pendingSuggestionsTable)
+        .set({
+          kind: "push",
+          followupLevel: opts.followupLevel ?? null,
+          requestedAt: new Date(),
+          suggestionText: opts.text,
+          attachments: opts.attachments,
+          createdAt: new Date(),
+          suggestedStage: null,
+          suggestedStageId: null,
+          suggestedStageReason: null,
+          suggestedStageTerminal: null,
+        })
+        .where(eq(pendingSuggestionsTable.id, existing[0]!.id));
     }
   }
 }
