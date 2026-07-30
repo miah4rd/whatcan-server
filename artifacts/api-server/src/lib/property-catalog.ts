@@ -751,6 +751,26 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
   }
 }
 
+/**
+ * Human-readable details for listing IDs — used when a BROKER pastes links by
+ * hand. Their label is just the ID, and handing that to the rewrite step made it
+ * ask the broker for the real names instead of writing to the client.
+ */
+export async function describePropertiesByIds(
+  ids: string[],
+): Promise<Map<string, { title: string; label: string; url: string }>> {
+  const out = new Map<string, { title: string; label: string; url: string }>();
+  if (ids.length === 0) return out;
+  const wanted = new Set(ids.map((i) => i.toUpperCase()));
+  const all = await fetchAllProperties().catch(() => [] as SupabaseProperty[]);
+  for (const p of all) {
+    if (!wanted.has(p.id.toUpperCase())) continue;
+    const pick = toPick(p);
+    out.set(p.id.toUpperCase(), { title: p.title, label: pick.label, url: pick.url });
+  }
+  return out;
+}
+
 /** Lightweight fetch used only for price lookups — reuses the same cache */
 export async function fetchAllPropertiesForPriceLookup(): Promise<SupabaseProperty[]> {
   return fetchAllProperties();

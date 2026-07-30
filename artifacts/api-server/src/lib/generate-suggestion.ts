@@ -248,6 +248,8 @@ Rewrite the message so it matches that reality:
 - Say the budget point ONCE, in its own sentence — "all three sit above the 30 million you mentioned" — never repeated after every villa. That reads like a machine.
 - Change NOTHING else: same language, same voice, same length, same closing question if it isn't about sending links.
 
+Your entire output IS the WhatsApp message to the CLIENT. Never address the broker, never ask for more details, never explain what you are missing — if a listing's details look incomplete, write around it and keep the message natural. A question back to the broker would be sent to the client as-is.
+
 Output only the corrected message.`,
       messages: [{ role: "user", content: text }],
       max_tokens: 400,
