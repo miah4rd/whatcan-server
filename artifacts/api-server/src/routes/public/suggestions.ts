@@ -372,8 +372,14 @@ router.get("/suggestions", async (req, res) => {
         if (PUSH_DAILY_CAP > 0) {
           const isReachStage = (s: string | null) =>
             ["1st follow up", "2nd follow up", "final follow up"].some((k) => (s ?? "").toLowerCase().includes(k));
+          // LIVE + REACH are ALWAYS shown (never hidden). REACH is time-sensitive
+          // and few, so it must never be dropped — but it IS a proactive touch, so
+          // it counts toward the daily proactive budget: PUSH flexes DOWN to keep
+          // total proactive (push + reach) ≈ PUSH_DAILY_CAP, for WhatsApp-ban safety.
           const liveOrReach = enriched.filter((i) => i.kind !== "push" || isReachStage(i.lead_stage));
+          const reachCount = enriched.filter((i) => i.kind === "push" && isReachStage(i.lead_stage)).length;
           const activePush = enriched.filter((i) => i.kind === "push" && !isReachStage(i.lead_stage));
+          const pushTarget = Math.max(0, PUSH_DAILY_CAP - reachCount); // reach eats into the budget
           const brokerKey = (responsibleUser ?? "").trim().toLowerCase();
           if (brokerKey) {
             const baliDay = new Date(nowMs + BALI_OFFSET_MS).toISOString().slice(0, 10);
@@ -386,10 +392,11 @@ router.get("/suggestions", async (req, res) => {
                 if (parsed.day === baliDay && Array.isArray(parsed.leadIds)) served = parsed.leadIds.slice();
               }
             } catch { /* fail open → fresh quota */ }
-            // Top up today's quota with the highest-ranked active-push not yet served.
+            // Top up today's PUSH quota (budget minus reach) with the highest-ranked
+            // active-push not yet served. Drains as worked; no same-day backfill.
             const servedSet = new Set(served);
             for (const item of activePush) {
-              if (served.length >= PUSH_DAILY_CAP) break;
+              if (served.length >= pushTarget) break;
               if (!servedSet.has(item.lead_id)) { served.push(item.lead_id); servedSet.add(item.lead_id); }
             }
             const payload = JSON.stringify({ day: baliDay, leadIds: served });
@@ -398,12 +405,10 @@ router.get("/suggestions", async (req, res) => {
                 .values({ key: focusKey, value: payload })
                 .onConflictDoUpdate({ target: brokerSettingsTable.key, set: { value: payload } });
             } catch { /* non-fatal — degrades to no-quota, never blocks the inbox */ }
-            // Show only the served leads still eligible → the list drains as worked,
-            // no new leads backfill until tomorrow's fresh quota.
             const shownActivePush = activePush.filter((i) => servedSet.has(i.lead_id));
             enriched = [...liveOrReach, ...shownActivePush];
           } else {
-            enriched = [...liveOrReach, ...activePush.slice(0, PUSH_DAILY_CAP)];
+            enriched = [...liveOrReach, ...activePush.slice(0, pushTarget)];
           }
         }
       } else {
