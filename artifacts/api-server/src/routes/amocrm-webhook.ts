@@ -1023,16 +1023,36 @@ router.post("/amocrm/regen-live", async (req, res) => {
       pipeline: lead.pipeline,
     });
 
+    // A draft asked for by hand on a lead we have ALREADY answered is a proactive
+    // message, not a reply — and the inbox hides LIVE drafts once we spoke last
+    // ("did the broker already answer?"). Queued as live it existed in the table
+    // and was invisible in the app, which is exactly what the owner kept seeing:
+    // "the draft is there, I don't see the lead". Queue it as push so it surfaces.
+    const weSpokeLast =
+      !!lead.lastOurMessageAt &&
+      (!dialog.lastLeadMessage?.at ||
+        lead.lastOurMessageAt.getTime() >= dialog.lastLeadMessage.at.getTime());
+
     await queueSuggestion({
       leadId: String(leadId),
       responsibleUser: responsibleUser ?? lead.responsibleUser ?? null,
-      kind: "live",
+      kind: weSpokeLast ? "push" : "live",
       text,
       attachments,
       leadMessageText: lastLeadMsg,
+      followupLevel: weSpokeLast ? 1 : undefined,
     });
 
-    res.json({ ok: true, leadId, preview: text.slice(0, 100) });
+    if (weSpokeLast) {
+      // The push tab also hides a lead whose follow-up task sits beyond today —
+      // bring it forward so the draft the broker just asked for is actually there.
+      await db
+        .update(leadsSyncTable)
+        .set({ nextFollowupAt: new Date(), updatedAt: new Date() })
+        .where(eq(leadsSyncTable.leadId, String(leadId)));
+    }
+
+    res.json({ ok: true, leadId, kind: weSpokeLast ? "push" : "live", preview: text.slice(0, 100) });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     req.log.error({ err }, "regen-live failed");
