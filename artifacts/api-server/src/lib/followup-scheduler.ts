@@ -439,9 +439,17 @@ export async function processFollowups(): Promise<void> {
       and(
         isNotNull(leadsSyncTable.nextFollowupAt),
         lt(leadsSyncTable.nextFollowupAt, twoHoursFromNow),
+        // "Did we speak last?" — decided by TIMESTAMPS, not by the flag. The flag
+        // goes stale: a reply sent manually from WhatsApp lands in
+        // last_our_message_at and lead_messages while last_message_from stays
+        // 'lead'. Such a lead was then invisible from both sides at once — the
+        // LIVE inbox hid it (by timestamp, we answered) and this query skipped it
+        // (by flag, the lead answered). Liza (22932219) sat in that gap for a week.
         or(
           eq(leadsSyncTable.lastMessageFrom, "us"),
           isNull(leadsSyncTable.lastMessageFrom),
+          isNull(leadsSyncTable.lastMessageAt),
+          sql`${leadsSyncTable.lastOurMessageAt} >= ${leadsSyncTable.lastMessageAt}`,
         ),
       ),
     );
