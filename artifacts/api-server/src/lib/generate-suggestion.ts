@@ -234,9 +234,11 @@ export async function reconcileTextWithAttachments(
   if (!contradicts) return text;
 
   const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");
-  const budgetLine = budgetIdr
-    ? `\n\nThe client's stated budget is ${Math.round(budgetIdr / 1_000_000)} million rupiah per month.`
-    : "";
+  // Deliberately NOT told the budget. Given it, this step kept making arithmetic
+  // claims that were wrong ("both sit above the 63 million you mentioned" with one
+  // at 55). Its job is making the words match the links; budget honesty belongs to
+  // the main prompt, which has the inventory and the numbers.
+  const budgetLine = "";
   try {
     const fixed = await chatCompletion({
       model: "claude-sonnet-5",
@@ -248,8 +250,8 @@ ${list}${budgetLine}
 Rewrite the message so it matches that reality:
 - Present the listings as being right here. Name each one as it is written above and say which area it is in — the names and areas above are the truth, never a place the client asked for but that isn't on the list. "a villa in Canggu, another villa in Canggu" is not naming them.
 - Delete any question asking permission to send them, and any promise to send something later.
-- The prices above are the real ones. Judge each against the client's budget on its own merits: call a villa over budget only when its own price exceeds that figure, and never claim one fits a budget it exceeds.
-- Say the budget point ONCE, in its own sentence — "all three sit above the 30 million you mentioned" — never repeated after every villa. That reads like a machine.
+- The prices above are the real ones — quote them as given and never invent one. Do NOT add any claim about whether they fit the client's budget: state the price and let them judge.
+- No email-style sign-off. This is WhatsApp: no "Best," and no name at the end.
 - Change NOTHING else: same voice, same length, same closing question if it isn't about sending links.
 - WRITE IN ${language ? language.toUpperCase() : "THE SAME LANGUAGE AS THE MESSAGE BELOW"}. This is absolute. The broker's instructions may be in another language; that never changes the language the client is written to.
 
