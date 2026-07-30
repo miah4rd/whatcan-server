@@ -13,7 +13,8 @@ import { getAmoLead } from "../lib/amo-client";
 import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
 import { buildRentalSystemPrompt } from "../lib/rental-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
-import { pickPropertyAttachments } from "../lib/generate-suggestion";
+import { isBroker, brokerKey } from "../lib/broker-identity";
+import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments } from "../lib/generate-suggestion";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
 import { classifyStage } from "../lib/stage-classifier";
 import { logger } from "../lib/logger";
@@ -317,14 +318,22 @@ IMPORTANT: Do NOT include property links or listings in this follow-up. The brok
 
 Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
+  // Name, inventory truth and the "links ride along with this message" rule —
+  // shared with lib/generate-suggestion so this copy can't drift again.
+  const promptAdditions = await buildPromptAdditions({
+    isRental,
+    dialogMessages: dialog.messages,
+    lastLeadText,
+  });
+
   const completion = await chatCompletion({
     model: "claude-sonnet-5",
     system: systemPrompt,
-    messages: [{ role: "user", content: prompt }],
+    messages: [{ role: "user", content: prompt + promptAdditions }],
     max_tokens: 400,
   });
 
-  const text = sanitizeSuggestion(completion.content);
+  const draft = sanitizeSuggestion(completion.content);
 
   // Shared picker — already-sent exclusion, current area/bedroom criteria, and
   // the "lead already chose a villa" gate all live in ONE place. The bare
@@ -341,6 +350,10 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     leadStage: opts.leadStage,
   });
 
+  // The draft was written without knowing which listings the matcher would
+  // choose — make the two agree before this reaches the broker.
+  const text = await reconcileTextWithAttachments(draft, attachments);
+
   return { text, attachments };
 }
 
@@ -354,7 +367,7 @@ export async function queueSuggestion(opts: {
   /** The lead's own incoming message (kind "live" only) — shown in the push notification instead of our draft reply. */
   leadMessageText?: string;
 }): Promise<void> {
-  const brokerId = (opts.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+  const brokerId = brokerKey(opts.responsibleUser);
 
   await db.insert(aiSuggestionsTable).values({
     brokerId,
@@ -548,7 +561,7 @@ router.post("/amocrm/webhook", async (req, res) => {
     // HoS is also responsible for leads outside the Rental pipeline (e.g. a
     // separate hiring/HR track) — this bot only handles Rental for that account,
     // so skip generation entirely rather than burning an AI call just to hide it later.
-    if (responsibleUser === "HoS" && (pipeline ?? "").toLowerCase() !== "rental") {
+    if (isBroker(responsibleUser, "HoS") && (pipeline ?? "").toLowerCase() !== "rental") {
       return;
     }
 
@@ -879,7 +892,7 @@ router.post("/amocrm/webhook", async (req, res) => {
 
     // HoS is also responsible for leads outside the Rental pipeline (e.g. a
     // separate hiring/HR track) — this bot only handles Rental for that account.
-    if (responsibleUser === "HoS" && (legacySyncRow?.pipeline ?? "").toLowerCase() !== "rental") {
+    if (isBroker(responsibleUser, "HoS") && (legacySyncRow?.pipeline ?? "").toLowerCase() !== "rental") {
       return;
     }
 
@@ -922,7 +935,7 @@ router.post("/amocrm/webhook", async (req, res) => {
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, String(lead.id)))
       .limit(1);
-    if (lead.responsible_user_name === "HoS" && (syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
+    if (isBroker(lead.responsible_user_name, "HoS") && (syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
     const { text, attachments } = await generateSuggestion({
       leadId: String(lead.id),
       responsibleUser: lead.responsible_user_name ?? null,
@@ -950,7 +963,7 @@ router.post("/amocrm/webhook", async (req, res) => {
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, String(lead.id)))
       .limit(1);
-    if (lead.responsible_user_name === "HoS" && (syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
+    if (isBroker(lead.responsible_user_name, "HoS") && (syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
     const { text, attachments } = await generateSuggestion({
       leadId: String(lead.id),
       responsibleUser: lead.responsible_user_name ?? null,

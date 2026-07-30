@@ -1,4 +1,4 @@
-import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable } from "@workspace/db";
+import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable, leadMessagesTable } from "@workspace/db";
 import { lt, isNotNull, eq, and, or, isNull, inArray, desc, sql } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON } from "./ai-client";
 import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming } from "./dialog-parser";
@@ -14,6 +14,8 @@ import { generateSuggestion } from "./generate-suggestion";
 import { isAdaptiveBroker } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
+import { isBroker, brokerKey } from "./broker-identity";
+import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
 
 /**
  * True when the timeline (lead_messages) holds a message FROM THE LEAD that is
@@ -35,8 +37,12 @@ async function hasNewerLeadMessage(leadId: string, contentLastMs: number): Promi
       .limit(1);
     if (!row || row.senderType !== "lead") return false;
     return row.sentAt.getTime() > contentLastMs + 60_000;
-  } catch {
-    // Never let this check be the reason a follow-up silently stops working.
+  } catch (err) {
+    // Never let this check be the reason a follow-up stops working — but say so.
+    // A bare `catch {}` here hid a missing import for hours: the helper threw on
+    // every call and silently reported "no newer message", so the guard it
+    // implements was inert while looking deployed.
+    logger.error({ err, leadId }, "hasNewerLeadMessage failed — falling back to content-only");
     return false;
   }
 }
@@ -460,7 +466,7 @@ export async function processFollowups(): Promise<void> {
 
       // HoS is also responsible for leads outside the Rental pipeline (e.g. a
       // separate hiring/HR track) — this bot only handles Rental for that account.
-      if (lead.responsibleUser === "HoS" && (lead.pipeline ?? "").toLowerCase() !== "rental") {
+      if (isBroker(lead.responsibleUser, "HoS") && (lead.pipeline ?? "").toLowerCase() !== "rental") {
         await db
           .update(leadsSyncTable)
           .set({ nextFollowupAt: null })
@@ -664,7 +670,7 @@ export async function processFollowups(): Promise<void> {
             "warmup: using follow-up message (not brochure)",
           );
         } else {
-          const warmupBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+          const warmupBrokerIdKey = brokerKey(lead.responsibleUser);
           const warmupCorrections = await buildBrokerCorrectionsBlock(warmupBrokerIdKey, correctionsCache);
           const warmupAI = await generateFollowup({
             leadId: lead.leadId,
@@ -684,7 +690,7 @@ export async function processFollowups(): Promise<void> {
           continue;
         }
 
-        const warmupBrokerId = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+        const warmupBrokerId = brokerKey(lead.responsibleUser);
 
         await db.insert(aiSuggestionsTable).values({
           brokerId: warmupBrokerId,
@@ -804,7 +810,7 @@ export async function processFollowups(): Promise<void> {
           }
         } catch { /* non-fatal */ }
 
-        const pushBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+        const pushBrokerIdKey = brokerKey(lead.responsibleUser);
         const pushCorrections = await buildBrokerCorrectionsBlock(pushBrokerIdKey, correctionsCache);
         const generated = await generatePushFollowup({
           responsibleUser: lead.responsibleUser,
@@ -862,7 +868,7 @@ export async function processFollowups(): Promise<void> {
           );
         } else {
           // ── No template — generate context-aware follow-up via AI ───────────
-          const genBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+          const genBrokerIdKey = brokerKey(lead.responsibleUser);
           const genCorrections = await buildBrokerCorrectionsBlock(genBrokerIdKey, correctionsCache);
           const generated = await generateFollowup({
             leadId: lead.leadId,
@@ -885,7 +891,7 @@ export async function processFollowups(): Promise<void> {
         continue;
       }
 
-      const brokerId = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+      const brokerId = brokerKey(lead.responsibleUser);
 
       await db.insert(aiSuggestionsTable).values({
         brokerId,
@@ -1067,7 +1073,7 @@ export async function processUnansweredLive(): Promise<void> {
     // HoS is also responsible for leads outside the Rental pipeline (e.g. a
     // separate hiring/HR track) — this bot only handles Rental for that account,
     // so skip generation entirely rather than burning an AI call just to hide it later.
-    if (l.responsibleUser === "HoS" && (l.pipeline ?? "").toLowerCase() !== "rental") return false;
+    if (isBroker(l.responsibleUser, "HoS") && (l.pipeline ?? "").toLowerCase() !== "rental") return false;
     return true;
   });
   if (toProcess.length === 0) return;
@@ -1101,7 +1107,7 @@ export async function processUnansweredLive(): Promise<void> {
         } catch { /* non-fatal */ }
       }
 
-      const liveBrokerIdKey = (lead.responsibleUser ?? "unknown").toLowerCase().slice(0, 64);
+      const liveBrokerIdKey = brokerKey(lead.responsibleUser);
       const liveCorrections = await buildBrokerCorrectionsBlock(liveBrokerIdKey, unansweredCorrectionsCache);
       const { text, attachments } = await generateSuggestion({
         leadId: lead.leadId,
@@ -1156,10 +1162,12 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
   setTimeout(() => {
     processFollowups().catch((err) => logger.error({ err }, "followup scheduler error"));
     processUnansweredLive().catch((err) => logger.error({ err }, "unanswered live error"));
+    processSourcedLeadOutreach().catch((err) => logger.error({ err }, "sourced lead outreach error"));
   }, 10_000);
   schedulerHandle = setInterval(() => {
     processFollowups().catch((err) => logger.error({ err }, "followup scheduler error"));
     processUnansweredLive().catch((err) => logger.error({ err }, "unanswered live error"));
+    processSourcedLeadOutreach().catch((err) => logger.error({ err }, "sourced lead outreach error"));
   }, intervalMs);
 }
 

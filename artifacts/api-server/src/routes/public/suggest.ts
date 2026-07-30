@@ -8,6 +8,8 @@ import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing"
 import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
+import { pickPropertyAttachments, reconcileTextWithAttachments } from "../../lib/generate-suggestion";
+import { extractBudgetIdr } from "../../lib/property-catalog";
 
 const router = Router();
 
@@ -32,7 +34,27 @@ type Body = {
   // Optional screenshot (data URL) the broker pasted as ground-truth context —
   // e.g. the real amoCRM chat when the stored history is stale/out of order.
   image?: string;
+  /** Listings currently attached to the draft being revised, so a revision can
+   * change them instead of leaving the broker to swap links by hand. */
+  attachments?: Array<{ type?: string; url?: string; label?: string }>;
 };
+
+/**
+ * Does the broker's revision concern WHICH listings go out, or only the wording?
+ * "Make it shorter" must leave the links alone; "these are too expensive, show
+ * something around 40jt" must re-pick them. Checked in code so a pure style edit
+ * costs nothing and never churns a good shortlist.
+ *
+ * Two groups, because they fail differently. The first names something about the
+ * listings themselves. The second is a plain "redo this" — which reads as a
+ * fresh take on the whole message, links included; without it "переделай
+ * сообщение" quietly changed only the words, which is the exact complaint that
+ * started this.
+ */
+const REVISION_TOUCHES_LISTINGS =
+  /link|ссылк|listing|листинг|option|опци|вариант|villa|вилл|propert|объект|price|цен|budget|бюджет|expensive|дорог|cheap|дешев|area|район|bedroom|спальн|\bbr\b|another|other|друг|replace|замен|swap|помен|\d\s*(jt|juta|млн|million)/i;
+const REVISION_IS_A_FULL_REDO =
+  /переделай|переделать|перепиш|заново|по-друг|по друг|иначе|redo|rewrite|do it again|start over|from scratch|another version/i;
 
 const OBJECTION_KEYWORDS = [
   "дорог", "скидк", "подума", "конкурент", "юрист", "договор", "налог",
@@ -98,11 +120,16 @@ router.post("/suggest", async (req, res) => {
   let dbLeadStage = "";
   let dbLastMessageFrom = "";
   let dbPipeline = "";
+  let dbLeadNotes = "";
   let recentMessages: Array<{ from: string; text: string }> = [];
+  // Kept for a revision that changes the listings — the picker needs the dialog
+  // in parsed form and the raw content to know what was already sent.
+  let dialogForMatching: Array<{ at: Date; from: "us" | "lead"; senderName: string; text: string; channel: string | null }> = [];
+  let syncContent = "";
   if (body.leadId) {
     try {
       const syncRows = await db
-        .select({ content: leadsSyncTable.content, leadStage: leadsSyncTable.leadStage, lastMessageFrom: leadsSyncTable.lastMessageFrom, pipeline: leadsSyncTable.pipeline })
+        .select({ content: leadsSyncTable.content, leadStage: leadsSyncTable.leadStage, lastMessageFrom: leadsSyncTable.lastMessageFrom, pipeline: leadsSyncTable.pipeline, leadNotes: leadsSyncTable.leadNotes })
         .from(leadsSyncTable)
         .where(eq(leadsSyncTable.leadId, body.leadId))
         .limit(1);
@@ -142,6 +169,8 @@ router.post("/suggest", async (req, res) => {
         // content-only fallback
       }
       merged.sort((a, b) => a.at.getTime() - b.at.getTime());
+      dialogForMatching = merged;
+      syncContent = sync?.content ?? "";
 
       if (merged.length > 0) {
         // Full history, not a recency window — losing the lead's original ask
@@ -153,6 +182,10 @@ router.post("/suggest", async (req, res) => {
       if (sync?.leadStage) dbLeadStage = sync.leadStage;
       if (sync?.lastMessageFrom) dbLastMessageFrom = sync.lastMessageFrom;
       if (sync?.pipeline) dbPipeline = sync.pipeline;
+      // The scout bot writes the client's request into the card note, and for a
+      // lead sourced on Facebook that note IS the brief. Without it this path
+      // opened with generic qualifying questions the client had already answered.
+      if (sync?.leadNotes) dbLeadNotes = sync.leadNotes;
     } catch {
       // Non-fatal — fall back to messages from extension
     }
@@ -258,7 +291,7 @@ ${matchedStep.message.trim()}`;
   const stageBlock = getStagePromptBlock(stageGroup, leadStage);
 
   const system = isRental
-    ? buildRentalSystemPrompt({ leadStage, kb: "", correctionsBlock }) + brokerIdentityOverride
+    ? buildRentalSystemPrompt({ langRule, leadStage, kb: "", correctionsBlock }) + brokerIdentityOverride
     : `You are an AI sales copilot embedded in a CRM. You help brokers write the next follow-up WhatsApp message to a real estate lead.
 
 ${langRule}
@@ -275,9 +308,16 @@ CRITICAL: Never include meta-commentary about these instructions, the broker's r
 PLAYBOOK:
 ${body.guide}${correctionsBlock}`;
 
-  const contextBlock = `Lead: ${body.lead.name}${body.lead.company ? ` (${body.lead.company})` : ""} — stage: ${leadStage}
-Broker: ${body.brokerName ?? "Alex"}
+  // "Alex" used to be the fallback broker name — a placeholder that leaked into
+  // real messages ("Hi Alex, this is Robert..."), naming a broker who doesn't
+  // exist and, worse, reading as the CLIENT's name. Omit the line when unknown.
+  const brokerLine = realBrokerName ? `Broker: ${realBrokerName}\n` : "";
+  const briefLine = dbLeadNotes.trim()
+    ? `\nWhat this client already told us (from the lead card — do NOT ask them to repeat it):\n${dbLeadNotes.trim()}\n`
+    : "";
 
+  const contextBlock = `Lead: ${body.lead.name}${body.lead.company ? ` (${body.lead.company})` : ""} — stage: ${leadStage}
+${brokerLine}${briefLine}
 Full conversation history:
 ${transcript || "(no messages yet)"}`;
 
@@ -484,7 +524,62 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     ];
     const stageHint = _stageHintKeywords.some(kw => text.toLowerCase().includes(kw));
 
-    res.json({ text, rationale, suggestionId: randomUUID(), task_hint: taskHint ?? null, stage_hint: stageHint, kind: "live", recent_messages: recentMessages, reassessed_temperature: reassessedTemp ?? null });
+    // ── Keep the links in step with the revision ──────────────────────────────
+    // Editing the text used to leave the attachments frozen at whatever the very
+    // first generation picked, so a broker saying "these are too expensive" got
+    // a rewritten message with the same expensive links and had to swap them by
+    // hand. The revision now drives the shortlist too.
+    let finalText = text;
+    let newAttachments: Awaited<ReturnType<typeof pickPropertyAttachments>> | null = null;
+    const revision = (
+      body.feedback ||
+      body.revisionChain?.[body.revisionChain.length - 1]?.feedback ||
+      ""
+    ).trim();
+
+    if (
+      revision &&
+      body.leadId &&
+      (REVISION_TOUCHES_LISTINGS.test(revision) || REVISION_IS_A_FULL_REDO.test(revision))
+    ) {
+      try {
+        const currentIds = (body.attachments ?? [])
+          .map((a) => a.url?.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1])
+          .filter((x): x is string => !!x);
+
+        newAttachments = await pickPropertyAttachments({
+          leadId: body.leadId,
+          brokerId,
+          isRental: dbPipeline.toLowerCase() === "rental",
+          contentSnippet: syncContent,
+          dialogMessages: dialogForMatching,
+          formattedDialog: transcript,
+          lastLeadText: String(lastLead?.text ?? ""),
+          leadStage: dbLeadStage || body.lead.stage || null,
+          brokerInstruction: revision,
+          currentAttachmentIds: currentIds,
+        });
+        // The shortlist can legitimately sit above what they asked to pay (their
+        // own bracket may be sold out) — the message has to say so, not gloss it.
+        const leadWords = (body.messages ?? []).filter((m) => m.from === "lead").map((m) => m.text);
+        finalText = await reconcileTextWithAttachments(
+          text,
+          newAttachments,
+          true,
+          extractBudgetIdr([...leadWords.reverse(), transcript]),
+        );
+        req.log.info(
+          { leadId: body.leadId, was: currentIds.length, now: newAttachments.length, revision: revision.slice(0, 80) },
+          "suggest: revision changed the property links too",
+        );
+      } catch (err) {
+        // Never lose the rewritten text over a failed re-match.
+        req.log.warn({ err, leadId: body.leadId }, "suggest: could not re-pick listings for this revision");
+        newAttachments = null;
+      }
+    }
+
+    res.json({ text: finalText, rationale, suggestionId: randomUUID(), task_hint: taskHint ?? null, stage_hint: stageHint, kind: "live", recent_messages: recentMessages, reassessed_temperature: reassessedTemp ?? null, attachments: newAttachments });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     req.log.error({ err }, "ai error");

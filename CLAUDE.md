@@ -15,7 +15,7 @@ tap. Two surfaces, one server:
 - **Chrome extension** — plain unbundled files, **source is NOT in this repo**
   (Alexander builds it separately). Prebuilt zips live in
   `artifacts/landing/public/ext*.zip` and are served at
-  `https://copilot.globalapplab.ru/extNN.zip`. Current: **ext70.zip (1.0.70)**.
+  `https://copilot.globalapplab.ru/extNN.zip`. Current: **ext71.zip (1.0.71)**.
   To change it: unzip the newest, edit, bump `manifest.json` version, rezip,
   copy to BOTH `artifacts/landing/public/` and (on the VPS)
   `artifacts/landing/dist/public/` — only `dist/public` is actually served.
@@ -81,8 +81,55 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   from `/property/<ID>` links **in the conversation text**, which covers every
   send path. Reading only `pending_suggestions.attachments` missed links sent
   elsewhere, and they leaked back via the explicit-mention fast path.
+- **There are TWO `generateSuggestion` implementations** — `lib/generate-suggestion.ts`
+  and a copy inside `routes/amocrm-webhook.ts` (which serves regen and the live
+  webhook). Every rule added to only one of them silently did nothing on the main
+  path: first the attachment picker, then the client's name, then the inventory
+  check. Anything that shapes the prompt goes in **`buildPromptAdditions`**, which
+  both call.
+- **Always a real choice: 2-3 listings, never one.** A hard filter that leaves a
+  single survivor is widened (bedrooms ±1) before it's accepted, and the shortlist
+  is topped up in code — the model's "at most 3" was read as permission to send one.
+- **The reply text is written CONCURRENTLY with property matching**, so it cannot
+  know what got attached. Don't try to fix that with prompt wording alone — it kept
+  ending in "want me to send them over?" with three links already attached.
+  `reconcileTextWithAttachments` checks the invariant after both finish and only
+  pays for a rewrite when the text actually contradicts the links.
+- **A truncated AI answer is not a failed one.** `chatCompletionJSON` repairs a
+  JSON object cut off by `max_tokens` — the matcher explained its reasoning first,
+  ran out of room mid-array, and three chosen villas became an empty shortlist.
+- **A listing with no price is held back from the first shortlist** — the client
+  can't judge it. Priced and most-viewed rank first. If the lead's own area holds
+  fewer than two priced villas of that size, the map widens; unpriced stock is not
+  what fills the gap.
+- **Two listings with the same title are not a choice** — the catalog holds
+  same-named units and the client reads the repeat as a mistake (`dedupeByTitle`).
+- **Budget unknown → spread the three across price points** rather than asking.
+  The reaction names the budget for us (`spreadByPrice`).
+- **A lead who arrives on a specific listing anchors the shortlist**: that listing
+  plus comparable alternatives. The anchor is read ONLY from what the LEAD wrote —
+  reading the whole conversation fed our own sent links back as "the answer".
+- **Rentals are priced in rupiah, and the catalog says so** — `monthly_price_idr` /
+  `yearly_price_idr`. The code originally selected only the `*_usd` columns, so the
+  bot quoted dollars at clients budgeting in juta and counted rupiah-priced villas
+  as having no price at all. Never convert a currency: read the rupiah column.
+  The site already renders rupiah by default, so property links carry no
+  `?currency` parameter (verified on a bare URL: "Rp 88M / month").
+- **The lead's stated budget filters the shortlist** (`extractBudgetIdr`, +15%
+  headroom). When nothing fits, the closest are offered and the reply says so
+  rather than pretending the budget was met.
 - **Each property link is sent as its own WhatsApp message** — glued together,
   WhatsApp only unfurls a preview banner for the first one.
+- **An edit must move the links too, not just the words.** `/suggest` returned
+  text only, so a broker dictating "these are too expensive" got a rewritten
+  message with the same expensive links. The revision now feeds the matcher
+  (`brokerInstruction`), and a price or area named in it outranks the lead's
+  earlier words. A style-only edit ("shorter, warmer") leaves the links alone —
+  `REVISION_TOUCHES_LISTINGS` decides, so a good shortlist is never churned.
+- **A stated budget is enforced in code, not asked of the model.** Handed an
+  affordable-first catalog it still picked villas at double the figure; told the
+  broker objected to the current links it dropped even the cheapest. The ceiling
+  is applied to the final shortlist, and it may not cut it below two.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
 

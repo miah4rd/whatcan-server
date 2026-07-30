@@ -1,9 +1,10 @@
 import { chatCompletion } from "./ai-client";
+import { logger } from "./logger";
 import { parseDialogContent, formatDialogForAI, describeConversationTiming } from "./dialog-parser";
 import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { buildRentalSystemPrompt } from "./rental-prompt";
-import { matchProperties, type PropertyPick } from "./property-catalog";
+import { matchProperties, availabilityForCriteria, type PropertyPick } from "./property-catalog";
 import { db, pendingSuggestionsTable } from "@workspace/db";
 import { eq, inArray, and } from "drizzle-orm";
 
@@ -57,6 +58,16 @@ async function alreadySentPropertyIds(leadId: string, conversationText: string):
  *    (quoting the link back is how "I like this one" arrives over WhatsApp)
  *  - the CRM stage already says the conversation is past browsing
  */
+/**
+ * Quoting a listing back at us is only a "stop sending options" signal when the
+ * lead LIKES it. Josua quoted the link we sent with "I really dont like the
+ * floor" — a rejection — and the bot read the quote alone, sent no new options,
+ * and promised to "come back shortly with the best options" instead. A rejection
+ * is precisely when a fresh shortlist is wanted.
+ */
+const REJECTS_THE_LISTING =
+  /(do ?n'?t|does ?n'?t|not) (like|love|work|suit|fit)|dislike|hate|too (expensive|pricey|small|big|far|dark|noisy|much)|not (for me|a fan|keen|what|quite)|something (else|different)|anything else|other options|не нравится|не подходит|не то\b|дорого|другие|другой|похуже|получше/i;
+
 function shouldSkipNewListings(
   messages: ReturnType<typeof parseDialogContent>["messages"],
   alreadySentIds: string[],
@@ -67,13 +78,16 @@ function shouldSkipNewListings(
 
   if (alreadySentIds.length === 0) return false;
   const sent = new Set(alreadySentIds.map((id) => id.toUpperCase()));
-  const recentLeadText = messages
-    .filter((m) => m.from === "lead")
-    .slice(-3)
-    .map((m) => m.text)
-    .join("\n")
-    .toUpperCase();
-  return [...sent].some((id) => recentLeadText.includes(id));
+  const recentLeadMessages = messages.filter((m) => m.from === "lead").slice(-3);
+
+  for (const m of recentLeadMessages) {
+    const text = (m.text ?? "").toUpperCase();
+    if (![...sent].some((id) => text.includes(id))) continue;
+    // They mentioned one of ours — the sentiment decides what to do next.
+    if (REJECTS_THE_LISTING.test(m.text ?? "")) return false;
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -97,13 +111,18 @@ export async function pickPropertyAttachments(opts: {
   formattedDialog: string;
   lastLeadText: string;
   leadStage?: string | null;
+  /** Set when the broker is revising an existing draft — see matchProperties. */
+  brokerInstruction?: string | null;
+  currentAttachmentIds?: string[];
 }): Promise<GeneratedSuggestion["attachments"]> {
   try {
     const excludeIds = await alreadySentPropertyIds(
       opts.leadId,
       `${opts.contentSnippet}\n${opts.formattedDialog}`,
     );
-    if (shouldSkipNewListings(opts.dialogMessages, excludeIds, opts.leadStage)) {
+    // A broker asking for different links has overruled the "don't send more
+    // options" gate — they are looking at the draft and telling us what to send.
+    if (!opts.brokerInstruction && shouldSkipNewListings(opts.dialogMessages, excludeIds, opts.leadStage)) {
       return [];
     }
     const picks = await matchProperties({
@@ -113,6 +132,8 @@ export async function pickPropertyAttachments(opts: {
       excludeIds,
       seenCount: excludeIds.length,
       latestLeadMessage: opts.lastLeadText,
+      brokerInstruction: opts.brokerInstruction ?? null,
+      currentAttachmentIds: opts.currentAttachmentIds ?? [],
       // newest first — the criteria filter takes the most recent area/bedroom pin
       recentLeadMessages: [
         opts.lastLeadText,
@@ -132,6 +153,151 @@ export type GeneratedSuggestion = {
 
 function toAttachments(picks: PropertyPick[]): GeneratedSuggestion["attachments"] {
   return picks.map((p) => ({ type: "link" as const, label: p.label, url: p.url }));
+}
+
+/**
+ * States the client's name as a fact for the prompt.
+ *
+ * Exported because there are two generateSuggestion implementations (this lib
+ * and amocrm-webhook.ts's own copy, which serves regen and several webhook
+ * paths). Adding the rule to only one meant replies still opened "Hi there" —
+ * exactly how the property-matching fixes silently missed the main path.
+ */
+export function buildLeadNameRule(
+  messages: ReturnType<typeof parseDialogContent>["messages"],
+): string {
+  const raw = messages.find(
+    (m) => m.from === "lead" && m.senderName && m.senderName.trim().length > 1,
+  )?.senderName;
+
+  // "Nathan Craig (клиент - Facebook)" → "Nathan"
+  const cleaned = (raw ?? "").replace(/\s*\([^)]*\)\s*$/, "").trim();
+  const first = cleaned.split(/\s+/)[0] ?? "";
+  const isPlaceholder = /^(lead|client|клиент|guest|user|wahelp|whatsapp|telegram|instagram)$/i.test(first);
+  const name = !first || isPlaceholder ? "" : first;
+
+  return name
+    ? `\n\nTHE CLIENT'S NAME IS ${name}. Address them by it naturally — greet them by name, or use it once early in the message. Never open with "Hi there" or any nameless greeting when you have their name.`
+    : `\n\nYou do NOT know this client's name. Do not invent one and do not use a placeholder — just open without a name.`;
+}
+
+/**
+ * Every rule that has to be true of the final message but can't live in the
+ * static system prompt: who the client is, what we actually have in stock, and
+ * the fact that links ride along with this very message.
+ *
+ * Shared because there are two generateSuggestion implementations and each new
+ * rule kept landing in only one of them — the name rule, then the inventory
+ * check. Both call this now, so a rule added here cannot go missing on the
+ * other path.
+ */
+/**
+ * Makes the message agree with the links actually attached to it.
+ *
+ * The reply and the property matching run concurrently (serialising them cost
+ * seconds on the broker's push), so the writer never knows what got picked. No
+ * amount of prompt wording fixed this reliably: the draft kept ending in "want
+ * me to send them over?" with three links already attached, or promised "a
+ * solid option" in the singular. So the invariant is checked in code, and only
+ * a message that actually contradicts its attachments pays for a rewrite —
+ * the normal case costs nothing.
+ */
+const ASKS_OR_PROMISES_TO_SEND =
+  /(want me to|shall i|should i|do you want me to)[^?]*\?|send (them|it|these|those) over|i(?:'ll| will| can| could|'d)\s+(send|pull|line up|put together|share|forward|dig out|get you)|отправ(лю|им|ить)|пришл(ю|ем|ать)|скину|подберу|могу подобрать/i;
+/** "I have one villa that fits" — said while two or three links are attached. */
+const CLAIMS_ONLY_ONE =
+  /\b(one|a single|just one|1)\s+(villa|property|option|place|match|listing)\b|\b(a|one) (solid|good|strong)? ?option\b|\bодн[ау] (виллу|опци|вариант)/i;
+
+export async function reconcileTextWithAttachments(
+  text: string,
+  attachments: GeneratedSuggestion["attachments"],
+  /** Set when the links have just CHANGED under an existing draft (a broker
+   * revision). The text was written against the old ones, so it has to be
+   * re-checked whether or not it trips a pattern — it claimed three villas
+   * "all sit around your 30 million budget" after they had been swapped. */
+  force = false,
+  /** The client's stated monthly budget in rupiah, when known. */
+  budgetIdr?: number | null,
+): Promise<string> {
+  if (attachments.length === 0) return text;
+  const contradicts =
+    force || ASKS_OR_PROMISES_TO_SEND.test(text) || (attachments.length > 1 && CLAIMS_ONLY_ONE.test(text));
+  if (!contradicts) return text;
+
+  const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");
+  const budgetLine = budgetIdr
+    ? `\n\nThe client's stated budget is ${Math.round(budgetIdr / 1_000_000)} million rupiah per month.`
+    : "";
+  try {
+    const fixed = await chatCompletion({
+      model: "claude-sonnet-5",
+      system: `You correct one specific inconsistency in a WhatsApp message a broker is about to send.
+
+These ${attachments.length} property links are attached to that exact message and will arrive with it:
+${list}${budgetLine}
+
+Rewrite the message so it matches that reality:
+- Present the listings as being right here. Name each one as it is written above and say which area it is in — the names and areas above are the truth, never a place the client asked for but that isn't on the list. "a villa in Canggu, another villa in Canggu" is not naming them.
+- Delete any question asking permission to send them, and any promise to send something later.
+- The prices above are the real ones. Judge each against the client's budget on its own merits: call a villa over budget only when its own price exceeds that figure, and never claim one fits a budget it exceeds.
+- Say the budget point ONCE, in its own sentence — "all three sit above the 30 million you mentioned" — never repeated after every villa. That reads like a machine.
+- Change NOTHING else: same language, same voice, same length, same closing question if it isn't about sending links.
+
+Output only the corrected message.`,
+      messages: [{ role: "user", content: text }],
+      max_tokens: 400,
+    });
+    const out = sanitizeSuggestion(fixed.content);
+    if (out.trim().length > 20) {
+      logger.info({ attachments: attachments.length }, "reconciled the reply with its attachments");
+      return out;
+    }
+  } catch (err) {
+    logger.warn({ err }, "attachment reconciliation failed (non-fatal, keeping the draft)");
+  }
+  return text;
+}
+
+export async function buildPromptAdditions(opts: {
+  isRental: boolean;
+  dialogMessages: ReturnType<typeof parseDialogContent>["messages"];
+  lastLeadText?: string | null;
+}): Promise<string> {
+  const recentLeadMessages = [
+    opts.lastLeadText ?? "",
+    ...opts.dialogMessages.filter((m) => m.from === "lead").slice(-5).reverse().map((m) => m.text),
+  ].filter(Boolean);
+
+  // What we can actually offer for what they asked — computed from the cached
+  // catalog with no AI call, so the reply is written KNOWING the answer instead
+  // of promising a shortlist that doesn't exist. (A lead asking "Seminyak only"
+  // got "I've got a few in mind" while the catalog held zero Seminyak listings:
+  // the matcher knew, the message didn't, because the two run in parallel.)
+  const stock = await availabilityForCriteria({
+    listingType: opts.isRental ? "rent" : "sale",
+    recentLeadMessages,
+  }).catch(() => null);
+
+  // The links are attached to THIS message, so asking "want me to send them?"
+  // sends the question and the answer together and makes the bot look broken.
+  const attachedRule =
+    `\n\nTHE LINKS GO OUT WITH THIS MESSAGE. When a shortlist is being sent, two or three property links are attached to this exact message automatically — they are already below your text. So present them ("here are three that fit"), never ask permission to send them and never promise them for later. The one exception is when the client has already settled on a specific villa: then no options are sent and you move to the viewing instead.`;
+
+  const stockLine = stock
+    ? stock.matching > 0
+      ? `\n\nINVENTORY CHECK (true right now): ${stock.matching} listing(s) match what they asked for${stock.areas.length ? ` in ${stock.areas.join("/")}` : ""}.`
+      : `\n\nINVENTORY CHECK (true right now): NOTHING in the catalog is${stock.areas.length ? ` in ${stock.areas.join("/")}` : " a match for their criteria"}${stock.bedrooms ? ` at ${stock.bedrooms} bedrooms` : ""}. Say that plainly — do not imply we have what they asked for.${stock.nearbyAreas.length ? ` The same size IS available in ${stock.nearbyAreas.join(", ")}, and those are the listings attached here: name the area each one is actually in, and let them decide. Being straight about it is what keeps their trust.` : ""}`
+    : "";
+
+  // Bali rents in rupiah — the catalog now carries the rupiah figure itself, so
+  // there is nothing to convert and nothing to hedge about. The bot used to
+  // quote dollars at a client budgeting in juta purely because the code read
+  // only the *_usd columns.
+  const currencyRule = opts.isRental
+    ? `\n\nPRICES ARE IN RUPIAH. The catalog figures for rentals are already the real rupiah price (shown as "Rp 88 jt/mo" — 88 million per month). Quote them exactly as given, in rupiah. Never convert to dollars, never state a dollar figure, and never invent a price for a listing that has none.`
+    : "";
+
+  return buildLeadNameRule(opts.dialogMessages) + attachedRule + stockLine + currencyRule;
 }
 
 export async function generateSuggestion(opts: {
@@ -440,6 +606,12 @@ IMPORTANT: Do NOT include property links or listings in this follow-up. The brok
 
 Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
+  const promptAdditions = await buildPromptAdditions({
+    isRental,
+    dialogMessages: dialog.messages,
+    lastLeadText,
+  });
+
   // Property matching only needs the conversation, not our reply — so it runs
   // CONCURRENTLY with writing the reply instead of after it. Serialising these
   // two AI round-trips was adding seconds of dead time before the broker's
@@ -450,7 +622,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     chatCompletion({
       model: "claude-sonnet-5",
       system: systemPrompt,
-      messages: [{ role: "user", content: prompt }],
+      messages: [{ role: "user", content: prompt + promptAdditions }],
       max_tokens: 400,
     }),
     pickPropertyAttachments({
@@ -465,7 +637,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     }),
   ]);
 
-  const text = sanitizeSuggestion(completion.content);
+  const text = await reconcileTextWithAttachments(sanitizeSuggestion(completion.content), attachments);
 
   return { text, attachments };
 }
