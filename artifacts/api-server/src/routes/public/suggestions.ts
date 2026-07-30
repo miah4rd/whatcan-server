@@ -362,20 +362,54 @@ router.get("/suggestions", async (req, res) => {
           try { return Number(BigInt(b.lead_id) - BigInt(a.lead_id)); } catch { return 0; }
         });
 
-        // Daily cap applies ONLY to active-push. LIVE (new client replies) and
-        // REACH (qualification follow-ups) are NEVER capped — a client who just
-        // wrote, or a lead the broker moved into a follow-up stage today, must
-        // always show. (A combined live+reach+push cap hid new client replies and
-        // freshly-staged leads once the day filled up — the owner hit exactly that.)
+        // LIVE (client replies) and REACH (qualification follow-ups) are NEVER
+        // capped — a client who just wrote, or a lead moved into a follow-up stage,
+        // must always show. Active-push gets a DAILY QUOTA of PUSH_DAILY_CAP
+        // distinct leads per Bali day: new leads fill the list up to the quota, but
+        // once that many distinct leads have entered today the list only DRAINS as
+        // the broker works them — no same-day backfill. (Owner: "I follow up 5 and
+        // it still shows 30 — they don't go down, new ones come in.") Resets daily.
         if (PUSH_DAILY_CAP > 0) {
           const isReachStage = (s: string | null) =>
             ["1st follow up", "2nd follow up", "final follow up"].some((k) => (s ?? "").toLowerCase().includes(k));
-          let activePushShown = 0;
-          enriched = enriched.filter((i) => {
-            if (i.kind !== "push" || isReachStage(i.lead_stage)) return true; // LIVE + REACH always
-            activePushShown++;
-            return activePushShown <= PUSH_DAILY_CAP;
-          });
+          // LIVE + REACH are ALWAYS shown (never hidden). REACH is time-sensitive
+          // and few, so it must never be dropped — but it IS a proactive touch, so
+          // it counts toward the daily proactive budget: PUSH flexes DOWN to keep
+          // total proactive (push + reach) ≈ PUSH_DAILY_CAP, for WhatsApp-ban safety.
+          const liveOrReach = enriched.filter((i) => i.kind !== "push" || isReachStage(i.lead_stage));
+          const reachCount = enriched.filter((i) => i.kind === "push" && isReachStage(i.lead_stage)).length;
+          const activePush = enriched.filter((i) => i.kind === "push" && !isReachStage(i.lead_stage));
+          const pushTarget = Math.max(0, PUSH_DAILY_CAP - reachCount); // reach eats into the budget
+          const brokerKey = (responsibleUser ?? "").trim().toLowerCase();
+          if (brokerKey) {
+            const baliDay = new Date(nowMs + BALI_OFFSET_MS).toISOString().slice(0, 10);
+            const focusKey = `daily_focus:${brokerKey}`;
+            let served: string[] = [];
+            try {
+              const [row] = await db.select().from(brokerSettingsTable).where(eq(brokerSettingsTable.key, focusKey));
+              if (row?.value) {
+                const parsed = JSON.parse(row.value) as { day?: string; leadIds?: string[] };
+                if (parsed.day === baliDay && Array.isArray(parsed.leadIds)) served = parsed.leadIds.slice();
+              }
+            } catch { /* fail open → fresh quota */ }
+            // Top up today's PUSH quota (budget minus reach) with the highest-ranked
+            // active-push not yet served. Drains as worked; no same-day backfill.
+            const servedSet = new Set(served);
+            for (const item of activePush) {
+              if (served.length >= pushTarget) break;
+              if (!servedSet.has(item.lead_id)) { served.push(item.lead_id); servedSet.add(item.lead_id); }
+            }
+            const payload = JSON.stringify({ day: baliDay, leadIds: served });
+            try {
+              await db.insert(brokerSettingsTable)
+                .values({ key: focusKey, value: payload })
+                .onConflictDoUpdate({ target: brokerSettingsTable.key, set: { value: payload } });
+            } catch { /* non-fatal — degrades to no-quota, never blocks the inbox */ }
+            const shownActivePush = activePush.filter((i) => servedSet.has(i.lead_id));
+            enriched = [...liveOrReach, ...shownActivePush];
+          } else {
+            enriched = [...liveOrReach, ...activePush.slice(0, pushTarget)];
+          }
         }
       } else {
         enriched.sort((a, b) => {
