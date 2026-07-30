@@ -117,7 +117,15 @@ function summaryLine(p: SupabaseProperty): string {
       : p.yearly_price_usd && p.yearly_price_usd > 0
         ? `$${Math.round(p.yearly_price_usd)}/yr`
         : null;
-  const priceStr = [freePrice, leasePrice, monthlyPrice, yearlyPrice].filter(Boolean).join(" / ") || null;
+  // A rental listing may also carry its SALE price. Quoting "$250K" to someone
+  // renting for a year is both irrelevant and in the wrong currency.
+  const priceStr =
+    (p.listing_type === "rent"
+      ? [monthlyPrice, yearlyPrice]
+      : [freePrice, leasePrice, monthlyPrice, yearlyPrice]
+    )
+      .filter(Boolean)
+      .join(" / ") || null;
   const parts: string[] = [
     `[${p.id}]`,
     p.area ?? "",
