@@ -226,7 +226,8 @@ ${list}${budgetLine}
 Rewrite the message so it matches that reality:
 - Present the listings as being right here. Name each one as it is written above and say which area it is in — the names and areas above are the truth, never a place the client asked for but that isn't on the list. "a villa in Canggu, another villa in Canggu" is not naming them.
 - Delete any question asking permission to send them, and any promise to send something later.
-- The prices above are the real ones. Compare EACH one separately against any budget the client named: call a villa over budget only when its own price exceeds that figure, and never claim one fits a budget it exceeds. Do not lump them together.
+- The prices above are the real ones. Judge each against the client's budget on its own merits: call a villa over budget only when its own price exceeds that figure, and never claim one fits a budget it exceeds.
+- Say the budget point ONCE, in its own sentence — "all three sit above the 30 million you mentioned" — never repeated after every villa. That reads like a machine.
 - Change NOTHING else: same language, same voice, same length, same closing question if it isn't about sending links.
 
 Output only the corrected message.`,
