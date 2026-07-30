@@ -32,6 +32,11 @@ export type SupabaseProperty = {
   views: number | null;
   purpose: string | null;
   listing_type: ListingType | null;
+  // Style and character. A lead saying "modern / luxury" had nothing to match
+  // against while these went unread: the matcher only ever saw area, bedrooms
+  // and price, so it judged the request far more shallowly than it needed to.
+  features: string[] | null;
+  description: string | null;
 };
 
 export type PropertyMatch = {
@@ -62,7 +67,7 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
 
   const url =
     `${SUPABASE_URL}/rest/v1/properties` +
-    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type` +
+    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description` +
     `&is_draft=eq.false` +
     `&status=neq.sold` +
     `&order=views.desc`;
@@ -100,6 +105,18 @@ function formatPrice(p: SupabaseProperty): string | null {
   return `$${price}`;
 }
 
+/**
+ * A short, style-bearing summary so the matcher can honour "modern", "luxury",
+ * "minimalist", "jungle" and the like. Features first (they are already short
+ * labels like "Contemporary Tropical Design"), then a slice of the description.
+ */
+function styleHint(p: SupabaseProperty): string {
+  const feats = (p.features ?? []).filter((f) => typeof f === "string").slice(0, 5).join(", ");
+  const descr = (p.description ?? "").replace(/\s+/g, " ").trim().slice(0, 130);
+  const parts = [feats, descr].filter(Boolean);
+  return parts.length ? `style: ${parts.join(" — ")}` : "";
+}
+
 function summaryLine(p: SupabaseProperty): string {
   const freePrice = p.price_usd && p.price_usd > 1000 ? `freehold $${Math.round(p.price_usd / 1000)}K` : null;
   const leasePrice = p.leasehold_price_usd && p.leasehold_price_usd > 1000 ? `leasehold $${Math.round(p.leasehold_price_usd / 1000)}K` : null;
@@ -134,6 +151,7 @@ function summaryLine(p: SupabaseProperty): string {
     priceStr ?? "",
     p.purpose ? `(${p.purpose})` : "",
     p.views ? `${p.views} views` : "",
+    styleHint(p),
     `${SITE_BASE}/${p.id}`,
   ].filter(Boolean);
   return parts.join(" | ");
@@ -596,6 +614,8 @@ Return an EMPTY list when sending listings would be the wrong move:
 - The lead has just expressed interest in a SPECIFIC listing they were already shown ("I like this one", "this looks good", quoting one link approvingly). The conversation should now move toward a viewing or the practical next step on THAT property — pushing a fresh batch talks over them.
 - The lead is arranging a viewing, negotiating terms, or discussing a property they've already chosen.
 - The conversation gives truly nothing to go on (e.g. only a greeting).
+
+STYLE COUNTS AS A CRITERION. Each catalog line carries a "style:" part — the villa's features and a slice of its description. When the lead describes how they want it to look or feel (modern, luxury, minimalist, traditional, jungle, bright, quiet, family), match that against those words as seriously as you match area and bedrooms. Two villas of the right size in the right area are not interchangeable if only one is the style they asked for.
 
 CRITERIA CAN CHANGE MID-CONVERSATION. When the lead revises what they want ("actually", "I wanna change my request", a new area, a different bedroom count), their NEWEST statement is the only one that counts — match against that and treat the earlier criteria as void, however much of the conversation was spent on them.
 
