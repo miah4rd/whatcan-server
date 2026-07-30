@@ -58,6 +58,16 @@ async function alreadySentPropertyIds(leadId: string, conversationText: string):
  *    (quoting the link back is how "I like this one" arrives over WhatsApp)
  *  - the CRM stage already says the conversation is past browsing
  */
+/**
+ * Quoting a listing back at us is only a "stop sending options" signal when the
+ * lead LIKES it. Josua quoted the link we sent with "I really dont like the
+ * floor" — a rejection — and the bot read the quote alone, sent no new options,
+ * and promised to "come back shortly with the best options" instead. A rejection
+ * is precisely when a fresh shortlist is wanted.
+ */
+const REJECTS_THE_LISTING =
+  /(do ?n'?t|does ?n'?t|not) (like|love|work|suit|fit)|dislike|hate|too (expensive|pricey|small|big|far|dark|noisy|much)|not (for me|a fan|keen|what|quite)|something (else|different)|anything else|other options|не нравится|не подходит|не то\b|дорого|другие|другой|похуже|получше/i;
+
 function shouldSkipNewListings(
   messages: ReturnType<typeof parseDialogContent>["messages"],
   alreadySentIds: string[],
@@ -68,13 +78,16 @@ function shouldSkipNewListings(
 
   if (alreadySentIds.length === 0) return false;
   const sent = new Set(alreadySentIds.map((id) => id.toUpperCase()));
-  const recentLeadText = messages
-    .filter((m) => m.from === "lead")
-    .slice(-3)
-    .map((m) => m.text)
-    .join("\n")
-    .toUpperCase();
-  return [...sent].some((id) => recentLeadText.includes(id));
+  const recentLeadMessages = messages.filter((m) => m.from === "lead").slice(-3);
+
+  for (const m of recentLeadMessages) {
+    const text = (m.text ?? "").toUpperCase();
+    if (![...sent].some((id) => text.includes(id))) continue;
+    // They mentioned one of ours — the sentiment decides what to do next.
+    if (REJECTS_THE_LISTING.test(m.text ?? "")) return false;
+    return true;
+  }
+  return false;
 }
 
 /**

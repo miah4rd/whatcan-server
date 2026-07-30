@@ -311,21 +311,27 @@ function rankForShortlist(a: SupabaseProperty, b: SupabaseProperty): number {
  * said 30 million was shown villas at 55.
  */
 export function extractBudgetIdr(messages: string[]): number | null {
+  // "750mill / year" is a yearly figure — read as monthly it became a 750M/month
+  // ceiling, which let anything through. Bali quotes both, so the period matters.
+  const PER_YEAR = /\/\s*year|per\s*year|a\s*year|\/\s*yr\b|yearly|annual|в\s*год|годов/i;
+
   for (const raw of messages) {
     const m = raw.toLowerCase();
+    const perYear = PER_YEAR.test(m);
+    const toMonthly = (n: number) => Math.round(perYear ? n / 12 : n);
 
-    // "30 million" / "30jt" / "30 juta" / "30 млн"
-    const short = m.match(/(\d[\d.,]*)\s*(jt\b|juta|million|mio|млн|миллион)/);
+    // "30 million" / "750mill" / "30jt" / "30 juta" / "40 млн"
+    const short = m.match(/(\d[\d.,]*)\s*(jt\b|juta|mio\b|mln\b|mill(?:ion)?s?\b|млн|миллион)/);
     if (short?.[1]) {
       const n = parseFloat(short[1].replace(/[.,](?=\d{3}\b)/g, "").replace(",", "."));
-      if (n > 0 && n < 10000) return Math.round(n * 1_000_000);
+      if (n > 0 && n < 100000) return toMonthly(n * 1_000_000);
     }
 
     // "Rp 30.000.000" / "30 000 000 idr"
     const full = m.match(/(?:rp\.?\s*|idr\s*)?(\d[\d\s.,]{6,})\s*(?:idr|rupiah|rp\b)?/);
     if (full?.[1] && /rp|idr|rupiah/.test(m)) {
       const n = parseInt(full[1].replace(/[^\d]/g, ""), 10);
-      if (n >= 1_000_000 && n < 10_000_000_000) return n;
+      if (n >= 1_000_000 && n < 100_000_000_000) return toMonthly(n);
     }
   }
   return null;
