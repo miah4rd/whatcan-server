@@ -586,12 +586,26 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
     // Skip if we already know about a more recent broker message
     if (knownOurAt && knownOurAt.getTime() >= eventAt.getTime()) continue;
 
+    // A broker replying straight from WhatsApp is the most common way a lead
+    // goes quiet: quick answer, no task, forgotten. This used to set
+    // nextFollowupAt = null, which actively DELETED the chase — the faster the
+    // broker answered, the more certain the lead was never followed up.
+    // Any outgoing message starts the 24h clock instead, whatever sent it.
+    const stageBlocksFollowup = shouldSuppressPush(existing.leadStage ?? "");
+    // Restart the chain only if the LEAD had written last — then this message
+    // answers them. If we were already chasing silence, keep the level so the
+    // cadence still runs out and the lead eventually closes instead of looping.
+    const leadHadReplied = existing.lastMessageFrom === "lead";
+
     await db
       .update(leadsSyncTable)
       .set({
         lastMessageFrom: "us",
         lastOurMessageAt: eventAt,
-        nextFollowupAt: null,
+        ...(leadHadReplied ? { followupLevel: 0 } : {}),
+        nextFollowupAt: stageBlocksFollowup
+          ? null
+          : new Date(eventAt.getTime() + 24 * 60 * 60 * 1000),
         updatedAt: new Date(),
       })
       .where(eq(leadsSyncTable.leadId, leadId));
@@ -608,7 +622,10 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
       );
 
     cleared++;
-    logger.info({ leadId, eventAt }, "amo-sync: broker outgoing event detected, LIVE cleared");
+    logger.info(
+      { leadId, eventAt, followupIn: stageBlocksFollowup ? "never (dead stage)" : "24h" },
+      "amo-sync: broker outgoing event detected, LIVE cleared, follow-up clock started",
+    );
   }
   return cleared;
 }

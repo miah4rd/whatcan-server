@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { shouldSuppressPush } from "../../lib/stage-routing";
 import { db, pendingSuggestionsTable, sentMessagesTable, leadsSyncTable, stageEventsTable, brokerCorrectionsTable, leadCrmTasksTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
@@ -435,7 +436,7 @@ router.post("/approve", async (req, res) => {
 
     // ── Update leads_sync BEFORE sending message ────────────────────────────
     const [prevSyncRow] = await db
-      .select({ lastMessageFrom: leadsSyncTable.lastMessageFrom })
+      .select({ lastMessageFrom: leadsSyncTable.lastMessageFrom, leadStage: leadsSyncTable.leadStage })
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, sug.leadId))
       .limit(1);
@@ -458,11 +459,23 @@ router.post("/approve", async (req, res) => {
         })
         .where(eq(leadsSyncTable.leadId, sug.leadId));
     } else {
+      // A LIVE reply also starts the clock. This branch used to set only
+      // "we answered" and leave nextFollowupAt untouched — so answering a lead
+      // through the bot scheduled NOTHING. The 24h promise existed only in the
+      // amoCRM task text, and once that task was auto-closed the lead could go
+      // quiet forever: Josua (22938199) sat three days after our reply with no
+      // reminder, and every LIVE-answered lead had the same hole.
+      // followupLevel resets to 0 because the lead engaged — the next chase is #1.
+      const stageBlocksFollowup = shouldSuppressPush(prevSyncRow?.leadStage ?? "");
       await db
         .update(leadsSyncTable)
         .set({
           lastMessageFrom: "us",
           lastOurMessageAt: approveNow,
+          followupLevel: 0,
+          nextFollowupAt: stageBlocksFollowup
+            ? null
+            : new Date(approveNow.getTime() + 24 * 60 * 60 * 1000),
           updatedAt: approveNow,
         })
         .where(eq(leadsSyncTable.leadId, sug.leadId));
