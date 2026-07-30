@@ -268,8 +268,17 @@ export async function reconcileTextWithAttachments(
   language?: string | null,
 ): Promise<string> {
   if (attachments.length === 0) return text;
+  // A quoted figure for a listing whose price nobody has filled in is a made-up
+  // number going to a client. Checked in code, not hoped for: the prompt already
+  // said never to invent a price and it did anyway.
+  const unpricedLabels = attachments
+    .filter((a) => /PRICE NOT PUBLISHED/i.test(a.label ?? ""))
+    .map((a) => (a.label ?? "").split(" (")[0]);
+  const QUOTES_MONEY = /\d[\d.,\s]{2,}\s*(idr|rp\b|million|jt\b|juta)|rp\.?\s*\d/i;
+  const invents = unpricedLabels.length > 0 && QUOTES_MONEY.test(text);
+
   const contradicts =
-    force || ASKS_OR_PROMISES_TO_SEND.test(text) || (attachments.length > 1 && CLAIMS_ONLY_ONE.test(text));
+    force || invents || ASKS_OR_PROMISES_TO_SEND.test(text) || (attachments.length > 1 && CLAIMS_ONLY_ONE.test(text));
   if (!contradicts) return text;
 
   const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");
@@ -284,7 +293,11 @@ export async function reconcileTextWithAttachments(
       system: `You correct one specific inconsistency in a WhatsApp message a broker is about to send.
 
 These ${attachments.length} property links are attached to that exact message and will arrive with it:
-${list}${budgetLine}
+${list}${budgetLine}${
+    unpricedLabels.length > 0
+      ? `\n\nTHESE HAVE NO PUBLISHED PRICE: ${unpricedLabels.join("; ")}. You do NOT know what they cost. Remove any figure, range or estimate for them from the message and say plainly that you will confirm the exact rate with the owner. Inventing a number here would be quoted back at us.`
+      : ""
+  }
 
 Rewrite the message so it matches that reality:
 - Present the listings as being right here. Name each one as it is written above and say which area it is in — the names and areas above are the truth, never a place the client asked for but that isn't on the list. "a villa in Canggu, another villa in Canggu" is not naming them.

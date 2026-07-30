@@ -197,7 +197,15 @@ function propertyUrl(p: SupabaseProperty): string {
 
 function toPick(p: SupabaseProperty): PropertyPick {
   const priceBit = summaryLine(p).split(" | ").slice(1, -1).join(", ");
-  return { id: p.id, title: p.title, url: propertyUrl(p), label: `${p.title} (${priceBit})`.slice(0, 140) };
+  // Spelled out on the label, because everything downstream reads the label and
+  // silence about the price is what let a figure be invented for it.
+  const noPrice = priceOf(p) === 0 ? ", PRICE NOT PUBLISHED" : "";
+  return {
+    id: p.id,
+    title: p.title,
+    url: propertyUrl(p),
+    label: `${p.title} (${priceBit}${noPrice})`.slice(0, 160),
+  };
 }
 
 /**
@@ -570,9 +578,16 @@ export async function matchProperties(opts: {
   let withinBudgetCount = 0;
   if (budgetCeiling) {
     const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
-    const above = candidates
-      .filter((p) => !(priceOf(p) > 0 && priceOf(p) <= budgetCeiling))
+    // Price-less listings sort LAST, never first. priceOf() returns 0 for them, so
+    // an ascending sort put them at the very top the moment nothing fit the
+    // budget — which is how a client who asked for "up to 40 million" was shown
+    // three villas whose price nobody has filled in, and the reply then invented
+    // "38,000,000 IDR/month" for one of them.
+    const abovePriced = candidates
+      .filter((p) => priceOf(p) > budgetCeiling)
       .sort((a, b) => priceOf(a) - priceOf(b));
+    const unpriced = candidates.filter((p) => priceOf(p) === 0);
+    const above = [...abovePriced, ...unpriced];
     withinBudgetCount = within.length;
     // Affordable first, then the closest above. Requiring TWO within budget
     // before honouring it at all threw the budget away whenever exactly one
