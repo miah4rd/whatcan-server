@@ -15,7 +15,7 @@ tap. Two surfaces, one server:
 - **Chrome extension** — plain unbundled files, **source is NOT in this repo**
   (Alexander builds it separately). Prebuilt zips live in
   `artifacts/landing/public/ext*.zip` and are served at
-  `https://copilot.globalapplab.ru/extNN.zip`. Current: **ext70.zip (1.0.70)**.
+  `https://copilot.globalapplab.ru/extNN.zip`. Current: **ext71.zip (1.0.71)**.
   To change it: unzip the newest, edit, bump `manifest.json` version, rezip,
   copy to BOTH `artifacts/landing/public/` and (on the VPS)
   `artifacts/landing/dist/public/` — only `dist/public` is actually served.
@@ -120,6 +120,16 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   rather than pretending the budget was met.
 - **Each property link is sent as its own WhatsApp message** — glued together,
   WhatsApp only unfurls a preview banner for the first one.
+- **An edit must move the links too, not just the words.** `/suggest` returned
+  text only, so a broker dictating "these are too expensive" got a rewritten
+  message with the same expensive links. The revision now feeds the matcher
+  (`brokerInstruction`), and a price or area named in it outranks the lead's
+  earlier words. A style-only edit ("shorter, warmer") leaves the links alone —
+  `REVISION_TOUCHES_LISTINGS` decides, so a good shortlist is never churned.
+- **A stated budget is enforced in code, not asked of the model.** Handed an
+  affordable-first catalog it still picked villas at double the figure; told the
+  broker objected to the current links it dropped even the cheapest. The ceiling
+  is applied to the final shortlist, and it may not cut it below two.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
 
