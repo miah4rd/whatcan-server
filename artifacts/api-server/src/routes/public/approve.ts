@@ -645,16 +645,26 @@ router.post("/approve", async (req, res) => {
       }).catch(() => {});
     }
 
-    // Update stage directly in amoCRM via API (stageId is the numeric status_id)
-    if (stageId) {
-      try {
+    // Update stage directly in amoCRM via API (stageId is the numeric status_id).
+    // Closed - lost needs the dedicated close path: a plain status set is rejected
+    // on this account (no loss reasons configured) and the broker's "Send + Move"
+    // then left the lead un-moved. closeLeadAsLost uses system status 143 and is
+    // the same proven path the auto-close uses — so it works regardless of the
+    // stageId the extension sent (or if it sent none).
+    const stageNameLower = effectiveNewStage.toLowerCase();
+    const isClosedLost = stageNameLower.includes("closed") && stageNameLower.includes("lost");
+    try {
+      if (isClosedLost) {
+        stageOk = await closeLeadAsLost(sug.leadId);
+        req.log.info({ leadId: sug.leadId, newStage: effectiveNewStage, stageOk }, "closed-lost applied via closeLeadAsLost");
+      } else if (stageId) {
         stageOk = await updateLeadStatus(sug.leadId, Number(stageId));
         req.log.info({ leadId: sug.leadId, newStage: effectiveNewStage, stageId, stageOk }, "stage updated in amoCRM via API");
-      } catch (e) {
-        req.log.error({ err: e }, "stage-change API error");
+      } else {
+        req.log.warn({ leadId: sug.leadId, newStage: effectiveNewStage }, "no stageId provided — skipping amoCRM stage update");
       }
-    } else {
-      req.log.warn({ leadId: sug.leadId, newStage: effectiveNewStage }, "no stageId provided — skipping amoCRM stage update");
+    } catch (e) {
+      req.log.error({ err: e }, "stage-change API error");
     }
   }
 

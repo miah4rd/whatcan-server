@@ -3,7 +3,7 @@ import { db, leadsSyncTable, pendingSuggestionsTable, leadCrmTasksTable } from "
 import { and, eq } from "drizzle-orm";
 import { computeNextFollowupDays } from "../../lib/adaptive-followup";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
-import { createAmoTask, getAmoLead } from "../../lib/amo-client.js";
+import { createAmoTask, getAmoLead, closeAmoTasksForLead } from "../../lib/amo-client.js";
 
 const router = Router();
 
@@ -65,8 +65,19 @@ router.post("/no-reply-needed", async (req, res) => {
         .where(eq(leadsSyncTable.leadId, leadId)),
     ]);
 
-    // 3. Create a real amoCRM follow-up task on that date so it persists and the
-    //    scheduler surfaces it in PUSH when due (the whole system is task-driven).
+    // 3. Close any open tasks FIRST (DB + amoCRM), then create exactly ONE
+    //    follow-up. Without this, each call added another task — the broker saw
+    //    several "no reply needed" tasks pile up, and they clobbered the task they
+    //    had rescheduled by hand. Close-then-create makes it idempotent: one call =
+    //    one task, and a later manual reschedule cleanly replaces this one.
+    await db
+      .update(leadCrmTasksTable)
+      .set({ status: "closed", closedAt: new Date() })
+      .where(and(eq(leadCrmTasksTable.leadId, leadId), eq(leadCrmTasksTable.status, "open")));
+    await closeAmoTasksForLead(leadId).catch((e) => {
+      req.log.warn({ err: e, leadId }, "no-reply-needed: closing existing amo tasks failed (non-fatal)");
+    });
+
     let amoOk = false;
     try {
       const amoLead = await getAmoLead(leadId);
