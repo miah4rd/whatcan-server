@@ -180,15 +180,11 @@ async function autoCreateCrmTask(
           // back for a retry instead of vanishing in a half-closed state.
           log.error({ leadId }, "auto-close FAILED: amoCRM did not accept Closed Lost — lead kept active for retry");
         }
-      } else {
-        const nextStatusId = stageAdvanceMap[currentStatusId];
-        if (nextStatusId) {
-          try {
-            await updateLeadStatus(leadId, nextStatusId);
-            log.info({ leadId, currentStatusId, nextStatusId }, "auto-advanced follow-up stage");
-          } catch { /* non-fatal */ }
-        }
       }
+      // The non-final follow-up advance (1st→2nd→final) moved to the MAIN approve
+      // handler so it runs SYNCHRONOUSLY in-request and reliably — from this
+      // fire-and-forget path it wasn't landing (a sent 1st follow-up left the lead
+      // stuck at 1st). Only the Final-Follow-Up auto-close stays here.
     }
 
     // 4. Create task directly in amoCRM via API
@@ -665,6 +661,23 @@ router.post("/approve", async (req, res) => {
       }
     } catch (e) {
       req.log.error({ err: e }, "stage-change API error");
+    }
+  } else if (!skipMessage && sug.kind === "push" && (sug.followupLevel ?? 0) !== FINAL_FOLLOWUP_LEVEL) {
+    // Reach/qualification follow-up advance (1st → 2nd → final), SYNCHRONOUS and
+    // reliable — the old fire-and-forget path left a sent 1st follow-up stuck at
+    // 1st. Runs only when no explicit or classifier stage was applied above.
+    // Status IDs are unique per pipeline, so both maps can be checked without a
+    // pipeline lookup.
+    try {
+      const amoLead = await getAmoLead(sug.leadId);
+      const curStatus = amoLead?.status_id;
+      const nextStatus = curStatus ? (FOLLOWUP_STAGE_ADVANCE[curStatus] ?? FOLLOWUP_STAGE_ADVANCE_RENTAL[curStatus]) : undefined;
+      if (nextStatus) {
+        stageOk = await updateLeadStatus(sug.leadId, Number(nextStatus));
+        req.log.info({ leadId: sug.leadId, from: curStatus, to: nextStatus, stageOk }, "follow-up stage advanced (sync)");
+      }
+    } catch (e) {
+      req.log.error({ err: e, leadId: sug.leadId }, "sync follow-up advance error");
     }
   }
 
