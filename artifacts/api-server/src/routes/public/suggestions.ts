@@ -362,43 +362,20 @@ router.get("/suggestions", async (req, res) => {
           try { return Number(BigInt(b.lead_id) - BigInt(a.lead_id)); } catch { return 0; }
         });
 
-        // Hard daily focus cap across EVERYTHING (live + reach + push = 30 total).
-        // LIVE (new client replies) are event-driven: always kept, on top, and they
-        // count toward the cap. The follow-up backlog (reach + push) is a set
-        // LOCKED at the first load of the day; it only DRAINS as the broker works
-        // it — new follow-ups do NOT backfill the same day, they wait for the next
-        // day's fresh snapshot. `enriched` is already priority-sorted here.
+        // Daily cap applies ONLY to active-push. LIVE (new client replies) and
+        // REACH (qualification follow-ups) are NEVER capped — a client who just
+        // wrote, or a lead the broker moved into a follow-up stage today, must
+        // always show. (A combined live+reach+push cap hid new client replies and
+        // freshly-staged leads once the day filled up — the owner hit exactly that.)
         if (PUSH_DAILY_CAP > 0) {
-          const liveItems = enriched.filter((i) => i.kind !== "push");
-          const followups = enriched.filter((i) => i.kind === "push"); // reach + active push
-          const brokerKey = (responsibleUser ?? "").trim().toLowerCase();
-          if (brokerKey) {
-            const baliDay = new Date(nowMs + BALI_OFFSET_MS).toISOString().slice(0, 10);
-            const focusKey = `daily_focus:${brokerKey}`;
-            let lockedIds: string[] | null = null;
-            try {
-              const [row] = await db.select().from(brokerSettingsTable).where(eq(brokerSettingsTable.key, focusKey));
-              if (row?.value) {
-                const parsed = JSON.parse(row.value) as { day?: string; leadIds?: string[] };
-                if (parsed.day === baliDay && Array.isArray(parsed.leadIds)) lockedIds = parsed.leadIds;
-              }
-            } catch { /* fail open → treat as first load of the day */ }
-            if (!lockedIds) {
-              // First load today → snapshot today's follow-up set (top N by ranking).
-              lockedIds = followups.slice(0, PUSH_DAILY_CAP).map((i) => i.lead_id);
-              const payload = JSON.stringify({ day: baliDay, leadIds: lockedIds });
-              try {
-                await db.insert(brokerSettingsTable)
-                  .values({ key: focusKey, value: payload })
-                  .onConflictDoUpdate({ target: brokerSettingsTable.key, set: { value: payload } });
-              } catch { /* non-fatal — degrades to no-lock, never blocks the inbox */ }
-            }
-            const lockedSet = new Set(lockedIds);
-            const lockedFollowups = followups.filter((i) => lockedSet.has(i.lead_id));
-            enriched = [...liveItems, ...lockedFollowups].slice(0, PUSH_DAILY_CAP);
-          } else {
-            enriched = enriched.slice(0, PUSH_DAILY_CAP); // no broker context → plain hard cap
-          }
+          const isReachStage = (s: string | null) =>
+            ["1st follow up", "2nd follow up", "final follow up"].some((k) => (s ?? "").toLowerCase().includes(k));
+          let activePushShown = 0;
+          enriched = enriched.filter((i) => {
+            if (i.kind !== "push" || isReachStage(i.lead_stage)) return true; // LIVE + REACH always
+            activePushShown++;
+            return activePushShown <= PUSH_DAILY_CAP;
+          });
         }
       } else {
         enriched.sort((a, b) => {
