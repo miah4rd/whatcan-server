@@ -1,4 +1,4 @@
-import { db, leadMessagesTable } from "@workspace/db";
+import { db, leadMessagesTable, sentMessagesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { parseDialogContent, type ParsedMessage } from "./dialog-parser";
 
@@ -52,6 +52,32 @@ export async function getMergedConversation(
     }
   } catch {
     /* content-only fallback */
+  }
+  // Our OWN sent record — written the instant we send, with no amoCRM sync lag.
+  // Without this, a message the broker just approved doesn't come back when they
+  // reopen the lead (content is frozen, the poll hasn't run yet), so the bot
+  // looked like it "forgot" what it sent and the broker couldn't copy it. Same
+  // normalised-text dedupe so it collapses once the poll syncs the same message.
+  try {
+    const sent = await db
+      .select({ text: sentMessagesTable.messageText, at: sentMessagesTable.createdAt })
+      .from(sentMessagesTable)
+      .where(eq(sentMessagesTable.leadId, leadId));
+    const seen = new Set(merged.map((m) => norm(m.text)));
+    for (const s of sent) {
+      const key = norm(s.text ?? "");
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      merged.push({
+        at: s.at ?? new Date(0),
+        from: "us",
+        senderName: "Us",
+        text: s.text ?? "",
+        channel: "whatsapp",
+      });
+    }
+  } catch {
+    /* non-fatal — sent-record enrichment is best-effort */
   }
   merged.sort((a, b) => a.at.getTime() - b.at.getTime());
   return merged;
