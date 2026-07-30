@@ -151,7 +151,6 @@ function summaryLine(p: SupabaseProperty): string {
     priceStr ?? "",
     p.purpose ? `(${p.purpose})` : "",
     p.views ? `${p.views} views` : "",
-    styleHint(p),
     `${SITE_BASE}/${p.id}`,
   ].filter(Boolean);
   return parts.join(" | ");
@@ -585,7 +584,15 @@ export async function matchProperties(opts: {
     const brokerTop = opts.brokerId
       ? await getTopPicksForBroker(opts.brokerId, candidates.map((p) => p.id))
       : [];
-    const catalogBlock = candidates.slice(0, 60).map(summaryLine).join("\n");
+    // Style goes to the MODEL only. Appending it inside summaryLine put it into
+    // the attachment label the broker and the client see ("style: Private Pool, …").
+    const catalogBlock = candidates
+      .slice(0, 60)
+      .map((p) => {
+        const style = styleHint(p);
+        return style ? `${summaryLine(p)} | ${style}` : summaryLine(p);
+      })
+      .join("\n");
     // Deliberately weak wording: this hint kept resurfacing the same two
     // listings regardless of what the lead asked for.
     const brokerBlock = brokerTop.length > 0 ? `\n\nFYI, this broker has used these before: ${brokerTop.join(", ")}. Only pick one if it fits the lead's CURRENT criteria as well as any other candidate — never as a tie-breaker against a better fit.` : "";
