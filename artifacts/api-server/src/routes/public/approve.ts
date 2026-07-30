@@ -87,8 +87,19 @@ async function autoCreateCrmTask(
     // adaptive brokers — the follow-up date must reflect the lead's temperature /
     // stage / freshness, not a flat "tomorrow". A hot lead → soon; a cold, old
     // lead → stretched to a week/two/month. Only Rental keeps its own fixed flow.
+    // Reach / qualification follow-up stages (1st / 2nd / final follow up) keep
+    // their OWN fixed cadence baked into the stage name (next day / +3d / +5d) —
+    // the owner sets those timings deliberately. Adaptive cadence is for LIVE and
+    // the active-funnel PUSH stages only. Applying it to the reach stages set a
+    // fresh lead's Final Follow Up to +3d (freshness cap) instead of the fixed +5d.
+    const stageLower = (pipelineRow?.leadStage ?? "").toLowerCase();
+    const isReachStage =
+      stageLower.includes("1st follow up") ||
+      stageLower.includes("2nd follow up") ||
+      stageLower.includes("final follow up");
     const useAdaptiveCadence =
       !isRentalPipeline &&
+      !isReachStage &&
       isAdaptiveBroker(pipelineRow?.responsibleUser);
 
     if (useAdaptiveCadence) {
@@ -191,6 +202,18 @@ async function autoCreateCrmTask(
       webhookStatus: amoTaskOk ? 200 : 0,
       webhookResponse: amoTaskOk ? "created via API" : "failed",
     });
+
+    // Keep the bot's re-surface date in step with the ADAPTIVE task. A LIVE reply
+    // sets leads_sync.nextFollowupAt to a flat +24h upstream (so an answered lead is
+    // never forgotten); when this send used the adaptive cadence, align that date to
+    // the same taskDate so the bot doesn't pull a hot lead back into PUSH tomorrow
+    // while its CRM task sits days out. Runs after the upstream write, so it wins.
+    // Reach/qualification + non-adaptive keep their upstream date untouched.
+    if (useAdaptiveCadence) {
+      try {
+        await db.update(leadsSyncTable).set({ nextFollowupAt: taskDate }).where(eq(leadsSyncTable.leadId, leadId));
+      } catch { /* non-fatal */ }
+    }
 
     log.info({ leadId, kind, amoTaskOk, responsibleUserId }, "auto-task created after approve");
   } catch (err) {
