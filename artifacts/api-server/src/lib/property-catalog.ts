@@ -541,6 +541,11 @@ export async function matchProperties(opts: {
     );
   }
 
+  // Best first — priced, then most-viewed — and never the same villa name twice.
+  // This line was lost in an earlier edit to the block above, which is how two
+  // identically named Canggu villas at 33 and 45 jt went out as a "choice".
+  candidates = dedupeByTitle(budgetCeiling ? candidates : [...candidates].sort(rankForShortlist));
+
   if (criteria.areas.length > 0 || criteria.bedrooms !== null) {
     logger.info(
       { areas: criteria.areas, bedrooms: criteria.bedrooms, poolSize: pool.length, candidates: candidates.length },
