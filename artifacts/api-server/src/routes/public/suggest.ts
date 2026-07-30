@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON, type ChatMessage } from "../../lib/ai-client";
-import { db, leadsSyncTable, brokerCorrectionsTable, leadMessagesTable } from "@workspace/db";
+import { db, leadsSyncTable, brokerCorrectionsTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
 import { parseDialogContent, formatDialogForAI } from "../../lib/dialog-parser";
 import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing";
 import { getQualificationSteps } from "../../lib/settings";
@@ -542,7 +542,53 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
       ""
     ).trim();
 
-    if (revision && body.attachmentsCurated) {
+    // The client's flag can't be trusted to arrive: an iOS PWA left open runs
+    // yesterday's JS for days, and old extension builds never send it. So the
+    // server also detects curation itself — if the links in the payload differ
+    // from the ones stored on this lead's own pending draft, a human changed
+    // them, whatever the client version says. That difference is the flag.
+    let curatedDetected = body.attachmentsCurated === true;
+    if (!curatedDetected && revision && body.leadId && Array.isArray(body.attachments)) {
+      try {
+        const idOf = (u: string | undefined) =>
+          u?.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1]?.toUpperCase() ?? null;
+        const [pendingRow] = await db
+          .select({ attachments: pendingSuggestionsTable.attachments })
+          .from(pendingSuggestionsTable)
+          .where(
+            and(
+              eq(pendingSuggestionsTable.leadId, body.leadId),
+              eq(pendingSuggestionsTable.status, "pending"),
+            ),
+          )
+          .limit(1);
+        const stored = new Set(
+          ((pendingRow?.attachments as Array<{ type?: string; url?: string }> | null) ?? [])
+            .filter((a) => a?.type === "link")
+            .map((a) => idOf(a.url))
+            .filter(Boolean) as string[],
+        );
+        const sent = new Set(
+          body.attachments
+            .filter((a) => a?.type === "link" || (!a?.type && a?.url))
+            .map((a) => idOf(a.url))
+            .filter(Boolean) as string[],
+        );
+        const differs =
+          stored.size !== sent.size || [...sent].some((id) => !stored.has(id));
+        if (differs && (stored.size > 0 || sent.size > 0)) {
+          curatedDetected = true;
+          req.log.info(
+            { leadId: body.leadId, stored: [...stored], sent: [...sent] },
+            "suggest: curation detected server-side — payload links differ from the stored draft",
+          );
+        }
+      } catch (err) {
+        req.log.warn({ err }, "suggest: curation self-detection failed (relying on the client flag)");
+      }
+    }
+
+    if (revision && curatedDetected) {
       // Hands off the listings — but the words still have to match them, so the
       // message names the villas the broker chose rather than the ones we picked.
       // A hand-pasted link carries only the property ID as its label, so look the
