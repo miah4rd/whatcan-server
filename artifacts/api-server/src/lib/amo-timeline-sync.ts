@@ -19,6 +19,7 @@ import { getLastMessengerFieldId, updateLastMessengerField } from "./amo-messeng
 // Coalesces this detection with the real-time webhook's — both can fire for
 // the same burst of WhatsApp messages, so both route through the same debounce.
 import { scheduleLiveReply } from "./live-reply-debounce.js";
+import { shouldSuppressPush } from "./stage-routing";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
 const AMO_BASE = `https://${AMO_SUBDOMAIN}.amocrm.ru`;
@@ -318,7 +319,65 @@ async function storeMessages(messages: RawMessage[]): Promise<number> {
       // Duplicate — non-fatal
     }
   }
+  await startFollowupClockForOutgoing(messages);
   return inserted;
+}
+
+/**
+ * Second, independent guarantee that answering a lead starts the follow-up clock.
+ *
+ * The primary detector is syncOutgoingEvents (amo-sync), but it polls amoCRM's
+ * event feed every 5 minutes with a 30-minute lookback — a restart or a longer
+ * outage silently drops whatever was sent in that window, and then nothing ever
+ * chases the lead again. This poll reads the timeline every 45s and already sees
+ * our outgoing messages, so it closes the clock here too. Both compute the same
+ * value from the same message time, so whichever runs first wins and the other
+ * is a no-op.
+ */
+async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<void> {
+  // Newest message per lead — only act when OURS is the newest one.
+  const newestByLead = new Map<string, RawMessage>();
+  for (const m of messages) {
+    const cur = newestByLead.get(m.leadId);
+    if (!cur || m.sentAt.getTime() > cur.sentAt.getTime()) newestByLead.set(m.leadId, m);
+  }
+
+  for (const [leadId, newest] of newestByLead) {
+    if (newest.senderType === "lead") continue;
+    try {
+      const [row] = await db
+        .select({
+          lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
+          lastMessageFrom: leadsSyncTable.lastMessageFrom,
+          leadStage: leadsSyncTable.leadStage,
+          botExcluded: leadsSyncTable.botExcluded,
+        })
+        .from(leadsSyncTable)
+        .where(eq(leadsSyncTable.leadId, leadId))
+        .limit(1);
+      if (!row || row.botExcluded) continue;
+      if (row.lastOurMessageAt && row.lastOurMessageAt.getTime() >= newest.sentAt.getTime()) continue;
+      if (shouldSuppressPush(row.leadStage ?? "")) continue;
+
+      await db
+        .update(leadsSyncTable)
+        .set({
+          lastMessageFrom: "us",
+          lastOurMessageAt: newest.sentAt,
+          ...(row.lastMessageFrom === "lead" ? { followupLevel: 0 } : {}),
+          nextFollowupAt: new Date(newest.sentAt.getTime() + 24 * 60 * 60 * 1000),
+          updatedAt: new Date(),
+        })
+        .where(eq(leadsSyncTable.leadId, leadId));
+
+      logger.info(
+        { leadId, sentAt: newest.sentAt, by: newest.senderType },
+        "timeline: our outgoing message seen — follow-up clock started (backup path)",
+      );
+    } catch (err) {
+      logger.warn({ err, leadId }, "timeline: could not start the follow-up clock");
+    }
+  }
 }
 
 // ── Main sync function ─────────────────────────────────────────────────────────
