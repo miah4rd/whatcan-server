@@ -658,6 +658,18 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
           chosen.add(p.id);
         }
       }
+      // Affordable stock can run out before there is a choice to offer — then the
+      // closest above budget completes it rather than the client getting a single
+      // link. Enforcing the ceiling first had cut a shortlist of two back to one.
+      if (keep.length < MIN_SHORTLIST) {
+        for (const p of candidates) {
+          if (keep.length >= MIN_SHORTLIST) break;
+          if (!chosen.has(p.id)) {
+            keep.push(p);
+            chosen.add(p.id);
+          }
+        }
+      }
       const changed =
         keep.length !== picked.length || keep.some((p, i) => p.id !== picked[i]?.id);
       if (keep.length > 0 && changed) {
