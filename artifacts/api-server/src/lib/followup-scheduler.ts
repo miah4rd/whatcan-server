@@ -1163,26 +1163,39 @@ export async function processUnansweredLive(): Promise<void> {
 
       if (!text) continue;
 
-      // Remove any stale pending push for this lead — live takes priority
-      await db
-        .delete(pendingSuggestionsTable)
+      // Refresh the lead's pending suggestion IN PLACE (keep the same id) rather
+      // than delete + insert. A broker who had the card open was hitting "Webhook
+      // 404" on approve because this pass churned the id out from under them every
+      // scheduler run. Update-in-place is the project rule (see CLAUDE.md); insert
+      // only when there's genuinely nothing pending yet.
+      const [existingPending] = await db
+        .select({ id: pendingSuggestionsTable.id })
+        .from(pendingSuggestionsTable)
         .where(
           and(
             eq(pendingSuggestionsTable.leadId, lead.leadId),
             eq(pendingSuggestionsTable.status, "pending"),
             isNull(pendingSuggestionsTable.requestedAt),
           ),
-        );
+        )
+        .limit(1);
 
-      await db.insert(pendingSuggestionsTable).values({
-        leadId: lead.leadId,
-        responsibleUser: lead.responsibleUser,
-        kind: "live",
-        followupLevel: null,
-        suggestionText: text,
-        status: "pending",
-        attachments,
-      });
+      if (existingPending) {
+        await db
+          .update(pendingSuggestionsTable)
+          .set({ kind: "live", followupLevel: null, suggestionText: text, attachments })
+          .where(eq(pendingSuggestionsTable.id, existingPending.id));
+      } else {
+        await db.insert(pendingSuggestionsTable).values({
+          leadId: lead.leadId,
+          responsibleUser: lead.responsibleUser,
+          kind: "live",
+          followupLevel: null,
+          suggestionText: text,
+          status: "pending",
+          attachments,
+        });
+      }
       notifyBrokerForLead(lead.responsibleUser, lead.leadId, "replied", lastLeadMessage, {
         content: lead.content,
         leadStage: lead.leadStage,
