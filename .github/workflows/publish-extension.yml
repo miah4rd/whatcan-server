@@ -1,0 +1,53 @@
+name: Publish Chrome Extension
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'copilot-extension/**'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build extension zip
+        run: |
+          cd copilot-extension
+          zip -r ../extension.zip . -x "CHANGELOG.md"
+
+      - name: Upload & publish to Chrome Web Store
+        env:
+          EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+          CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+        run: |
+          # Get access token
+          ACCESS_TOKEN=$(curl -s -X POST https://oauth2.googleapis.com/token \
+            -d "client_id=$CLIENT_ID" \
+            -d "client_secret=$CLIENT_SECRET" \
+            -d "refresh_token=$REFRESH_TOKEN" \
+            -d "grant_type=refresh_token" \
+            -d "scope=https://www.googleapis.com/auth/chromewebstore" \
+            | jq -r .access_token)
+
+          # Upload
+          UPLOAD_RESPONSE=$(curl -s -X PUT \
+            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/$EXTENSION_ID" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "x-goog-api-version: 2" \
+            -T extension.zip)
+
+          echo "Upload: $UPLOAD_RESPONSE"
+
+          # Publish (immediate for private extensions)
+          PUBLISH_RESPONSE=$(curl -s -X POST \
+            "https://www.googleapis.com/chromewebstore/v1.1/items/$EXTENSION_ID/publish" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "x-goog-api-version: 2" \
+            -H "Content-Length: 0")
+
+          echo "Publish: $PUBLISH_RESPONSE"
