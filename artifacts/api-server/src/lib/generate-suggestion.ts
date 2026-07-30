@@ -203,7 +203,7 @@ export function buildLeadNameRule(
  * the normal case costs nothing.
  */
 const ASKS_OR_PROMISES_TO_SEND =
-  /(want me to|shall i|should i|do you want me to)[^?]*\?|send (them|it|these|those) over|i(?:'ll| will| can| could|'d)\s+(send|pull|line up|put together|share|forward|dig out|get you)|отправ(лю|им|ить)|пришл(ю|ем|ать)|скину|подберу|могу подобрать/i;
+  /(want me to|shall i|should i|do you want me to)[^?]*\?|(send|get) (them|it|these|those) over|(i(?:'ll| will| can| could|'d)|let me)\s+(send|pull|line up|put together|share|forward|dig out|get|find|shortlist)|(get|send|have) (these|them|those|a few|a couple)[^.!?]{0,30}(to you|over|your way)|come back to you|отправ(лю|им|ить)|пришл(ю|ем|ать)|скину|подберу|подготовлю|могу подобрать/i;
 /** "I have one villa that fits" — said while two or three links are attached. */
 const CLAIMS_ONLY_ONE =
   /\b(one|a single|just one|1)\s+(villa|property|option|place|match|listing)\b|\b(a|one) (solid|good|strong)? ?option\b|\bодн[ау] (виллу|опци|вариант)/i;
