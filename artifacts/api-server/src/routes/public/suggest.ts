@@ -565,6 +565,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           curated,
           true,
           extractBudgetIdr([...leadWords.reverse(), transcript]),
+          outputLang === "auto" ? null : outputLang,
         );
       }
       req.log.info(
@@ -601,6 +602,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           newAttachments,
           true,
           extractBudgetIdr([...leadWords.reverse(), transcript]),
+          outputLang === "auto" ? null : outputLang,
         );
         req.log.info(
           { leadId: body.leadId, was: currentIds.length, now: newAttachments.length, revision: revision.slice(0, 80) },

@@ -223,6 +223,10 @@ export async function reconcileTextWithAttachments(
   force = false,
   /** The client's stated monthly budget in rupiah, when known. */
   budgetIdr?: number | null,
+  /** The language the message must be in. "Same language" as an instruction was
+   * too weak — this step silently returned a Russian message for an
+   * English-speaking client, so the target is now stated outright. */
+  language?: string | null,
 ): Promise<string> {
   if (attachments.length === 0) return text;
   const contradicts =
@@ -246,7 +250,8 @@ Rewrite the message so it matches that reality:
 - Delete any question asking permission to send them, and any promise to send something later.
 - The prices above are the real ones. Judge each against the client's budget on its own merits: call a villa over budget only when its own price exceeds that figure, and never claim one fits a budget it exceeds.
 - Say the budget point ONCE, in its own sentence — "all three sit above the 30 million you mentioned" — never repeated after every villa. That reads like a machine.
-- Change NOTHING else: same language, same voice, same length, same closing question if it isn't about sending links.
+- Change NOTHING else: same voice, same length, same closing question if it isn't about sending links.
+- WRITE IN ${language ? language.toUpperCase() : "THE SAME LANGUAGE AS THE MESSAGE BELOW"}. This is absolute. The broker's instructions may be in another language; that never changes the language the client is written to.
 
 Your entire output IS the WhatsApp message to the CLIENT. Never address the broker, never ask for more details, never explain what you are missing — if a listing's details look incomplete, write around it and keep the message natural. A question back to the broker would be sent to the client as-is.
 
