@@ -983,9 +983,39 @@ export async function processUnansweredLive(): Promise<void> {
       profileSummary: leadsSyncTable.profileSummary,
     })
     .from(leadsSyncTable)
-    .where(eq(leadsSyncTable.lastMessageFrom, "lead"));
+    // The flag alone is not proof the lead is unanswered: a reply sent manually
+    // from WhatsApp lands in last_our_message_at while last_message_from stays
+    // "lead" forever. This pass then treated an answered lead as unanswered on
+    // every cycle — regenerating a LIVE draft and deleting whatever was there,
+    // which is what kept wiping the draft the broker had just asked for.
+    .where(
+      and(
+        eq(leadsSyncTable.lastMessageFrom, "lead"),
+        or(
+          isNull(leadsSyncTable.lastOurMessageAt),
+          isNull(leadsSyncTable.lastMessageAt),
+          sql`${leadsSyncTable.lastOurMessageAt} < ${leadsSyncTable.lastMessageAt}`,
+        ),
+      ),
+    );
 
   if (unanswered.length === 0) return;
+
+  // A draft the broker asked for by hand is theirs — this pass must not delete it
+  // or write over it, whatever it thinks about who spoke last.
+  const requestedByBroker = new Set(
+    (
+      await db
+        .select({ leadId: pendingSuggestionsTable.leadId })
+        .from(pendingSuggestionsTable)
+        .where(
+          and(
+            eq(pendingSuggestionsTable.status, "pending"),
+            isNotNull(pendingSuggestionsTable.requestedAt),
+          ),
+        )
+    ).map((r) => r.leadId),
+  );
 
   // Fetch existing pending LIVE suggestions for filtering in Pass 2
   const existingLive = await db
@@ -1075,6 +1105,8 @@ export async function processUnansweredLive(): Promise<void> {
   // PASS 2: For genuinely unanswered leads that don't yet have a LIVE suggestion, generate one.
   const toProcess = genuinelyUnanswered.filter((l) => {
     if (alreadyHasLive.has(l.leadId)) return false;
+    // The broker asked for a draft on this lead by hand — leave it alone.
+    if (requestedByBroker.has(l.leadId)) return false;
     if (l.botExcluded) return false;
     const stage = (l.leadStage ?? "").toLowerCase();
     if (shouldSuppressPush(stage)) return false;
@@ -1138,6 +1170,7 @@ export async function processUnansweredLive(): Promise<void> {
           and(
             eq(pendingSuggestionsTable.leadId, lead.leadId),
             eq(pendingSuggestionsTable.status, "pending"),
+            isNull(pendingSuggestionsTable.requestedAt),
           ),
         );
 
