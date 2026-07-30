@@ -203,6 +203,8 @@ export async function reconcileTextWithAttachments(
    * re-checked whether or not it trips a pattern — it claimed three villas
    * "all sit around your 30 million budget" after they had been swapped. */
   force = false,
+  /** The client's stated monthly budget in rupiah, when known. */
+  budgetIdr?: number | null,
 ): Promise<string> {
   if (attachments.length === 0) return text;
   const contradicts =
@@ -210,13 +212,16 @@ export async function reconcileTextWithAttachments(
   if (!contradicts) return text;
 
   const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");
+  const budgetLine = budgetIdr
+    ? `\n\nThe client's stated budget is ${Math.round(budgetIdr / 1_000_000)} million rupiah per month.`
+    : "";
   try {
     const fixed = await chatCompletion({
       model: "claude-sonnet-5",
       system: `You correct one specific inconsistency in a WhatsApp message a broker is about to send.
 
 These ${attachments.length} property links are attached to that exact message and will arrive with it:
-${list}
+${list}${budgetLine}
 
 Rewrite the message so it matches that reality:
 - Present the listings as being right here. Name each one as it is written above and say which area it is in — the names and areas above are the truth, never a place the client asked for but that isn't on the list. "a villa in Canggu, another villa in Canggu" is not naming them.

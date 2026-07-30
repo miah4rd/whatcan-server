@@ -9,6 +9,7 @@ import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
 import { pickPropertyAttachments, reconcileTextWithAttachments } from "../../lib/generate-suggestion";
+import { extractBudgetIdr } from "../../lib/property-catalog";
 
 const router = Router();
 
@@ -290,7 +291,7 @@ ${matchedStep.message.trim()}`;
   const stageBlock = getStagePromptBlock(stageGroup, leadStage);
 
   const system = isRental
-    ? buildRentalSystemPrompt({ leadStage, kb: "", correctionsBlock }) + brokerIdentityOverride
+    ? buildRentalSystemPrompt({ langRule, leadStage, kb: "", correctionsBlock }) + brokerIdentityOverride
     : `You are an AI sales copilot embedded in a CRM. You help brokers write the next follow-up WhatsApp message to a real estate lead.
 
 ${langRule}
@@ -558,7 +559,15 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           brokerInstruction: revision,
           currentAttachmentIds: currentIds,
         });
-        finalText = await reconcileTextWithAttachments(text, newAttachments, true);
+        // The shortlist can legitimately sit above what they asked to pay (their
+        // own bracket may be sold out) — the message has to say so, not gloss it.
+        const leadWords = (body.messages ?? []).filter((m) => m.from === "lead").map((m) => m.text);
+        finalText = await reconcileTextWithAttachments(
+          text,
+          newAttachments,
+          true,
+          extractBudgetIdr([...leadWords.reverse(), transcript]),
+        );
         req.log.info(
           { leadId: body.leadId, was: currentIds.length, now: newAttachments.length, revision: revision.slice(0, 80) },
           "suggest: revision changed the property links too",
