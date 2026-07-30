@@ -41,11 +41,19 @@ type Body = {
 /**
  * Does the broker's revision concern WHICH listings go out, or only the wording?
  * "Make it shorter" must leave the links alone; "these are too expensive, show
- * something around 40jt" must re-pick them. Checked in code so a pure style
- * edit costs nothing and never churns a good shortlist.
+ * something around 40jt" must re-pick them. Checked in code so a pure style edit
+ * costs nothing and never churns a good shortlist.
+ *
+ * Two groups, because they fail differently. The first names something about the
+ * listings themselves. The second is a plain "redo this" — which reads as a
+ * fresh take on the whole message, links included; without it "переделай
+ * сообщение" quietly changed only the words, which is the exact complaint that
+ * started this.
  */
 const REVISION_TOUCHES_LISTINGS =
   /link|ссылк|listing|листинг|option|опци|вариант|villa|вилл|propert|объект|price|цен|budget|бюджет|expensive|дорог|cheap|дешев|area|район|bedroom|спальн|\bbr\b|another|other|друг|replace|замен|swap|помен|\d\s*(jt|juta|млн|million)/i;
+const REVISION_IS_A_FULL_REDO =
+  /переделай|переделать|перепиш|заново|по-друг|по друг|иначе|redo|rewrite|do it again|start over|from scratch|another version/i;
 
 const OBJECTION_KEYWORDS = [
   "дорог", "скидк", "подума", "конкурент", "юрист", "договор", "налог",
@@ -528,7 +536,11 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
       ""
     ).trim();
 
-    if (revision && body.leadId && REVISION_TOUCHES_LISTINGS.test(revision)) {
+    if (
+      revision &&
+      body.leadId &&
+      (REVISION_TOUCHES_LISTINGS.test(revision) || REVISION_IS_A_FULL_REDO.test(revision))
+    ) {
       try {
         const currentIds = (body.attachments ?? [])
           .map((a) => a.url?.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1])
