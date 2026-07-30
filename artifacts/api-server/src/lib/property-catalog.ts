@@ -380,6 +380,19 @@ export function extractBudgetIdr(messages: string[]): number | null {
   return null;
 }
 
+/**
+ * The broker asking us to stop restricting the search.
+ *
+ * A broker instruction could previously only ADD a criterion, never lift one:
+ * the area filter took "Uluwatu" from the lead's own messages and narrowed the
+ * candidates before the model saw anything, so "there is nothing in her budget
+ * there, look in other areas" changed nothing — the model was still choosing
+ * from Uluwatu alone. Being ignored on a direct instruction is worse than a bad
+ * shortlist, so this is read deterministically and releases the filter.
+ */
+const BROKER_RELEASES_AREA =
+  /(other|another|different|wider|any)\s+(area|areas|location|locations|zone)|elsewhere|anywhere else|(drop|forget|ignore|beyond|outside)[^.]{0,20}(area|location)|не фокусируйся|в других районах|другие районы|другой район|другом районе|не важен район|шире по район|расширь.{0,15}район|посмотри.{0,20}других/i;
+
 /** Has the lead said anything about money at all? */
 function mentionsBudget(messages: string[]): boolean {
   return messages.some((m) =>
@@ -529,6 +542,16 @@ export async function matchProperties(opts: {
   // statement of what should be attached.
   const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
   const criteria = extractLeadCriteria(criteriaSource, pool);
+  // An explicit "look outside that area" from the broker outranks the area the
+  // lead named — and unlike a prompt hint, this actually widens the candidates.
+  const releaseArea = !!opts.brokerInstruction && BROKER_RELEASES_AREA.test(opts.brokerInstruction);
+  if (releaseArea && criteria.areas.length > 0) {
+    logger.info(
+      { droppedAreas: criteria.areas, instruction: opts.brokerInstruction!.slice(0, 80) },
+      "matchProperties: broker asked to look beyond that area — area filter released",
+    );
+    criteria.areas = [];
+  }
   let candidates = pool;
   if (criteria.areas.length > 0) {
     const byArea = candidates.filter((p) => areaMatches(p.area, criteria.areas));
@@ -640,6 +663,10 @@ export async function matchProperties(opts: {
               ? "Only a few fit it: take those first, then the closest above so there is still a choice."
               : "Nothing fits it, so pick the CHEAPEST available — the reply says openly that they are above the budget."
         }`
+      : "";
+
+    const areaReleaseNote = releaseArea
+      ? `\n\nThe broker has told you to look BEYOND the area the lead named — the whole island is on the table now, so choose on price and fit and name the area each villa is actually in.`
       : "";
 
     const brokerRevision = opts.brokerInstruction
