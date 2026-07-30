@@ -32,6 +32,11 @@ export type SupabaseProperty = {
   views: number | null;
   purpose: string | null;
   listing_type: ListingType | null;
+  // Style and character. A lead saying "modern / luxury" had nothing to match
+  // against while these went unread: the matcher only ever saw area, bedrooms
+  // and price, so it judged the request far more shallowly than it needed to.
+  features: string[] | null;
+  description: string | null;
 };
 
 export type PropertyMatch = {
@@ -62,7 +67,7 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
 
   const url =
     `${SUPABASE_URL}/rest/v1/properties` +
-    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type` +
+    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description` +
     `&is_draft=eq.false` +
     `&status=neq.sold` +
     `&order=views.desc`;
@@ -98,6 +103,18 @@ function formatPrice(p: SupabaseProperty): string | null {
   if (price >= 1_000_000) return `$${(price / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
   if (price >= 1_000) return `$${Math.round(price / 1_000)}K`;
   return `$${price}`;
+}
+
+/**
+ * A short, style-bearing summary so the matcher can honour "modern", "luxury",
+ * "minimalist", "jungle" and the like. Features first (they are already short
+ * labels like "Contemporary Tropical Design"), then a slice of the description.
+ */
+function styleHint(p: SupabaseProperty): string {
+  const feats = (p.features ?? []).filter((f) => typeof f === "string").slice(0, 5).join(", ");
+  const descr = (p.description ?? "").replace(/\s+/g, " ").trim().slice(0, 130);
+  const parts = [feats, descr].filter(Boolean);
+  return parts.length ? `style: ${parts.join(" — ")}` : "";
 }
 
 function summaryLine(p: SupabaseProperty): string {
@@ -507,11 +524,21 @@ export async function matchProperties(opts: {
     if (exact.length >= MIN_SHORTLIST) {
       candidates = exact;
     } else {
-      const near = candidates.filter(
-        (p) => p.bedrooms !== null && Math.abs(p.bedrooms - criteria.bedrooms!) <= 1,
+      // Widen UPWARDS first. A client who asked for 3 bedrooms will look at a 4,
+      // but showing them a 2 reads as not having listened — and it happened:
+      // Josua asked for 2-4BR, ideally 3-4, and got a 2BR in the shortlist.
+      const bigger = candidates.filter(
+        (p) => p.bedrooms !== null && p.bedrooms >= criteria.bedrooms! && p.bedrooms <= criteria.bedrooms! + 1,
       );
-      if (near.length >= MIN_SHORTLIST) candidates = near;
-      else if (exact.length > 0) candidates = exact;
+      if (bigger.length >= MIN_SHORTLIST) {
+        candidates = bigger;
+      } else {
+        const near = candidates.filter(
+          (p) => p.bedrooms !== null && Math.abs(p.bedrooms - criteria.bedrooms!) <= 1,
+        );
+        if (near.length >= MIN_SHORTLIST) candidates = near;
+        else if (exact.length > 0) candidates = exact;
+      }
     }
   }
   // Priced stock first — see hasPrice. Dropped only while a real choice remains.
@@ -567,7 +594,15 @@ export async function matchProperties(opts: {
     const brokerTop = opts.brokerId
       ? await getTopPicksForBroker(opts.brokerId, candidates.map((p) => p.id))
       : [];
-    const catalogBlock = candidates.slice(0, 60).map(summaryLine).join("\n");
+    // Style goes to the MODEL only. Appending it inside summaryLine put it into
+    // the attachment label the broker and the client see ("style: Private Pool, …").
+    const catalogBlock = candidates
+      .slice(0, 60)
+      .map((p) => {
+        const style = styleHint(p);
+        return style ? `${summaryLine(p)} | ${style}` : summaryLine(p);
+      })
+      .join("\n");
     // Deliberately weak wording: this hint kept resurfacing the same two
     // listings regardless of what the lead asked for.
     const brokerBlock = brokerTop.length > 0 ? `\n\nFYI, this broker has used these before: ${brokerTop.join(", ")}. Only pick one if it fits the lead's CURRENT criteria as well as any other candidate — never as a tie-breaker against a better fit.` : "";
@@ -596,6 +631,8 @@ Return an EMPTY list when sending listings would be the wrong move:
 - The lead has just expressed interest in a SPECIFIC listing they were already shown ("I like this one", "this looks good", quoting one link approvingly). The conversation should now move toward a viewing or the practical next step on THAT property — pushing a fresh batch talks over them.
 - The lead is arranging a viewing, negotiating terms, or discussing a property they've already chosen.
 - The conversation gives truly nothing to go on (e.g. only a greeting).
+
+STYLE COUNTS AS A CRITERION. Each catalog line carries a "style:" part — the villa's features and a slice of its description. When the lead describes how they want it to look or feel (modern, luxury, minimalist, traditional, jungle, bright, quiet, family), match that against those words as seriously as you match area and bedrooms. Two villas of the right size in the right area are not interchangeable if only one is the style they asked for.
 
 CRITERIA CAN CHANGE MID-CONVERSATION. When the lead revises what they want ("actually", "I wanna change my request", a new area, a different bedroom count), their NEWEST statement is the only one that counts — match against that and treat the earlier criteria as void, however much of the conversation was spent on them.
 

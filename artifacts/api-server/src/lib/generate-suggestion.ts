@@ -135,9 +135,14 @@ export async function pickPropertyAttachments(opts: {
       brokerInstruction: opts.brokerInstruction ?? null,
       currentAttachmentIds: opts.currentAttachmentIds ?? [],
       // newest first — the criteria filter takes the most recent area/bedroom pin
+      // The lead's OWN messages, newest first. The window used to be 5, which is
+      // where a long conversation lost its own requirements: Josua agreed on
+      // 3-4 bedrooms early, then talked style and budget, and by then the size
+      // had scrolled out of view — so no bedroom filter applied at all and a 2BR
+      // reached his shortlist. Newest-first still means a revision wins.
       recentLeadMessages: [
         opts.lastLeadText,
-        ...opts.dialogMessages.filter((m) => m.from === "lead").slice(-5).reverse().map((m) => m.text),
+        ...opts.dialogMessages.filter((m) => m.from === "lead").slice(-25).reverse().map((m) => m.text),
       ].filter(Boolean),
     });
     return toAttachments(picks);
@@ -265,7 +270,7 @@ export async function buildPromptAdditions(opts: {
 }): Promise<string> {
   const recentLeadMessages = [
     opts.lastLeadText ?? "",
-    ...opts.dialogMessages.filter((m) => m.from === "lead").slice(-5).reverse().map((m) => m.text),
+    ...opts.dialogMessages.filter((m) => m.from === "lead").slice(-25).reverse().map((m) => m.text),
   ].filter(Boolean);
 
   // What we can actually offer for what they asked — computed from the cached
