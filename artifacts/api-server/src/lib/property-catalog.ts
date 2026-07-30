@@ -121,7 +121,17 @@ function summaryLine(p: SupabaseProperty): string {
   const freePrice = p.price_usd && p.price_usd > 1000 ? `freehold $${Math.round(p.price_usd / 1000)}K` : null;
   const leasePrice = p.leasehold_price_usd && p.leasehold_price_usd > 1000 ? `leasehold $${Math.round(p.leasehold_price_usd / 1000)}K` : null;
   // Rentals are quoted in rupiah — the same number the site and the owner use.
-  const jt = (v: number) => `Rp ${(v / 1_000_000).toFixed(v >= 100_000_000 ? 0 : 1)} jt`;
+  // Spelled out, not as "jt": that is Indonesian "juta" (million) and it goes
+  // straight into the message an international client reads, where it means
+  // nothing. The broker had to ask what it stood for.
+  const jt = (v: number) => {
+    if (v >= 1_000_000_000) {
+      const b = v / 1_000_000_000;
+      return `Rp ${b % 1 === 0 ? b.toFixed(0) : b.toFixed(1)} billion`;
+    }
+    const m = v / 1_000_000;
+    return `Rp ${m % 1 === 0 ? m.toFixed(0) : m.toFixed(1)} million`;
+  };
   const monthlyPrice =
     p.monthly_price_idr && p.monthly_price_idr > 0
       ? `${jt(p.monthly_price_idr)}/mo`
