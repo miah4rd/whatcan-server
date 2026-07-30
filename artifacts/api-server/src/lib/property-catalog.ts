@@ -515,25 +515,25 @@ export async function matchProperties(opts: {
   // headroom, because a villa slightly over budget is still worth showing — one
   // at double is not, and that is what went out before.
   const budgetIdr = opts.listingType === "rent" ? extractBudgetIdr(criteriaSource) : null;
-  if (budgetIdr) {
-    const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetIdr * 1.15);
-    if (within.length >= MIN_SHORTLIST) {
-      logger.info(
-        { budgetIdr, within: within.length, of: candidates.length },
-        "matchProperties: filtered to the lead's budget",
-      );
-      candidates = within;
-    } else {
-      // Nothing fits — lead with the closest, so the reply can say so honestly
-      // instead of pretending the budget was met.
-      candidates = [...candidates].sort((a, b) => priceOf(a) - priceOf(b));
-      logger.info({ budgetIdr }, "matchProperties: nothing inside the budget, offering the closest");
-    }
+  const budgetCeiling = budgetIdr ? Math.round(budgetIdr * 1.15) : null;
+  let withinBudgetCount = 0;
+  if (budgetCeiling) {
+    const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
+    const above = candidates
+      .filter((p) => !(priceOf(p) > 0 && priceOf(p) <= budgetCeiling))
+      .sort((a, b) => priceOf(a) - priceOf(b));
+    withinBudgetCount = within.length;
+    // Affordable first, then the closest above. Requiring TWO within budget
+    // before honouring it at all threw the budget away whenever exactly one
+    // fitted — and the model then freely picked villas at double the number.
+    candidates = [...within.sort(rankForShortlist), ...above];
+    logger.info(
+      { budgetIdr, within: within.length, of: candidates.length },
+      within.length > 0
+        ? "matchProperties: ordered the shortlist by the lead's budget"
+        : "matchProperties: nothing inside the budget, offering the closest",
+    );
   }
-
-  // Best first: priced, then most-viewed. The model sees them in this order and
-  // the top-up follows it, so popularity ranks without needing to be explained.
-  candidates = dedupeByTitle([...candidates].sort(budgetIdr ? (a, b) => priceOf(a) - priceOf(b) : rankForShortlist));
 
   if (criteria.areas.length > 0 || criteria.bedrooms !== null) {
     logger.info(
@@ -552,6 +552,16 @@ export async function matchProperties(opts: {
     // Deliberately weak wording: this hint kept resurfacing the same two
     // listings regardless of what the lead asked for.
     const brokerBlock = brokerTop.length > 0 ? `\n\nFYI, this broker has used these before: ${brokerTop.join(", ")}. Only pick one if it fits the lead's CURRENT criteria as well as any other candidate — never as a tie-breaker against a better fit.` : "";
+
+    const budgetBlock = budgetCeiling
+      ? `\n\nTHEIR BUDGET IS ${Math.round(budgetIdr! / 1_000_000)} MILLION RUPIAH PER MONTH. The catalog below is ordered affordable-first. ${
+          withinBudgetCount >= MIN_SHORTLIST
+            ? "Pick only listings at or under that figure — there are enough of them, so going over it is never necessary."
+            : withinBudgetCount > 0
+              ? "Only a few fit it: take those first, then the closest above so there is still a choice."
+              : "Nothing fits it, so pick the CHEAPEST available — the reply says openly that they are above the budget."
+        }`
+      : "";
 
     const brokerRevision = opts.brokerInstruction
       ? `\n\nTHE BROKER IS REVISING THIS DRAFT AND SAID: "${opts.brokerInstruction.slice(0, 400)}"\nThis outranks everything else. It is feedback on the listings currently attached${
@@ -629,6 +639,31 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
         "matchProperties: topped the shortlist up to the minimum — one link is not a choice",
       );
     }
+    // Enforced, not requested: when enough listings fit the budget, none of the
+    // picks may exceed it. The model was handed an affordable-first catalog and
+    // still chose villas at nearly double the figure the broker named.
+    if (budgetCeiling && withinBudgetCount >= MIN_SHORTLIST) {
+      const overBudget = picked.filter((p) => priceOf(p) > budgetCeiling);
+      if (overBudget.length > 0) {
+        const affordable = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
+        const keep = picked.filter((p) => priceOf(p) <= budgetCeiling);
+        const chosen = new Set(keep.map((p) => p.id));
+        for (const p of affordable) {
+          if (keep.length >= Math.max(MIN_SHORTLIST, picked.length)) break;
+          if (!chosen.has(p.id)) {
+            keep.push(p);
+            chosen.add(p.id);
+          }
+        }
+        logger.info(
+          { dropped: overBudget.map((p) => p.id), ceiling: budgetCeiling },
+          "matchProperties: replaced over-budget picks with affordable ones",
+        );
+        picked.length = 0;
+        picked.push(...keep);
+      }
+    }
+
     const final = budgetKnown ? picked : spreadByPrice(picked.slice(0, limit), candidates);
     return final.slice(0, limit).map(toPick);
   } catch (err) {
