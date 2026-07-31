@@ -574,12 +574,26 @@ export async function matchProperties(opts: {
   const pool = all.filter((p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()));
   if (pool.length === 0) return [];
 
+  // The broker's instruction is read first: whether it moves the search matters
+  // to the anchor decision below, not just to the filters further down.
+  let brokerIntent: BrokerIntent | null = null;
+  if (opts.brokerInstruction) {
+    const vocab = [...new Set([...allAreaNames(), ...pool.map((p) => (p.area ?? "").trim())])].filter(Boolean);
+    brokerIntent = await parseBrokerIntent(opts.brokerInstruction, vocab);
+  }
+  // Only a revision that actually moves the search drops the anchor. Killing it
+  // for ANY broker instruction meant a wording edit ("make it warmer") lost the
+  // villa the lead had come in on — the link vanished from the draft and the bot
+  // could only paste the URL into the text afterwards, never restore it.
+  const revisionMovesSearch =
+    !!brokerIntent && (brokerIntent.releaseArea || brokerIntent.areas.length > 0 || !!brokerIntent.bedrooms);
+
   // 1. Anchor listing — the lead arrived FROM a specific listing (clicked its ad)
   // or named one themselves. Read only from what the LEAD wrote: matching any
   // mention in the whole conversation meant our own previously sent links came
   // straight back as "the answer". Anything already sent is out of `pool`, so a
   // lead quoting a link we sent cannot become an anchor either.
-  const anchorIds = opts.brokerInstruction ? new Set<string>() : new Set(
+  const anchorIds = revisionMovesSearch ? new Set<string>() : new Set(
     (opts.recentLeadMessages ?? [])
       .flatMap((m) => Array.from(m.matchAll(PROPERTY_ID_REGEX)).map((x) => x[1].toUpperCase())),
   );
@@ -621,11 +635,6 @@ export async function matchProperties(opts: {
 
   // The broker's own instruction, parsed rather than pattern-matched, and applied
   // over the criteria taken from the lead. Their words win for this one message.
-  let brokerIntent: BrokerIntent | null = null;
-  if (opts.brokerInstruction) {
-    const vocab = [...new Set([...allAreaNames(), ...pool.map((p) => (p.area ?? "").trim())])].filter(Boolean);
-    brokerIntent = await parseBrokerIntent(opts.brokerInstruction, vocab);
-  }
   const releaseArea = brokerIntent
     ? brokerIntent.releaseArea
     : !!opts.brokerInstruction && BROKER_RELEASES_AREA.test(opts.brokerInstruction);

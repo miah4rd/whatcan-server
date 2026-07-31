@@ -643,15 +643,30 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         // The shortlist can legitimately sit above what they asked to pay (their
         // own bracket may be sold out) — the message has to say so, not gloss it.
         const leadWords = (body.messages ?? []).filter((m) => m.from === "lead").map((m) => m.text);
-        finalText = await reconcileTextWithAttachments(
-          text,
-          newAttachments,
-          true,
-          extractBudgetIdr([...leadWords.reverse(), transcript]),
-          outputLang === "auto" ? null : outputLang,
-        );
+        // A revision must never leave the message with FEWER links than it had.
+        // An empty re-pick used to replace the list wholesale, so an edit on an
+        // ad lead silently dropped the one villa the enquiry was about — and the
+        // bot could then only paste the URL into the text, never put the
+        // attachment back.
+        if (newAttachments.length === 0 && (body.attachments?.length ?? 0) > 0) {
+          req.log.info(
+            { leadId: body.leadId, kept: body.attachments?.length ?? 0 },
+            "suggest: re-pick came back empty — keeping the links the draft already had",
+          );
+          newAttachments = null;
+        }
+
+        if (newAttachments) {
+          finalText = await reconcileTextWithAttachments(
+            text,
+            newAttachments,
+            true,
+            extractBudgetIdr([...leadWords.reverse(), transcript]),
+            outputLang === "auto" ? null : outputLang,
+          );
+        }
         req.log.info(
-          { leadId: body.leadId, was: currentIds.length, now: newAttachments.length, revision: revision.slice(0, 80) },
+          { leadId: body.leadId, was: currentIds.length, now: newAttachments?.length ?? "kept", revision: revision.slice(0, 80) },
           "suggest: revision changed the property links too",
         );
       } catch (err) {
