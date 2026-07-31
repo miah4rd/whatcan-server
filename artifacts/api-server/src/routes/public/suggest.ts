@@ -577,9 +577,12 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             .map((a) => idOf(a.url))
             .filter(Boolean) as string[],
         );
+        // With no stored draft there is nothing to compare against — that is not
+        // evidence the broker curated anything, and treating it as such quietly
+        // froze the links on every revision where the row was missing.
         const differs =
-          stored.size !== sent.size || [...sent].some((id) => !stored.has(id));
-        if (differs && (stored.size > 0 || sent.size > 0)) {
+          stored.size > 0 && (stored.size !== sent.size || [...sent].some((id) => !stored.has(id)));
+        if (differs) {
           curatedDetected = true;
           req.log.info(
             { leadId: body.leadId, stored: [...stored], sent: [...sent] },
