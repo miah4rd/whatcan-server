@@ -141,6 +141,15 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   affordable-first catalog it still picked villas at double the figure; told the
   broker objected to the current links it dropped even the cheapest. The ceiling
   is applied to the final shortlist, and it may not cut it below two.
+- **Rental changes must not leak into Unicorn.** The sales funnel is configured
+  the way the owner wants it — leave its cadence and flow alone. Anything shaped
+  for Rental is gated: the ad-lead and scout seeding is `pipeline='rental'` only,
+  the rupiah formatting keys off `listing_type='rent'`, the budget filter is
+  rentals-only, and the follow-up clock after a reply uses each funnel's OWN
+  cadence via `followupClockAfterReply` (Rental 1 day, Unicorn 1/3/5) rather than
+  a flat 24h. Fixes to genuine bugs (a reply scheduling no follow-up at all, an
+  invented price, a wrong-language message) do apply everywhere — those were
+  never anyone's configuration.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
 

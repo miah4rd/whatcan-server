@@ -9,7 +9,7 @@ import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, clos
 import { stripEmojiForDelivery } from "../../lib/message-delivery.js";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
 import { resolveOutboundSource } from "../../lib/amo-messenger-field";
-import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL } from "../../lib/rental-followup.js";
+import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL, followupClockAfterReply } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
 
 // amoCRM status IDs for the Unicorn Property pipeline (PIPELINE 8347534)
@@ -455,7 +455,11 @@ router.post("/approve", async (req, res) => {
 
     // ── Update leads_sync BEFORE sending message ────────────────────────────
     const [prevSyncRow] = await db
-      .select({ lastMessageFrom: leadsSyncTable.lastMessageFrom, leadStage: leadsSyncTable.leadStage })
+      .select({
+        lastMessageFrom: leadsSyncTable.lastMessageFrom,
+        leadStage: leadsSyncTable.leadStage,
+        pipeline: leadsSyncTable.pipeline,
+      })
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, sug.leadId))
       .limit(1);
@@ -486,15 +490,14 @@ router.post("/approve", async (req, res) => {
       // reminder, and every LIVE-answered lead had the same hole.
       // followupLevel resets to 0 because the lead engaged — the next chase is #1.
       const stageBlocksFollowup = shouldSuppressPush(prevSyncRow?.leadStage ?? "");
+      const liveClock = followupClockAfterReply(approveNow, prevSyncRow?.pipeline ?? null);
       await db
         .update(leadsSyncTable)
         .set({
           lastMessageFrom: "us",
           lastOurMessageAt: approveNow,
           followupLevel: 0,
-          nextFollowupAt: stageBlocksFollowup
-            ? null
-            : new Date(approveNow.getTime() + 24 * 60 * 60 * 1000),
+          nextFollowupAt: stageBlocksFollowup ? null : liveClock,
           updatedAt: approveNow,
         })
         .where(eq(leadsSyncTable.leadId, sug.leadId));

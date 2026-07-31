@@ -20,6 +20,7 @@ import { getLastMessengerFieldId, updateLastMessengerField } from "./amo-messeng
 // the same burst of WhatsApp messages, so both route through the same debounce.
 import { scheduleLiveReply } from "./live-reply-debounce.js";
 import { shouldSuppressPush } from "./stage-routing";
+import { followupClockAfterReply } from "./rental-followup";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
 const AMO_BASE = `https://${AMO_SUBDOMAIN}.amocrm.ru`;
@@ -350,6 +351,7 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
           lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
           lastMessageFrom: leadsSyncTable.lastMessageFrom,
           leadStage: leadsSyncTable.leadStage,
+          pipeline: leadsSyncTable.pipeline,
           botExcluded: leadsSyncTable.botExcluded,
         })
         .from(leadsSyncTable)
@@ -365,7 +367,7 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
           lastMessageFrom: "us",
           lastOurMessageAt: newest.sentAt,
           ...(row.lastMessageFrom === "lead" ? { followupLevel: 0 } : {}),
-          nextFollowupAt: new Date(newest.sentAt.getTime() + 24 * 60 * 60 * 1000),
+          nextFollowupAt: followupClockAfterReply(newest.sentAt, row.pipeline),
           updatedAt: new Date(),
         })
         .where(eq(leadsSyncTable.leadId, leadId));
