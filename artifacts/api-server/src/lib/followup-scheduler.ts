@@ -1,6 +1,6 @@
 import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable, leadMessagesTable } from "@workspace/db";
 import { lt, isNotNull, eq, and, or, isNull, inArray, desc, sql } from "drizzle-orm";
-import { chatCompletion, chatCompletionJSON } from "./ai-client";
+import { chatCompletion, chatCompletionJSON , WRITER_MODEL } from "./ai-client";
 import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming } from "./dialog-parser";
 import { getFollowupSteps, getQualificationSteps } from "./settings";
 import { logger } from "./logger";
@@ -56,7 +56,7 @@ async function classifyObjection(
   ).join("\n");
 
   const completion = await chatCompletion({
-    model: "claude-sonnet-5",
+    model: WRITER_MODEL,
     system: "You are a Bali real estate sales coach. Based on the conversation snippet, identify which hidden objection is most likely blocking the lead. Reply with ONLY the id from the list, nothing else.",
     messages: [
       {
@@ -104,7 +104,7 @@ export async function generateFollowup(opts: {
 
   // Write the follow-up from scratch, fully driven by conversation context.
   const completion = await chatCompletion({
-    model: "claude-sonnet-5",
+    model: WRITER_MODEL,
     system: `You are ${brokerName}, a senior broker at Unicorn Property, Bali real estate. You are writing a WhatsApp follow-up to a lead who has not replied to your last message.
 
 RULES:
@@ -184,7 +184,7 @@ export async function generatePushFollowup(opts: {
     : "";
 
   const completion = await chatCompletion({
-    model: "claude-sonnet-5",
+    model: WRITER_MODEL,
     system: `You are ${brokerName}, a senior Bali real estate broker at Unicorn Property, writing a WhatsApp follow-up to a lead currently at CRM stage "${opts.leadStage}".
 
 LANGUAGE RULE (absolute): Detect the language the lead writes in. Respond 100% in that language. Never mix languages. Default to English if unclear.

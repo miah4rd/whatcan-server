@@ -1,4 +1,4 @@
-import { chatCompletion } from "./ai-client";
+import { chatCompletion , WRITER_MODEL } from "./ai-client";
 import { logger } from "./logger";
 import { parseDialogContent, formatDialogForAI, describeConversationTiming } from "./dialog-parser";
 import { getKnowledgeBase } from "./knowledge-base";
@@ -265,7 +265,7 @@ export async function enforceLanguage(text: string, required: string | null | un
 
   try {
     const fixed = await chatCompletion({
-      model: "claude-sonnet-5",
+      model: WRITER_MODEL,
       system: `Rewrite the WhatsApp message below in ${required}. Keep the meaning, the tone, the line breaks, the names, the numbers and the links EXACTLY as they are — only the language changes. Property names stay as written. Output only the rewritten message, nothing else.`,
       messages: [{ role: "user", content: text }],
       max_tokens: 500,
@@ -318,7 +318,7 @@ export async function reconcileTextWithAttachments(
   const budgetLine = "";
   try {
     const fixed = await chatCompletion({
-      model: "claude-sonnet-5",
+      model: WRITER_MODEL,
       system: `You correct one specific inconsistency in a WhatsApp message a broker is about to send.
 
 These ${attachments.length} property links are attached to that exact message and will arrive with it:
@@ -733,7 +733,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   // link sent long ago still counts as "already shown to this lead".
   const [completion, attachments] = await Promise.all([
     chatCompletion({
-      model: "claude-sonnet-5",
+      model: WRITER_MODEL,
       system: systemPrompt,
       messages: [{ role: "user", content: prompt + promptAdditions }],
       max_tokens: 400,

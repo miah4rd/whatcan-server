@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, contactEventsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
-import { chatCompletion } from "../lib/ai-client";
+import { chatCompletion, WRITER_MODEL } from "../lib/ai-client";
 import { parseDialogContent, nextFollowupDate, formatDialogForAI } from "../lib/dialog-parser";
 import { getKnowledgeBase } from "../lib/knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "../lib/sanitize-suggestion";
@@ -328,7 +328,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   });
 
   const completion = await chatCompletion({
-    model: "claude-sonnet-5",
+    model: WRITER_MODEL,
     system: systemPrompt,
     messages: [{ role: "user", content: prompt + promptAdditions }],
     max_tokens: 400,

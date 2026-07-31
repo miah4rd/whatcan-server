@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
 import { eq, desc, and } from "drizzle-orm";
-import { chatCompletion, chatCompletionJSON, type ChatMessage } from "../../lib/ai-client";
+import { chatCompletion, chatCompletionJSON, WRITER_MODEL, type ChatMessage } from "../../lib/ai-client";
 import { db, leadsSyncTable, brokerCorrectionsTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
 import { parseDialogContent, formatDialogForAI } from "../../lib/dialog-parser";
 import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing";
@@ -90,10 +90,10 @@ function pickModel(hasRevisions: boolean, lastLeadText: string, messages: Msg[],
     reasons.push("objection-keyword");
   }
 
-  // Everything runs on Sonnet 5 now (no more Haiku tier). Kept as a function
-  // so call sites and the reason-collection above stay untouched.
+  // The message a client will actually read is written by the stronger model —
+  // see WRITER_MODEL. The reason-collection above is kept for the log.
   void reasons;
-  return "claude-sonnet-5";
+  return WRITER_MODEL;
 }
 
 router.options("/suggest", (_req, res) => {

@@ -12,6 +12,17 @@ export function getAnthropic(): Anthropic {
   return _client;
 }
 
+/**
+ * One place to change the model, instead of the twenty hardcoded literals this
+ * used to be. Both tiers are Sonnet 5 — the owner's call: Opus was considered
+ * for the client-facing text and deliberately not taken.
+ *
+ * WRITER: text a real client will read. HELPER: the mechanical background work
+ * (classify a stage, distil a correction, parse an instruction).
+ */
+export const WRITER_MODEL = "claude-sonnet-5";
+export const HELPER_MODEL = "claude-sonnet-5";
+
 export type ChatTextBlock = { type: "text"; text: string };
 export type ChatImageBlock = { type: "image"; source: { type: "base64"; media_type: string; data: string } };
 // content is a plain string OR a mix of text/image blocks (multimodal — lets the
