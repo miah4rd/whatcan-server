@@ -607,11 +607,35 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     // future into an offer in the present, which is exactly what it was told
     // not to do.
     if (revision && intent?.sendNoListings) {
-      req.log.info(
-        { leadId: body.leadId, dropped: body.attachments?.length ?? 0, revision: revision.slice(0, 80) },
-        "suggest: broker is asking the client first — sending this one with no listings",
+      // "Send nothing yet" means don't push a SHORTLIST — it does not mean
+      // throwing away the villa the client themselves asked about. An ad lead
+      // arrives on one specific listing; dropping it left them with a question
+      // about a villa that was no longer in the message at all.
+      const leadOwnIds = new Set(
+        (body.messages ?? [])
+          .filter((m) => m.from === "lead")
+          .flatMap((m) =>
+            Array.from(String(m.text).matchAll(/\/property\/([A-Za-z0-9-]+)/gi)).map((x) =>
+              x[1]!.toUpperCase(),
+            ),
+          ),
       );
-      const stillListsThem = (body.attachments ?? []).some((a) => {
+      const keepTheirOwn = (body.attachments ?? []).filter((a) => {
+        const id = a.url?.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1]?.toUpperCase();
+        return !!id && leadOwnIds.has(id);
+      });
+      req.log.info(
+        {
+          leadId: body.leadId,
+          dropped: (body.attachments?.length ?? 0) - keepTheirOwn.length,
+          keptTheirOwn: keepTheirOwn.length,
+          revision: revision.slice(0, 80),
+        },
+        "suggest: broker is asking the client first — no new listings, the villa they came in on stays",
+      );
+      const stillListsThem = (body.attachments ?? [])
+        .filter((a) => !keepTheirOwn.includes(a))
+        .some((a) => {
         const id = a.url?.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1];
         return !!id && text.toUpperCase().includes(id.toUpperCase());
       });
@@ -643,7 +667,11 @@ Rewrite it so it contains NO property names, NO listing links and NO list of vil
         kind: "live",
         recent_messages: recentMessages,
         reassessed_temperature: reassessedTemp ?? null,
-        attachments: [],
+        attachments: keepTheirOwn.map((a) => ({
+          type: "link" as const,
+          url: a.url!,
+          label: a.label ?? a.url!,
+        })),
       });
       return;
     }
