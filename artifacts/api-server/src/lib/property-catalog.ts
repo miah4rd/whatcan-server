@@ -208,6 +208,11 @@ function toPick(p: SupabaseProperty): PropertyPick {
   };
 }
 
+/** Public wrapper — the route needs a pick built the same way the matcher builds them. */
+export function toPickPublic(p: SupabaseProperty): PropertyPick {
+  return toPick(p);
+}
+
 /**
  * Picks 0-limit best-fitting properties for a lead, in priority order:
  * 1. A specific listing already mentioned in the conversation (explicit signal — no AI needed).

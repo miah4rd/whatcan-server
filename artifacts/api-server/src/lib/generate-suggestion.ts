@@ -321,33 +321,49 @@ export async function composeReplyWithListings(opts: {
       system: `${opts.systemPrompt}
 
 ──────────────────────────────────────────
-You are revising a message a broker is about to send, and you decide BOTH things at once: what it says and which property links go with it.
+THE BROKER'S INSTRUCTION IS THE HIGHEST AUTHORITY HERE.
 
-Currently attached:
+You are revising a draft the broker has read and rejected. Everything above —
+tone rules, structure rules, stage rules, CTA rules — is the DEFAULT, for when
+nobody is steering. The broker is steering now. Where their instruction
+conflicts with any rule above, the instruction wins, completely, not partially.
+Half-obeying an instruction is the one unforgivable failure in this task.
+
+You decide BOTH things as one decision: the message text AND which property
+links go with it (listing_ids).
+
+Currently attached to the draft:
 ${current}
-
 ${
-  opts.attachmentsCurated
-    ? "THE BROKER CHOSE THESE LINKS BY HAND. Keep listing_ids exactly as they are — they overrode you on purpose. Only the words change."
-    : `Available properties (pick by ID, or none):
-${opts.candidates.map((c) => c.line).join("\n")}`
-}
+        opts.attachmentsCurated
+          ? "\nThe broker picked this list BY HAND earlier. Keep it exactly — unless their new instruction below says to change it, in which case the new instruction wins."
+          : ""
+      }
 
-Think about what the broker actually means, not which words they used:
-- If they want the client asked something first ("get their budget so I can find suitable options"), the options come LATER — return the links that belong to villas the client themselves asked about, and nothing else. A message that says "tell me your budget and I'll find options" must not arrive with options already in it.
-- If they want different properties, choose different ones.
-- If they are only changing the wording, return exactly the IDs that are attached now.
-- Never attach a property the message does not talk about, and never talk about one that is not attached.
-- NO URLS IN THE MESSAGE BODY. Every attached link is delivered as its own WhatsApp message right after this one, so writing the address inside the text duplicates it. Refer to "the link below".
-- Never write an internal listing code (R-YUD-018, UP-1001) — use the villa's name.
-- Never invent a price or a level of demand. A listing whose label says "price on request" has no published price: say you will confirm the exact rate with the owner.
-${opts.language ? `\nWrite the message in ${opts.language}. The broker may instruct you in another language; that never changes the language the client reads.` : ""}
+Properties you may attach (pick by ID; attaching NONE is a normal answer):
+${opts.candidates.map((c) => c.line).join("\n")}
+
+How to read the instruction — by MEANING, not keywords:
+- Only about wording (shorter, warmer, translate, fix tone)? Return listing_ids EXACTLY as currently attached. Do not swap, drop or add anything.
+- Asking the client for something first, with options to come after they answer ("get their budget so I can find suitable options")? Then options come LATER: keep only links to villas the CLIENT themselves brought up (e.g. the one they came in on from an ad) and drop the rest. If they brought none, return [].
+- Getting feedback on options ALREADY SENT, arranging a viewing, or nudging a quiet lead? Return [] — a fresh batch would talk over the point of the message.
+- Wants different / cheaper / other-area properties? Pick new ones from the list.
+- Names specific listings to add, remove or keep? Do exactly that.
+
+Facts you never break (these are facts, not style, and the broker is not asking you to lie):
+- A listing whose line says "price on request" has no published price. Never state or estimate a number for it — say you will confirm the exact rate with the owner.
+- Never invent demand ("very popular", "going fast").
+- Never write URLs in the message body — every attached link is delivered as its own WhatsApp message. Refer to "the link below".
+- Never write internal codes (R-YUD-018, UP-1001) in the text — use the villa's name.
+- The message must talk about what is attached and nothing else: no describing a villa you did not attach.
+
+Language: write in ${opts.language ?? "the language the CLIENT writes in"} — unless the broker's instruction explicitly asks for another language, in which case obey the broker.
 
 Respond with JSON only: {"message": "<the WhatsApp message>", "listing_ids": ["ID", ...]}`,
       messages: [
         {
           role: "user",
-          content: `Conversation so far:\n${opts.conversation.slice(-3000)}\n\nCurrent draft:\n${opts.currentDraft}\n\nThe broker says:\n"${opts.brokerInstruction}"`,
+          content: `Conversation so far:\n${opts.conversation.slice(-3000)}\n\nCurrent draft:\n${opts.currentDraft}\n\nTHE BROKER'S INSTRUCTION:\n"${opts.brokerInstruction}"`,
         },
       ],
       max_tokens: 900,
@@ -362,7 +378,6 @@ Respond with JSON only: {"message": "<the WhatsApp message>", "listing_ids": ["I
     return null;
   }
 }
-
 export async function reconcileTextWithAttachments(
   text: string,
   attachments: GeneratedSuggestion["attachments"],

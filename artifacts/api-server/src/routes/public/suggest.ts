@@ -9,7 +9,7 @@ import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
 import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings } from "../../lib/generate-suggestion";
-import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, finaliseListingIds } from "../../lib/property-catalog";
+import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, toPickPublic } from "../../lib/property-catalog";
 
 const router = Router();
 
@@ -603,7 +603,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     // re-picked on a wording-only edit, dropped the villa an ad lead came in on,
     // and once described a villa it had not attached. Kept behind a flag so the
     // work survives; enable ONE_PASS_COMPOSE=1 only once those are covered.
-    if (process.env["ONE_PASS_COMPOSE"] === "1" && revision && body.leadId) {
+    if (process.env["ONE_PASS_COMPOSE"] !== "0" && revision && body.leadId) {
       try {
         const leadOwn = (body.messages ?? [])
           .filter((m) => m.from === "lead")
@@ -633,26 +633,35 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         });
 
         if (composed) {
-          const chosen = curatedDetected
-            ? (body.attachments ?? [])
-                .filter((a) => !!a.url)
-                .map((a) => ({
-                  type: "link" as const,
-                  url: a.url!,
-                  label: known.get(
-                    (a.url!.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase(),
-                  )?.label ?? a.label ?? a.url!,
-                }))
-            : finaliseListingIds(
-                composed.listingIds,
-                pool.candidates,
-                pool.budgetCeiling,
-              ).map((p) => ({ type: "link" as const, url: p.url, label: p.label }));
+          // The broker's word is law on this path: the chosen IDs are applied as
+          // chosen. No budget swap, no language override, no dedupe — those
+          // guards exist for the bot's OWN drafts, where nobody is steering.
+          // Resolve each ID against the candidate pool first, then the links
+          // already on the draft (they may sit outside the filtered pool — an
+          // unpriced ad villa, another area), so obeying can never drop one.
+          const byId = new Map(pool.candidates.map((p) => [p.id.toUpperCase(), p]));
+          const extra = await describePropertiesByIds(
+            composed.listingIds.filter((id) => !byId.has(id)),
+          ).catch(() => new Map());
+          const chosen = composed.listingIds
+            .map((id) => {
+              const cand = byId.get(id);
+              if (cand) {
+                const pick = toPickPublic(cand);
+                return { type: "link" as const, url: pick.url, label: pick.label };
+              }
+              const hit = (extra as Map<string, { label: string; url: string }>).get(id) ?? known.get(id);
+              if (hit) return { type: "link" as const, url: hit.url, label: hit.label };
+              const fromBody = (body.attachments ?? []).find((a) =>
+                (a.url ?? "").toUpperCase().includes(`/PROPERTY/${id}`),
+              );
+              return fromBody?.url
+                ? { type: "link" as const, url: fromBody.url, label: fromBody.label ?? fromBody.url }
+                : null;
+            })
+            .filter((x): x is { type: "link"; url: string; label: string } => !!x)
+            .slice(0, 6);
 
-          const finalOne = await enforceLanguage(
-            composed.text,
-            outputLang === "auto" ? null : outputLang,
-          );
           req.log.info(
             {
               leadId: body.leadId,
@@ -664,7 +673,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             "suggest: one-pass compose decided the message and the links together",
           );
           res.json({
-            text: finalOne,
+            text: composed.text,
             rationale,
             suggestionId: randomUUID(),
             task_hint: taskHint ?? null,

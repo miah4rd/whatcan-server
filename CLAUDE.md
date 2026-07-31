@@ -127,6 +127,13 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   rather than pretending the budget was met.
 - **Each property link is sent as its own WhatsApp message** — glued together,
   WhatsApp only unfurls a preview banner for the first one.
+- **On the edit path the broker's instruction is LAW.** Baseline rules exist for
+  the bot's own drafts; a dictated edit means the broker has seen the result and
+  decided. The one-pass composer (`composeReplyWithListings`) gets the
+  instruction as highest authority and decides text + links together; the code
+  applies its choice without budget swaps, language overrides or dedupe on this
+  path. Only facts survive as hard limits: no invented prices/demand, no URLs in
+  the body, no internal codes.
 - **An edit must move the links too, not just the words.** `/suggest` returned
   text only, so a broker dictating "these are too expensive" got a rewritten
   message with the same expensive links. The revision now feeds the matcher
