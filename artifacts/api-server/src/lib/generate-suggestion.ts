@@ -331,7 +331,7 @@ ${list}${budgetLine}${
 Rewrite the message so it matches that reality:
 - Present the listings as being right here. Name each one as it is written above and say which area it is in — the names and areas above are the truth, never a place the client asked for but that isn't on the list. "a villa in Canggu, another villa in Canggu" is not naming them.
 - Delete any question asking permission to send them, and any promise to send something later.
-- The prices above are the real ones — quote them as given and never invent one. Do NOT add any claim about whether they fit the client's budget: state the price and let them judge.
+- The prices above are the real ones — quote them as given and never invent one. Never invent demand either: no "popular", "in high demand", "going fast", "lots of interest". Do NOT add any claim about whether they fit the client's budget: state the price and let them judge.
 - No email-style sign-off. This is WhatsApp: no "Best," and no name at the end.
 - NO URLs inside the text. The property links are attached below and each is delivered as its own WhatsApp message — writing a link (or a catalog/browse link) under every villa duplicates them and looks broken. At most ONE general browse link at the very end, and only if the draft already had it.
 - Change NOTHING else: same voice, same length, same closing question if it isn't about sending links.
@@ -403,7 +403,8 @@ export async function buildPromptAdditions(opts: {
   const adMatch = /Ad enquiry:\s*([A-Z0-9-]+)\s*—\s*(.+)/i.exec(opts.leadNotes ?? "");
   const adRule =
     adMatch && opts.dialogMessages.filter((m) => m.from === "lead").length <= 1
-      ? `\n\nTHIS PERSON CAME FROM AN AD FOR ONE SPECIFIC VILLA: "${adMatch[2]!.trim()}". That is their entire enquiry — they have not told you dates, budget or anything else. Write the first message like a person who just got their enquiry:\n- greet them by name and thank them for reaching out;\n- say you can see which villa caught their eye and NAME IT exactly as written above;\n- tell them the link below has the full details — photos, the location on the map, what's included;\n- then ONE question, the one that decides everything: when they are looking to move in and for how long.\nDo NOT offer alternative villas in this first message. They came for this one; suggesting others straight away reads as not having listened.`
+      ? `\n\nTHIS PERSON CAME FROM AN AD FOR ONE SPECIFIC VILLA: "${adMatch[2]!.trim()}". That is their entire enquiry — they have not told you dates, budget or anything else. Write the first message like a person who just got their enquiry:\n- greet them by name and thank them for reaching out;\n- say you can see which villa caught their eye and NAME IT exactly as written above;\n- tell them the link below has the full details — photos, the location on the map, what's included;\n- then ONE question, the one that decides everything: when they are looking to move in and for how long.\nDo NOT offer alternative villas in this first message. They came for this one; suggesting others straight away reads as not having listened.
+- Never claim the villa is popular, in demand, "getting a lot of interest" or going fast. You have no such information, and this one had a single view. An invented pressure line is the fastest way to lose a serious client.`
       : "";
 
   return buildLeadNameRule(opts.dialogMessages) + attachedRule + stockLine + currencyRule + adRule;
