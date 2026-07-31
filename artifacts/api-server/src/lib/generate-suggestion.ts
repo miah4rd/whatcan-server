@@ -1,4 +1,4 @@
-import { chatCompletion , WRITER_MODEL } from "./ai-client";
+import { chatCompletion, chatCompletionJSON, WRITER_MODEL } from "./ai-client";
 import { logger } from "./logger";
 import { parseDialogContent, formatDialogForAI, describeConversationTiming } from "./dialog-parser";
 import { getKnowledgeBase } from "./knowledge-base";
@@ -281,6 +281,83 @@ export async function enforceLanguage(text: string, required: string | null | un
     logger.warn({ err }, "language enforcement failed (keeping the draft)");
   }
   return text;
+}
+
+/**
+ * ONE decision: the words and the links together.
+ *
+ * The old shape had three minds and none of them saw the whole picture — a
+ * writer that read the broker's instruction, a matcher that read the catalog,
+ * and code in the middle guessing the broker's intent from keywords. Every
+ * guess needed another rule ("the word budget means filter" → "unless they're
+ * asking FOR the budget" → "unless they said they'd send options later"), and
+ * each rule left a gap at the next phrasing.
+ *
+ * Here the same mind that writes "tell me your budget and I'll find options"
+ * decides that nothing is attached — because it is one thought, not two.
+ *
+ * What stays in code afterwards is only what is arithmetic or fact, never
+ * judgement: the budget ceiling, listings with no price, duplicates, anything
+ * the lead has already been shown, and links the broker curated by hand.
+ */
+export async function composeReplyWithListings(opts: {
+  systemPrompt: string;
+  conversation: string;
+  brokerInstruction: string;
+  currentDraft: string;
+  currentAttachments: Array<{ id: string; label: string }>;
+  /** True when the broker edited the link list themselves — a fact, not a guess. */
+  attachmentsCurated: boolean;
+  candidates: Array<{ id: string; line: string }>;
+  language?: string | null;
+}): Promise<{ text: string; listingIds: string[] } | null> {
+  const current = opts.currentAttachments.length
+    ? opts.currentAttachments.map((a) => `${a.id} — ${a.label}`).join("\n")
+    : "(none)";
+
+  try {
+    const result = await chatCompletionJSON<{ message?: string; listing_ids?: string[] }>({
+      model: WRITER_MODEL,
+      system: `${opts.systemPrompt}
+
+──────────────────────────────────────────
+You are revising a message a broker is about to send, and you decide BOTH things at once: what it says and which property links go with it.
+
+Currently attached:
+${current}
+
+${
+  opts.attachmentsCurated
+    ? "THE BROKER CHOSE THESE LINKS BY HAND. Keep listing_ids exactly as they are — they overrode you on purpose. Only the words change."
+    : `Available properties (pick by ID, or none):
+${opts.candidates.map((c) => c.line).join("\n")}`
+}
+
+Think about what the broker actually means, not which words they used:
+- If they want the client asked something first ("get their budget so I can find suitable options"), the options come LATER — return the links that belong to villas the client themselves asked about, and nothing else. A message that says "tell me your budget and I'll find options" must not arrive with options already in it.
+- If they want different properties, choose different ones.
+- If they are only changing the wording, return exactly the IDs that are attached now.
+- Never attach a property the message does not talk about, and never talk about one that is not attached.
+${opts.language ? `\nWrite the message in ${opts.language}. The broker may instruct you in another language; that never changes the language the client reads.` : ""}
+
+Respond with JSON only: {"message": "<the WhatsApp message>", "listing_ids": ["ID", ...]}`,
+      messages: [
+        {
+          role: "user",
+          content: `Conversation so far:\n${opts.conversation.slice(-3000)}\n\nCurrent draft:\n${opts.currentDraft}\n\nThe broker says:\n"${opts.brokerInstruction}"`,
+        },
+      ],
+      max_tokens: 900,
+    });
+
+    const text = sanitizeSuggestion(result.message ?? "");
+    if (text.trim().length < 10) return null;
+    const ids = (result.listing_ids ?? []).map((i) => String(i).toUpperCase());
+    return { text, listingIds: ids };
+  } catch (err) {
+    logger.warn({ err }, "composeReplyWithListings failed — falling back to the split path");
+    return null;
+  }
 }
 
 export async function reconcileTextWithAttachments(

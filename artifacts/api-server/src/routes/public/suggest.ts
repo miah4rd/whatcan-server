@@ -8,8 +8,8 @@ import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing"
 import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
-import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage } from "../../lib/generate-suggestion";
-import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary } from "../../lib/property-catalog";
+import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings } from "../../lib/generate-suggestion";
+import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, finaliseListingIds } from "../../lib/property-catalog";
 
 const router = Router();
 
@@ -588,6 +588,88 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         }
       } catch (err) {
         req.log.warn({ err }, "suggest: curation self-detection failed (relying on the client flag)");
+      }
+    }
+
+    // ── One decision: the words and the links together ───────────────────────
+    // Tried first for every revision. The keyword-driven path below stays as a
+    // fallback, but this is the one that can understand "ask for their budget so
+    // I can find suitable options" without a rule spelling it out.
+    if (revision && body.leadId) {
+      try {
+        const leadOwn = (body.messages ?? [])
+          .filter((m) => m.from === "lead")
+          .map((m) => String(m.text));
+        const currentIds = (body.attachments ?? [])
+          .map((a) => a.url?.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1])
+          .filter((x): x is string => !!x);
+        const known = await describePropertiesByIds(currentIds).catch(() => new Map());
+        const pool = await candidatesForLead({
+          listingType: dbPipeline.toLowerCase() === "rental" ? "rent" : "sale",
+          recentLeadMessages: [...leadOwn].reverse(),
+          brokerInstruction: revision,
+        });
+
+        const composed = await composeReplyWithListings({
+          systemPrompt: system,
+          conversation: transcript,
+          brokerInstruction: revision,
+          currentDraft: text,
+          currentAttachments: currentIds.map((id) => ({
+            id,
+            label: known.get(id.toUpperCase())?.label ?? id,
+          })),
+          attachmentsCurated: curatedDetected,
+          candidates: pool.lines,
+          language: outputLang === "auto" ? null : outputLang,
+        });
+
+        if (composed) {
+          const chosen = curatedDetected
+            ? (body.attachments ?? [])
+                .filter((a) => !!a.url)
+                .map((a) => ({
+                  type: "link" as const,
+                  url: a.url!,
+                  label: known.get(
+                    (a.url!.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase(),
+                  )?.label ?? a.label ?? a.url!,
+                }))
+            : finaliseListingIds(
+                composed.listingIds,
+                pool.candidates,
+                pool.budgetCeiling,
+              ).map((p) => ({ type: "link" as const, url: p.url, label: p.label }));
+
+          const finalOne = await enforceLanguage(
+            composed.text,
+            outputLang === "auto" ? null : outputLang,
+          );
+          req.log.info(
+            {
+              leadId: body.leadId,
+              was: currentIds.length,
+              now: chosen.length,
+              curated: curatedDetected,
+              revision: revision.slice(0, 80),
+            },
+            "suggest: one-pass compose decided the message and the links together",
+          );
+          res.json({
+            text: finalOne,
+            rationale,
+            suggestionId: randomUUID(),
+            task_hint: taskHint ?? null,
+            stage_hint: stageHint,
+            kind: "live",
+            recent_messages: recentMessages,
+            reassessed_temperature: reassessedTemp ?? null,
+            attachments: chosen,
+          });
+          return;
+        }
+      } catch (err) {
+        req.log.warn({ err, leadId: body.leadId }, "suggest: one-pass compose failed, using the split path");
       }
     }
 

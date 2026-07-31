@@ -554,6 +554,111 @@ function bedroomDistance(p: SupabaseProperty, wanted: number | null): number {
   return Math.abs(p.bedrooms - wanted);
 }
 
+/**
+ * The candidate list and the money facts, without any AI in the loop.
+ *
+ * Split out of matchProperties so the combined "write the message AND choose the
+ * links" call can work from exactly the same filtered pool — one place deciding
+ * what is even eligible, instead of a second copy that drifts.
+ */
+export async function candidatesForLead(opts: {
+  listingType: ListingType;
+  excludeIds?: string[];
+  recentLeadMessages?: string[];
+  brokerInstruction?: string | null;
+}): Promise<{
+  candidates: SupabaseProperty[];
+  budgetIdr: number | null;
+  budgetCeiling: number | null;
+  lines: Array<{ id: string; line: string }>;
+}> {
+  const all = await fetchAllProperties();
+  const exclude = new Set((opts.excludeIds ?? []).map((id) => id.toUpperCase()));
+  const pool = all.filter((p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()));
+
+  const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
+  const criteria = extractLeadCriteria(criteriaSource, pool);
+
+  let candidates = pool;
+  if (criteria.areas.length > 0) {
+    const byArea = candidates.filter((p) => areaMatches(p.area, criteria.areas));
+    if (byArea.length > 0) candidates = byArea;
+  }
+  if (criteria.bedrooms !== null) {
+    const exact = candidates.filter((p) => p.bedrooms === criteria.bedrooms);
+    if (exact.length >= MIN_SHORTLIST) candidates = exact;
+    else {
+      const bigger = candidates.filter(
+        (p) => p.bedrooms !== null && p.bedrooms >= criteria.bedrooms! && p.bedrooms <= criteria.bedrooms! + 1,
+      );
+      if (bigger.length >= MIN_SHORTLIST) candidates = bigger;
+      else if (exact.length > 0) candidates = exact;
+    }
+  }
+
+  const priced = candidates.filter(hasPrice);
+  if (priced.length >= MIN_SHORTLIST) candidates = priced;
+
+  const budgetIdr = opts.listingType === "rent" ? extractBudgetIdr(criteriaSource) : null;
+  const budgetCeiling = budgetIdr ? Math.round(budgetIdr * 1.15) : null;
+  if (budgetCeiling) {
+    const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
+    const abovePriced = candidates.filter((p) => priceOf(p) > budgetCeiling).sort((a, b) => priceOf(a) - priceOf(b));
+    const unpriced = candidates.filter((p) => priceOf(p) === 0);
+    candidates = [...within.sort(rankForShortlist), ...abovePriced, ...unpriced];
+  } else {
+    candidates = [...candidates].sort(rankForShortlist);
+  }
+  candidates = dedupeByTitle(candidates);
+
+  return {
+    candidates,
+    budgetIdr,
+    budgetCeiling,
+    lines: candidates.slice(0, 40).map((p) => {
+      const style = styleHint(p);
+      return { id: p.id, line: style ? `${summaryLine(p)} | ${style}` : summaryLine(p) };
+    }),
+  };
+}
+
+/**
+ * Turns chosen IDs into links, enforcing the things a model must not be trusted
+ * with: a stated budget, and never the same villa name twice. An empty choice is
+ * respected — deciding to send nothing is a real decision.
+ */
+export function finaliseListingIds(
+  ids: string[],
+  candidates: SupabaseProperty[],
+  budgetCeiling: number | null,
+  limit = 3,
+): PropertyPick[] {
+  const wanted = new Set(ids.map((i) => i.toUpperCase()));
+  let picked = candidates.filter((p) => wanted.has(p.id.toUpperCase()));
+  if (picked.length === 0) return [];
+
+  if (budgetCeiling) {
+    const affordable = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
+    if (affordable.length > 0) {
+      const over = picked.filter((p) => priceOf(p) > budgetCeiling);
+      if (over.length > 0) {
+        const keep = picked.filter((p) => priceOf(p) <= budgetCeiling);
+        for (const p of affordable) {
+          if (keep.length >= picked.length) break;
+          if (!keep.some((k) => k.id === p.id)) keep.push(p);
+        }
+        logger.info(
+          { dropped: over.map((p) => p.id), ceiling: budgetCeiling },
+          "finaliseListingIds: enforced the budget on the chosen links",
+        );
+        picked = keep;
+      }
+    }
+  }
+
+  return dedupeByTitle(picked).slice(0, limit).map(toPick);
+}
+
 export async function matchProperties(opts: {
   listingType: ListingType;
   conversationText: string;
