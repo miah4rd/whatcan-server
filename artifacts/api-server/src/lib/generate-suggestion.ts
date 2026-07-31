@@ -125,6 +125,8 @@ export async function pickPropertyAttachments(opts: {
   formattedDialog: string;
   lastLeadText: string;
   leadStage?: string | null;
+  /** Card notes — used to spot an "Ad enquiry" lead on first contact. */
+  leadNotes?: string | null;
   /** Set when the broker is revising an existing draft — see matchProperties. */
   brokerInstruction?: string | null;
   currentAttachmentIds?: string[];
@@ -143,8 +145,17 @@ export async function pickPropertyAttachments(opts: {
     if (!opts.brokerInstruction && shouldSkipNewListings(opts.dialogMessages, excludeIds, opts.leadStage)) {
       return [];
     }
+    // First reply to an ad lead: the advertised villa on its own. The usual
+    // "always two or three" rule is about giving a choice to someone still
+    // looking — this person already chose, and burying their villa among
+    // alternatives is the opposite of listening.
+    const isFirstContactAdLead =
+      /Ad enquiry:/i.test(opts.leadNotes ?? "") &&
+      opts.dialogMessages.filter((m) => m.from === "lead").length <= 1;
+
     const picks = await matchProperties({
       listingType: opts.isRental ? "rent" : "sale",
+      ...(isFirstContactAdLead ? { limit: 1 } : {}),
       conversationText: `${opts.formattedDialog}\n${opts.lastLeadText}`,
       brokerId: opts.brokerId,
       excludeIds,
@@ -347,6 +358,9 @@ export async function buildPromptAdditions(opts: {
   isRental: boolean;
   dialogMessages: ReturnType<typeof parseDialogContent>["messages"];
   lastLeadText?: string | null;
+  /** Card notes — carries the "Ad enquiry: <ID> — <title>" marker for a lead that
+   * arrived by clicking a listing ad. */
+  leadNotes?: string | null;
 }): Promise<string> {
   const recentLeadMessages = [
     opts.lastLeadText ?? "",
@@ -383,7 +397,16 @@ export async function buildPromptAdditions(opts: {
     ? `\n\nPRICES ARE IN RUPIAH. The catalog figures for rentals are already the real rupiah price (shown as "Rp 88 jt/mo" — 88 million per month). Quote them exactly as given, in rupiah. Never convert to dollars, never state a dollar figure, and never invent a price for a listing that has none.`
     : "";
 
-  return buildLeadNameRule(opts.dialogMessages) + attachedRule + stockLine + currencyRule;
+  // A lead who clicked a listing ad has told us exactly one thing: which villa
+  // caught their eye. The first reply should answer that and nothing else — thank
+  // them, name the villa, hand over the link with the details, ask ONE thing.
+  const adMatch = /Ad enquiry:\s*([A-Z0-9-]+)\s*—\s*(.+)/i.exec(opts.leadNotes ?? "");
+  const adRule =
+    adMatch && opts.dialogMessages.filter((m) => m.from === "lead").length <= 1
+      ? `\n\nTHIS PERSON CAME FROM AN AD FOR ONE SPECIFIC VILLA: "${adMatch[2]!.trim()}". That is their entire enquiry — they have not told you dates, budget or anything else. Write the first message like a person who just got their enquiry:\n- greet them by name and thank them for reaching out;\n- say you can see which villa caught their eye and NAME IT exactly as written above;\n- tell them the link below has the full details — photos, the location on the map, what's included;\n- then ONE question, the one that decides everything: when they are looking to move in and for how long.\nDo NOT offer alternative villas in this first message. They came for this one; suggesting others straight away reads as not having listened.`
+      : "";
+
+  return buildLeadNameRule(opts.dialogMessages) + attachedRule + stockLine + currencyRule + adRule;
 }
 
 export async function generateSuggestion(opts: {
@@ -696,6 +719,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     isRental,
     dialogMessages: dialog.messages,
     lastLeadText,
+    leadNotes: opts.leadNotes ?? null,
   });
 
   // Property matching only needs the conversation, not our reply — so it runs
@@ -720,6 +744,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
       formattedDialog,
       lastLeadText,
       leadStage: opts.leadStage,
+      leadNotes: opts.leadNotes ?? null,
     }),
   ]);
 

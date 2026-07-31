@@ -324,6 +324,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     isRental,
     dialogMessages: dialog.messages,
     lastLeadText,
+    leadNotes: opts.leadNotes ?? null,
   });
 
   const completion = await chatCompletion({
@@ -348,6 +349,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     formattedDialog,
     lastLeadText,
     leadStage: opts.leadStage,
+    leadNotes: opts.leadNotes ?? null,
   });
 
   // The draft was written without knowing which listings the matcher would

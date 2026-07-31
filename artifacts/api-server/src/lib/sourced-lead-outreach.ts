@@ -42,6 +42,28 @@ async function fetchLeadNote(leadId: string): Promise<string | null> {
   }
 }
 
+/**
+ * The PERSON's name, from the lead's contact. For an ad lead the lead name is the
+ * listing code ("R-YUD-018 - 3BR Villa…"), so using it as the sender would have
+ * the bot greeting the client as "Hi R-YUD-018".
+ */
+async function fetchContactName(leadId: string): Promise<string> {
+  try {
+    const lead = await amoFetch<{ _embedded?: { contacts?: Array<{ id: number }> } }>(
+      `/api/v4/leads/${leadId}?with=contacts`,
+    );
+    const contactId = lead?._embedded?.contacts?.[0]?.id;
+    if (!contactId) return "";
+    const contact = await amoFetch<{ name?: string }>(`/api/v4/contacts/${contactId}`);
+    const name = (contact?.name ?? "").trim();
+    // amoCRM placeholders are worse than no name at all.
+    if (!name || /^<|dummy|test lead|full_name/i.test(name)) return "";
+    return name;
+  } catch {
+    return "";
+  }
+}
+
 /** The lead's amoCRM name exactly as it is — ad leads carry the listing code in it. */
 async function fetchRawLeadName(leadId: string): Promise<string> {
   try {
@@ -160,7 +182,8 @@ export async function processSourcedLeadOutreach(): Promise<void> {
 
       if (!adListing && (!note || !looksLikeClientRequest(note))) continue;
 
-      const leadName = await fetchLeadName(lead.leadId);
+      // The person, not the lead title — for ad leads those are different things.
+      const leadName = (await fetchContactName(lead.leadId)) || (await fetchLeadName(lead.leadId));
       const at = lead.amoCreatedAt ?? new Date();
       // Only ever state what is actually known: which listing the ad was for.
       // Never invent requirements the person has not given.
