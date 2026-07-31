@@ -199,7 +199,7 @@ function toPick(p: SupabaseProperty): PropertyPick {
   const priceBit = summaryLine(p).split(" | ").slice(1, -1).join(", ");
   // Spelled out on the label, because everything downstream reads the label and
   // silence about the price is what let a figure be invented for it.
-  const noPrice = priceOf(p) === 0 ? ", PRICE NOT PUBLISHED" : "";
+  const noPrice = priceOf(p) === 0 ? ", price on request" : "";
   return {
     id: p.id,
     title: p.title,

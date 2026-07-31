@@ -795,8 +795,19 @@ Rewrite it so it contains NO property names, NO listing links and NO list of vil
     res.json({ text: finalText, rationale, suggestionId: randomUUID(), task_hint: taskHint ?? null, stage_hint: stageHint, kind: "live", recent_messages: recentMessages, reassessed_temperature: reassessedTemp ?? null, attachments: newAttachments });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // Say what actually went wrong. A bare "API 502" in the broker's panel tells
+    // them nothing they can act on — the commonest cause by far is the Anthropic
+    // balance running out, which no amount of retrying fixes.
+    const outOfCredit = /credit balance is too low|insufficient_quota|billing/i.test(msg);
+    const overloaded = /overloaded|rate.?limit|429/i.test(msg);
     req.log.error({ err }, "ai error");
-    res.status(502).json({ error: `AI error: ${msg.slice(0, 200)}` });
+    res.status(outOfCredit ? 503 : 502).json({
+      error: outOfCredit
+        ? "Закончились кредиты Anthropic API — бот не может писать сообщения. Пополните баланс в аккаунте Anthropic, перезапуск не нужен."
+        : overloaded
+          ? "Модель сейчас перегружена — попробуйте ещё раз через минуту."
+          : `AI error: ${msg.slice(0, 200)}`,
+    });
   }
 });
 

@@ -303,7 +303,7 @@ export async function reconcileTextWithAttachments(
   // number going to a client. Checked in code, not hoped for: the prompt already
   // said never to invent a price and it did anyway.
   const unpricedLabels = attachments
-    .filter((a) => /PRICE NOT PUBLISHED/i.test(a.label ?? ""))
+    .filter((a) => /price on request/i.test(a.label ?? ""))
     .map((a) => (a.label ?? "").split(" (")[0]);
   const QUOTES_MONEY = /\d[\d.,\s]{2,}\s*(idr|rp\b|million|jt\b|juta)|rp\.?\s*\d/i;
   const invents = unpricedLabels.length > 0 && QUOTES_MONEY.test(text);
@@ -326,7 +326,7 @@ export async function reconcileTextWithAttachments(
 These ${attachments.length} property links are attached to that exact message and will arrive with it:
 ${list}${budgetLine}${
     unpricedLabels.length > 0
-      ? `\n\nTHESE HAVE NO PUBLISHED PRICE: ${unpricedLabels.join("; ")}. You do NOT know what they cost. Remove any figure, range or estimate for them from the message and say plainly that you will confirm the exact rate with the owner. Inventing a number here would be quoted back at us.`
+      ? `\n\nTHESE HAVE NO PUBLISHED PRICE (their label says "price on request"): ${unpricedLabels.join("; ")}. You do NOT know what they cost. Remove any figure, range or estimate for them from the message and say plainly that you will confirm the exact rate with the owner. Inventing a number here would be quoted back at us.`
       : ""
   }
 

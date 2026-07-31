@@ -720,7 +720,13 @@ const PAGE_HTML = `<!doctype html>
           attachments: (item.attachments || []).filter(function (a) { return a.type === "link" && a.url; }),
         }),
       });
-      if (!res.ok) throw new Error("API " + res.status);
+      // Show what the server actually said. "API 502" told the broker nothing —
+      // the usual cause is the AI balance running out, which they can fix.
+      if (!res.ok) {
+        var errText = "API " + res.status;
+        try { var ej = await res.json(); if (ej && ej.error) errText = ej.error; } catch (e2) {}
+        throw new Error(errText);
+      }
       var json = await res.json();
       if (json && json.text) item.text = json.text;
       // A revision about the listings re-picks them server-side. Links the
