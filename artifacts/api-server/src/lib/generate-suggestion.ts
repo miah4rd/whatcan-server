@@ -21,11 +21,25 @@ import { eq, inArray, and } from "drizzle-orm";
  * in the conversation and treats our own earlier link as the lead asking about
  * that listing, re-offering exactly what was just rejected.
  */
-async function alreadySentPropertyIds(leadId: string, conversationText: string): Promise<string[]> {
+async function alreadySentPropertyIds(
+  leadId: string,
+  conversationText: string,
+  /** The lead's OWN links are not something we sent them. Someone arriving from a
+   * listing ad has that listing in their first message, and counting it as
+   * "already shown" removed the one villa the whole enquiry was about — the
+   * shortlist then came back empty. Pass the lead's text to subtract it. */
+  leadOwnText?: string,
+): Promise<string[]> {
   const ids = new Set<string>();
 
   for (const m of conversationText.matchAll(/\/property\/([A-Za-z0-9-]+)/gi)) {
     if (m[1]) ids.add(m[1]);
+  }
+
+  if (leadOwnText) {
+    for (const m of leadOwnText.matchAll(/\/property\/([A-Za-z0-9-]+)/gi)) {
+      if (m[1]) ids.delete(m[1]);
+    }
   }
 
   try {
@@ -119,6 +133,10 @@ export async function pickPropertyAttachments(opts: {
     const excludeIds = await alreadySentPropertyIds(
       opts.leadId,
       `${opts.contentSnippet}\n${opts.formattedDialog}`,
+      opts.dialogMessages
+        .filter((m) => m.from === "lead")
+        .map((m) => m.text)
+        .join("\n"),
     );
     // A broker asking for different links has overruled the "don't send more
     // options" gate — they are looking at the draft and telling us what to send.
