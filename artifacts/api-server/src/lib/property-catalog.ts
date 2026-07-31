@@ -455,7 +455,12 @@ Return JSON with exactly these keys:
 - "areas": the areas they want searched, as an array of names from the list above. Empty when they named none.
 - "bedrooms": the bedroom count they asked for, or null.
 - "budget_idr_monthly": a budget the broker is telling you to FILTER BY, in rupiah, as a plain number ("show her something around 40 million" → 40000000). A yearly figure divided by 12. Never a dollar amount. Null when the broker is telling you to ASK the client what their budget is — a budget nobody has stated yet is not a filter.
-- "send_no_listings": true when the message should go out with NO properties attached because the broker is asking the client for something FIRST and will pick options afterwards ("ask for their budget so we can find suitable options", "let's find out the dates before sending anything"). The giveaway is a promise about the future: options come AFTER the client answers.
+- "send_no_listings": true whenever this message should carry NO new property links. That covers every case where the point of the message is something other than offering properties:
+  · asking the client for something first, options to follow ("get their budget so we can find suitable ones");
+  · asking what they thought of options ALREADY sent ("let's just get feedback on the villas we sent yesterday") — a feedback request that arrives with a fresh batch talks straight over the question;
+  · arranging or confirming a viewing;
+  · a nudge to someone who has gone quiet.
+  Sending nothing is a normal, frequent answer. Only leave this false when the broker actually wants properties in this message.
 - "listings_unchanged": true whenever the instruction is about what the message SAYS or ASKS rather than which properties go out. Wording changes (shorter, warmer, fix the grammar) and added questions ("ask when they want to move in", "ask what their budget is and say we can find better matches once we know") are all listings_unchanged: true. Only set it false when the broker actually wants different properties attached.
 
 Read the tense. "Ask her budget so we can match better" is a request to ASK — the properties do not change. "Her budget is 40 million, match that" is a filter.

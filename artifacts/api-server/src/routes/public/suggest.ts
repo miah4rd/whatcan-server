@@ -598,7 +598,12 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     // Tried first for every revision. The keyword-driven path below stays as a
     // fallback, but this is the one that can understand "ask for their budget so
     // I can find suitable options" without a rule spelling it out.
-    if (revision && body.leadId) {
+    // OFF by default. The idea is right — one mind for the words and the links —
+    // but this implementation lost three guarantees the split path holds: it
+    // re-picked on a wording-only edit, dropped the villa an ad lead came in on,
+    // and once described a villa it had not attached. Kept behind a flag so the
+    // work survives; enable ONE_PASS_COMPOSE=1 only once those are covered.
+    if (process.env["ONE_PASS_COMPOSE"] === "1" && revision && body.leadId) {
       try {
         const leadOwn = (body.messages ?? [])
           .filter((m) => m.from === "lead")
