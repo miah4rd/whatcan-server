@@ -9,7 +9,7 @@ import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
 import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage } from "../../lib/generate-suggestion";
-import { extractBudgetIdr, describePropertiesByIds } from "../../lib/property-catalog";
+import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary } from "../../lib/property-catalog";
 
 const router = Router();
 
@@ -58,6 +58,9 @@ type Body = {
  */
 const REVISION_TOUCHES_LISTINGS =
   /link|ссылк|listing|листинг|option|опци|вариант|villa|вилл|propert|объект|price|цен|budget|бюджет|expensive|дорог|cheap|дешев|area|район|bedroom|спальн|\bbr\b|another|other|друг|replace|замен|swap|помен|\d\s*(jt|juta|млн|million)/i;
+/** Thrown to leave the re-pick block early without touching the attachments. */
+class SkipRepick extends Error {}
+
 const REVISION_IS_A_FULL_REDO =
   /переделай|переделать|перепиш|заново|по-друг|по друг|иначе|redo|rewrite|do it again|start over|from scratch|another version/i;
 
@@ -624,6 +627,19 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
       (REVISION_TOUCHES_LISTINGS.test(revision) || REVISION_IS_A_FULL_REDO.test(revision))
     ) {
       try {
+        // What the message SAYS vs which properties go out. A word like "budget"
+        // in the instruction used to be enough to re-pick — so "ask her what her
+        // budget is, and say we can match better once we know" made the bot
+        // filter on a budget nobody had given yet and swap the links for a
+        // question about the future.
+        const intent = await parseBrokerIntent(revision, await allAreaVocabulary());
+        if (intent?.listingsUnchanged) {
+          req.log.info(
+            { leadId: body.leadId, revision: revision.slice(0, 80) },
+            "suggest: instruction is about the wording — links left alone",
+          );
+          throw new SkipRepick();
+        }
         const currentIds = (body.attachments ?? [])
           .map((a) => a.url?.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1])
           .filter((x): x is string => !!x);
@@ -671,7 +687,9 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         );
       } catch (err) {
         // Never lose the rewritten text over a failed re-match.
-        req.log.warn({ err, leadId: body.leadId }, "suggest: could not re-pick listings for this revision");
+        if (!(err instanceof SkipRepick)) {
+          req.log.warn({ err, leadId: body.leadId }, "suggest: could not re-pick listings for this revision");
+        }
         newAttachments = null;
       }
     }

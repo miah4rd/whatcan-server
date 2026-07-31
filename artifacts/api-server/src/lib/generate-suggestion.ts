@@ -4,7 +4,7 @@ import { parseDialogContent, formatDialogForAI, describeConversationTiming } fro
 import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { buildRentalSystemPrompt } from "./rental-prompt";
-import { matchProperties, availabilityForCriteria, type PropertyPick } from "./property-catalog";
+import { matchProperties, availabilityForCriteria, type PropertyPick, type BrokerIntent } from "./property-catalog";
 import { db, pendingSuggestionsTable } from "@workspace/db";
 import { eq, inArray, and } from "drizzle-orm";
 
@@ -130,6 +130,7 @@ export async function pickPropertyAttachments(opts: {
   /** Set when the broker is revising an existing draft — see matchProperties. */
   brokerInstruction?: string | null;
   currentAttachmentIds?: string[];
+  brokerIntent?: BrokerIntent | null;
 }): Promise<GeneratedSuggestion["attachments"]> {
   try {
     const excludeIds = await alreadySentPropertyIds(
@@ -163,6 +164,7 @@ export async function pickPropertyAttachments(opts: {
       latestLeadMessage: opts.lastLeadText,
       brokerInstruction: opts.brokerInstruction ?? null,
       currentAttachmentIds: opts.currentAttachmentIds ?? [],
+      brokerIntent: opts.brokerIntent ?? null,
       // newest first — the criteria filter takes the most recent area/bedroom pin
       // The lead's OWN messages, newest first. The window used to be 5, which is
       // where a long conversation lost its own requirements: Josua agreed on

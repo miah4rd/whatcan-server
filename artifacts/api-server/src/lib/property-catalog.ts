@@ -420,6 +420,12 @@ export type BrokerIntent = {
   listingsUnchanged: boolean;
 };
 
+/** Area names the classifier may choose from — the site's list plus whatever the catalog actually uses. */
+export async function allAreaVocabulary(): Promise<string[]> {
+  const all = await fetchAllProperties().catch(() => [] as SupabaseProperty[]);
+  return [...new Set([...allAreaNames(), ...all.map((p) => (p.area ?? "").trim())])].filter(Boolean);
+}
+
 export async function parseBrokerIntent(
   instruction: string,
   knownAreas: string[],
@@ -442,8 +448,10 @@ Return JSON with exactly these keys:
 - "release_area": true when the broker wants the search to STOP being restricted to the area the client named (e.g. "don't focus on this area", "nothing fits there, look elsewhere", "widen the search"). False otherwise.
 - "areas": the areas they want searched, as an array of names from the list above. Empty when they named none.
 - "bedrooms": the bedroom count they asked for, or null.
-- "budget_idr_monthly": the monthly budget in RUPIAH as a plain number, or null. "40 million" → 40000000. A yearly figure divided by 12. Never a dollar amount.
-- "listings_unchanged": true ONLY when the instruction is purely about wording (shorter, warmer, friendlier, fix the grammar) and says nothing about which properties to send.
+- "budget_idr_monthly": a budget the broker is telling you to FILTER BY, in rupiah, as a plain number ("show her something around 40 million" → 40000000). A yearly figure divided by 12. Never a dollar amount. Null when the broker is telling you to ASK the client what their budget is — a budget nobody has stated yet is not a filter.
+- "listings_unchanged": true whenever the instruction is about what the message SAYS or ASKS rather than which properties go out. Wording changes (shorter, warmer, fix the grammar) and added questions ("ask when they want to move in", "ask what their budget is and say we can find better matches once we know") are all listings_unchanged: true. Only set it false when the broker actually wants different properties attached.
+
+Read the tense. "Ask her budget so we can match better" is a request to ASK — the properties do not change. "Her budget is 40 million, match that" is a filter.
 
 Be literal. Do not infer a preference the broker did not express.`,
       messages: [{ role: "user", content: instruction.slice(0, 500) }],
@@ -565,6 +573,9 @@ export async function matchProperties(opts: {
   brokerInstruction?: string | null;
   /** Listings currently attached to the draft the broker is revising. */
   currentAttachmentIds?: string[];
+  /** Already-parsed instruction, when the caller has decided on it — avoids
+   * classifying the same sentence twice in one request. */
+  brokerIntent?: BrokerIntent | null;
 }): Promise<PropertyPick[]> {
   // A shortlist of one isn't a choice, and two is thin. Three is what a broker
   // would actually send; the matcher may still return fewer if stock is short.
@@ -576,8 +587,8 @@ export async function matchProperties(opts: {
 
   // The broker's instruction is read first: whether it moves the search matters
   // to the anchor decision below, not just to the filters further down.
-  let brokerIntent: BrokerIntent | null = null;
-  if (opts.brokerInstruction) {
+  let brokerIntent: BrokerIntent | null = opts.brokerIntent ?? null;
+  if (!brokerIntent && opts.brokerInstruction) {
     const vocab = [...new Set([...allAreaNames(), ...pool.map((p) => (p.area ?? "").trim())])].filter(Boolean);
     brokerIntent = await parseBrokerIntent(opts.brokerInstruction, vocab);
   }
