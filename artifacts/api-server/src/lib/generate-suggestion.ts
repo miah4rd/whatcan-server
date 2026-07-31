@@ -333,6 +333,7 @@ Rewrite the message so it matches that reality:
 - Delete any question asking permission to send them, and any promise to send something later.
 - The prices above are the real ones — quote them as given and never invent one. Never invent demand either: no "popular", "in high demand", "going fast", "lots of interest". Do NOT add any claim about whether they fit the client's budget: state the price and let them judge.
 - No email-style sign-off. This is WhatsApp: no "Best," and no name at the end.
+- Never write an internal listing code (R-YUD-018, UP-1001). If a listing above shows only a code and no name, describe it plainly ("the 3-bedroom villa in Canggu") instead.
 - NO URLs inside the text. The property links are attached below and each is delivered as its own WhatsApp message — writing a link (or a catalog/browse link) under every villa duplicates them and looks broken. At most ONE general browse link at the very end, and only if the draft already had it.
 - Change NOTHING else: same voice, same length, same closing question if it isn't about sending links.
 - WRITE IN ${language ? language.toUpperCase() : "THE SAME LANGUAGE AS THE MESSAGE BELOW"}. This is absolute. The broker's instructions may be in another language; that never changes the language the client is written to.
@@ -380,6 +381,7 @@ export async function buildPromptAdditions(opts: {
   // The links are attached to THIS message, so asking "want me to send them?"
   // sends the question and the answer together and makes the bot look broken.
   const attachedRule =
+    `\n\nNEVER write an internal listing code (R-YUD-018, UP-1001 and the like) in the message — it is our catalog reference, meaningless to the client and it reads like a database record. Use the villa's name.` +
     `\n\nNO URLS IN THE TEXT: every attached property link is delivered as its own separate WhatsApp message right after this one — never write property or catalog URLs inside the message body itself.` +
     `\n\nTHE LINKS GO OUT WITH THIS MESSAGE. When a shortlist is being sent, two or three property links are attached to this exact message automatically — they are already below your text. So present them ("here are three that fit"), never ask permission to send them and never promise them for later. The one exception is when the client has already settled on a specific villa: then no options are sent and you move to the viewing instead.`;
 
