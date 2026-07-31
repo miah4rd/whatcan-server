@@ -591,7 +591,27 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
       }
     }
 
-    if (revision && curatedDetected) {
+    // Parsed once, before anything decides. An explicit "show something else"
+    // must outrank the curation guard — that guard exists to stop an unrelated
+    // revision churning links the broker chose, not to override the broker when
+    // they are the one asking for different ones.
+    let intent: Awaited<ReturnType<typeof parseBrokerIntent>> = null;
+    if (
+      revision &&
+      (REVISION_TOUCHES_LISTINGS.test(revision) || REVISION_IS_A_FULL_REDO.test(revision))
+    ) {
+      intent = await parseBrokerIntent(revision, await allAreaVocabulary()).catch(() => null);
+    }
+    const wantsDifferentListings =
+      !!intent &&
+      !intent.listingsUnchanged &&
+      (intent.releaseArea ||
+        intent.areas.length > 0 ||
+        !!intent.bedrooms ||
+        !!intent.budgetIdrMonthly ||
+        true);
+
+    if (revision && curatedDetected && !wantsDifferentListings) {
       // Hands off the listings — but the words still have to match them, so the
       // message names the villas the broker chose rather than the ones we picked.
       // A hand-pasted link carries only the property ID as its label, so look the
@@ -632,7 +652,6 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         // budget is, and say we can match better once we know" made the bot
         // filter on a budget nobody had given yet and swap the links for a
         // question about the future.
-        const intent = await parseBrokerIntent(revision, await allAreaVocabulary());
         if (intent?.listingsUnchanged) {
           req.log.info(
             { leadId: body.leadId, revision: revision.slice(0, 80) },
@@ -655,6 +674,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           leadStage: dbLeadStage || body.lead.stage || null,
           brokerInstruction: revision,
           currentAttachmentIds: currentIds,
+          brokerIntent: intent,
         });
         // The shortlist can legitimately sit above what they asked to pay (their
         // own bracket may be sold out) — the message has to say so, not gloss it.
