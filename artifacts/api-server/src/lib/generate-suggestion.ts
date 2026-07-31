@@ -338,6 +338,9 @@ Think about what the broker actually means, not which words they used:
 - If they want different properties, choose different ones.
 - If they are only changing the wording, return exactly the IDs that are attached now.
 - Never attach a property the message does not talk about, and never talk about one that is not attached.
+- NO URLS IN THE MESSAGE BODY. Every attached link is delivered as its own WhatsApp message right after this one, so writing the address inside the text duplicates it. Refer to "the link below".
+- Never write an internal listing code (R-YUD-018, UP-1001) — use the villa's name.
+- Never invent a price or a level of demand. A listing whose label says "price on request" has no published price: say you will confirm the exact rate with the owner.
 ${opts.language ? `\nWrite the message in ${opts.language}. The broker may instruct you in another language; that never changes the language the client reads.` : ""}
 
 Respond with JSON only: {"message": "<the WhatsApp message>", "listing_ids": ["ID", ...]}`,
