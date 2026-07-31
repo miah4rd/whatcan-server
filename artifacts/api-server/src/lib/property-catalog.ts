@@ -418,6 +418,11 @@ export type BrokerIntent = {
   bedrooms: number | null;
   budgetIdrMonthly: number | null;
   listingsUnchanged: boolean;
+  /** The broker wants this message to go out with NO property links at all —
+   * they are asking the client for something first ("tell me your budget and
+   * I'll find suitable options"). Keeping the links attached made the reply
+   * present villas in the very message that says it cannot pick them yet. */
+  sendNoListings: boolean;
 };
 
 /** Area names the classifier may choose from — the site's list plus whatever the catalog actually uses. */
@@ -433,6 +438,7 @@ export async function parseBrokerIntent(
   try {
     const result = await chatCompletionJSON<{
       release_area?: boolean;
+      send_no_listings?: boolean;
       areas?: string[];
       bedrooms?: number | null;
       budget_idr_monthly?: number | null;
@@ -449,6 +455,7 @@ Return JSON with exactly these keys:
 - "areas": the areas they want searched, as an array of names from the list above. Empty when they named none.
 - "bedrooms": the bedroom count they asked for, or null.
 - "budget_idr_monthly": a budget the broker is telling you to FILTER BY, in rupiah, as a plain number ("show her something around 40 million" → 40000000). A yearly figure divided by 12. Never a dollar amount. Null when the broker is telling you to ASK the client what their budget is — a budget nobody has stated yet is not a filter.
+- "send_no_listings": true when the message should go out with NO properties attached because the broker is asking the client for something FIRST and will pick options afterwards ("ask for their budget so we can find suitable options", "let's find out the dates before sending anything"). The giveaway is a promise about the future: options come AFTER the client answers.
 - "listings_unchanged": true whenever the instruction is about what the message SAYS or ASKS rather than which properties go out. Wording changes (shorter, warmer, fix the grammar) and added questions ("ask when they want to move in", "ask what their budget is and say we can find better matches once we know") are all listings_unchanged: true. Only set it false when the broker actually wants different properties attached.
 
 Read the tense. "Ask her budget so we can match better" is a request to ASK — the properties do not change. "Her budget is 40 million, match that" is a filter.
@@ -465,6 +472,7 @@ Be literal. Do not infer a preference the broker did not express.`,
     const budget = Number(result.budget_idr_monthly);
 
     return {
+      sendNoListings: (result as { send_no_listings?: boolean }).send_no_listings === true,
       releaseArea: result.release_area === true,
       areas,
       bedrooms: typeof result.bedrooms === "number" && result.bedrooms > 0 ? result.bedrooms : null,

@@ -602,6 +602,52 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     ) {
       intent = await parseBrokerIntent(revision, await allAreaVocabulary()).catch(() => null);
     }
+    // "Ask for the budget first, then I'll pick" — the message must carry no
+    // property links at all. Kept attached, they turned a question about the
+    // future into an offer in the present, which is exactly what it was told
+    // not to do.
+    if (revision && intent?.sendNoListings) {
+      req.log.info(
+        { leadId: body.leadId, dropped: body.attachments?.length ?? 0, revision: revision.slice(0, 80) },
+        "suggest: broker is asking the client first — sending this one with no listings",
+      );
+      const stillListsThem = (body.attachments ?? []).some((a) => {
+        const id = a.url?.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1];
+        return !!id && text.toUpperCase().includes(id.toUpperCase());
+      });
+      const presentsVillas = stillListsThem || /https?:\/\/[^\s]*property/i.test(text);
+      if (presentsVillas) {
+        try {
+          const cleaned = await chatCompletion({
+            model: WRITER_MODEL,
+            system: `You are editing a WhatsApp message a broker is about to send a client.
+
+No properties are being sent with this message — the broker is asking the client a question first and will pick options once they answer.
+
+Rewrite it so it contains NO property names, NO listing links and NO list of villas. Keep the question and the warmth, keep the same language, keep it short. Your entire output is the message itself.`,
+            messages: [{ role: "user", content: text }],
+            max_tokens: 400,
+          });
+          const out = sanitizeSuggestion(cleaned.content);
+          if (out.trim().length > 15) finalText = out;
+        } catch (err) {
+          req.log.warn({ err }, "suggest: could not strip listings from the text");
+        }
+      }
+      res.json({
+        text: finalText,
+        rationale,
+        suggestionId: randomUUID(),
+        task_hint: taskHint ?? null,
+        stage_hint: stageHint,
+        kind: "live",
+        recent_messages: recentMessages,
+        reassessed_temperature: reassessedTemp ?? null,
+        attachments: [],
+      });
+      return;
+    }
+
     const wantsDifferentListings =
       !!intent &&
       !intent.listingsUnchanged &&
