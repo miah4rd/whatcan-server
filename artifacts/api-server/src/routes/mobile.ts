@@ -235,6 +235,15 @@ const PAGE_HTML = `<!doctype html>
     "Contract signed","Closed - won","Closed - lost"
   ];
 
+  // URLs in conversation bubbles are tappable: a client quoting a villa link
+  // ("this one looks good") was dead text, so the broker could not open the very
+  // villa being discussed. Linkified AFTER esc(), so nothing unescaped renders.
+  function linkify(escaped) {
+    return escaped.replace(/(https?:\/\/[^\s<]+)/g, function (u) {
+      return '<a href="' + u + '" target="_blank" rel="noopener" style="color:#7dd3fc;text-decoration:underline;word-break:break-all">' + u + "</a>";
+    });
+  }
+
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
@@ -981,7 +990,7 @@ const PAGE_HTML = `<!doctype html>
         var isUs = m.from === "us";
         html += '<div class="tmsg ' + (isUs ? "us" : "lead") + '">';
         html += '<div class="tmsg-hdr"><span class="tsender">' + (isUs ? "You" : "Lead") + '</span></div>';
-        html += '<div class="tbubble">' + esc(m.text) + '</div>';
+        html += '<div class="tbubble">' + linkify(esc(m.text)) + '</div>';
         html += '</div>';
       }
     }
@@ -1012,7 +1021,7 @@ const PAGE_HTML = `<!doctype html>
       html += '<div class="skel"><div></div><div></div><div></div><div></div></div>';
     } else {
       html += '<label class="section">Suggested message</label>';
-      html += '<div class="msg-text">' + esc(it.text) + '</div>';
+      html += '<div class="msg-text">' + linkify(esc(it.text)) + '</div>';
       html += renderAttachments(it, false);
     }
     if (it.error) html += '<div class="err-text">' + esc(it.error) + '</div>';
