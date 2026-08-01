@@ -20,8 +20,11 @@ router.get("/autopilot", async (req, res) => {
     ]);
     res.json({
       setting,
-      // Only stages the bot may ever act in — closing stages are never delegated.
-      stages: (stages?.selectable ?? []).map((s) => s.name),
+      // Only stages the bot may ever act in — the closes carry money and
+      // reporting weight and are never delegated, same as the auto-stage rule.
+      stages: (stages?.selectable ?? [])
+        .map((s) => s.name)
+        .filter((n) => !/closed|won|lost|сделка|лост/i.test(n)),
     });
   } catch (err) {
     req.log.error({ err }, "autopilot get failed");
@@ -45,9 +48,11 @@ router.post("/autopilot", async (req, res) => {
     let upToStageName: string | null = null;
     if (mode !== "off") {
       const stages = await getPipelineStages(pipeline);
-      const found = stages?.selectable.find(
-        (s) => s.name.trim().toLowerCase() === (body.upToStageName ?? "").trim().toLowerCase(),
-      );
+      const found = stages?.selectable
+        .filter((s) => !/closed|won|lost|сделка|лост/i.test(s.name))
+        .find(
+          (s) => s.name.trim().toLowerCase() === (body.upToStageName ?? "").trim().toLowerCase(),
+        );
       if (!found) {
         res.status(400).json({ error: "upToStageName must be one of the funnel's stages" });
         return;
