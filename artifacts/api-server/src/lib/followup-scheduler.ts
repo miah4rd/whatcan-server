@@ -14,8 +14,9 @@ import { generateSuggestion } from "./generate-suggestion";
 import { isAdaptiveBroker } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
-import { isBroker, brokerKey } from "./broker-identity";
+import { isBroker, brokerKey, brokerDisplayName } from "./broker-identity";
 import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
+import { correctionsPromptBlock } from "./broker-corrections";
 import { maybeAutopilot } from "./autopilot";
 import { enforceBudgetFilter } from "./budget-filter";
 
@@ -83,7 +84,8 @@ export async function generateFollowup(opts: {
   /** Pre-built corrections block to inject into system prompt */
   correctionsBlock?: string;
 }): Promise<{ text: string; entry: PlaybookEntry; rationale: string; formattedDialog: string }> {
-  const brokerName = opts.responsibleUser ?? "Broker";
+  // The SIGNING name, not the login: "HoS" is an account, the person is Nick.
+  const brokerName = brokerDisplayName(opts.responsibleUser) || opts.responsibleUser || "Broker";
   const parsedDialog = parseDialogContent(opts.lastContent);
   const formattedDialog = formatDialogForAI(parsedDialog.messages);
   const leadName =
@@ -123,7 +125,7 @@ RULES:
 - Return ONLY the message body — no preamble, no quotes, no subject line
 
 AVAILABLE TACTICS (use only if genuinely relevant to the conversation, not forced):
-${tacticsHint}${opts.correctionsBlock ?? ""}${AVOID_PHRASES_REMINDER}`,
+${tacticsHint}${opts.correctionsBlock ?? ""}${await correctionsPromptBlock(opts.responsibleUser)}${AVOID_PHRASES_REMINDER}`,
     messages: [
       {
         role: "user",
@@ -861,10 +863,19 @@ export async function processFollowups(): Promise<void> {
         const qualStep = qualSteps[qualScriptIndexForStage(lead.leadStage)];
         const qualScriptMsg = qualStep?.message?.trim() ?? "";
 
-        // ── Then try hardcoded stage template ────────────────────────────────
+        // Only a message the BROKER wrote (Settings preset / qualification
+        // script) is used verbatim. The hardcoded TOUCH_TEMPLATES fallback is
+        // gone for Rental: it produced canned text the owner never loaded,
+        // signed with a default broker name, identical for every lead — and
+        // because nothing generated it, none of his edits could ever teach it.
+        // "Он точно обучается на моих исправлениях?" — on this path he was
+        // right: it never called the model at all.
+        const isRentalFollowup = (lead.pipeline ?? "").trim().toLowerCase() === "rental";
         const tplText = qualScriptMsg
           ? qualScriptMsg.replace(/\[Name\]/g, leadFirstName).replace(/\[name\]/g, leadFirstName)
-          : buildFollowupTemplateByLevel(nextLevel, lead.leadId, leadFirstName, lead.responsibleUser ?? "Robert");
+          : isRentalFollowup
+            ? null
+            : buildFollowupTemplateByLevel(nextLevel, lead.leadId, leadFirstName, lead.responsibleUser ?? "Robert");
 
         if (tplText) {
           text = tplText;

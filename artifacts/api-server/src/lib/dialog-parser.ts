@@ -263,9 +263,19 @@ export function nextFollowupDate(
   fromDate: Date,
   levelIndex: number,
   delayDays: number[] = FOLLOWUP_DELAY_DAYS,
+  /** Exactly N×24h from `fromDate`, instead of snapping to 23:59 Bali.
+   *
+   * The end-of-day snap makes an amoCRM task read as "Today" all day, which is
+   * right for the qualification cadence. But it also collapses every lead of a
+   * given day onto ONE instant — the owner got seven follow-ups arriving
+   * together at midday. For a "we replied, wait a day" clock the point is the
+   * gap since THAT lead's own message: answered at 8pm, chased at 8pm. */
+  exact = false,
 ): Date | null {
   const days = delayDays[levelIndex];
   if (days === undefined) return null; // max follow-up level reached
+
+  if (exact) return new Date(fromDate.getTime() + days * DAY_MS);
 
   // Shift to Bali clock, floor to start of current Bali day, add N days,
   // set to 23:59:59 of target day so the task shows as "Today" all day in AmoCRM,

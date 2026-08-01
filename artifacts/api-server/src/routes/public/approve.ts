@@ -469,9 +469,16 @@ router.post("/approve", async (req, res) => {
     if (sug.kind === "push") {
       const sentLevel = sug.followupLevel ?? 1;
       const level = Math.max(0, sentLevel);
+      // Rental: its own 1-day spacing, counted exactly from this send, so a
+      // day's follow-ups no longer all land on the same minute.
+      const isRentalSend = (prevSyncRow?.pipeline ?? "").trim().toLowerCase() === "rental";
       const precomputedNextAt =
-        nextFollowupDate(approveNow, level) ??
-        new Date(approveNow.getTime() + 7 * 24 * 60 * 60 * 1000);
+        nextFollowupDate(
+          approveNow,
+          level,
+          isRentalSend ? FOLLOWUP_DELAY_DAYS_RENTAL : undefined,
+          isRentalSend,
+        ) ?? new Date(approveNow.getTime() + 7 * 24 * 60 * 60 * 1000);
       await db
         .update(leadsSyncTable)
         .set({

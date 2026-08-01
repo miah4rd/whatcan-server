@@ -30,7 +30,9 @@ export const FOLLOWUP_DELAY_DAYS_RENTAL = [1, 1, 1];
  */
 export function followupClockAfterReply(from: Date, pipeline: string | null | undefined): Date | null {
   const isRental = (pipeline ?? "").trim().toLowerCase() === "rental";
-  return nextFollowupDate(from, 0, isRental ? FOLLOWUP_DELAY_DAYS_RENTAL : undefined);
+  // Rental counts EXACTLY 24h from this lead's own last message — answered at
+  // 8pm, chased at 8pm. Unicorn keeps its configured end-of-day cadence.
+  return nextFollowupDate(from, 0, isRental ? FOLLOWUP_DELAY_DAYS_RENTAL : undefined, isRental);
 }
 
 /** Map a Rental lead's current stage name to its touch-sequence level (0 = New LEAD / touch 0). */

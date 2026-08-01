@@ -238,10 +238,32 @@ const PAGE_HTML = `<!doctype html>
   // URLs in conversation bubbles are tappable: a client quoting a villa link
   // ("this one looks good") was dead text, so the broker could not open the very
   // villa being discussed. Linkified AFTER esc(), so nothing unescaped renders.
+  //
+  // Built WITHOUT a regex literal on purpose: this page is one big template
+  // literal, and the backslashes of a URL regex were eaten on the way out —
+  // the browser received a broken pattern, the whole script failed to parse and
+  // the app rendered a blank screen on the owner's phone.
   function linkify(escaped) {
-    return escaped.replace(/(https?:\/\/[^\s<]+)/g, function (u) {
-      return '<a href="' + u + '" target="_blank" rel="noopener" style="color:#7dd3fc;text-decoration:underline;word-break:break-all">' + u + "</a>";
-    });
+    var out = "", rest = String(escaped);
+    for (;;) {
+      var at = rest.indexOf("http");
+      if (at === -1 || (rest.substr(at, 7) !== "http://" && rest.substr(at, 8) !== "https://")) break;
+      out += rest.slice(0, at);
+      rest = rest.slice(at);
+      var stop = rest.length;
+      for (var i = 0; i < rest.length; i++) {
+        // Compared by CHARACTER CODE, never by an escape sequence: this page is
+        // one template literal, so a backslash-n written anywhere here (even in
+        // a comment) arrives as a real line break and breaks the whole script.
+        var code = rest.charCodeAt(i);
+        if (code === 32 || code === 60 || code === 10 || code === 13 || code === 9) { stop = i; break; }
+      }
+      var url = rest.slice(0, stop);
+      while (url.length && ".,;:!?)".indexOf(url.charAt(url.length - 1)) !== -1) url = url.slice(0, -1);
+      out += '<a href="' + url + '" target="_blank" rel="noopener" style="color:#7dd3fc;text-decoration:underline;word-break:break-all">' + url + "</a>";
+      rest = rest.slice(url.length);
+    }
+    return out + rest;
   }
 
   function esc(s) {
@@ -280,6 +302,27 @@ const PAGE_HTML = `<!doctype html>
     if (item.lead_stage) html += '<span class="badge stagepill">' + esc(item.lead_stage) + '</span>';
     if (item.discard_flagged) html += '<span class="badge discard">\\u2298 Review</span>';
     return html;
+  }
+
+  // Every message shows when it was sent. Without it the broker opens a thread
+  // and cannot tell whether the last line is from ten minutes or three days ago.
+  // Times come from the phone's own clock, which on Bali is the client's clock.
+  var MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+  function sameDay(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+  function fmtAt(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    var hm = pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    var now = new Date();
+    if (sameDay(d, now)) return hm;
+    if (sameDay(d, new Date(now.getTime() - 86400000))) return "Yesterday " + hm;
+    var base = d.getDate() + " " + MON[d.getMonth()];
+    if (d.getFullYear() !== now.getFullYear()) base += " " + d.getFullYear();
+    return base + ", " + hm;
   }
 
   function fmtAgo(iso) {
@@ -997,7 +1040,8 @@ const PAGE_HTML = `<!doctype html>
         var m = msgs[i];
         var isUs = m.from === "us";
         html += '<div class="tmsg ' + (isUs ? "us" : "lead") + '">';
-        html += '<div class="tmsg-hdr"><span class="tsender">' + (isUs ? "You" : "Lead") + '</span></div>';
+        var _at = fmtAt(m.at);
+        html += '<div class="tmsg-hdr"><span class="tsender">' + (isUs ? "You" : "Lead") + '</span>' + (_at ? '<span class="tat">' + esc(_at) + '</span>' : '') + '</div>';
         html += '<div class="tbubble">' + linkify(esc(m.text)) + '</div>';
         html += '</div>';
       }
