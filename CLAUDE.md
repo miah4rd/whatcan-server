@@ -151,7 +151,14 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   instruction as highest authority and decides text + links together; the code
   applies its choice without budget swaps, language overrides or dedupe on this
   path. Only facts survive as hard limits: no invented prices/demand, no URLs in
-  the body, no internal codes.
+  the body, no internal codes. Named listings even disable the budget swap.
+  Known ways this law has been silently broken — check for their pattern before
+  adding ANY logic to the edit path: a keyword layer guessing intent between the
+  command and the execution; the server inferring "hand-curated" from a link
+  diff the bot's own re-pick created; a parser distorting the world (a yearly
+  budget read as monthly, "3 or 4" read as exactly 4) so the bot obeyed inside
+  a wrong picture. Any "я сказал X, бот сделал Y" report outranks feature work,
+  and the fix is verified by replaying the broker's EXACT edit sequence.
 - **An edit must move the links too, not just the words.** `/suggest` returned
   text only, so a broker dictating "these are too expensive" got a rewritten
   message with the same expensive links. The revision now feeds the matcher
