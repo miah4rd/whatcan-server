@@ -1,7 +1,7 @@
 import { logger } from "./logger";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { getTopPicksForBroker } from "./broker-picks-tracker";
-import { allAreaNames, areaMatches, areaNamesInText } from "./bali-areas";
+import { allAreaNames, areaMatches, areaNamesInText, parentAreaOf } from "./bali-areas";
 
 const SUPABASE_URL = process.env["SUPABASE_URL"] ?? "";
 const SUPABASE_ANON_KEY = process.env["SUPABASE_ANON_KEY"] ?? "";
@@ -566,6 +566,40 @@ function dedupeByTitle(list: SupabaseProperty[]): SupabaseProperty[] {
   });
 }
 
+/**
+ * The owner's criteria hierarchy, stated as system law: BEDROOMS, AREA, BUDGET
+ * are the core — everything else (style, features, views) is secondary. A lead
+ * who arrived from a listing ad has told us the core WITHOUT words: the villa
+ * they clicked carries the bedrooms and the district. Those fill any criterion
+ * the client has not stated themselves — their own words always override.
+ */
+function inheritCriteriaFromAnchor(
+  criteria: { areas: string[]; bedrooms: number | null },
+  recentLeadMessages: string[],
+  pool: SupabaseProperty[],
+): void {
+  if (criteria.bedrooms !== null && criteria.areas.length > 0) return;
+  const ids = new Set(
+    recentLeadMessages.flatMap((m) =>
+      Array.from((m ?? "").matchAll(/\/property\/([A-Za-z0-9-]+)/gi)).map((x) => x[1]!.toUpperCase()),
+    ),
+  );
+  if (ids.size === 0) return;
+  const anchor = pool.find((p) => ids.has(p.id.toUpperCase()));
+  if (!anchor) return;
+  if (criteria.bedrooms === null && anchor.bedrooms) {
+    criteria.bedrooms = anchor.bedrooms;
+  }
+  if (criteria.areas.length === 0 && anchor.area) {
+    const parent = parentAreaOf(anchor.area);
+    if (parent) criteria.areas = [parent];
+  }
+  logger.info(
+    { anchor: anchor.id, bedrooms: criteria.bedrooms, areas: criteria.areas },
+    "criteria inherited from the villa the lead came in on",
+  );
+}
+
 /** A shortlist of one is a take-it-or-leave-it, not a choice. Never send fewer. */
 const MIN_SHORTLIST = 2;
 
@@ -598,6 +632,7 @@ export async function candidatesForLead(opts: {
 
   const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
   const criteria = extractLeadCriteria(criteriaSource, pool);
+  inheritCriteriaFromAnchor(criteria, opts.recentLeadMessages ?? [], pool);
 
   let candidates = pool;
   if (criteria.areas.length > 0) {
@@ -931,6 +966,8 @@ Return an EMPTY list when sending listings would be the wrong move:
 - The lead has just expressed interest in a SPECIFIC listing they were already shown ("I like this one", "this looks good", quoting one link approvingly). The conversation should now move toward a viewing or the practical next step on THAT property — pushing a fresh batch talks over them.
 - The lead is arranging a viewing, negotiating terms, or discussing a property they've already chosen.
 - The conversation gives truly nothing to go on (e.g. only a greeting).
+
+CORE CRITERIA, IN PRIORITY ORDER: bedrooms, area, budget. A candidate that violates a stated core criterion is the wrong pick no matter how good it looks — style, features and views are secondary and only break ties among candidates that satisfy the core.
 
 STYLE COUNTS AS A CRITERION. Each catalog line carries a "style:" part — the villa's features and a slice of its description. When the lead describes how they want it to look or feel (modern, luxury, minimalist, traditional, jungle, bright, quiet, family), match that against those words as seriously as you match area and bedrooms. Two villas of the right size in the right area are not interchangeable if only one is the style they asked for.
 

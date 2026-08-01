@@ -113,6 +113,11 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   same-named units and the client reads the repeat as a mistake (`dedupeByTitle`).
 - **Budget unknown → spread the three across price points** rather than asking.
   The reaction names the budget for us (`spreadByPrice`).
+- **Core criteria, the owner's hierarchy: bedrooms → area → budget.** Everything
+  else (style, features, views) is secondary and only breaks ties. An ad lead
+  inherits missing core criteria from the anchor villa they clicked (bedrooms
+  exact-or-bigger, area widened to the parent district); the client's own words
+  always override the inherited values.
 - **A lead who arrives on a specific listing anchors the shortlist**: that listing
   plus comparable alternatives. The anchor is read ONLY from what the LEAD wrote —
   reading the whole conversation fed our own sent links back as "the answer".

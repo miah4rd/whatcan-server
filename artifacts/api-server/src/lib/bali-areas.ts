@@ -152,3 +152,18 @@ export function areaNamesInText(text: string): string[] {
   }
   return found;
 }
+
+/**
+ * The parent district of a sub-area ("Padonan" -> "Canggu"). Used when criteria
+ * are inherited from an ad's anchor villa: the client clicked one villa in
+ * Padonan, but the honest search area is the whole district, not that street.
+ */
+export function parentAreaOf(subArea: string | null | undefined): string | null {
+  const w = (subArea ?? "").trim().toLowerCase();
+  if (!w) return null;
+  for (const g of AREA_GROUPS) {
+    if (g.name.toLowerCase() === w) return g.name;
+    if ((g.subAreas ?? []).some((s) => s.toLowerCase() === w)) return g.name;
+  }
+  return subArea!.trim();
+}
