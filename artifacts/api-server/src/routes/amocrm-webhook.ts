@@ -1039,6 +1039,14 @@ router.post("/amocrm/regen-live", async (req, res) => {
 
     const lead = rows[0];
 
+    // The budget gate applies here too — this path generated a draft for a lead
+    // the gate had already condemned (the villa she clicked costs 28M against a
+    // 40M bar), because regen skipped every entry-point check.
+    if (await enforceBudgetFilter(String(leadId))) {
+      res.json({ ok: true, closed: true, reason: "budget below the broker's threshold" });
+      return;
+    }
+
     // ── Stage whitelist (testing filter) ───────────────────────────────────
     if (!isStageWhitelisted(lead.leadStage)) {
       res.json({ ok: true, skipped: true, reason: "stage not in testing whitelist", stage: lead.leadStage });

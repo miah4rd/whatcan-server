@@ -251,7 +251,7 @@ const WORD_NUMBERS: Record<string, number> = {
 function extractLeadCriteria(
   recentLeadMessages: string[],
   pool: SupabaseProperty[],
-): { areas: string[]; bedrooms: number | null } {
+): { areas: string[]; bedrooms: number | null; bedroomsMax: number | null } {
   // Vocabulary is the site's own area list (parents AND sub-areas), not just the
   // strings that happen to appear in the catalog — a lead saying "Uluwatu" must
   // be understood even when every Uluwatu listing is tagged Pecatu or Bingin.
@@ -261,6 +261,7 @@ function extractLeadCriteria(
     .sort((a, b) => b.length - a.length);
   const areas: string[] = [];
   let bedrooms: number | null = null;
+  let bedroomsMax: number | null = null;
 
   for (const raw of recentLeadMessages) {
     const lower = (raw ?? "").toLowerCase();
@@ -279,6 +280,19 @@ function extractLeadCriteria(
     }
 
     if (bedrooms === null) {
+      // "3 or 4 bedrooms" / "3-4BR" is a RANGE. The single-digit pattern used to
+      // grab the "4" (the digit adjacent to "bedrooms"), silently turning
+      // "3 or 4" into "exactly 4" — which threw every 3BR out of Lukass's
+      // shortlist while he had said 3 was fine.
+      const range = lower.match(/(\d+)\s*(?:-|–|to|or|или|до)\s*(\d+)\s*(?:bed\b|beds\b|br\b|bedroom|bedrooms|спал)/);
+      if (range?.[1] && range?.[2]) {
+        const a = parseInt(range[1], 10);
+        const b = parseInt(range[2], 10);
+        bedrooms = Math.min(a, b);
+        bedroomsMax = Math.max(a, b);
+      }
+    }
+    if (bedrooms === null) {
       const digit = lower.match(/(\d+)\s*-?\s*(?:bed\b|beds\b|br\b|bedroom|bedrooms|спал)/);
       if (digit?.[1]) {
         bedrooms = parseInt(digit[1], 10);
@@ -293,7 +307,7 @@ function extractLeadCriteria(
     if (areas.length > 0 && bedrooms !== null) break;
   }
 
-  return { areas, bedrooms };
+  return { areas, bedrooms, bedroomsMax };
 }
 
 /**
@@ -662,14 +676,22 @@ export async function candidatesForLead(opts: {
     if (byArea.length > 0) candidates = byArea;
   }
   if (criteria.bedrooms !== null) {
-    const exact = candidates.filter((p) => p.bedrooms === criteria.bedrooms);
-    if (exact.length >= MIN_SHORTLIST) candidates = exact;
-    else {
-      const bigger = candidates.filter(
-        (p) => p.bedrooms !== null && p.bedrooms >= criteria.bedrooms! && p.bedrooms <= criteria.bedrooms! + 1,
-      );
-      if (bigger.length >= MIN_SHORTLIST) candidates = bigger;
-      else if (exact.length > 0) candidates = exact;
+    const min = criteria.bedrooms;
+    const max = criteria.bedroomsMax ?? null;
+    if (max !== null) {
+      // A stated range filters to the range — no widening games needed.
+      const within = candidates.filter((p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= max);
+      if (within.length > 0) candidates = within;
+    } else {
+      const exact = candidates.filter((p) => p.bedrooms === min);
+      if (exact.length >= MIN_SHORTLIST) candidates = exact;
+      else {
+        const bigger = candidates.filter(
+          (p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= min + 1,
+        );
+        if (bigger.length >= MIN_SHORTLIST) candidates = bigger;
+        else if (exact.length > 0) candidates = exact;
+      }
     }
   }
 
@@ -902,27 +924,33 @@ export async function matchProperties(opts: {
     if (byArea.length > 0) candidates = byArea;
   }
   if (criteria.bedrooms !== null) {
-    const exact = candidates.filter((p) => p.bedrooms === criteria.bedrooms);
-    // A filter that leaves a single survivor makes a shortlist impossible — and
-    // the broker asked for two or three options every time. Widen by one bedroom
-    // (a 3BR seeker will happily look at a 4BR) before accepting a pool of one.
-    if (exact.length >= MIN_SHORTLIST) {
-      candidates = exact;
+    const min = criteria.bedrooms;
+    const max = criteria.bedroomsMax ?? null;
+    if (max !== null) {
+      // A stated range ("3 or 4 bedrooms") filters to the range as given.
+      const within = candidates.filter((p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= max);
+      if (within.length > 0) candidates = within;
     } else {
-      // Widen UPWARDS first. A client who asked for 3 bedrooms will look at a 4,
-      // but showing them a 2 reads as not having listened — and it happened:
-      // Josua asked for 2-4BR, ideally 3-4, and got a 2BR in the shortlist.
-      const bigger = candidates.filter(
-        (p) => p.bedrooms !== null && p.bedrooms >= criteria.bedrooms! && p.bedrooms <= criteria.bedrooms! + 1,
-      );
-      if (bigger.length >= MIN_SHORTLIST) {
-        candidates = bigger;
+      const exact = candidates.filter((p) => p.bedrooms === min);
+      // A filter that leaves a single survivor makes a shortlist impossible — and
+      // the broker asked for two or three options every time. Widen by one bedroom
+      // (a 3BR seeker will happily look at a 4BR) before accepting a pool of one.
+      if (exact.length >= MIN_SHORTLIST) {
+        candidates = exact;
       } else {
-        const near = candidates.filter(
-          (p) => p.bedrooms !== null && Math.abs(p.bedrooms - criteria.bedrooms!) <= 1,
+        // Widen UPWARDS first: a 3BR seeker will look at a 4BR, never at a 2BR.
+        const bigger = candidates.filter(
+          (p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= min + 1,
         );
-        if (near.length >= MIN_SHORTLIST) candidates = near;
-        else if (exact.length > 0) candidates = exact;
+        if (bigger.length >= MIN_SHORTLIST) {
+          candidates = bigger;
+        } else {
+          const near = candidates.filter(
+            (p) => p.bedrooms !== null && Math.abs(p.bedrooms - min) <= 1,
+          );
+          if (near.length >= MIN_SHORTLIST) candidates = near;
+          else if (exact.length > 0) candidates = exact;
+        }
       }
     }
   }
