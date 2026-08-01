@@ -328,6 +328,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     lastLeadText,
     leadNotes: opts.leadNotes ?? null,
     responsibleUser: opts.responsibleUser ?? null,
+    leadId: opts.leadId,
   });
 
   const completion = await chatCompletion({

@@ -7,7 +7,7 @@ import { parseDialogContent, formatDialogForAI, describeConversationTiming, conv
 import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { buildRentalSystemPrompt } from "./rental-prompt";
-import { matchProperties, availabilityForCriteria, type PropertyPick, type BrokerIntent } from "./property-catalog";
+import { matchProperties, availabilityForCriteria, describePropertiesByIds, type PropertyPick, type BrokerIntent } from "./property-catalog";
 import { db, pendingSuggestionsTable } from "@workspace/db";
 import { eq, inArray, and } from "drizzle-orm";
 
@@ -153,13 +153,29 @@ export async function pickPropertyAttachments(opts: {
     // "always two or three" rule is about giving a choice to someone still
     // looking — this person already chose, and burying their villa among
     // alternatives is the opposite of listening.
-    const isFirstContactAdLead =
-      /Ad enquiry:/i.test(opts.leadNotes ?? "") &&
-      opts.dialogMessages.filter((m) => m.from === "lead").length <= 1;
-
+    // Only the advertised villa on first contact — UNLESS their stated budget
+    // says they cannot afford it. Then a single unaffordable link is the worst
+    // possible first message, and they get real alternatives instead.
     // Core criteria the client typed into the ad form. Their own words in the
     // conversation still win — this only fills what they never said out loud.
     const card = await getLeadCardCriteria(opts.leadId).catch(() => null);
+    const cardBudget = card?.budgetIdrMonthly ?? null;
+    const adAffordable =
+      !cardBudget ||
+      !card ||
+      (await (async () => {
+        const m = /Ad enquiry:\s*([A-Z0-9-]+)/i.exec(opts.leadNotes ?? "");
+        if (!m?.[1]) return true;
+        const known = await describePropertiesByIds([m[1]]).catch(() => new Map());
+        const hit = known.get(m[1].toUpperCase());
+        if (!hit || typeof hit.priceIdr !== "number" || hit.priceIdr <= 0) return true;
+        return hit.priceIdr <= Math.round(cardBudget * 1.15);
+      })());
+
+    const isFirstContactAdLead =
+      /Ad enquiry:/i.test(opts.leadNotes ?? "") &&
+      opts.dialogMessages.filter((m) => m.from === "lead").length <= 1 &&
+      adAffordable;
 
     const picks = await matchProperties({
       listingType: opts.isRental ? "rent" : "sale",
@@ -496,6 +512,8 @@ export async function buildPromptAdditions(opts: {
   leadNotes?: string | null;
   /** Whose voice this is — resolves the SIGNING name and their learned preferences. */
   responsibleUser?: string | null;
+  /** Needed to read the lead card's own fields (the ad form's answers). */
+  leadId?: string | null;
 }): Promise<string> {
   const recentLeadMessages = [
     opts.lastLeadText ?? "",
@@ -538,6 +556,11 @@ export async function buildPromptAdditions(opts: {
   // caught their eye. The first reply should answer that and nothing else — thank
   // them, name the villa, hand over the link with the details, ask ONE thing.
   const adMatch = /Ad enquiry:\s*([A-Z0-9-]+)\s*—\s*(.+)/i.exec(opts.leadNotes ?? "");
+  const cardForAd = await getLeadCardCriteria(opts.leadId ?? "").catch(() => null);
+  const adBudgetNote =
+    cardForAd?.budgetIdrMonthly
+      ? `\n\nTHEY TOLD THE FORM THEIR BUDGET: ${Math.round(cardForAd.budgetIdrMonthly / 1_000_000)} million rupiah a month. If the villa they clicked costs more than that, say so kindly and early — do not pretend it fits — and point them at what does. Their money is the more reliable signal of the two.`
+      : "";
   const adRule =
     adMatch && opts.dialogMessages.filter((m) => m.from === "lead").length <= 1
       ? `\n\nTHIS PERSON CAME FROM AN AD FOR ONE SPECIFIC VILLA: "${adMatch[2]!.trim()}". That is their entire enquiry — they have not told you dates, budget or anything else. Write the first message like a person who just got their enquiry:\n- greet them by name and thank them for reaching out;\n- say you can see which villa caught their eye and NAME IT exactly as written above;\n- tell them the link below has the full details — photos, the location on the map, what's included;\n- then ONE question, the one that decides everything: when they are looking to move in and for how long.\nDo NOT offer alternative villas in this first message. They came for this one; suggesting others straight away reads as not having listened.
@@ -871,6 +894,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     lastLeadText,
     leadNotes: opts.leadNotes ?? null,
     responsibleUser: opts.responsibleUser ?? null,
+    leadId: opts.leadId,
   });
 
   // Property matching only needs the conversation, not our reply — so it runs

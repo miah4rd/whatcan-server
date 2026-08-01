@@ -800,6 +800,26 @@ export async function matchProperties(opts: {
     // Their own pick tells us the criteria better than any question would. Send
     // it back WITH comparable alternatives, so they still get a real choice.
     const anchor = anchors[0]!;
+
+    // THE DOUBLE CHECK. Clicking an ad is one signal; the budget they typed into
+    // the form is another, and they disagree more often than you'd think —
+    // people click a villa they cannot actually afford. The anchor used to be
+    // returned before any budget test, so a client who wrote "30 million" got
+    // the 60-million villa they clicked as the answer. When the two disagree,
+    // their MONEY wins: the villa they can't afford stops leading the shortlist.
+    const anchorBudget =
+      opts.listingType === "rent"
+        ? extractBudgetIdr(
+            [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean),
+          ) ?? opts.cardCriteria?.budgetIdrMonthly ?? null
+        : null;
+    const anchorPrice = priceOf(anchor);
+    const anchorTooExpensive =
+      !!anchorBudget && anchorPrice > 0 && anchorPrice > Math.round(anchorBudget * 1.15);
+
+    const affordable = (p: SupabaseProperty) =>
+      !anchorBudget || priceOf(p) === 0 || priceOf(p) <= Math.round(anchorBudget * 1.15);
+
     const similar = pool
       .filter(
         (p) =>
@@ -807,14 +827,27 @@ export async function matchProperties(opts: {
           (anchor.bedrooms === null || p.bedrooms === null || Math.abs((p.bedrooms ?? 0) - anchor.bedrooms) <= 1),
       )
       .sort((a, b) => {
+        // Within budget first when the two signals disagree, then same area.
+        const byMoney = (affordable(a) ? 0 : 1) - (affordable(b) ? 0 : 1);
+        if (anchorTooExpensive && byMoney !== 0) return byMoney;
         const sameArea = (x: SupabaseProperty) => (areaMatches(x.area, [anchor.area ?? ""]) ? 0 : 1);
         const byArea = sameArea(a) - sameArea(b);
         return byArea !== 0 ? byArea : rankForShortlist(a, b);
       });
-    const shortlist = dedupeByTitle([...anchors, ...similar]).slice(0, limit);
+
+    const ordered = anchorTooExpensive ? [...similar, ...anchors] : [...anchors, ...similar];
+    const shortlist = dedupeByTitle(ordered).slice(0, limit);
     logger.info(
-      { anchor: anchor.id, total: shortlist.length },
-      "matchProperties: built the shortlist around the listing the lead came in on",
+      {
+        anchor: anchor.id,
+        total: shortlist.length,
+        budgetIdr: anchorBudget,
+        anchorPrice,
+        mismatch: anchorTooExpensive,
+      },
+      anchorTooExpensive
+        ? "matchProperties: DOUBLE CHECK — the clicked villa costs more than the budget they stated, leading with what fits"
+        : "matchProperties: built the shortlist around the listing the lead came in on",
     );
     return shortlist.map(toPick);
   }
@@ -1117,15 +1150,15 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
  */
 export async function describePropertiesByIds(
   ids: string[],
-): Promise<Map<string, { title: string; label: string; url: string }>> {
-  const out = new Map<string, { title: string; label: string; url: string }>();
+): Promise<Map<string, { title: string; label: string; url: string; priceIdr: number }>> {
+  const out = new Map<string, { title: string; label: string; url: string; priceIdr: number }>();
   if (ids.length === 0) return out;
   const wanted = new Set(ids.map((i) => i.toUpperCase()));
   const all = await fetchAllProperties().catch(() => [] as SupabaseProperty[]);
   for (const p of all) {
     if (!wanted.has(p.id.toUpperCase())) continue;
     const pick = toPick(p);
-    out.set(p.id.toUpperCase(), { title: p.title, label: pick.label, url: pick.url });
+    out.set(p.id.toUpperCase(), { title: p.title, label: pick.label, url: pick.url, priceIdr: priceOf(p) });
   }
   return out;
 }
