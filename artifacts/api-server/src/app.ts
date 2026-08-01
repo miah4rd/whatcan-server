@@ -66,6 +66,18 @@ pool.query(`ALTER TABLE leads_sync ADD COLUMN IF NOT EXISTS pipeline text`)
   .then(() => logger.info("startup migration: pipeline column ensured"))
   .catch((err) => logger.error({ err }, "startup migration failed"));
 
+pool.query(`CREATE TABLE IF NOT EXISTS autopilot_settings (
+  pipeline TEXT PRIMARY KEY,
+  mode TEXT NOT NULL DEFAULT 'off',
+  up_to_stage_name TEXT,
+  daily_cap INTEGER NOT NULL DEFAULT 30,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`)
+  .catch((err) => logger.error({ err }, "startup migration: autopilot_settings failed"));
+
+pool.query(`ALTER TABLE pending_suggestions ADD COLUMN IF NOT EXISTS auto_sent BOOLEAN DEFAULT FALSE`)
+  .catch((err) => logger.error({ err }, "startup migration: auto_sent failed"));
+
 pool.query(`ALTER TABLE pending_suggestions ADD COLUMN IF NOT EXISTS requested_at TIMESTAMPTZ`)
   .catch((err) => logger.error({ err }, "startup migration: pending_suggestions.requested_at failed"));
 

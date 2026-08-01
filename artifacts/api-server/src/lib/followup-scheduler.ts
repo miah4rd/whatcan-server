@@ -16,6 +16,7 @@ import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
 import { isBroker, brokerKey } from "./broker-identity";
 import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
+import { maybeAutopilot } from "./autopilot";
 
 /**
  * True when the timeline (lead_messages) holds a message FROM THE LEAD that is
@@ -732,6 +733,7 @@ export async function processFollowups(): Promise<void> {
             objectionCategory: warmupEntry.id,
             attachments: [],
           });
+          void maybeAutopilot(lead.leadId);
         }
 
         // Mark as level 1 done. nextFollowupAt = null — the amoCRM task
@@ -934,6 +936,7 @@ export async function processFollowups(): Promise<void> {
           objectionCategory: entry.id,
           attachments: [],
         });
+        void maybeAutopilot(lead.leadId);
       }
 
       // Update followupLevel to the stage-derived level.
@@ -1202,6 +1205,7 @@ export async function processUnansweredLive(): Promise<void> {
       }).catch(() => {});
 
       logger.info({ leadId: lead.leadId }, "live suggestion generated for unanswered lead");
+      void maybeAutopilot(lead.leadId);
     } catch (err) {
       logger.error({ err, leadId: lead.leadId }, "unanswered live generation error");
     }

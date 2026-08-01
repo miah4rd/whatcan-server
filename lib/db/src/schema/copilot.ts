@@ -36,6 +36,8 @@ export const pendingSuggestionsTable = pgTable("pending_suggestions", {
    * scheduler producing it. Such a draft must never be snoozed or deleted by the
    * "the broker already has a task, don't nag" rules — it IS what they asked for. */
   requestedAt: timestamp("requested_at", { withTimezone: true }),
+  /** True when autopilot sent this without a human approve (see lib/autopilot). */
+  autoSent: boolean("auto_sent").default(false),
   suggestionText: text("suggestion_text").notNull(),
   triggeredByMessageAt: timestamp("triggered_by_message_at", { withTimezone: true }),
   status: text("status").notNull().default("pending"),

@@ -15,6 +15,7 @@ import { buildRentalSystemPrompt } from "../lib/rental-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
 import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments } from "../lib/generate-suggestion";
+import { maybeAutopilot } from "../lib/autopilot";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
 import { classifyStage } from "../lib/stage-classifier";
 import { logger } from "../lib/logger";
@@ -498,6 +499,11 @@ export async function queueSuggestion(opts: {
         .where(eq(pendingSuggestionsTable.id, existing[0]!.id));
     }
   }
+
+  // Staged delegation: if the broker has handed this lead's stage to the bot,
+  // the freshly queued suggestion is sent without waiting for approval — or
+  // logged as "would send" in dry mode. Covers LIVE and push alike.
+  void maybeAutopilot(opts.leadId);
 }
 
 /**

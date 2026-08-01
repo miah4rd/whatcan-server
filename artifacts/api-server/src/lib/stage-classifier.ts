@@ -96,7 +96,7 @@ function isWorkflowStage(stageName: string): boolean {
 type AmoStatus = { id: number; name: string; sort: number };
 type AmoPipeline = { id: number; name: string; _embedded: { statuses: AmoStatus[] } };
 
-type PipelineStages = {
+export type PipelineStages = {
   /** Every stage in funnel order — used to resolve the lead's CURRENT stage. */
   all: StageDef[];
   /** Stages the classifier may choose, with what each means in a chat. */
@@ -166,6 +166,11 @@ function findStage(stages: StageDef[], name: string | null | undefined): { def: 
   const wanted = name.trim().toLowerCase();
   const index = stages.findIndex((s) => s.name.trim().toLowerCase() === wanted);
   return index === -1 ? null : { def: stages[index]!, index };
+}
+
+/** The live stage map for one pipeline — autopilot needs the funnel's own order. */
+export async function getPipelineStages(pipeline: string): Promise<PipelineStages | null> {
+  return (await loadPipelines()).get(pipeline.trim().toLowerCase()) ?? null;
 }
 
 export type StageClassification = {
