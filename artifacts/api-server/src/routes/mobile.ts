@@ -422,6 +422,14 @@ const PAGE_HTML = `<!doctype html>
     }
     _voiceEl = edEl; _voiceBtn = btnEl;
     _voiceWanted = true;
+    // Dictating means the on-screen keyboard is dead weight — on iPhone it eats
+    // half the screen, hiding the very draft being corrected. Blur the field to
+    // dismiss it; the transcript still lands in the field's value, and the
+    // keyboard comes back the moment the broker taps the text to type.
+    try {
+      edEl.blur();
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    } catch (e) {}
     if (btnEl) { btnEl.textContent = "\\u23f3"; btnEl.title = "Starting microphone…"; }
     var sr = new SR();
     sr.lang = navigator.language || "ru-RU";

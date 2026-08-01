@@ -2316,6 +2316,9 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
     _voiceEdEl  = edEl;
     _voiceEdBtn = btnEl;
     _voiceEdHint = hintEl;
+    // Dictating means the on-screen keyboard is dead weight — on a phone it eats
+    // half the screen, hiding the very draft being corrected. Harmless on desktop.
+    try { edEl.blur(); if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch {}
     if (btnEl) { btnEl.textContent = "⏳"; btnEl.title = "Starting microphone…"; }
 
     const sr = new SR();
