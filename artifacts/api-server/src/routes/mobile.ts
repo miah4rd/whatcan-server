@@ -837,21 +837,17 @@ const PAGE_HTML = `<!doctype html>
     html += "</div></div>";
     if (apOpen) {
       var apStages = apData && apData.stages ? apData.stages : [];
-      var apSet = (apData && apData.setting) || { mode: "off", upToStageName: null, dailyCap: 30 };
+      var apSet = (apData && apData.setting) || { mode: "off", upToStageName: null };
+      var apOn = apSet.mode === "on" && apSet.upToStageName;
       html += '<div class="stage-hint" id="ap-panel" style="margin-top:8px">';
-      html += '<b>\\ud83e\\udd16 \\u0410\\u0432\\u0442\\u043e\\u043f\\u0438\\u043b\\u043e\\u0442 (Rental)</b> \\u2014 \\u0431\\u043e\\u0442 \\u0448\\u043b\\u0451\\u0442 \\u0431\\u0435\\u0437 \\u0430\\u043f\\u0440\\u0443\\u0432\\u0430 \\u0434\\u043e \\u044d\\u0442\\u0430\\u043f\\u0430:<br>';
-      html += '<select id="ap-stage" style="margin:6px 0;max-width:100%">';
+      html += '<b>\\ud83e\\udd16 \\u0410\\u0432\\u0442\\u043e\\u043f\\u0438\\u043b\\u043e\\u0442</b> \\u2014 \\u0431\\u0435\\u0437 \\u0430\\u043f\\u0440\\u0443\\u0432\\u0430 \\u0434\\u043e \\u0432\\u044b\\u0431\\u0440\\u0430\\u043d\\u043d\\u043e\\u0433\\u043e \\u044d\\u0442\\u0430\\u043f\\u0430. \\u0412\\u044b\\u043a\\u043b = \\u0432\\u0441\\u0451 \\u0447\\u0435\\u0440\\u0435\\u0437 \\u0430\\u043f\\u0440\\u0443\\u0432, \\u043a\\u0430\\u043a \\u043e\\u0431\\u044b\\u0447\\u043d\\u043e.<br>';
+      html += '<select id="ap-sel" style="margin:6px 6px 0 0;max-width:75%">';
+      html += '<option value=""' + (!apOn ? " selected" : "") + '>\\u0412\\u044b\\u043a\\u043b</option>';
       for (var ai = 0; ai < apStages.length; ai++) {
-        html += '<option value="' + esc(apStages[ai]) + '"' + (apSet.upToStageName === apStages[ai] ? " selected" : "") + '>' + esc(apStages[ai]) + "</option>";
+        html += '<option value="' + esc(apStages[ai]) + '"' + (apOn && apSet.upToStageName === apStages[ai] ? " selected" : "") + '>\\u0414\\u043e \\u044d\\u0442\\u0430\\u043f\\u0430 \\u00ab' + esc(apStages[ai]) + '\\u00bb</option>';
       }
-      html += "</select> ";
-      html += '<select id="ap-mode" style="margin:6px 0">';
-      html += '<option value="off"' + (apSet.mode === "off" ? " selected" : "") + '>\\u0412\\u044b\\u043a\\u043b</option>';
-      html += '<option value="dry"' + (apSet.mode === "dry" ? " selected" : "") + '>\\u041d\\u0430\\u0431\\u043b\\u044e\\u0434\\u0435\\u043d\\u0438\\u0435</option>';
-      html += '<option value="on"' + (apSet.mode === "on" ? " selected" : "") + '>\\u0411\\u043e\\u0435\\u0432\\u043e\\u0439</option>';
-      html += "</select> ";
-      html += '<button class="refresh-btn" id="ap-save">\\u0421\\u043e\\u0445\\u0440\\u0430\\u043d\\u0438\\u0442\\u044c</button>';
-      html += '<div class="dim" style="font-size:11px;margin-top:4px">\\u041d\\u0430\\u0431\\u043b\\u044e\\u0434\\u0435\\u043d\\u0438\\u0435: \\u043d\\u0435 \\u0448\\u043b\\u0451\\u0442, \\u0442\\u043e\\u043b\\u044c\\u043a\\u043e \\u043f\\u0438\\u0448\\u0435\\u0442 \\u0432 \\u043b\\u043e\\u0433 \\u00ab\\u043e\\u0442\\u043f\\u0440\\u0430\\u0432\\u0438\\u043b \\u0431\\u044b \\u0432\\u043e\\u0442 \\u044d\\u0442\\u043e\\u00bb. \\u041b\\u0438\\u043c\\u0438\\u0442 30/\\u0434\\u0435\\u043d\\u044c.</div>';
+      html += "</select>";
+      html += '<button class="refresh-btn" id="ap-save">OK</button>';
       html += "</div>";
     }
     html += '<div class="tabs">';
@@ -903,13 +899,16 @@ const PAGE_HTML = `<!doctype html>
     };
     var apSave = $("#ap-save");
     if (apSave) apSave.onclick = async function () {
-      var mode = $("#ap-mode").value, stage = $("#ap-stage").value;
+      var v = $("#ap-sel").value;
+      var payload = v
+        ? { pipeline: "rental", mode: "on", upToStageName: v, dailyCap: 30 }
+        : { pipeline: "rental", mode: "off", upToStageName: null, dailyCap: 30 };
       try {
-        var r2 = await fetch(API + "/autopilot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pipeline: "rental", mode: mode, upToStageName: stage, dailyCap: 30 }) });
+        var r2 = await fetch(API + "/autopilot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
         var j2 = await r2.json();
-        if (j2 && j2.ok) { apData.setting = j2.setting; showToast(mode === "off" ? "Автопилот выключен" : mode === "dry" ? "Автопилот: наблюдение до «" + stage + "»" : "Автопилот БОЕВОЙ до «" + stage + "»"); apOpen = false; render(); }
-        else showToast((j2 && j2.error) || "Не сохранилось");
-      } catch (e) { showToast("Не сохранилось: " + (e && e.message)); }
+        if (j2 && j2.ok) { if (apData) apData.setting = j2.setting; showToast(v ? "\\u0410\\u0432\\u0442\\u043e\\u043f\\u0438\\u043b\\u043e\\u0442: \\u0434\\u043e \\u00ab" + v + "\\u00bb \\u0431\\u0435\\u0437 \\u0430\\u043f\\u0440\\u0443\\u0432\\u0430" : "\\u0410\\u0432\\u0442\\u043e\\u043f\\u0438\\u043b\\u043e\\u0442 \\u0432\\u044b\\u043a\\u043b\\u044e\\u0447\\u0435\\u043d"); apOpen = false; render(); }
+        else showToast((j2 && j2.error) || "\\u041d\\u0435 \\u0441\\u043e\\u0445\\u0440\\u0430\\u043d\\u0438\\u043b\\u043e\\u0441\\u044c");
+      } catch (e) { showToast("\\u041d\\u0435 \\u0441\\u043e\\u0445\\u0440\\u0430\\u043d\\u0438\\u043b\\u043e\\u0441\\u044c: " + (e && e.message)); }
     };
     var togglePushBtn = $("#toggle-push-btn");
     if (togglePushBtn) togglePushBtn.onclick = togglePush;
