@@ -22,11 +22,13 @@ import setTemperatureRouter from "./set-temperature";
 import rescheduleTaskRouter from "./reschedule-task";
 import noReplyNeededRouter from "./no-reply-needed";
 import autopilotRouter from "./autopilot";
+import budgetFilterRouter from "./budget-filter";
 
 const router = Router();
 
 router.use(suggestRouter);
 router.use(autopilotRouter);
+router.use(budgetFilterRouter);
 router.use(suggestionsRouter);
 router.use(feedbackRouter);
 router.use(approveRouter);

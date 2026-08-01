@@ -166,6 +166,12 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   affordable-first catalog it still picked villas at double the figure; told the
   broker objected to the current links it dropped even the cheapest. The ceiling
   is applied to the final shortlist, and it may not cut it below two.
+- **The rental budget gate (owner's explicit exception to "never auto-close").**
+  `lib/budget-filter.ts`: Rental leads whose own stated budget (or ad/scout form
+  note) parses below the broker-set threshold are closed to Lost BEFORE any
+  generation — "чтобы не тратить ни время, ни энергию, ни токены". Ranges take
+  the upper bound, equal-to-threshold stays, no parsed budget = worked normally.
+  The dial lives in the mobile 🤖 panel next to the autopilot.
 - **Rental changes must not leak into Unicorn.** The sales funnel is configured
   the way the owner wants it — leave its cadence and flow alone. Anything shaped
   for Rental is gated: the ad-lead and scout seeding is `pipeline='rental'` only,

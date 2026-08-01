@@ -847,7 +847,14 @@ const PAGE_HTML = `<!doctype html>
         html += '<option value="' + esc(apStages[ai]) + '"' + (apOn && apSet.upToStageName === apStages[ai] ? " selected" : "") + '>Up to \\u201c' + esc(apStages[ai]) + '\\u201d</option>';
       }
       html += "</select>";
-      html += '<button class="refresh-btn" id="ap-save">OK</button>';
+      var bf = (apData && apData.bf) || { enabled: false, minMonthlyIdr: 0 };
+      html += '<div style="margin-top:8px"><b>\\ud83d\\udcb0 Budget filter</b> \\u2014 rental leads with a stated budget below this go to Closed Lost automatically, no tokens spent:</div>';
+      html += '<input id="bf-min" type="number" min="1" step="1" value="' + (bf.minMonthlyIdr ? Math.round(bf.minMonthlyIdr / 1000000) : 40) + '" style="width:70px;margin:6px 4px 0 0"> million IDR/mo ';
+      html += '<select id="bf-on" style="margin:6px 0">';
+      html += '<option value="off"' + (!bf.enabled ? " selected" : "") + '>Off</option>';
+      html += '<option value="on"' + (bf.enabled ? " selected" : "") + '>On</option>';
+      html += "</select><br>";
+      html += '<button class="refresh-btn" id="ap-save" style="margin-top:6px">Save</button>';
       html += "</div>";
     }
     html += '<div class="tabs">';
@@ -893,7 +900,13 @@ const PAGE_HTML = `<!doctype html>
     if (apBtn) apBtn.onclick = async function () {
       apOpen = !apOpen;
       if (apOpen && !apData) {
-        try { var r = await fetch(API + "/autopilot?pipeline=rental"); apData = await r.json(); } catch (e) { apData = null; }
+        try {
+          var r = await fetch(API + "/autopilot?pipeline=rental");
+          apData = await r.json();
+          var rb = await fetch(API + "/budget-filter?pipeline=rental");
+          var jb = await rb.json();
+          apData.bf = (jb && jb.setting) || { enabled: false, minMonthlyIdr: 0 };
+        } catch (e) { apData = null; }
       }
       render();
     };
@@ -906,8 +919,16 @@ const PAGE_HTML = `<!doctype html>
       try {
         var r2 = await fetch(API + "/autopilot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
         var j2 = await r2.json();
-        if (j2 && j2.ok) { if (apData) apData.setting = j2.setting; showToast(v ? "Autopilot: sending without approval up to \\u201c" + v + "\\u201d" : "Autopilot off"); apOpen = false; render(); }
-        else showToast((j2 && j2.error) || "Could not save");
+        var bfOn = $("#bf-on").value === "on";
+        var bfMin = Math.max(0, Math.round(Number($("#bf-min").value) || 0)) * 1000000;
+        var r3 = await fetch(API + "/budget-filter", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pipeline: "rental", enabled: bfOn, minMonthlyIdr: bfMin }) });
+        var j3 = await r3.json();
+        if (j2 && j2.ok && j3 && j3.ok) {
+          if (apData) { apData.setting = j2.setting; apData.bf = j3.setting; }
+          showToast((v ? "Autopilot up to \\u201c" + v + "\\u201d" : "Autopilot off") + " \\u00b7 Budget filter " + (bfOn ? "ON at " + Math.round(bfMin / 1000000) + "M" : "off"));
+          apOpen = false; render();
+        }
+        else showToast((j2 && j2.error) || (j3 && j3.error) || "Could not save");
       } catch (e) { showToast("Could not save: " + (e && e.message)); }
     };
     var togglePushBtn = $("#toggle-push-btn");

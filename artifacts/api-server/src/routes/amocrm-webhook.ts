@@ -16,6 +16,7 @@ import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
 import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments } from "../lib/generate-suggestion";
 import { maybeAutopilot } from "../lib/autopilot";
+import { enforceBudgetFilter } from "../lib/budget-filter";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
 import { classifyStage } from "../lib/stage-classifier";
 import { logger } from "../lib/logger";
@@ -855,6 +856,9 @@ router.post("/amocrm/webhook", async (req, res) => {
           // Re-reads the lead fresh at fire time so whichever trigger's timer
           // actually runs still reflects the latest content, not a stale snapshot.
           scheduleLiveReply(leadId, async () => {
+            // The budget gate runs BEFORE any generation — a below-threshold
+            // rental lead is closed without spending a token on it.
+            if (await enforceBudgetFilter(leadId)) return;
             const [freshLead] = await db
               .select({
                 content: leadsSyncTable.content,

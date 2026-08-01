@@ -75,6 +75,14 @@ pool.query(`CREATE TABLE IF NOT EXISTS autopilot_settings (
 )`)
   .catch((err) => logger.error({ err }, "startup migration: autopilot_settings failed"));
 
+pool.query(`CREATE TABLE IF NOT EXISTS budget_filter_settings (
+  pipeline TEXT PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  min_monthly_idr BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`)
+  .catch((err) => logger.error({ err }, "startup migration: budget_filter_settings failed"));
+
 pool.query(`ALTER TABLE pending_suggestions ADD COLUMN IF NOT EXISTS auto_sent BOOLEAN DEFAULT FALSE`)
   .catch((err) => logger.error({ err }, "startup migration: auto_sent failed"));
 

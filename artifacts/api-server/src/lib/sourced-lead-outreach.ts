@@ -23,6 +23,7 @@ import { eq, and, isNull, isNotNull, or, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch } from "./amo-client";
 import { describePropertiesByIds } from "./property-catalog";
+import { enforceBudgetFilter } from "./budget-filter";
 
 type AmoNote = { note_type?: string; params?: { text?: string } };
 
@@ -181,6 +182,10 @@ export async function processSourcedLeadOutreach(): Promise<number> {
       }
 
       if (!adListing && (!note || !looksLikeClientRequest(note))) continue;
+
+      // The ad/scout form may carry the budget — a below-threshold lead goes to
+      // the bin instead of being seeded and worked.
+      if (await enforceBudgetFilter(lead.leadId, [note])) continue;
 
       // The person, not the lead title — for ad leads those are different things.
       const leadName = (await fetchContactName(lead.leadId)) || (await fetchLeadName(lead.leadId));

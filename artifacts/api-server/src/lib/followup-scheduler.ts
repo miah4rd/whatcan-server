@@ -17,6 +17,7 @@ import { refreshLeadProfile } from "./lead-profile";
 import { isBroker, brokerKey } from "./broker-identity";
 import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
 import { maybeAutopilot } from "./autopilot";
+import { enforceBudgetFilter } from "./budget-filter";
 
 /**
  * True when the timeline (lead_messages) holds a message FROM THE LEAD that is
@@ -1126,6 +1127,8 @@ export async function processUnansweredLive(): Promise<void> {
 
   for (const lead of batch) {
     try {
+      // Below-budget rentals are binned before any generation spends a token.
+      if (await enforceBudgetFilter(lead.leadId)) continue;
       const content = lead.content ?? "";
       if (!content) continue;
 
