@@ -127,6 +127,19 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   rather than pretending the budget was met.
 - **Each property link is sent as its own WhatsApp message** — glued together,
   WhatsApp only unfurls a preview banner for the first one.
+- **Every edit teaches, server-side.** The correction store existed but only the
+  Chrome extension wrote to it — edits from the mobile page taught nothing, which
+  read as "the bot never learns". `learnFromRevision` now distils and stores the
+  lesson on the `/suggest` endpoint itself, and `correctionsPromptBlock` injects
+  the lessons into BOTH generation paths via `buildPromptAdditions` (they used to
+  reach only the revision prompt, so fresh drafts ignored everything taught).
+- **The broker signs with their display name, never the login.** A prompt rule
+  said "sign off as 'HoS'" with absolute priority — fighting the owner's repeated
+  correction to sign as Nick. `brokerDisplayName` (broker-identity.ts) maps
+  account labels to real names; nothing reaches for the raw login anymore.
+- **Earlier instructions in an editing session still stand.** Each revision pass
+  saw only the newest feedback, so a name fixed in step one silently reverted in
+  step two; the composer now receives the whole chain as standing instructions.
 - **On the edit path the broker's instruction is LAW.** Baseline rules exist for
   the bot's own drafts; a dictated edit means the broker has seen the result and
   decided. The one-pass composer (`composeReplyWithListings`) gets the

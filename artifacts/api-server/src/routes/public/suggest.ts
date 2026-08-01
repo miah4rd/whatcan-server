@@ -9,6 +9,8 @@ import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
 import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings } from "../../lib/generate-suggestion";
+import { brokerDisplayName } from "../../lib/broker-identity";
+import { learnFromRevision } from "../../lib/broker-corrections";
 import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, toPickPublic } from "../../lib/property-catalog";
 
 const router = Router();
@@ -287,8 +289,12 @@ ${matchedStep.message.trim()}`;
   // playbook happens to mention (e.g. the built-in guide says "sign off as
   // Robert" regardless of who's actually using it).
   const realBrokerName = (body.brokerName || (body.brokerId && body.brokerId !== "anon" ? body.brokerId : "")).trim();
-  const brokerIdentityOverride = realBrokerName
-    ? `\n\nBROKER IDENTITY (absolute, highest priority): Sign off using this broker's real name — "${realBrokerName}" — ignoring any other name mentioned anywhere above (a default playbook may reference an example name that is not this broker). If a sign-off doesn't fit naturally, just omit it rather than using the wrong name.`
+  // The DISPLAY name, never the login. This rule used to read "sign off as
+  // 'HoS'" with absolute priority — so the owner corrected the signature to
+  // Nick on every edit and was overridden by our own prompt every time.
+  const brokerSigningName = brokerDisplayName(realBrokerName) || realBrokerName;
+  const brokerIdentityOverride = brokerSigningName
+    ? `\n\nBROKER IDENTITY (absolute, highest priority): this broker's name is "${brokerSigningName}" — use it if you introduce yourself or sign, and never an account label (such as "HoS") or any example name from the playbook. If a sign-off doesn't fit naturally, omit it rather than using the wrong name.`
     : "";
 
   // ── Stage-aware routing ───────────────────────────────────────────────────
@@ -603,6 +609,11 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     // re-picked on a wording-only edit, dropped the villa an ad lead came in on,
     // and once described a villa it had not attached. Kept behind a flag so the
     // work survives; enable ONE_PASS_COMPOSE=1 only once those are covered.
+    // Every edit is a lesson. Saved server-side and off the critical path, so
+    // learning no longer depends on which surface the broker edits from — the
+    // mobile page never saved a correction at all.
+    if (revision) void learnFromRevision(brokerId, revision);
+
     if (process.env["ONE_PASS_COMPOSE"] !== "0" && revision && body.leadId) {
       try {
         const leadOwn = (body.messages ?? [])
@@ -618,10 +629,16 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           brokerInstruction: revision,
         });
 
+        const priorInstructions = (body.revisionChain ?? [])
+          .slice(0, -1)
+          .map((r) => (r.feedback ?? "").trim())
+          .filter(Boolean);
+
         const composed = await composeReplyWithListings({
           systemPrompt: system,
           conversation: transcript,
           brokerInstruction: revision,
+          priorInstructions,
           currentDraft: text,
           currentAttachments: currentIds.map((id) => ({
             id,

@@ -1,4 +1,6 @@
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL } from "./ai-client";
+import { brokerDisplayName } from "./broker-identity";
+import { correctionsPromptBlock } from "./broker-corrections";
 import { logger } from "./logger";
 import { parseDialogContent, formatDialogForAI, describeConversationTiming } from "./dialog-parser";
 import { getKnowledgeBase } from "./knowledge-base";
@@ -304,6 +306,10 @@ export async function composeReplyWithListings(opts: {
   systemPrompt: string;
   conversation: string;
   brokerInstruction: string;
+  /** Earlier instructions from THIS editing session. The owner corrected his
+   * name in step one and watched step two revert it — each pass saw only the
+   * newest feedback, so every earlier decision silently expired. */
+  priorInstructions?: string[];
   currentDraft: string;
   currentAttachments: Array<{ id: string; label: string }>;
   /** True when the broker edited the link list themselves — a fact, not a guess. */
@@ -331,6 +337,13 @@ Half-obeying an instruction is the one unforgivable failure in this task.
 
 You decide BOTH things as one decision: the message text AND which property
 links go with it (listing_ids).
+${
+        (opts.priorInstructions ?? []).length > 0
+          ? `\nInstructions the broker ALREADY gave while editing this same message — every one of them still stands; the newest instruction adds to them and never silently undoes them:\n${opts
+              .priorInstructions!.map((i) => `- ${i}`)
+              .join("\n")}\n`
+          : ""
+      }
 
 Currently attached to the draft:
 ${current}
@@ -459,6 +472,8 @@ export async function buildPromptAdditions(opts: {
   /** Card notes — carries the "Ad enquiry: <ID> — <title>" marker for a lead that
    * arrived by clicking a listing ad. */
   leadNotes?: string | null;
+  /** Whose voice this is — resolves the SIGNING name and their learned preferences. */
+  responsibleUser?: string | null;
 }): Promise<string> {
   const recentLeadMessages = [
     opts.lastLeadText ?? "",
@@ -507,7 +522,19 @@ export async function buildPromptAdditions(opts: {
 - Never claim the villa is popular, in demand, "getting a lot of interest" or going fast. You have no such information, and this one had a single view. An invented pressure line is the fastest way to lose a serious client.`
       : "";
 
-  return buildLeadNameRule(opts.dialogMessages) + attachedRule + stockLine + currencyRule + adRule;
+  // Who is writing, by their real name — never the login. "HoS" signed messages
+  // because the account label leaked into the prompt as if it were a person.
+  const displayName = brokerDisplayName(opts.responsibleUser);
+  const identityRule = displayName
+    ? `\n\nYOU ARE WRITING AS ${displayName}. If you introduce yourself or sign anywhere, that is the only name you use — never an account label like "HoS".`
+    : "";
+
+  // What the broker has taught on earlier edits. This is the other half of
+  // "the bot never learns": lessons were saved but only the revision endpoint
+  // read them, so every fresh draft ignored them.
+  const learned = await correctionsPromptBlock(opts.responsibleUser);
+
+  return buildLeadNameRule(opts.dialogMessages) + attachedRule + stockLine + currencyRule + adRule + identityRule + learned;
 }
 
 export async function generateSuggestion(opts: {
@@ -821,6 +848,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     dialogMessages: dialog.messages,
     lastLeadText,
     leadNotes: opts.leadNotes ?? null,
+    responsibleUser: opts.responsibleUser ?? null,
   });
 
   // Property matching only needs the conversation, not our reply — so it runs

@@ -32,3 +32,22 @@ export function brokerKey(name: string | null | undefined): string {
   const n = normalizeBroker(name);
   return (n || "unknown").slice(0, 64);
 }
+
+/**
+ * The name a broker SIGNS with, as opposed to the label they log in with.
+ * "HoS" is an account, not a person — the owner signs as Nick, told the bot so
+ * on every edit, and kept being overridden by a prompt rule that said "sign as
+ * HoS" with absolute priority. Display names live here so no prompt ever
+ * reaches for the login again.
+ */
+const DISPLAY_NAMES: Record<string, string> = {
+  hos: "Nick",
+  nick: "Nick",
+};
+
+export function brokerDisplayName(name: string | null | undefined): string {
+  const n = normalizeBroker(name);
+  if (!n) return "";
+  if (DISPLAY_NAMES[n]) return DISPLAY_NAMES[n];
+  return n.charAt(0).toUpperCase() + n.slice(1);
+}
