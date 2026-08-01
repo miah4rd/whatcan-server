@@ -188,6 +188,21 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   a flat 24h. Fixes to genuine bugs (a reply scheduling no follow-up at all, an
   invented price, a wrong-language message) do apply everywhere — those were
   never anyone's configuration.
+- **A follow-up is timed from THAT lead's own last message.** `nextFollowupDate`
+  snapped every result to 23:59:59 Bali of the target day, which collapsed a
+  whole day of leads onto one instant — seven follow-ups arrived "ровно в
+  двенадцать". Rental sends pass `exact` so the time is literally last message
+  + 24h; the day-snap remains for the funnels that were built around it.
+- **A follow-up nobody wrote cannot learn anything.** Rental used to fall back
+  to a hardcoded `TOUCH_TEMPLATES` variant when the broker had configured no
+  script: canned text he never loaded, signed with a default name, identical
+  across leads, and — since no model ran — untouched by every correction he had
+  dictated. That fallback is Rental-off; the message is generated with the
+  conversation, `correctionsPromptBlock`, and `brokerDisplayName`. Non-Rental
+  funnels keep the templates: theirs are configured, not accidental.
+- **Every message in `/m` shows its time.** Without it a thread cannot be placed
+  in time and the broker cannot tell a ten-minute-old reply from a three-day-old
+  one. `fmtAt` is written with no backslashes (template-literal trap).
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
 
