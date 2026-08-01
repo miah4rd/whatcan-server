@@ -24,6 +24,7 @@ import { logger } from "./logger";
 import { extractBudgetIdr } from "./property-catalog";
 import { parseDialogContent } from "./dialog-parser";
 import { closeLeadAsLost } from "./amo-client";
+import { getLeadCardCriteria } from "./lead-card-fields";
 
 export type BudgetFilterSetting = {
   pipeline: string;
@@ -104,8 +105,12 @@ export async function enforceBudgetFilter(leadId: string, extraTexts?: string[])
       .messages.filter((m) => m.from === "lead")
       .map((m) => m.text)
       .reverse();
+    // The ad form writes the budget onto the CARD, not into the chat — read it,
+    // otherwise a form-filled budget looked like "no budget stated" and the lead
+    // was worked anyway.
+    const card = await getLeadCardCriteria(leadId);
     const texts = [...leadTexts, ...(extraTexts ?? []), lead.leadNotes ?? ""].filter(Boolean);
-    const budget = extractBudgetIdr(texts);
+    const budget = extractBudgetIdr(texts) ?? card.budgetIdrMonthly;
     if (!budget) return false; // no stated budget → no decision → work the lead
     if (budget >= setting.minMonthlyIdr) return false;
 

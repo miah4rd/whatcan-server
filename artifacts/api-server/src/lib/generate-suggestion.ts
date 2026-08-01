@@ -1,5 +1,6 @@
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL } from "./ai-client";
 import { brokerDisplayName } from "./broker-identity";
+import { getLeadCardCriteria } from "./lead-card-fields";
 import { correctionsPromptBlock } from "./broker-corrections";
 import { logger } from "./logger";
 import { parseDialogContent, formatDialogForAI, describeConversationTiming, conversationWindow } from "./dialog-parser";
@@ -156,6 +157,10 @@ export async function pickPropertyAttachments(opts: {
       /Ad enquiry:/i.test(opts.leadNotes ?? "") &&
       opts.dialogMessages.filter((m) => m.from === "lead").length <= 1;
 
+    // Core criteria the client typed into the ad form. Their own words in the
+    // conversation still win — this only fills what they never said out loud.
+    const card = await getLeadCardCriteria(opts.leadId).catch(() => null);
+
     const picks = await matchProperties({
       listingType: opts.isRental ? "rent" : "sale",
       ...(isFirstContactAdLead ? { limit: 1 } : {}),
@@ -167,6 +172,9 @@ export async function pickPropertyAttachments(opts: {
       brokerInstruction: opts.brokerInstruction ?? null,
       currentAttachmentIds: opts.currentAttachmentIds ?? [],
       brokerIntent: opts.brokerIntent ?? null,
+      cardCriteria: card
+        ? { bedrooms: card.bedrooms, areas: card.areas, budgetIdrMonthly: card.budgetIdrMonthly }
+        : null,
       // newest first — the criteria filter takes the most recent area/bedroom pin
       // The lead's OWN messages, newest first. The window used to be 5, which is
       // where a long conversation lost its own requirements: Josua agreed on

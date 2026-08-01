@@ -10,6 +10,7 @@ import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
 import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings } from "../../lib/generate-suggestion";
 import { brokerDisplayName } from "../../lib/broker-identity";
+import { getLeadCardCriteria } from "../../lib/lead-card-fields";
 import { learnFromRevision } from "../../lib/broker-corrections";
 import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, toPickPublic, invalidatePropertyCache } from "../../lib/property-catalog";
 
@@ -626,10 +627,14 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         // the catalog as it is now, not as it was ten minutes ago.
         invalidatePropertyCache();
         const known = await describePropertiesByIds(currentIds).catch(() => new Map());
+        const cardCrit = await getLeadCardCriteria(body.leadId).catch(() => null);
         const pool = await candidatesForLead({
           listingType: dbPipeline.toLowerCase() === "rental" ? "rent" : "sale",
           recentLeadMessages: [...leadOwn].reverse(),
           brokerInstruction: revision,
+          cardCriteria: cardCrit
+            ? { bedrooms: cardCrit.bedrooms, areas: cardCrit.areas, budgetIdrMonthly: cardCrit.budgetIdrMonthly }
+            : null,
         });
 
         const priorInstructions = (body.revisionChain ?? [])

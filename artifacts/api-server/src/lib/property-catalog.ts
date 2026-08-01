@@ -621,6 +621,9 @@ export async function candidatesForLead(opts: {
   excludeIds?: string[];
   recentLeadMessages?: string[];
   brokerInstruction?: string | null;
+  /** Core criteria from the lead CARD (the ad form filled them) — lowest
+   * precedence, they only fill what the client never said themselves. */
+  cardCriteria?: { bedrooms: number | null; areas: string[]; budgetIdrMonthly: number | null } | null;
 }): Promise<{
   candidates: SupabaseProperty[];
   budgetIdr: number | null;
@@ -634,6 +637,15 @@ export async function candidatesForLead(opts: {
   const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
   const criteria = extractLeadCriteria(criteriaSource, pool);
   inheritCriteriaFromAnchor(criteria, opts.recentLeadMessages ?? [], pool);
+  // The ad form's answers fill whatever is still unknown — never override.
+  if (opts.cardCriteria) {
+    if (criteria.bedrooms === null && opts.cardCriteria.bedrooms) {
+      criteria.bedrooms = opts.cardCriteria.bedrooms;
+    }
+    if (criteria.areas.length === 0 && opts.cardCriteria.areas.length > 0) {
+      criteria.areas = [...opts.cardCriteria.areas];
+    }
+  }
 
   let candidates = pool;
   if (criteria.areas.length > 0) {
@@ -655,7 +667,10 @@ export async function candidatesForLead(opts: {
   const priced = candidates.filter(hasPrice);
   if (priced.length >= MIN_SHORTLIST) candidates = priced;
 
-  const budgetIdr = opts.listingType === "rent" ? extractBudgetIdr(criteriaSource) : null;
+  const budgetIdr =
+    opts.listingType === "rent"
+      ? extractBudgetIdr(criteriaSource) ?? opts.cardCriteria?.budgetIdrMonthly ?? null
+      : null;
   const budgetCeiling = budgetIdr ? Math.round(budgetIdr * 1.15) : null;
   if (budgetCeiling) {
     const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
@@ -745,6 +760,9 @@ export async function matchProperties(opts: {
   /** Already-parsed instruction, when the caller has decided on it — avoids
    * classifying the same sentence twice in one request. */
   brokerIntent?: BrokerIntent | null;
+  /** Core criteria taken from the lead CARD (the ad form filled them). Lowest
+   * precedence: they fill only what the client never said themselves. */
+  cardCriteria?: { bedrooms: number | null; areas: string[]; budgetIdrMonthly: number | null } | null;
 }): Promise<PropertyPick[]> {
   // A shortlist of one isn't a choice, and two is thin. Three is what a broker
   // would actually send; the matcher may still return fewer if stock is short.
@@ -879,7 +897,10 @@ export async function matchProperties(opts: {
   // at double is not, and that is what went out before.
   const budgetIdr =
     opts.listingType === "rent"
-      ? brokerIntent?.budgetIdrMonthly ?? extractBudgetIdr(criteriaSource)
+      ? brokerIntent?.budgetIdrMonthly ??
+        extractBudgetIdr(criteriaSource) ??
+        opts.cardCriteria?.budgetIdrMonthly ??
+        null
       : null;
   const budgetCeiling = budgetIdr ? Math.round(budgetIdr * 1.15) : null;
   let withinBudgetCount = 0;
