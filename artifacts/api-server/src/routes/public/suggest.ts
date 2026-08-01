@@ -940,9 +940,9 @@ Rewrite it so it contains NO property names, NO listing links and NO list of vil
     req.log.error({ err }, "ai error");
     res.status(outOfCredit ? 503 : 502).json({
       error: outOfCredit
-        ? "Закончились кредиты Anthropic API — бот не может писать сообщения. Пополните баланс в аккаунте Anthropic, перезапуск не нужен."
+        ? "Anthropic API credits have run out — the bot cannot write messages. Top up the balance in the Anthropic account; no restart needed."
         : overloaded
-          ? "Модель сейчас перегружена — попробуйте ещё раз через минуту."
+          ? "The model is overloaded right now — try again in a minute."
           : `AI error: ${msg.slice(0, 200)}`,
     });
   }

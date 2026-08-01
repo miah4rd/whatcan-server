@@ -840,11 +840,11 @@ const PAGE_HTML = `<!doctype html>
       var apSet = (apData && apData.setting) || { mode: "off", upToStageName: null };
       var apOn = apSet.mode === "on" && apSet.upToStageName;
       html += '<div class="stage-hint" id="ap-panel" style="margin-top:8px">';
-      html += '<b>\\ud83e\\udd16 \\u0410\\u0432\\u0442\\u043e\\u043f\\u0438\\u043b\\u043e\\u0442</b> \\u2014 \\u0431\\u0435\\u0437 \\u0430\\u043f\\u0440\\u0443\\u0432\\u0430 \\u0434\\u043e \\u0432\\u044b\\u0431\\u0440\\u0430\\u043d\\u043d\\u043e\\u0433\\u043e \\u044d\\u0442\\u0430\\u043f\\u0430. \\u0412\\u044b\\u043a\\u043b = \\u0432\\u0441\\u0451 \\u0447\\u0435\\u0440\\u0435\\u0437 \\u0430\\u043f\\u0440\\u0443\\u0432, \\u043a\\u0430\\u043a \\u043e\\u0431\\u044b\\u0447\\u043d\\u043e.<br>';
+      html += '<b>\\ud83e\\udd16 Autopilot</b> \\u2014 send without approval up to a chosen stage. Off = every message waits for you, as now.<br>';
       html += '<select id="ap-sel" style="margin:6px 6px 0 0;max-width:75%">';
-      html += '<option value=""' + (!apOn ? " selected" : "") + '>\\u0412\\u044b\\u043a\\u043b</option>';
+      html += '<option value=""' + (!apOn ? " selected" : "") + '>Off</option>';
       for (var ai = 0; ai < apStages.length; ai++) {
-        html += '<option value="' + esc(apStages[ai]) + '"' + (apOn && apSet.upToStageName === apStages[ai] ? " selected" : "") + '>\\u0414\\u043e \\u044d\\u0442\\u0430\\u043f\\u0430 \\u00ab' + esc(apStages[ai]) + '\\u00bb</option>';
+        html += '<option value="' + esc(apStages[ai]) + '"' + (apOn && apSet.upToStageName === apStages[ai] ? " selected" : "") + '>Up to \\u201c' + esc(apStages[ai]) + '\\u201d</option>';
       }
       html += "</select>";
       html += '<button class="refresh-btn" id="ap-save">OK</button>';
@@ -906,9 +906,9 @@ const PAGE_HTML = `<!doctype html>
       try {
         var r2 = await fetch(API + "/autopilot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
         var j2 = await r2.json();
-        if (j2 && j2.ok) { if (apData) apData.setting = j2.setting; showToast(v ? "\\u0410\\u0432\\u0442\\u043e\\u043f\\u0438\\u043b\\u043e\\u0442: \\u0434\\u043e \\u00ab" + v + "\\u00bb \\u0431\\u0435\\u0437 \\u0430\\u043f\\u0440\\u0443\\u0432\\u0430" : "\\u0410\\u0432\\u0442\\u043e\\u043f\\u0438\\u043b\\u043e\\u0442 \\u0432\\u044b\\u043a\\u043b\\u044e\\u0447\\u0435\\u043d"); apOpen = false; render(); }
-        else showToast((j2 && j2.error) || "\\u041d\\u0435 \\u0441\\u043e\\u0445\\u0440\\u0430\\u043d\\u0438\\u043b\\u043e\\u0441\\u044c");
-      } catch (e) { showToast("\\u041d\\u0435 \\u0441\\u043e\\u0445\\u0440\\u0430\\u043d\\u0438\\u043b\\u043e\\u0441\\u044c: " + (e && e.message)); }
+        if (j2 && j2.ok) { if (apData) apData.setting = j2.setting; showToast(v ? "Autopilot: sending without approval up to \\u201c" + v + "\\u201d" : "Autopilot off"); apOpen = false; render(); }
+        else showToast((j2 && j2.error) || "Could not save");
+      } catch (e) { showToast("Could not save: " + (e && e.message)); }
     };
     var togglePushBtn = $("#toggle-push-btn");
     if (togglePushBtn) togglePushBtn.onclick = togglePush;

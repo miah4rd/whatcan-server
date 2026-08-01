@@ -418,7 +418,7 @@ router.post("/approve", async (req, res) => {
         ok: false,
         error: "channel_unresolved",
         message:
-          "Не удалось определить канал отправки для этого лида — сообщение НЕ отправлено. Отправьте вручную из amoCRM (подсказка осталась в инбоксе).",
+          "Could not resolve the sending channel for this lead — the message was NOT sent. Send it manually from amoCRM (the draft stays in your inbox).",
       });
       return;
     }
@@ -447,7 +447,7 @@ router.post("/approve", async (req, res) => {
           ok: false,
           error: "multiple_chat_threads",
           message:
-            "У этого лида в WhatsApp сейчас 2 активные беседы на один номер — авто-отправка ушла бы клиенту дважды. Сообщение НЕ отправлено. Отправьте его вручную из amoCRM в основную переписку (подсказка осталась в инбоксе). Причина — дубль-тред в WAhelp, чинится на стороне интеграции.",
+            "This lead has 2 active WhatsApp threads on the same number — auto-sending would deliver the message twice. It was NOT sent. Send it manually from amoCRM into the main thread (the draft stays in your inbox). Cause: a duplicate thread in WAhelp, fixed on the integration side.",
         });
         return;
       }
