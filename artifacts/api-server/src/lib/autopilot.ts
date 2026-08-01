@@ -9,10 +9,16 @@
  *
  * Modes: 'off' (default — nothing changes), 'dry' (log only), 'on' (auto-send).
  * Scope: leads whose CURRENT stage sits at or before `up_to_stage_name` in the
- * funnel's own live order, in that pipeline only. Hard daily cap. Auto-send goes
- * through the real /approve endpoint on localhost, so every existing guard —
- * duplicate threads, channel resolution, stage advance, the owner-promise task,
- * the follow-up clock — applies to an autopilot send exactly as to a human one.
+ * funnel's own live order, in that pipeline only. Auto-send goes through the
+ * real /approve endpoint on localhost, so every existing guard — duplicate
+ * threads, channel resolution, stage advance, the owner-promise task, the
+ * follow-up clock — applies to an autopilot send exactly as to a human one.
+ *
+ * There is deliberately NO rate cap: a 30/day limit existed and the owner had
+ * it removed — "я сам буду контролить". His control instrument is the audit
+ * trail: every auto-send flips auto_sent=TRUE on the suggestion row, so "what
+ * did the bot send by itself" is always one query. The dailyCap field stays in
+ * the table/API but is not enforced.
  */
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
@@ -68,18 +74,6 @@ export async function setAutopilotSetting(s: AutopilotSetting): Promise<void> {
   logger.info({ setting: { ...s, pipeline: key } }, "autopilot: setting saved");
 }
 
-async function autoSentToday(pipeline: string): Promise<number> {
-  const res = await db.execute(sql`
-    SELECT count(*)::int AS n
-    FROM pending_suggestions p
-    JOIN leads_sync l ON l.lead_id = p.lead_id
-    WHERE p.auto_sent = TRUE
-      AND p.created_at > now() - interval '24 hours'
-      AND lower(coalesce(l.pipeline, '')) = ${pipeline}
-  `);
-  return firstRow<{ n: number }>(res)?.n ?? 0;
-}
-
 /**
  * Called after a suggestion lands in the inbox. Decides — by the broker's own
  * per-stage setting — whether the bot sends it itself.
@@ -127,15 +121,6 @@ export async function maybeAutopilot(leadId: string): Promise<void> {
       )
       .limit(1);
     if (!sug || !sug.text?.trim()) return;
-
-    const sentToday = await autoSentToday(pipeline);
-    if (sentToday >= setting.dailyCap) {
-      logger.warn(
-        { pipeline, sentToday, cap: setting.dailyCap },
-        "autopilot: daily cap reached — leaving for approval",
-      );
-      return;
-    }
 
     if (setting.mode === "dry") {
       logger.info(
