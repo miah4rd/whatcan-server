@@ -17,7 +17,7 @@ tap. Two surfaces, one server:
   (owner, Nikita, Alexander) edits there and commits, so every change is shared
   and versioned; no more parallel local copies. (History: two lines had forked —
   Nikita's served `ext71` and the owner's local `v85` that the brokers actually
-  ran; `v86` reconciles them, see `copilot-extension/CHANGELOG.md`.) Current: **ext87.zip (1.0.87)**.
+  ran; `v86` reconciles them, see `copilot-extension/CHANGELOG.md`.) Current: **ext88.zip (1.0.88)**.
   To release a change: edit files in `copilot-extension/`, bump
   `manifest.json` version + add a `CHANGELOG.md` line, rebuild the zip **with the
   files at the archive ROOT** (`Compress-Archive -Path copilot-extension/* -Dest
