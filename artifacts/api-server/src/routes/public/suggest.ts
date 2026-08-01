@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { eq, desc, and } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL, type ChatMessage } from "../../lib/ai-client";
 import { db, leadsSyncTable, brokerCorrectionsTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
-import { parseDialogContent, formatDialogForAI } from "../../lib/dialog-parser";
+import { parseDialogContent, formatDialogForAI, conversationWindow } from "../../lib/dialog-parser";
 import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing";
 import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
@@ -466,7 +466,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         messages: [
           {
             role: "user",
-            content: convTranscript.slice(-3000),
+            content: conversationWindow(convTranscript, 1000, 3000),
           },
         ],
         max_tokens: 60,
@@ -492,7 +492,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
       const tj = await chatCompletionJSON<{ temperature?: string }>({
         model: HELPER_MODEL,
         system: `You re-assess a real-estate lead's temperature from the conversation AND the attached screenshot (the SOURCE OF TRUTH). Output JSON {"temperature":"hot|warm|cold"}. hot = active buying intent / positive signals; warm = genuine engagement; cold = minimal / terse / no real signal.`,
-        messages: [{ role: "user", content: [{ type: "text", text: `Conversation (stored, may be stale):\n${transcript.slice(-3000)}\n\nBroker note: ${lastFb || "(none)"}` }, imageBlock] }],
+        messages: [{ role: "user", content: [{ type: "text", text: `Conversation (stored, may be stale):\n${conversationWindow(transcript, 1000, 3000)}\n\nBroker note: ${lastFb || "(none)"}` }, imageBlock] }],
         max_tokens: 30,
       });
       const t = String(tj.temperature || "").toLowerCase().trim();

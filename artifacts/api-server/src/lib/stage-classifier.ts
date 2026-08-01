@@ -25,6 +25,7 @@
 import { HELPER_MODEL, chatCompletionJSON } from "./ai-client";
 import { amoFetch } from "./amo-client";
 import { logger } from "./logger";
+import { conversationWindow } from "./dialog-parser";
 
 export type StageDef = { name: string; id: number };
 
@@ -231,7 +232,7 @@ Respond with JSON only, using a stage name EXACTLY as written above: {"stage": "
 Property links attached to the pending reply: ${opts.attachmentsCount}
 
 Conversation (oldest → newest):
-${opts.conversationText.slice(-4000)}
+${conversationWindow(opts.conversationText, 1500, 4000)}
 
 Broker's pending reply (not sent yet):
 ${opts.replyText.slice(0, 1200)}`,

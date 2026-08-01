@@ -2,7 +2,7 @@ import { chatCompletion, chatCompletionJSON, WRITER_MODEL } from "./ai-client";
 import { brokerDisplayName } from "./broker-identity";
 import { correctionsPromptBlock } from "./broker-corrections";
 import { logger } from "./logger";
-import { parseDialogContent, formatDialogForAI, describeConversationTiming } from "./dialog-parser";
+import { parseDialogContent, formatDialogForAI, describeConversationTiming, conversationWindow } from "./dialog-parser";
 import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { buildRentalSystemPrompt } from "./rental-prompt";
@@ -383,7 +383,7 @@ Respond with JSON only: {"message": "<the WhatsApp message>", "attachments_decis
       messages: [
         {
           role: "user",
-          content: `Conversation so far:\n${opts.conversation.slice(-9000)}\n\nCurrent draft:\n${opts.currentDraft}\n\nTHE BROKER'S INSTRUCTION:\n"${opts.brokerInstruction}"`,
+          content: `Conversation so far:\n${conversationWindow(opts.conversation)}\n\nCurrent draft:\n${opts.currentDraft}\n\nTHE BROKER'S INSTRUCTION:\n"${opts.brokerInstruction}"`,
         },
       ],
       max_tokens: 900,

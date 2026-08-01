@@ -1,4 +1,5 @@
 import { logger } from "./logger";
+import { conversationWindow } from "./dialog-parser";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { getTopPicksForBroker } from "./broker-picks-tracker";
 import { allAreaNames, areaMatches, areaNamesInText, parentAreaOf } from "./bali-areas";
@@ -993,7 +994,7 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
             opts.latestLeadMessage
               ? `LEAD'S LATEST MESSAGE — their current criteria, this overrides anything older:\n"${opts.latestLeadMessage.slice(0, 500)}"\n\n`
               : ""
-          }Conversation (background):\n${opts.conversationText.slice(-3000)}\n\nCatalog:\n${catalogBlock}`,
+          }Conversation (background):\n${conversationWindow(opts.conversationText)}\n\nCatalog:\n${catalogBlock}`,
         },
       ],
       // Room for three IDs plus whatever reasoning the model writes first —

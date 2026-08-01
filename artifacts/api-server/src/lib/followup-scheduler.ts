@@ -1,7 +1,7 @@
 import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable, leadMessagesTable } from "@workspace/db";
 import { lt, isNotNull, eq, and, or, isNull, inArray, desc, sql } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON , WRITER_MODEL } from "./ai-client";
-import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming } from "./dialog-parser";
+import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming, conversationWindow } from "./dialog-parser";
 import { getFollowupSteps, getQualificationSteps } from "./settings";
 import { logger } from "./logger";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
@@ -265,7 +265,7 @@ Constraints: minimum 6 hours, maximum 360 hours (15 days). Return null if no cle
       messages: [
         {
           role: "user",
-          content: formattedDialog.slice(-3000),
+          content: conversationWindow(formattedDialog),
         },
       ],
       max_tokens: 80,
@@ -304,7 +304,7 @@ Constraints: minimum 6 hours, maximum 360 hours (15 days). Return null if no cle
  */
 async function isLeadActiveForFollowup(content: string, stage: string): Promise<boolean> {
   try {
-    const snippet = content.slice(-3000);
+    const snippet = conversationWindow(content, 1000, 3000);
     const parsed = await chatCompletionJSON<{ active?: boolean; reason?: string }>({
       model: "claude-sonnet-5",
       system: `You are a CRM analyst. Given a sales conversation, decide if the lead is still a viable prospect worth following up with.

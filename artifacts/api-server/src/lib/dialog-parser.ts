@@ -275,3 +275,25 @@ export function nextFollowupDate(
   const targetBaliEndOfDay = baliDayStart + days * DAY_MS + (DAY_MS - 1000); // 23:59:59 Bali
   return new Date(targetBaliEndOfDay - BALI_OFFSET_MS);
 }
+
+/**
+ * A context window that keeps BOTH ends of the conversation.
+ *
+ * Several AI calls used a plain tail slice (-3000/-4000/-9000 chars), which on a
+ * long thread silently dropped the BEGINNING — the client's original request,
+ * the seeded ad enquiry, the first agreements. That is exactly the owner's
+ * complaint about replies "невпопад": the reply was written without the start
+ * of the story. The head survives now, whatever the length; only the middle is
+ * elided, with an explicit marker so the model knows something was skipped.
+ */
+export function conversationWindow(text: string, headChars = 2500, tailChars = 11000): string {
+  const t = text ?? "";
+  if (t.length <= headChars + tailChars + 200) return t;
+  return (
+    t.slice(0, headChars) +
+    "\n\n[... middle of the conversation omitted (" +
+    String(t.length - headChars - tailChars) +
+    " chars) — the beginning above and the latest part below are both real ...]\n\n" +
+    t.slice(-tailChars)
+  );
+}
