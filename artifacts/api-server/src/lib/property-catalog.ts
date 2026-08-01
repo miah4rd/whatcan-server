@@ -405,8 +405,15 @@ export function extractBudgetIdr(messages: string[]): number | null {
     const toMonthly = (n: number) =>
       Math.round(perYear ? n / 12 : n > 200_000_000 ? n / 12 : n);
 
-    // "30 million" / "750mill" / "30jt" / "30 juta" / "40 млн"
-    const short = m.match(/(\d[\d.,]*)\s*(jt\b|juta|mio\b|mln\b|mill(?:ion)?s?\b|млн|миллион)/);
+    // "30 million" / "750mill" / "30jt" / "30 juta" / "40 млн" — plus the ad
+    // form's bare-M shorthand ("Budget: 20-50M IDR/month"), which parsed to
+    // NOTHING, so Alex's 20-50M ceiling was invisible and villas at 55 and 88
+    // led his shortlist. The bare M only counts in a money context, so "500m
+    // from the beach" stays a distance.
+    const moneyContext = /idr|rp\b|rupiah|budget|бюджет|price|цен/i.test(m);
+    const short =
+      m.match(/(\d[\d.,]*)\s*(jt\b|juta|mio\b|mln\b|mill(?:ion)?s?\b|млн|миллион)/) ??
+      (moneyContext ? m.match(/(\d[\d.,]*)\s*(m)\b/) : null);
     if (short?.[1]) {
       const n = parseFloat(short[1].replace(/[.,](?=\d{3}\b)/g, "").replace(",", "."));
       if (n > 0 && n < 100000) return toMonthly(n * 1_000_000);

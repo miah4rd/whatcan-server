@@ -429,6 +429,37 @@ Respond with JSON only: {"message": "<the WhatsApp message>", "attachments_decis
     return null;
   }
 }
+/**
+ * Does the message actually talk about ANY of the villas attached to it?
+ *
+ * The writer and the matcher run concurrently, so a first-touch draft could ask
+ * a pure qualifying question while three links rode along "прикрученные" — the
+ * owner's words. A message referencing none of its own attachments is broken by
+ * definition, whatever produced it.
+ */
+const GENERIC_TITLE_WORDS = new Set([
+  "villa", "villas", "bedroom", "bedrooms", "rental", "rent", "yearly", "monthly",
+  "long", "term", "long-term", "for", "in", "with", "the", "and", "brand", "new",
+  "house", "family", "private", "premium", "spacious", "bali",
+]);
+
+export function textMentionsAnyAttachment(
+  text: string,
+  attachments: Array<{ label?: string }>,
+): boolean {
+  if (attachments.length === 0) return true;
+  const t = (text ?? "").toLowerCase();
+  for (const a of attachments) {
+    const title = (a.label ?? "").split(" (")[0] ?? "";
+    const words = title
+      .toLowerCase()
+      .split(/[^a-zа-яё0-9]+/)
+      .filter((w) => w.length > 3 && !GENERIC_TITLE_WORDS.has(w));
+    if (words.some((w) => t.includes(w))) return true;
+  }
+  return false;
+}
+
 export async function reconcileTextWithAttachments(
   text: string,
   attachments: GeneratedSuggestion["attachments"],
@@ -455,7 +486,11 @@ export async function reconcileTextWithAttachments(
   const invents = unpricedLabels.length > 0 && QUOTES_MONEY.test(text);
 
   const contradicts =
-    force || invents || ASKS_OR_PROMISES_TO_SEND.test(text) || (attachments.length > 1 && CLAIMS_ONLY_ONE.test(text));
+    force ||
+    invents ||
+    ASKS_OR_PROMISES_TO_SEND.test(text) ||
+    (attachments.length > 1 && CLAIMS_ONLY_ONE.test(text)) ||
+    !textMentionsAnyAttachment(text, attachments);
   if (!contradicts) return text;
 
   const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");

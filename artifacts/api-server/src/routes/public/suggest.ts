@@ -724,6 +724,46 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           let finalText = composed.text;
           let mustReconcile = false;
 
+          // A villa the broker NAMED in the command is law, enforced in code —
+          // the composer once answered "клиент спрашивает про эту опцию <link>"
+          // with three unrelated villas. Whatever the model returned, every
+          // named listing is present; and when the broker had also hand-cleared
+          // the panel, the named ones are ALL that goes out.
+          const namedIds = new Set<string>();
+          for (const m of revision.matchAll(/\/property\/([A-Za-z0-9-]+)/gi)) namedIds.add(m[1]!.toUpperCase());
+          for (const m of revision.matchAll(/\b(R-[A-Z]{2,6}-[A-Z0-9]+|UP-\d+)\b/gi)) namedIds.add(m[1]!.toUpperCase());
+          if (namedIds.size > 0) {
+            const namedResolved = await describePropertiesByIds([...namedIds]).catch(() => new Map());
+            const have = new Set(
+              chosen.map((c) => (c.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase()),
+            );
+            if (curatedDetected) {
+              // Hand-cleared panel + a named villa = exactly the named villa(s).
+              const keepCurrent = chosen.filter((c) =>
+                currentIds.some((ci) => c.url.toUpperCase().includes(`/PROPERTY/${ci.toUpperCase()}`)),
+              );
+              chosen.length = 0;
+              chosen.push(...keepCurrent);
+            }
+            for (const id of namedIds) {
+              if (have.has(id)) continue;
+              const hit = (namedResolved as Map<string, { label: string; url: string }>).get(id);
+              if (hit) {
+                chosen.push({ type: "link", url: hit.url, label: hit.label });
+                have.add(id);
+              }
+            }
+            if (curatedDetected || chosen.length !== composed.listingIds.length) mustReconcile = true;
+            req.log.info(
+              { leadId: body.leadId, named: [...namedIds], final: chosen.length },
+              "suggest: listings named in the broker's command enforced in code",
+            );
+          }
+
+          // A hand-curated list means the text MUST mirror it — "если ссылки
+          // поменял руками, то и текст должен подстроиться".
+          if (curatedDetected && chosen.length > 0) mustReconcile = true;
+
           // Price is a fact, and facts are enforced in code (the standing rule
           // the split path already follows). Handed a budget-ordered list and an
           // instruction that said "по бюджету лида", the model still picked
@@ -827,6 +867,27 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         }
       } catch (err) {
         req.log.warn({ err, leadId: body.leadId }, "suggest: one-pass compose failed, using the split path");
+        // The keyword fallback re-picks links from scratch — under a hand-curated
+        // panel or a named listing that would overrule the broker during an
+        // outage. Obedient degradation instead: keep the panel exactly, only the
+        // text is rewritten (below), links untouched.
+        if (
+          body.attachmentsCurated === true ||
+          /\/property\/|\b(R-[A-Z]{2,6}-[A-Z0-9]+|UP-\d+)\b/i.test(revision)
+        ) {
+          res.json({
+            text,
+            rationale,
+            suggestionId: randomUUID(),
+            task_hint: taskHint ?? null,
+            stage_hint: stageHint,
+            kind: "live",
+            recent_messages: recentMessages,
+            reassessed_temperature: reassessedTemp ?? null,
+            attachments: null,
+          });
+          return;
+        }
       }
     }
 
