@@ -708,12 +708,54 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             .filter((x): x is { type: "link"; url: string; label: string } => !!x)
             .slice(0, 6);
 
-          // The "always a real choice" law survived on the split path but was
-          // lost here: the model kept answering "I only have one within budget"
-          // while two more affordable villas sat in the very list it was shown.
-          // Topped up in code from the affordable candidates, then the text is
-          // force-reconciled so it names what is actually attached.
           let finalText = composed.text;
+          let mustReconcile = false;
+
+          // Price is a fact, and facts are enforced in code (the standing rule
+          // the split path already follows). Handed a budget-ordered list and an
+          // instruction that said "по бюджету лида", the model still picked
+          // villas at 900M and 1B a year against a 700M/yr budget — and wrote
+          // "three that fit your budget" over them. Over-ceiling picks are
+          // swapped for affordable ones, unless the broker named specific
+          // listings themselves: a named ID is their explicit decision.
+          const brokerNamedListings =
+            /\/property\/|\b[A-Z]{1,4}-[A-Z0-9]+-?[A-Z0-9]*\b/.test(revision);
+          if (
+            composed.decision === "new_selection" &&
+            pool.budgetCeiling &&
+            pool.affordableIds.length >= 2 &&
+            !brokerNamedListings
+          ) {
+            const priceById = new Map(pool.candidates.map((p) => [p.id.toUpperCase(), p]));
+            const isAffordable = (c: { url: string }) => {
+              const id = (c.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase();
+              return pool.affordableIds.some((a) => a.toUpperCase() === id);
+            };
+            const over = chosen.filter((c) => !isAffordable(c));
+            if (over.length > 0) {
+              const keep = chosen.filter(isAffordable);
+              const have = new Set(
+                keep.map((c) => (c.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase()),
+              );
+              for (const id of pool.affordableIds) {
+                if (keep.length >= Math.max(chosen.length, 2)) break;
+                if (have.has(id.toUpperCase())) continue;
+                const cand = priceById.get(id.toUpperCase());
+                if (!cand) continue;
+                const pick = toPickPublic(cand);
+                keep.push({ type: "link", url: pick.url, label: pick.label });
+                have.add(id.toUpperCase());
+              }
+              req.log.info(
+                { leadId: body.leadId, dropped: over.length, ceiling: pool.budgetCeiling },
+                "suggest: enforced the lead's budget on the composed shortlist",
+              );
+              chosen.length = 0;
+              chosen.push(...keep);
+              mustReconcile = true;
+            }
+          }
+
           if (
             composed.decision === "new_selection" &&
             chosen.length > 0 &&
@@ -730,16 +772,20 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
               chosen.push({ type: "link", url: pick.url, label: pick.label });
               have.add(id.toUpperCase());
             }
+            mustReconcile = true;
+            req.log.info(
+              { leadId: body.leadId, toppedUpTo: chosen.length },
+              "suggest: shortlist topped up to the minimum — one link is not a choice",
+            );
+          }
+
+          if (mustReconcile) {
             finalText = await reconcileTextWithAttachments(
               composed.text,
               chosen,
               true,
               pool.budgetIdr,
               outputLang === "auto" ? null : outputLang,
-            );
-            req.log.info(
-              { leadId: body.leadId, toppedUpTo: chosen.length },
-              "suggest: shortlist topped up to the minimum — one link is not a choice",
             );
           }
 
