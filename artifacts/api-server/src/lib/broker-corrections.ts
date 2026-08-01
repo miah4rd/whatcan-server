@@ -44,7 +44,7 @@ export async function learnFromRevision(brokerName: string | null | undefined, r
   try {
     const parsed = await chatCompletionJSON<{ instruction?: string }>({
       model: HELPER_MODEL,
-      system: `A real-estate broker just corrected an AI-drafted message. Extract the REUSABLE preference behind the correction — something that should apply to future messages too (max 120 chars). Keep names the broker wants used (e.g. "sign as Nick"), drop one-off details about this specific lead or property. If the correction is purely one-off (nothing reusable), return an empty instruction.
+      system: `A real-estate broker just corrected an AI-drafted message. Extract the REUSABLE preference behind the correction — something that should apply to future messages too (max 120 chars). Keep names the broker wants used (e.g. "sign as Nick") and copy every name EXACTLY as written — never transliterate or guess a spelling ("Хос" stays "Хос", it is not "Jose"). Drop one-off details about this specific lead or property. If the correction is purely one-off (nothing reusable), return an empty instruction.
 
 Respond with JSON only: {"instruction": "..."}`,
       messages: [{ role: "user", content: feedback.slice(0, 1500) }],
