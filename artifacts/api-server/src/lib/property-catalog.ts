@@ -383,7 +383,13 @@ export function extractBudgetIdr(messages: string[]): number | null {
   for (const raw of messages) {
     const m = raw.toLowerCase();
     const perYear = PER_YEAR.test(m);
-    const toMonthly = (n: number) => Math.round(perYear ? n / 12 : n);
+    // People quoting a yearly figure often drop the "per year": Lukass wrote
+    // "anything around 700 million or less" about a 3-year lease and the parser
+    // read it as 700M PER MONTH — a ceiling that passes the entire island, so
+    // villas at 900M/yr led his "within budget" shortlist. No Bali monthly rent
+    // is 200M+; a figure that size without a period marker is a yearly one.
+    const toMonthly = (n: number) =>
+      Math.round(perYear ? n / 12 : n > 200_000_000 ? n / 12 : n);
 
     // "30 million" / "750mill" / "30jt" / "30 juta" / "40 млн"
     const short = m.match(/(\d[\d.,]*)\s*(jt\b|juta|mio\b|mln\b|mill(?:ion)?s?\b|млн|миллион)/);
@@ -629,6 +635,9 @@ export async function candidatesForLead(opts: {
   budgetIdr: number | null;
   budgetCeiling: number | null;
   lines: Array<{ id: string; line: string }>;
+  /** Priced candidates inside the ceiling (or simply priced, when no budget),
+   * in shortlist order — the composer's minimum-choice top-up draws from here. */
+  affordableIds: string[];
 }> {
   const all = await fetchAllProperties();
   const exclude = new Set((opts.excludeIds ?? []).map((id) => id.toUpperCase()));
@@ -686,6 +695,9 @@ export async function candidatesForLead(opts: {
     candidates,
     budgetIdr,
     budgetCeiling,
+    affordableIds: candidates
+      .filter((p) => priceOf(p) > 0 && (!budgetCeiling || priceOf(p) <= budgetCeiling))
+      .map((p) => p.id),
     lines: candidates.slice(0, 40).map((p) => {
       const style = styleHint(p);
       return { id: p.id, line: style ? `${summaryLine(p)} | ${style}` : summaryLine(p) };

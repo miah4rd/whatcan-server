@@ -21,7 +21,7 @@
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { extractBudgetIdr } from "./property-catalog";
+import { extractBudgetIdr, describePropertiesByIds } from "./property-catalog";
 import { parseDialogContent } from "./dialog-parser";
 import { closeLeadAsLost } from "./amo-client";
 import { getLeadCardCriteria } from "./lead-card-fields";
@@ -110,8 +110,35 @@ export async function enforceBudgetFilter(leadId: string, extraTexts?: string[])
     // was worked anyway.
     const card = await getLeadCardCriteria(leadId);
     const texts = [...leadTexts, ...(extraTexts ?? []), lead.leadNotes ?? ""].filter(Boolean);
-    const budget = extractBudgetIdr(texts) ?? card.budgetIdrMonthly;
-    if (!budget) return false; // no stated budget → no decision → work the lead
+    let budget = extractBudgetIdr(texts) ?? card.budgetIdrMonthly;
+    let impliedFrom: string | null = null;
+
+    // The owner's double check, other direction: an ad lead who stated NO budget
+    // still told us one thing — which villa they clicked. Its price is their
+    // implied budget: "выставил фильтр 40, а заявку на виллу за 28 всё равно
+    // предлагает обработать". Advertising sub-threshold listings is being cut on
+    // the ads side too; any lead arriving on one is, by his definition, out.
+    if (!budget) {
+      const ids = new Set<string>();
+      for (const t of texts) {
+        for (const m of String(t).matchAll(/\/property\/([A-Za-z0-9-]+)/gi)) ids.add(m[1]!.toUpperCase());
+      }
+      const noteMatch = /Ad enquiry:\s*([A-Z0-9-]+)/i.exec(lead.leadNotes ?? "");
+      if (noteMatch?.[1]) ids.add(noteMatch[1].toUpperCase());
+      if (ids.size > 0) {
+        const known = await describePropertiesByIds([...ids]).catch(() => new Map());
+        for (const id of ids) {
+          const hit = known.get(id);
+          if (hit && hit.priceIdr > 0) {
+            budget = hit.priceIdr;
+            impliedFrom = id;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!budget) return false; // no stated budget, no priced anchor → work the lead
     if (budget >= setting.minMonthlyIdr) return false;
 
     // Below the bar — into the bin, exactly as ordered. amoCRM first: if the
@@ -132,8 +159,10 @@ export async function enforceBudgetFilter(leadId: string, extraTexts?: string[])
         and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending")),
       );
     logger.warn(
-      { leadId, budgetIdr: budget, minIdr: setting.minMonthlyIdr },
-      "budget filter: rental lead auto-closed to Lost — budget below the broker's threshold",
+      { leadId, budgetIdr: budget, minIdr: setting.minMonthlyIdr, impliedFrom },
+      impliedFrom
+        ? "budget filter: rental lead auto-closed to Lost — the villa they clicked is priced below the broker's threshold"
+        : "budget filter: rental lead auto-closed to Lost — budget below the broker's threshold",
     );
     return true;
   } catch (err) {

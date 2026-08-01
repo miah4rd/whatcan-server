@@ -708,6 +708,41 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             .filter((x): x is { type: "link"; url: string; label: string } => !!x)
             .slice(0, 6);
 
+          // The "always a real choice" law survived on the split path but was
+          // lost here: the model kept answering "I only have one within budget"
+          // while two more affordable villas sat in the very list it was shown.
+          // Topped up in code from the affordable candidates, then the text is
+          // force-reconciled so it names what is actually attached.
+          let finalText = composed.text;
+          if (
+            composed.decision === "new_selection" &&
+            chosen.length > 0 &&
+            chosen.length < 3 &&
+            pool.affordableIds.length > chosen.length
+          ) {
+            const have = new Set(chosen.map((c) => (c.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase()));
+            for (const id of pool.affordableIds) {
+              if (chosen.length >= 3) break;
+              if (have.has(id.toUpperCase())) continue;
+              const cand = pool.candidates.find((p) => p.id === id);
+              if (!cand) continue;
+              const pick = toPickPublic(cand);
+              chosen.push({ type: "link", url: pick.url, label: pick.label });
+              have.add(id.toUpperCase());
+            }
+            finalText = await reconcileTextWithAttachments(
+              composed.text,
+              chosen,
+              true,
+              pool.budgetIdr,
+              outputLang === "auto" ? null : outputLang,
+            );
+            req.log.info(
+              { leadId: body.leadId, toppedUpTo: chosen.length },
+              "suggest: shortlist topped up to the minimum — one link is not a choice",
+            );
+          }
+
           req.log.info(
             {
               leadId: body.leadId,
@@ -719,7 +754,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             "suggest: one-pass compose decided the message and the links together",
           );
           res.json({
-            text: composed.text,
+            text: finalText,
             rationale,
             suggestionId: randomUUID(),
             task_hint: taskHint ?? null,
