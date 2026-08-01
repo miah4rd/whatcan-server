@@ -443,6 +443,16 @@ const GENERIC_TITLE_WORDS = new Set([
   "house", "family", "private", "premium", "spacious", "bali",
 ]);
 
+/** Strict variant: EVERY attachment must be referenced — a hand-curated panel
+ * of four where the text lists three reads as the fourth being ignored, which
+ * is exactly the owner's screenshot. */
+export function textMentionsEveryAttachment(
+  text: string,
+  attachments: Array<{ label?: string }>,
+): boolean {
+  return attachments.every((a) => textMentionsAnyAttachment(text, [a]));
+}
+
 export function textMentionsAnyAttachment(
   text: string,
   attachments: Array<{ label?: string }>,

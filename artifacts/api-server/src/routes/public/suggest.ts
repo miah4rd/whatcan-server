@@ -8,7 +8,7 @@ import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing"
 import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
-import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings } from "../../lib/generate-suggestion";
+import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment } from "../../lib/generate-suggestion";
 import { brokerDisplayName } from "../../lib/broker-identity";
 import { getLeadCardCriteria } from "../../lib/lead-card-fields";
 import { learnFromRevision } from "../../lib/broker-corrections";
@@ -733,9 +733,13 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           for (const m of revision.matchAll(/\/property\/([A-Za-z0-9-]+)/gi)) namedIds.add(m[1]!.toUpperCase());
           for (const m of revision.matchAll(/\b(R-[A-Z]{2,6}-[A-Z0-9]+|UP-\d+)\b/gi)) namedIds.add(m[1]!.toUpperCase());
           if (namedIds.size > 0) {
-            const namedResolved = await describePropertiesByIds([...namedIds]).catch(() => new Map());
-            const have = new Set(
-              chosen.map((c) => (c.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase()),
+            const namedResolved = await describePropertiesByIds([...namedIds]).catch((e) => {
+              req.log.error({ err: e }, "named-listing resolve threw");
+              return new Map();
+            });
+            req.log.info(
+              { asked: [...namedIds], resolved: [...namedResolved.keys()] },
+              "named-listing resolve result",
             );
             if (curatedDetected) {
               // Hand-cleared panel + a named villa = exactly the named villa(s).
@@ -745,6 +749,14 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
               chosen.length = 0;
               chosen.push(...keepCurrent);
             }
+            // Membership is computed AFTER the curated clear — computed before,
+            // it remembered the villa the composer had (correctly) picked, the
+            // clear wiped it, and the loop then skipped re-adding it as
+            // "already there". The enforcement deleted the very obedience it
+            // existed to guarantee.
+            const have = new Set(
+              chosen.map((c) => (c.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase()),
+            );
             for (const id of namedIds) {
               if (have.has(id)) continue;
               const hit = (namedResolved as Map<string, { label: string; url: string }>).get(id);
@@ -753,7 +765,10 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
                 have.add(id);
               }
             }
-            if (curatedDetected || chosen.length !== composed.listingIds.length) mustReconcile = true;
+            // Re-sync the text only when it actually ignores the final links —
+            // an unconditional rewrite was flattening the broker's own wording
+            // ("скажи, что могу съездить узнать прайс") out of an obedient text.
+            if (!textMentionsAnyAttachment(composed.text, chosen)) mustReconcile = true;
             req.log.info(
               { leadId: body.leadId, named: [...namedIds], final: chosen.length },
               "suggest: listings named in the broker's command enforced in code",
@@ -761,8 +776,11 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           }
 
           // A hand-curated list means the text MUST mirror it — "если ссылки
-          // поменял руками, то и текст должен подстроиться".
-          if (curatedDetected && chosen.length > 0) mustReconcile = true;
+          // поменял руками, то и текст должен подстроиться" — but only when the
+          // text actually fails to mention what is attached.
+          if (curatedDetected && chosen.length > 0 && !textMentionsEveryAttachment(composed.text, chosen)) {
+            mustReconcile = true;
+          }
 
           // Price is a fact, and facts are enforced in code (the standing rule
           // the split path already follows). Handed a budget-ordered list and an
@@ -809,8 +827,13 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             }
           }
 
+          // The 2-3 minimum is the law for the bot's OWN shortlists. A panel the
+          // broker hand-cleared, or a villa they named, IS the list they want —
+          // topping it up "helpfully" re-added two villas over an explicit one.
           if (
             composed.decision === "new_selection" &&
+            !curatedDetected &&
+            namedIds.size === 0 &&
             chosen.length > 0 &&
             chosen.length < 3 &&
             pool.affordableIds.length > chosen.length
