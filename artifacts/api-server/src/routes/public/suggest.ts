@@ -558,7 +558,20 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     // from the ones stored on this lead's own pending draft, a human changed
     // them, whatever the client version says. That difference is the flag.
     let curatedDetected = body.attachmentsCurated === true;
-    if (!curatedDetected && revision && body.leadId && Array.isArray(body.attachments)) {
+    // The diff heuristic exists ONLY for stale clients that never send the flag.
+    // A modern client sends an explicit false when the broker did not touch the
+    // links — and inferring curation over that was a real authority bug: the
+    // bot's own previous re-pick left the panel with different links than the
+    // stored draft, the diff screamed "hand-curated", and the broker's next
+    // command ("надо три") was fought by a curation he never performed.
+    const clientStatedNotCurated = body.attachmentsCurated === false;
+    if (
+      !curatedDetected &&
+      !clientStatedNotCurated &&
+      revision &&
+      body.leadId &&
+      Array.isArray(body.attachments)
+    ) {
       try {
         const idOf = (u: string | undefined) =>
           u?.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1]?.toUpperCase() ?? null;
