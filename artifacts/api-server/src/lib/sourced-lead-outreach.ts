@@ -116,7 +116,7 @@ function formatAsLeadMessage(at: Date, leadName: string, text: string): string {
   return `${stamp} ${leadName} (клиент - Facebook) → ${oneLine}`;
 }
 
-export async function processSourcedLeadOutreach(): Promise<void> {
+export async function processSourcedLeadOutreach(): Promise<number> {
   const candidates = await db
     .select({
       leadId: leadsSyncTable.leadId,
@@ -140,7 +140,7 @@ export async function processSourcedLeadOutreach(): Promise<void> {
       ),
     );
 
-  if (candidates.length === 0) return;
+  if (candidates.length === 0) return 0;
 
   let seeded = 0;
   for (const lead of candidates) {
@@ -218,4 +218,5 @@ export async function processSourcedLeadOutreach(): Promise<void> {
   }
 
   if (seeded > 0) logger.info({ seeded }, "sourced-lead seeding pass complete");
+  return seeded;
 }

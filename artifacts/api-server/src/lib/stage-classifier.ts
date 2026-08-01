@@ -22,7 +22,7 @@
  *    weight, so it's surfaced pre-filled for the broker to confirm.
  *  - A broker's own explicit stage pick always wins over the classification.
  */
-import { chatCompletionJSON } from "./ai-client";
+import { HELPER_MODEL, chatCompletionJSON } from "./ai-client";
 import { amoFetch } from "./amo-client";
 import { logger } from "./logger";
 
@@ -124,6 +124,17 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
     const selectable = ordered
       .filter((s) => !isWorkflowStage(s.name))
       .map((s) => {
+        // The owner's Rental funnel uses "Need Assessed" as "the first outreach
+        // was made" — not the generic "requirements are known". Wrong meaning
+        // here made the classifier hold cards in New LEAD after the welcome.
+        if (key === "rental" && /need.?s? assess/i.test(s.name)) {
+          return {
+            name: s.name,
+            id: s.id,
+            meaning:
+              "The FIRST outreach message has been sent to this client (the first touch is done) and the conversation is in early qualifying — the client has not necessarily shared requirements yet.",
+          };
+        }
         const meaning =
           meaningFor(s.name) ??
           // Unrecognised name: still selectable, positioned by funnel order so
@@ -194,7 +205,7 @@ export async function classifyStage(opts: {
   try {
     const catalog = stages.selectable.map((s) => `- ${s.name}: ${s.meaning}`).join("\n");
     const result = await chatCompletionJSON<{ stage?: string; reason?: string }>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
       system: `You classify which CRM funnel stage a sales conversation is currently in.
 
 Available stages, in funnel order:

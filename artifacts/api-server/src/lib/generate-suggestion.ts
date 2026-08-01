@@ -316,13 +316,17 @@ export async function composeReplyWithListings(opts: {
   attachmentsCurated: boolean;
   candidates: Array<{ id: string; line: string }>;
   language?: string | null;
-}): Promise<{ text: string; listingIds: string[] } | null> {
+}): Promise<{ text: string; listingIds: string[]; decision: "keep_current" | "none_this_message" | "new_selection" } | null> {
   const current = opts.currentAttachments.length
     ? opts.currentAttachments.map((a) => `${a.id} — ${a.label}`).join("\n")
     : "(none)";
 
   try {
-    const result = await chatCompletionJSON<{ message?: string; listing_ids?: string[] }>({
+    const result = await chatCompletionJSON<{
+      message?: string;
+      listing_ids?: string[];
+      attachments_decision?: string;
+    }>({
       model: WRITER_MODEL,
       system: `${opts.systemPrompt}
 
@@ -356,12 +360,12 @@ ${
 Properties you may attach (pick by ID; attaching NONE is a normal answer):
 ${opts.candidates.map((c) => c.line).join("\n")}
 
-How to read the instruction — by MEANING, not keywords:
-- Only about wording (shorter, warmer, translate, fix tone)? Return listing_ids EXACTLY as currently attached. Do not swap, drop or add anything.
-- Asking the client for something first, with options to come after they answer ("get their budget so I can find suitable options")? Then options come LATER: keep only links to villas the CLIENT themselves brought up (e.g. the one they came in on from an ad) and drop the rest. If they brought none, return [].
-- Getting feedback on options ALREADY SENT, arranging a viewing, or nudging a quiet lead? Return [] — a fresh batch would talk over the point of the message.
-- Wants different / cheaper / other-area properties? Pick new ones from the list.
-- Names specific listings to add, remove or keep? Do exactly that.
+First decide attachments_decision — ONE of exactly these three, by MEANING, not keywords:
+- "keep_current" — the instruction is about wording only (shorter, warmer, translate, fix tone). listing_ids = exactly what is currently attached.
+- "none_this_message" — the point of this message is something other than offering properties: asking the client something first with options to come AFTER they answer, collecting feedback on options already sent, arranging a viewing, nudging a quiet lead. listing_ids = only villas the CLIENT themselves brought up (the one they came in on from an ad); usually [].
+- "new_selection" — the broker wants different/other/cheaper properties, or names listings to add or remove. listing_ids = the new set, picked from the list.
+
+When in doubt between "none_this_message" and "new_selection", choose "none_this_message" — attaching villas to a message whose text is a question about the future is the single most complained-about failure of this system.
 
 Facts you never break (these are facts, not style, and the broker is not asking you to lie):
 - A listing whose line says "price on request" has no published price. Never state or estimate a number for it — say you will confirm the exact rate with the owner.
@@ -372,7 +376,7 @@ Facts you never break (these are facts, not style, and the broker is not asking 
 
 Language: write in ${opts.language ?? "the language the CLIENT writes in"} — unless the broker's instruction explicitly asks for another language, in which case obey the broker.
 
-Respond with JSON only: {"message": "<the WhatsApp message>", "listing_ids": ["ID", ...]}`,
+Respond with JSON only: {"message": "<the WhatsApp message>", "attachments_decision": "keep_current|none_this_message|new_selection", "listing_ids": ["ID", ...]}`,
       messages: [
         {
           role: "user",
@@ -385,7 +389,14 @@ Respond with JSON only: {"message": "<the WhatsApp message>", "listing_ids": ["I
     const text = sanitizeSuggestion(result.message ?? "");
     if (text.trim().length < 10) return null;
     const ids = (result.listing_ids ?? []).map((i) => String(i).toUpperCase());
-    return { text, listingIds: ids };
+    const d = String(result.attachments_decision ?? "").trim();
+    const decision =
+      d === "keep_current" || d === "none_this_message" || d === "new_selection"
+        ? d
+        : ids.length === 0
+          ? ("none_this_message" as const)
+          : ("new_selection" as const);
+    return { text, listingIds: ids, decision };
   } catch (err) {
     logger.warn({ err }, "composeReplyWithListings failed — falling back to the split path");
     return null;

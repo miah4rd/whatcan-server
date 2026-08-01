@@ -4,7 +4,7 @@ import { db, pendingSuggestionsTable, sentMessagesTable, leadsSyncTable, stageEv
 import { eq, and } from "drizzle-orm";
 import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-followup";
-import { chatCompletionJSON } from "../../lib/ai-client.js";
+import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost, countActiveWhatsappChats } from "../../lib/amo-client.js";
 import { stripEmojiForDelivery } from "../../lib/message-delivery.js";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
@@ -234,7 +234,7 @@ async function learnFromManualEdit(
 ): Promise<void> {
   try {
     const parsed = await chatCompletionJSON<{ instruction?: string }>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
       system: `You are a writing coach analyzing how a real estate broker edited an AI-generated message.
 Extract a SHORT, REUSABLE instruction (max 120 chars) that describes WHAT the broker changed and WHY, 
 so an AI can apply this preference to future messages automatically.
@@ -516,6 +516,25 @@ router.post("/approve", async (req, res) => {
         chatSent = botTriggered;
         hookStatus = botTriggered ? 200 : 500;
         hookBody = botTriggered ? `Salesbot ${botId} triggered` : "Salesbot trigger failed";
+
+        // The broker promised the CLIENT something ("I'll check with the owner
+        // and get back to you"). The lead may stay silent — correctly — while
+        // the ball is with US, so the follow-up-on-silence clock never covers
+        // this case and the promise lived only in the broker's head. A CRM task
+        // in a few hours makes the promise impossible to forget.
+        if (botTriggered) {
+          const OWNER_PROMISE =
+            /(check|confirm|double.?check|ask|уточн|провер|спрошу|узнаю|запрошу)[^.!?\n]{0,50}(owner|собственник|владел)|(owner|собственник|владел)[^.!?\n]{0,40}(get back|come back|confirm|вернусь|отвечу)|вернусь (к вам|к тебе|с ответом)|get back to you (with|once|after)/i;
+          if (OWNER_PROMISE.test(body.message)) {
+            const due = new Date(Date.now() + 4 * 60 * 60 * 1000);
+            void createAmoTask(
+              sug.leadId,
+              "Обещали клиенту вернуться с ответом собственника — узнать и написать (клиент может молчать, мяч у нас)",
+              due,
+            ).catch((err) => req.log.warn({ err }, "owner-promise task failed (non-fatal)"));
+            req.log.info({ leadId: sug.leadId }, "owner promise detected — broker task set for +4h");
+          }
+        }
       } else {
         hookStatus = 500;
         hookBody = "Custom field update failed";

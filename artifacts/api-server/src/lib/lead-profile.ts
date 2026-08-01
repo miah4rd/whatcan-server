@@ -1,6 +1,6 @@
 import { db, leadsSyncTable } from "@workspace/db";
 import { eq, and, isNotNull, desc } from "drizzle-orm";
-import { chatCompletionJSON } from "./ai-client";
+import { HELPER_MODEL, chatCompletionJSON } from "./ai-client";
 import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
 import { logger } from "./logger";
 
@@ -156,7 +156,7 @@ export async function refreshLeadProfile(opts: {
   let profile: LeadProfile;
   try {
     const raw = await chatCompletionJSON<Partial<LeadProfile>>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
       system: `You maintain a compact intelligence profile for a real-estate lead, for a Bali property brokerage. Read the conversation and output a JSON profile.
 
 CRITICAL — real estate reality: a long SILENCE does NOT mean the lead is dead. Buyers visit Bali on long, seasonal cycles and often go quiet for months, then re-engage perfectly when they're back or ready. Judge "alive" vs "dead_candidate" ONLY from the CONTENT of what the lead actually said — never from how long they've been silent.

@@ -13,15 +13,17 @@ export function getAnthropic(): Anthropic {
 }
 
 /**
- * One place to change the model, instead of the twenty hardcoded literals this
- * used to be. Both tiers are Sonnet 5 — the owner's call: Opus was considered
- * for the client-facing text and deliberately not taken.
- *
- * WRITER: text a real client will read. HELPER: the mechanical background work
- * (classify a stage, distil a correction, parse an instruction).
+ * One place to change the models, instead of the twenty hardcoded literals this
+ * used to be. WRITER is text a real client will read (Sonnet — Opus was
+ * considered and deliberately not taken, the owner's call). HELPER is the
+ * mechanical background work.
  */
 export const WRITER_MODEL = "claude-sonnet-5";
-export const HELPER_MODEL = "claude-sonnet-5";
+// The mechanical background calls (classify a stage, distil a lesson, parse an
+// instruction, spot a task) run on Haiku — several times cheaper per call, and
+// these fire far more often than a client ever gets written to. The owner asked
+// for the API bill to come down; the client-facing text stays on Sonnet.
+export const HELPER_MODEL = "claude-haiku-4-5-20251001";
 
 export type ChatTextBlock = { type: "text"; text: string };
 export type ChatImageBlock = { type: "image"; source: { type: "base64"; media_type: string; data: string } };

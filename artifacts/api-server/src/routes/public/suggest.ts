@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
 import { eq, desc, and } from "drizzle-orm";
-import { chatCompletion, chatCompletionJSON, WRITER_MODEL, type ChatMessage } from "../../lib/ai-client";
+import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL, type ChatMessage } from "../../lib/ai-client";
 import { db, leadsSyncTable, brokerCorrectionsTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
 import { parseDialogContent, formatDialogForAI } from "../../lib/dialog-parser";
 import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing";
@@ -452,7 +452,7 @@ ${transcript || "(no messages yet)"}`;
     try {
       const today = new Date().toISOString().slice(0, 10);
       const parsed = await chatCompletionJSON<{ taskDate?: string | null; taskText?: string | null }>({
-        model: "claude-sonnet-5",
+        model: HELPER_MODEL,
         system: `Today is ${today}. You analyze a real estate sales conversation.
 Detect if the lead explicitly stated a concrete future contact date — vacation return, scheduled call, scheduled viewing, or similar committed date.
 
@@ -490,7 +490,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     try {
       const lastFb = body.feedback || body.revisionChain?.[body.revisionChain.length - 1]?.feedback || "";
       const tj = await chatCompletionJSON<{ temperature?: string }>({
-        model: "claude-sonnet-5",
+        model: HELPER_MODEL,
         system: `You re-assess a real-estate lead's temperature from the conversation AND the attached screenshot (the SOURCE OF TRUTH). Output JSON {"temperature":"hot|warm|cold"}. hot = active buying intent / positive signals; warm = genuine engagement; cold = minimal / terse / no real signal.`,
         messages: [{ role: "user", content: [{ type: "text", text: `Conversation (stored, may be stale):\n${transcript.slice(-3000)}\n\nBroker note: ${lastFb || "(none)"}` }, imageBlock] }],
         max_tokens: 30,
@@ -650,6 +650,27 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         });
 
         if (composed) {
+          // The decision is applied in CODE, not hoped for. "Ask their budget"
+          // with every link removed still came back with a stray villa attached
+          // — the model may only add listings when it explicitly decided
+          // "new_selection"; a question-message keeps at most the villas the
+          // client themselves brought up, and a wording edit keeps the list
+          // exactly as it was.
+          const leadOwnIds = new Set(
+            (body.messages ?? [])
+              .filter((m) => m.from === "lead")
+              .flatMap((m) =>
+                Array.from(String(m.text).matchAll(/\/property\/([A-Za-z0-9-]+)/gi)).map((x) =>
+                  x[1]!.toUpperCase(),
+                ),
+              ),
+          );
+          if (composed.decision === "keep_current") {
+            composed.listingIds = currentIds.map((i) => i.toUpperCase());
+          } else if (composed.decision === "none_this_message") {
+            composed.listingIds = composed.listingIds.filter((id) => leadOwnIds.has(id));
+          }
+
           // The broker's word is law on this path: the chosen IDs are applied as
           // chosen. No budget swap, no language override, no dedupe — those
           // guards exist for the bot's OWN drafts, where nobody is steering.

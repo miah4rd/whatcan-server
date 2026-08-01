@@ -1,5 +1,5 @@
 import { logger } from "./logger";
-import { chatCompletionJSON } from "./ai-client";
+import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { getTopPicksForBroker } from "./broker-picks-tracker";
 import { allAreaNames, areaMatches, areaNamesInText } from "./bali-areas";
 
@@ -449,7 +449,7 @@ export async function parseBrokerIntent(
       budget_idr_monthly?: number | null;
       listings_unchanged?: boolean;
     }>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
       system: `You read one instruction a real-estate broker just gave about the property links attached to a draft message, and turn it into a filter. The instruction may be in any language, often dictated by voice, and may be untidy.
 
 Valid area names (use these spellings, nothing else):

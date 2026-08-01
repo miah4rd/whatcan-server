@@ -1221,8 +1221,20 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
   schedulerHandle = setInterval(() => {
     processFollowups().catch((err) => logger.error({ err }, "followup scheduler error"));
     processUnansweredLive().catch((err) => logger.error({ err }, "unanswered live error"));
-    processSourcedLeadOutreach().catch((err) => logger.error({ err }, "sourced lead outreach error"));
   }, intervalMs);
+
+  // A paid ad lead sat unnoticed for up to ten minutes: one 5-min pass to seed
+  // it, ANOTHER to write its draft. Seeding is a cheap SELECT, so it runs every
+  // minute — and when it actually seeded someone, their draft is generated right
+  // away instead of waiting for the next general pass.
+  setInterval(() => {
+    processSourcedLeadOutreach()
+      .then((seeded) => {
+        if (seeded > 0) return processUnansweredLive();
+        return undefined;
+      })
+      .catch((err) => logger.error({ err }, "sourced lead outreach error"));
+  }, 60_000);
 }
 
 export function stopFollowupScheduler(): void {
