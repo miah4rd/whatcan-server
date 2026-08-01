@@ -56,6 +56,16 @@ let _cache: SupabaseProperty[] | null = null;
 let _cacheAt = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * Drops the catalog cache. Called on every broker revision: "у нас новые
+ * листинги, посмотри на сайте" hit a 10-minute-old cache, so the very listings
+ * the broker had just added were invisible and the bot fell back to
+ * re-qualifying the client instead of offering them.
+ */
+export function invalidatePropertyCache(): void {
+  _cacheAt = 0;
+}
+
 async function fetchAllProperties(): Promise<SupabaseProperty[]> {
   const now = Date.now();
   if (_cache && now - _cacheAt < CACHE_TTL_MS) return _cache;

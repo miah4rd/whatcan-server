@@ -11,7 +11,7 @@ import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
 import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings } from "../../lib/generate-suggestion";
 import { brokerDisplayName } from "../../lib/broker-identity";
 import { learnFromRevision } from "../../lib/broker-corrections";
-import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, toPickPublic } from "../../lib/property-catalog";
+import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, toPickPublic, invalidatePropertyCache } from "../../lib/property-catalog";
 
 const router = Router();
 
@@ -622,6 +622,9 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         const currentIds = (body.attachments ?? [])
           .map((a) => a.url?.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1])
           .filter((x): x is string => !!x);
+        // The broker may have JUST added listings to the site — an edit must see
+        // the catalog as it is now, not as it was ten minutes ago.
+        invalidatePropertyCache();
         const known = await describePropertiesByIds(currentIds).catch(() => new Map());
         const pool = await candidatesForLead({
           listingType: dbPipeline.toLowerCase() === "rental" ? "rent" : "sale",
