@@ -376,7 +376,7 @@ Respond with JSON only: {"message": "<the WhatsApp message>", "listing_ids": ["I
       messages: [
         {
           role: "user",
-          content: `Conversation so far:\n${opts.conversation.slice(-3000)}\n\nCurrent draft:\n${opts.currentDraft}\n\nTHE BROKER'S INSTRUCTION:\n"${opts.brokerInstruction}"`,
+          content: `Conversation so far:\n${opts.conversation.slice(-9000)}\n\nCurrent draft:\n${opts.currentDraft}\n\nTHE BROKER'S INSTRUCTION:\n"${opts.brokerInstruction}"`,
         },
       ],
       max_tokens: 900,
