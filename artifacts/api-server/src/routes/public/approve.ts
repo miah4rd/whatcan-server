@@ -7,6 +7,7 @@ import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-fo
 import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost, countActiveWhatsappChats } from "../../lib/amo-client.js";
 import { stripEmojiForDelivery } from "../../lib/message-delivery.js";
+import { classifyStage } from "../../lib/stage-classifier";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
 import { resolveOutboundSource } from "../../lib/amo-messenger-field";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL, followupClockAfterReply } from "../../lib/rental-followup.js";
@@ -630,6 +631,42 @@ router.post("/approve", async (req, res) => {
           { leadId: sug.leadId, toStage: sug.suggestedStage, reason: sug.suggestedStageReason },
           "auto stage: applied from conversation classification",
         );
+      }
+    } else if (!explicitNewStage && !sug.suggestedStage) {
+      // Not every draft arrives pre-classified: the unanswered-lead pass and the
+      // autopilot insert rows directly, so their sends carried no stage and the
+      // card silently stayed put ("я лиду ответил, но этап не поменялся" —
+      // options delivered, lead still in New LEAD). The send moment is the one
+      // place every path goes through, so the missing classification happens
+      // HERE, whatever produced the draft.
+      try {
+        const [ctx] = await db
+          .select({
+            pipeline: leadsSyncTable.pipeline,
+            leadStage: leadsSyncTable.leadStage,
+            content: leadsSyncTable.content,
+          })
+          .from(leadsSyncTable)
+          .where(eq(leadsSyncTable.leadId, sug.leadId))
+          .limit(1);
+        if (ctx) {
+          const cls = await classifyStage({
+            pipeline: ctx.pipeline,
+            currentStage: ctx.leadStage,
+            conversationText: ctx.content ?? "",
+            replyText: body.message ?? sug.suggestionText ?? "",
+            attachmentsCount: (body.attachments ?? sug.attachments ?? []).length,
+          });
+          if (cls && !cls.terminal) {
+            autoStage = { name: cls.stage.name, id: cls.stage.id };
+            req.log.info(
+              { leadId: sug.leadId, toStage: cls.stage.name, reason: cls.reason },
+              "auto stage: classified at send time (draft carried none)",
+            );
+          }
+        }
+      } catch (err) {
+        req.log.warn({ err, leadId: sug.leadId }, "send-time stage classification failed (non-fatal)");
       }
     }
   }
