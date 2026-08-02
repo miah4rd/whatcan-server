@@ -1,6 +1,6 @@
 import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable, leadMessagesTable } from "@workspace/db";
 import { lt, isNotNull, eq, and, or, isNull, inArray, desc, sql } from "drizzle-orm";
-import { chatCompletion, chatCompletionJSON , WRITER_MODEL } from "./ai-client";
+import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL } from "./ai-client";
 import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming, conversationWindow } from "./dialog-parser";
 import { getFollowupSteps, getQualificationSteps } from "./settings";
 import { logger } from "./logger";
@@ -59,7 +59,9 @@ async function classifyObjection(
   ).join("\n");
 
   const completion = await chatCompletion({
-    model: WRITER_MODEL,
+    // Picks one label off a list — mechanical, never read by a client. Sonnet
+    // was three times the price for a twenty-token answer.
+    model: HELPER_MODEL,
     system: "You are a Bali real estate sales coach. Based on the conversation snippet, identify which hidden objection is most likely blocking the lead. Reply with ONLY the id from the list, nothing else.",
     messages: [
       {
@@ -253,7 +255,7 @@ async function estimateContextualDelay(
 ): Promise<{ delayMs: number; reason: string; contextual: boolean }> {
   try {
     const parsed = await chatCompletionJSON<{ delayHours?: number | null; reason?: string }>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
       system: `You analyze a real estate sales conversation and decide the ideal timing for the next follow-up.
 
 Look for concrete signals:
@@ -309,7 +311,7 @@ async function isLeadActiveForFollowup(content: string, stage: string): Promise<
   try {
     const snippet = conversationWindow(content, 1000, 3000);
     const parsed = await chatCompletionJSON<{ active?: boolean; reason?: string }>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
       system: `You are a CRM analyst. Given a sales conversation, decide if the lead is still a viable prospect worth following up with.
 
 Return JSON: {"active": true/false, "reason": "one short line"}

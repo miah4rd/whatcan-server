@@ -11,7 +11,7 @@ import { isStageWhitelisted, shouldSuppressPush } from "../lib/stage-routing";
 
 import { getAmoLead } from "../lib/amo-client";
 import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
-import { buildRentalSystemPrompt } from "../lib/rental-prompt";
+import { buildRentalSystemPrompt, buildRentalPromptParts } from "../lib/rental-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
 import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments } from "../lib/generate-suggestion";
@@ -55,8 +55,12 @@ export async function generateSuggestion(opts: {
   const brokerPicksBlock = "";
   const catalog = "";
 
-  const systemPrompt = isRental
-    ? buildRentalSystemPrompt({ leadStage: opts.leadStage, kb })
+  // Same split as the library path — see generate-suggestion.ts. Both write
+  // client-facing drafts with the identical rulebook, so both cache it.
+  const rentalParts = isRental ? buildRentalPromptParts({ leadStage: opts.leadStage, kb }) : null;
+  const cachePrefix = rentalParts?.prefix;
+  const systemPrompt = rentalParts
+    ? rentalParts.tail
     :
 `You are a senior Bali real estate broker working directly with international clients for Unicorn Property, Bali.
 
@@ -334,6 +338,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   const completion = await chatCompletion({
     model: WRITER_MODEL,
     system: systemPrompt,
+    ...(cachePrefix ? { cachePrefix } : {}),
     messages: [{ role: "user", content: prompt + promptAdditions }],
     max_tokens: 400,
   });

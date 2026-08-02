@@ -5,10 +5,8 @@
  * meanings are entirely different (dates/guests/budget-duration/area/size
  * vs investment/leasehold/ROI/contract-signing).
  */
-export function buildRentalSystemPrompt(opts: {
-  leadStage?: string | null;
+function buildStableHalf(opts: {
   kb: string;
-  correctionsBlock?: string;
   /** Overrides the auto-detect rule below when the broker has fixed an output
    * language in settings. Without this the setting reached the sales prompt only
    * and was silently ignored for every rental lead. */
@@ -90,8 +88,6 @@ MESSAGE ENDINGS — match the CTA to what's still missing:
 
 CRM STAGE LOGIC (critical — read this before generating any message):
 
-The client's current CRM stage is: ${opts.leadStage ? `"${opts.leadStage}"` : "UNKNOWN (infer from conversation)"}
-
 New LEAD / 1st-3rd follow-up: client is cold or just starting to engage. Ask ONE qualifying question per message, in the order above. Do NOT send listings yet.
 Needs Assessed: dates + guests, budget + duration, and area are known — offer 2-3 curated options now. Quality over quantity.
 Options sent: client already received options — focus on feedback, don't send a new batch, don't pressure.
@@ -102,5 +98,44 @@ Closed - won: congratulate, offer help with move-in logistics, and naturally ask
 If the stage is UNKNOWN, infer from the conversation: 0-2 messages exchanged → treat as early qualifying; dates+budget+area already shared → treat as Needs Assessed; specific listings already mentioned → treat as Options sent or later.
 
 KNOWLEDGE BASE (objection scripts, case studies, market data):
-${opts.kb}${opts.correctionsBlock ?? ""}`;
+${opts.kb}`;
+}
+
+/**
+ * The same prompt, split where it stops being the same for everyone.
+ *
+ * `prefix` is byte-identical on every call — the rulebook plus the knowledge
+ * base, close to 9,000 tokens. It is sent as a cached block, so we buy it once
+ * an hour instead of once per draft. `tail` is what actually differs per lead:
+ * this client's CRM stage and the lessons the broker has taught. It has to come
+ * AFTER the prefix — caching matches from the start of the prompt, so a stage
+ * name in the middle would invalidate the knowledge base sitting behind it.
+ */
+export function buildRentalPromptParts(opts: {
+  leadStage?: string | null;
+  kb: string;
+  correctionsBlock?: string;
+  langRule?: string;
+}): { prefix: string; tail: string } {
+  const prefix = buildStableHalf({ kb: opts.kb, langRule: opts.langRule });
+  const tail = `The client's current CRM stage is: ${
+    opts.leadStage ? `"${opts.leadStage}"` : "UNKNOWN (infer from conversation)"
+  }
+Apply the CRM STAGE LOGIC above for exactly this stage.${opts.correctionsBlock ?? ""}`;
+  return { prefix, tail };
+}
+
+/**
+ * The whole prompt as one string, for the callers that don't split it.
+ * Identical in content to prefix + tail — only the CRM-stage line has moved to
+ * the end, so that the knowledge base above it can be cached.
+ */
+export function buildRentalSystemPrompt(opts: {
+  leadStage?: string | null;
+  kb: string;
+  correctionsBlock?: string;
+  langRule?: string;
+}): string {
+  const { prefix, tail } = buildRentalPromptParts(opts);
+  return `${prefix}\n\n${tail}`;
 }

@@ -37,6 +37,16 @@ interface ChatCompletionOpts {
   messages: ChatMessage[];
   max_tokens?: number;
   temperature?: number;
+  /**
+   * The part of the system prompt that is IDENTICAL on every call — the rental
+   * rulebook and the knowledge base, ~8,900 tokens of it. Sent as its own
+   * cached block so we pay full price for it once and a tenth of that on every
+   * later call, instead of buying the same 9,000 tokens again for every single
+   * draft. Anything that varies per lead (stage, the broker's own lessons)
+   * belongs in `system`, AFTER this — caching is a prefix match, so one
+   * changing character early throws away everything behind it.
+   */
+  cachePrefix?: string;
 }
 
 interface ChatCompletionResult {
@@ -59,9 +69,26 @@ function modelRejectsTemperature(model: string): boolean {
 export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatCompletionResult> {
   const client = getAnthropic();
 
+  // A prefix shorter than ~1000 tokens is silently NOT cached (Anthropic's
+  // minimum) while still costing the write premium, so only split the system
+  // prompt when the stable half is genuinely large.
+  const usePrefix = (opts.cachePrefix ?? "").length > 4000;
+  // A one-hour cache, not the default five minutes: leads arrive minutes to
+  // hours apart, and at five minutes almost every draft would rewrite the cache
+  // instead of reading it. Verified against the live API — the response comes
+  // back with ephemeral_1h_input_tokens filled in, so the hour is real.
+  // The cast is only because the pinned SDK's types predate the ttl field; the
+  // wire format is correct and the API confirms it.
+  const systemParam = (usePrefix
+    ? [
+        { type: "text", text: opts.cachePrefix!, cache_control: { type: "ephemeral", ttl: "1h" } },
+        { type: "text", text: opts.system },
+      ]
+    : opts.system) as Anthropic.MessageCreateParams["system"];
+
   const params: Anthropic.MessageCreateParamsNonStreaming = {
     model: opts.model,
-    system: opts.system,
+    system: systemParam,
     messages: opts.messages as Anthropic.MessageParam[],
     max_tokens: opts.max_tokens ?? 400,
     // Some models (e.g. claude-sonnet-5) use extended thinking by default. For
@@ -76,6 +103,28 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatComp
   }
 
   const response = await client.messages.create(params);
+
+  // Nothing recorded what any of this cost, so "the tokens are burning fast"
+  // could only ever be answered by guesswork. Every call now says what it spent
+  // and how much of it came from cache.
+  try {
+    const u = response.usage as unknown as {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+    logger.info(
+      {
+        model: opts.model,
+        inTok: u.input_tokens ?? 0,
+        outTok: u.output_tokens ?? 0,
+        cacheRead: u.cache_read_input_tokens ?? 0,
+        cacheWrite: u.cache_creation_input_tokens ?? 0,
+      },
+      "ai usage",
+    );
+  } catch { /* accounting must never break a reply */ }
 
   const text = response.content
     .filter((block): block is Anthropic.TextBlock => block.type === "text")
@@ -97,6 +146,9 @@ export async function chatCompletionJSON<T = Record<string, unknown>>(
   const jsonPrompt = `${opts.system}
 
 IMPORTANT: Respond with valid JSON only. No markdown, no code fences, no extra text. Just the raw JSON object.`;
+  // Appending to `system` and not to `cachePrefix` is deliberate: the prefix has
+  // to stay byte-identical between the JSON and non-JSON callers or neither of
+  // them ever gets a cache hit.
 
   const result = await chatCompletion({
     ...opts,

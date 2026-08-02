@@ -6,7 +6,7 @@ import { logger } from "./logger";
 import { parseDialogContent, formatDialogForAI, describeConversationTiming, conversationWindow } from "./dialog-parser";
 import { getKnowledgeBase } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
-import { buildRentalSystemPrompt } from "./rental-prompt";
+import { buildRentalSystemPrompt, buildRentalPromptParts } from "./rental-prompt";
 import { matchProperties, availabilityForCriteria, describePropertiesByIds, type PropertyPick, type BrokerIntent } from "./property-catalog";
 import { db, pendingSuggestionsTable } from "@workspace/db";
 import { eq, inArray, and } from "drizzle-orm";
@@ -650,8 +650,15 @@ export async function generateSuggestion(opts: {
   const brokerPicksBlock = "";
   const catalog = "";
 
-  const systemPrompt = isRental
-    ? buildRentalSystemPrompt({ leadStage: opts.leadStage, kb, correctionsBlock: opts.correctionsBlock })
+  // Rental splits its prompt: the rulebook and the knowledge base are the same
+  // ~9,000 tokens for every lead and get cached; only the stage and the lessons
+  // the broker taught ride along uncached.
+  const rentalParts = isRental
+    ? buildRentalPromptParts({ leadStage: opts.leadStage, kb, correctionsBlock: opts.correctionsBlock })
+    : null;
+  const cachePrefix = rentalParts?.prefix;
+  const systemPrompt = rentalParts
+    ? rentalParts.tail
     :
 `You are a senior Bali real estate broker working directly with international clients for Unicorn Property, Bali.
 
@@ -952,6 +959,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     chatCompletion({
       model: WRITER_MODEL,
       system: systemPrompt,
+      ...(cachePrefix ? { cachePrefix } : {}),
       messages: [{ role: "user", content: prompt + promptAdditions }],
       max_tokens: 400,
     }),
