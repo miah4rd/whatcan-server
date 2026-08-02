@@ -212,6 +212,19 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   it. `buildRentalPromptParts` returns the two halves; `buildRentalSystemPrompt`
   still returns them joined, byte-identical, for callers that don't split.
   Anything new that varies per lead goes in the TAIL or the cache dies.
+- **The knowledge base is a SALES guide — Rental gets only the part that applies.**
+  It talks about developers, leasehold, ROI, resale and buyer objections, and it
+  was pasted whole into every rental draft: a client asking about a villa for
+  three months was answered by a bot holding 6,000 tokens of investment material.
+  `filterKnowledgeBaseForRental` keeps tone of voice, message endings, the Bali
+  area map, the do-not list and the mission (8,840 tok → 4,188), and strips any
+  surviving line about buying. It DERIVES from the stored text, so the broker's
+  own edits still reach rental — do not fork it into a second copy. Sales keeps
+  the full guide.
+- **A version bump must never overwrite a knowledge base the broker edited.**
+  `ensureKnowledgeBaseVersion` used to replace it unconditionally, so a deploy
+  silently destroyed his wording. It now installs the new default only when the
+  stored text is still the untouched old one.
 - **Every AI call logs what it cost** (`ai usage` in `ai-client.ts`: input, output,
   cache read, cache write). Before this, "the tokens are burning fast" could only
   be answered by guesswork. Check a cache hit with
