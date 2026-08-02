@@ -213,6 +213,26 @@ export const leadCrmTasksTable = pgTable("lead_crm_tasks", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Tracks a broker's own promise to come back with information they don't have
+// yet ("I'll check with the owner and get back to you") — the client is left
+// waiting on US, not the other way around, so the standard "wait for client
+// reply" follow-up clock is the wrong instrument. See lib/commitment-detector.ts
+// and lib/commitment-scheduler.ts.
+export const leadCommitmentsTable = pgTable("lead_commitments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  leadId: text("lead_id").notNull(),
+  responsibleUser: text("responsible_user"),
+  promiseText: text("promise_text").notNull(),
+  sourceExcerpt: text("source_excerpt"),
+  dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
+  notifiedAt: timestamp("notified_at", { withTimezone: true }),
+  status: text("status").notNull().default("open"), // "open" | "done"
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type LeadCommitment = typeof leadCommitmentsTable.$inferSelect;
+
 // ── Lead messages (synced from amoCRM chat history) ─────────────────────────
 export const leadMessagesTable = pgTable("lead_messages", {
   id: uuid("id").primaryKey().defaultRandom(),

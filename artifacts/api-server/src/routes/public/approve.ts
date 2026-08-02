@@ -12,6 +12,7 @@ import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-clien
 import { resolveOutboundSource } from "../../lib/amo-messenger-field";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL, followupClockAfterReply } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
+import { recordCommitment } from "../../lib/commitment-scheduler.js";
 
 // amoCRM status IDs for the Unicorn Property pipeline (PIPELINE 8347534)
 // Maps each follow-up stage to the NEXT stage — bot auto-advances on approve.
@@ -607,6 +608,10 @@ router.post("/approve", async (req, res) => {
       req.log,
       prevLastMessageFrom,
     ).catch(() => {});
+
+    // ── Detect "I'll check and get back to you" promises — the client is
+    // waiting on US here, so the normal wait-for-reply clock never fires.
+    recordCommitment(sug.leadId, sug.responsibleUser, body.message).catch(() => {});
 
     // ── Track property picks — personalizes future matching for this broker ──
     if (sug.responsibleUser && effectiveAttachments.length > 0) {

@@ -10,6 +10,7 @@ import { startFollowupScheduler } from "./lib/followup-scheduler";
 import { startAmoSyncScheduler } from "./lib/amo-sync";
 import { startFunnelSnapshotScheduler } from "./lib/funnel-snapshot";
 import { startTimelineSyncScheduler } from "./lib/amo-timeline-sync";
+import { startCommitmentScheduler } from "./lib/commitment-scheduler";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
 
@@ -60,6 +61,7 @@ startFollowupScheduler();
 startAmoSyncScheduler();
 startFunnelSnapshotScheduler();
 startTimelineSyncScheduler();
+startCommitmentScheduler();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
 pool.query(`ALTER TABLE leads_sync ADD COLUMN IF NOT EXISTS pipeline text`)
@@ -262,5 +264,24 @@ pool.query(`
   )
 `).then(() => logger.info("startup migration: push_subscriptions table ensured"))
   .catch((err) => logger.error({ err }, "push_subscriptions migration failed"));
+
+// ── lead_commitments table (see lib/commitment-scheduler.ts) ────────────────
+pool.query(`
+  CREATE TABLE IF NOT EXISTS lead_commitments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    lead_id TEXT NOT NULL,
+    responsible_user TEXT,
+    promise_text TEXT NOT NULL,
+    source_excerpt TEXT,
+    due_at TIMESTAMPTZ NOT NULL,
+    notified_at TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT 'open',
+    resolved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )
+`).then(() => pool.query(`
+  CREATE INDEX IF NOT EXISTS lead_commitments_due_idx ON lead_commitments (status, notified_at, due_at)
+`)).then(() => logger.info("startup migration: lead_commitments table ensured"))
+  .catch((err) => logger.error({ err }, "lead_commitments migration failed"));
 
 export default app;
