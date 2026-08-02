@@ -631,7 +631,18 @@ router.post("/approve", async (req, res) => {
     // Two guards: a stage the broker picked themselves always wins, and a
     // terminal stage (Closed won/lost) is never applied automatically — those
     // carry money and reporting weight, so the broker confirms them explicitly.
-    if (!explicitNewStage && sug.suggestedStage && sug.suggestedStageId) {
+    // Third guard: a lead in a REACH / qualification follow-up stage (1st / 2nd /
+    // final follow up) that never got a reply must ONLY move along the
+    // qualification ladder (1st→2nd→final, advanced below) — the conversation
+    // classifier must NOT pull it into a funnel stage like "Contact established"
+    // off our own outbound follow-up. If the client actually replies, that's a
+    // LIVE turn and the broker moves the stage themselves.
+    const curStageLower = (prevSyncRow?.leadStage ?? "").toLowerCase();
+    const inReachStage =
+      curStageLower.includes("1st follow up") ||
+      curStageLower.includes("2nd follow up") ||
+      curStageLower.includes("final follow up");
+    if (!explicitNewStage && !inReachStage && sug.suggestedStage && sug.suggestedStageId) {
       if (sug.suggestedStageTerminal) {
         req.log.info(
           { leadId: sug.leadId, stage: sug.suggestedStage },
@@ -669,7 +680,15 @@ router.post("/approve", async (req, res) => {
             replyText: body.message ?? sug.suggestionText ?? "",
             attachmentsCount: (body.attachments ?? sug.attachments ?? []).length,
           });
-          if (cls && !cls.terminal) {
+          // Same reach/qualification guard as the draft-classifier path above: a
+          // lead on the 1st/2nd/final-follow-up ladder must NOT be pulled into a
+          // funnel stage off our own outbound. Only the follow-up advance moves it.
+          const ctxStageLower = (ctx.leadStage ?? "").toLowerCase();
+          const ctxInReach =
+            ctxStageLower.includes("1st follow up") ||
+            ctxStageLower.includes("2nd follow up") ||
+            ctxStageLower.includes("final follow up");
+          if (cls && !cls.terminal && !ctxInReach) {
             autoStage = { name: cls.stage.name, id: cls.stage.id };
             req.log.info(
               { leadId: sug.leadId, toStage: cls.stage.name, reason: cls.reason },
@@ -684,7 +703,15 @@ router.post("/approve", async (req, res) => {
   }
 
   // ── Stage change (applies for both normal approve and skip-message) ─────────
-  const effectiveNewStage = explicitNewStage ?? autoStage?.name ?? null;
+  // The bot SUGGESTS a stage but no longer MOVES the lead into a funnel stage on
+  // its own — the owner wants the broker to decide. It kept auto-moving leads
+  // wrongly (e.g. → "Options Sent" when no options were sent yet). So a funnel
+  // move now applies ONLY when the broker picked it themselves (explicitNewStage);
+  // the classifier's autoStage is surfaced as a hint, not applied. The
+  // qualification ladder (1st→2nd→final) still advances automatically below —
+  // that's the cadence, not a funnel judgement call.
+  const effectiveNewStage = explicitNewStage ?? null;
+  void autoStage; // computed for the hint/logs; intentionally not auto-applied
   if (effectiveNewStage) {
     const prevSync = await db
       .select({ leadStage: leadsSyncTable.leadStage })
