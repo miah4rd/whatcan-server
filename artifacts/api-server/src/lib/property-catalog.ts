@@ -430,6 +430,46 @@ export function extractBudgetIdr(messages: string[]): number | null {
 }
 
 /**
+ * The FLOOR of a stated range, e.g. "40-50 million" — extractBudgetIdr reads
+ * that same sentence and returns 50 (the ceiling), which is the right number
+ * for "don't show anything over budget". But it silently drops the 40: Ani
+ * Vit's form said "Budget: IDR 40-50 million/month" and the shortlist filled
+ * two of three slots with villas at 23 and 28.6 million — correctly UNDER the
+ * ceiling, so nothing rejected them, and a broker's own edit repeating "stay
+ * in that range" still didn't move them, because the code had nowhere to hold
+ * a floor at all. Returns null when the lead gave a single figure, not a
+ * range — a bare ceiling is not a promise they won't accept cheaper.
+ */
+export function extractBudgetFloorIdr(messages: string[]): number | null {
+  const PER_YEAR = /\/\s*year|per\s*year|a\s*year|\/\s*yr\b|yearly|annual|в\s*год|годов/i;
+  const RANGE_SEP = /\s*(?:-|–|—|to|до)\s*/;
+
+  for (const raw of messages) {
+    const m = raw.toLowerCase();
+    const perYear = PER_YEAR.test(m);
+    const toMonthly = (n: number) =>
+      Math.round(perYear ? n / 12 : n > 200_000_000 ? n / 12 : n);
+
+    const moneyContext = /idr|rp\b|rupiah|budget|бюджет|price|цен/i.test(m);
+    const range = new RegExp(
+      String.raw`(\d[\d.,]*)${RANGE_SEP.source}(\d[\d.,]*)\s*(jt\b|juta|mio\b|mln\b|mill(?:ion)?s?\b|млн|миллион)`,
+    ).exec(m) ??
+      (moneyContext
+        ? new RegExp(String.raw`(\d[\d.,]*)${RANGE_SEP.source}(\d[\d.,]*)\s*(m)\b`).exec(m)
+        : null);
+    if (range?.[1] && range[2]) {
+      const parse = (raw: string) => parseFloat(raw.replace(/[.,](?=\d{3}\b)/g, "").replace(",", "."));
+      const a = parse(range[1]);
+      const b = parse(range[2]);
+      if (a > 0 && b > 0 && a < 100000 && b < 100000) {
+        return toMonthly(Math.min(a, b) * 1_000_000);
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * The broker asking us to stop restricting the search.
  *
  * A broker instruction could previously only ADD a criterion, never lift one:
@@ -710,11 +750,23 @@ export async function candidatesForLead(opts: {
       ? extractBudgetIdr(criteriaSource) ?? opts.cardCriteria?.budgetIdrMonthly ?? null
       : null;
   const budgetCeiling = budgetIdr ? Math.round(budgetIdr * 1.15) : null;
+  // Same gap as matchProperties: a stated range's bottom half was invisible
+  // here too, and this is the pool the EDIT path's composer actually sees —
+  // so a broker's own "stay in that 40-50 range" instruction had nothing
+  // correctly ordered to draw from.
+  const budgetFloorIdr = opts.listingType === "rent" ? extractBudgetFloorIdr(criteriaSource) : null;
   if (budgetCeiling) {
     const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
     const abovePriced = candidates.filter((p) => priceOf(p) > budgetCeiling).sort((a, b) => priceOf(a) - priceOf(b));
     const unpriced = candidates.filter((p) => priceOf(p) === 0);
-    candidates = [...within.sort(rankForShortlist), ...abovePriced, ...unpriced];
+    const sortedWithin = budgetFloorIdr
+      ? [...within].sort((a, b) => {
+          const aIn = priceOf(a) >= budgetFloorIdr ? 0 : 1;
+          const bIn = priceOf(b) >= budgetFloorIdr ? 0 : 1;
+          return aIn !== bIn ? aIn - bIn : rankForShortlist(a, b);
+        })
+      : within.sort(rankForShortlist);
+    candidates = [...sortedWithin, ...abovePriced, ...unpriced];
   } else {
     candidates = [...candidates].sort(rankForShortlist);
   }
@@ -983,6 +1035,14 @@ export async function matchProperties(opts: {
         null
       : null;
   const budgetCeiling = budgetIdr ? Math.round(budgetIdr * 1.15) : null;
+  // A stated RANGE ("40-50 million") has a bottom too. extractBudgetIdr only
+  // ever reads the top of it — correct for the ceiling above, useless for
+  // telling a 23-million villa apart from a 48-million one, both of which
+  // pass "under the ceiling" equally. Ani Vit's request said 40-50; the
+  // shortlist filled two of three slots with villas at 23 and 28.6, and a
+  // broker edit repeating "stay in that range" still didn't move them,
+  // because nothing downstream had ever been told where the range started.
+  const budgetFloorIdr = opts.listingType === "rent" ? extractBudgetFloorIdr(criteriaSource) : null;
   let withinBudgetCount = 0;
   if (budgetCeiling) {
     const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
@@ -997,12 +1057,23 @@ export async function matchProperties(opts: {
     const unpriced = candidates.filter((p) => priceOf(p) === 0);
     const above = [...abovePriced, ...unpriced];
     withinBudgetCount = within.length;
+    // In-range first when a floor is known, THEN the general ranking — a villa
+    // below the stated floor is not "closer to what they asked for" just
+    // because it's cheap, so it no longer competes on views/recency against
+    // one that actually sits in the window they named.
+    const sortedWithin = budgetFloorIdr
+      ? [...within].sort((a, b) => {
+          const aIn = priceOf(a) >= budgetFloorIdr ? 0 : 1;
+          const bIn = priceOf(b) >= budgetFloorIdr ? 0 : 1;
+          return aIn !== bIn ? aIn - bIn : rankForShortlist(a, b);
+        })
+      : within.sort(rankForShortlist);
     // Affordable first, then the closest above. Requiring TWO within budget
     // before honouring it at all threw the budget away whenever exactly one
     // fitted — and the model then freely picked villas at double the number.
-    candidates = [...within.sort(rankForShortlist), ...above];
+    candidates = [...sortedWithin, ...above];
     logger.info(
-      { budgetIdr, within: within.length, of: candidates.length },
+      { budgetIdr, budgetFloorIdr, within: within.length, of: candidates.length },
       within.length > 0
         ? "matchProperties: ordered the shortlist by the lead's budget"
         : "matchProperties: nothing inside the budget, offering the closest",

@@ -77,11 +77,18 @@ export function expandArea(spoken: string): string[] {
 
 /** True when a catalog listing's area falls under any of the requested areas. */
 export function areaMatches(listingArea: string | null | undefined, requested: string[]): boolean {
-  const a = (listingArea ?? "").trim().toLowerCase();
-  if (!a) return false;
+  const raw = (listingArea ?? "").trim().toLowerCase();
+  if (!raw) return false;
+  // A couple of listings carry the sub-area AND its parent in one field,
+  // comma-joined ("Tumbak Bayuh, Pererenan") — compared as a whole string that
+  // matched neither name in it, so a lead asking for "Pererenan" never saw a
+  // villa that is, in fact, in Pererenan. Split on the comma and match any part.
+  const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  const candidates = parts.length > 0 ? parts : [raw];
   for (const r of requested) {
     for (const candidate of expandArea(r)) {
-      if (candidate.toLowerCase() === a) return true;
+      const c = candidate.toLowerCase();
+      if (candidates.some((p) => p === c)) return true;
     }
   }
   return false;
