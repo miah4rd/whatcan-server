@@ -220,6 +220,12 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   `generate-suggestion.ts` AND `amocrm-webhook.ts`, and the copies had already
   drifted — one carried corrections, the other didn't. Never re-inline it.
   Verified character-for-character against the pre-split text before shipping.
+- **The daily bill is recorded, not estimated.** `ai_usage` gets a row per API
+  call with its cost already worked out (`PRICE_PER_MTOK` in ai-client.ts) and a
+  `label` saying what it was for. `GET /api/public/ai-spend` totals it by day in
+  Bali time plus today by purpose. Give every new AI call a label — unlabelled
+  ones land in "other" and the breakdown stops being useful. Note the API path:
+  public routes are mounted at **/api/public/**, not /api/.
 - **The property matcher CANNOT be cached — don't try again.** Its static rules
   are 557 tokens, below Anthropic's 1024-token minimum, so a cache_control there
   silently does nothing while still costing the write premium. The catalog is the
