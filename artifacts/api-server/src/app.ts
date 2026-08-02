@@ -96,10 +96,10 @@ pool.query(`CREATE TABLE IF NOT EXISTS ai_usage (
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
   cost_usd NUMERIC(12, 6) NOT NULL DEFAULT 0
 )`)
+  // The index has to wait for the table: fired side by side, it lost the race
+  // and logged "relation ai_usage does not exist" on every boot.
+  .then(() => pool.query(`CREATE INDEX IF NOT EXISTS ai_usage_created_at_idx ON ai_usage (created_at)`))
   .catch((err) => logger.error({ err }, "startup migration: ai_usage failed"));
-
-pool.query(`CREATE INDEX IF NOT EXISTS ai_usage_created_at_idx ON ai_usage (created_at)`)
-  .catch((err) => logger.error({ err }, "startup migration: ai_usage index failed"));
 
 pool.query(`ALTER TABLE pending_suggestions ADD COLUMN IF NOT EXISTS auto_sent BOOLEAN DEFAULT FALSE`)
   .catch((err) => logger.error({ err }, "startup migration: auto_sent failed"));
