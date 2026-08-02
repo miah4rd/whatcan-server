@@ -33,6 +33,14 @@ async function alreadySentPropertyIds(
    * "already shown" removed the one villa the whole enquiry was about — the
    * shortlist then came back empty. Pass the lead's text to subtract it. */
   leadOwnText?: string,
+  /** But a lead quoting back a link WE sent — "is this one available?", "I like
+   * this one" — is the normal, common way a listing comes up a second time over
+   * WhatsApp. Subtracting every ID in the lead's text (above) treated that quote
+   * exactly like an ad-lead's opening link, un-excluding a villa that genuinely
+   * was already shown — it then came back as a "similar alternative" to a new
+   * anchor and got re-attached as if fresh. Anything that also appears in what
+   * WE sent stays excluded no matter what the lead echoes back. */
+  ourSentText?: string,
 ): Promise<string[]> {
   const ids = new Set<string>();
 
@@ -41,8 +49,14 @@ async function alreadySentPropertyIds(
   }
 
   if (leadOwnText) {
+    const oursIds = new Set<string>();
+    if (ourSentText) {
+      for (const m of ourSentText.matchAll(/\/property\/([A-Za-z0-9-]+)/gi)) {
+        if (m[1]) oursIds.add(m[1]);
+      }
+    }
     for (const m of leadOwnText.matchAll(/\/property\/([A-Za-z0-9-]+)/gi)) {
-      if (m[1]) ids.delete(m[1]);
+      if (m[1] && !oursIds.has(m[1])) ids.delete(m[1]);
     }
   }
 
@@ -142,6 +156,10 @@ export async function pickPropertyAttachments(opts: {
       `${opts.contentSnippet}\n${opts.formattedDialog}`,
       opts.dialogMessages
         .filter((m) => m.from === "lead")
+        .map((m) => m.text)
+        .join("\n"),
+      opts.dialogMessages
+        .filter((m) => m.from === "us")
         .map((m) => m.text)
         .join("\n"),
     );
