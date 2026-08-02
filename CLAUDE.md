@@ -173,6 +173,17 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   budget read as monthly, "3 or 4" read as exactly 4) so the bot obeyed inside
   a wrong picture. Any "я сказал X, бот сделал Y" report outranks feature work,
   and the fix is verified by replaying the broker's EXACT edit sequence.
+- **A pure-text edit must not attach a link nobody asked for.** The
+  `composeReplyWithListings` "none_this_message" branch carried a carve-out —
+  attach the villa the CLIENT themselves named, "usually []" otherwise — meant
+  for a lead's first message on an ad-lead villa. It fired instead on an
+  ordinary mid-conversation "is this available?", attaching a link the client
+  already had, on a message whose whole point was "let me check and get back
+  to you" — the broker never asked for a link, only for words. His own
+  description: "ссылки в своей жизни живут." Fixed: this mode now returns
+  `listing_ids: []` unless the BROKER'S OWN INSTRUCTION says to send/attach/
+  confirm a link — the reply text naming a villa is not itself a request to
+  attach it.
 - **An edit must move the links too, not just the words.** `/suggest` returned
   text only, so a broker dictating "these are too expensive" got a rewritten
   message with the same expensive links. The revision now feeds the matcher
