@@ -870,11 +870,18 @@ const PAGE_HTML = `<!doctype html>
       var json = await res.json();
       if (json && json.text) item.text = json.text;
       // A revision about the listings re-picks them server-side. Links the
-      // broker added by hand stay — they overrode the bot on purpose.
+      // broker added by hand stay — they overrode the bot on purpose. But when
+      // the panel was curated, the server now echoes the broker's own set back
+      // verbatim (see suggest.ts) — concatenating item.attachments' own _broker
+      // copy on top of that would just duplicate every link.
       if (json && Array.isArray(json.attachments)) {
-        var keep = (item.attachments || []).filter(function (a) { return a._broker; });
-        item.attachments = json.attachments.concat(keep);
-        showToast("Options updated: " + json.attachments.length + " link(s)");
+        if (item._attachmentsCurated) {
+          item.attachments = json.attachments;
+        } else {
+          var keep = (item.attachments || []).filter(function (a) { return a._broker; });
+          item.attachments = json.attachments.concat(keep);
+        }
+        showToast("Options updated: " + item.attachments.length + " link(s)");
       }
       // The bot re-read the temperature from the pasted screenshot — apply it so
       // the follow-up cadence and the chip reflect ground truth, not stale sync.

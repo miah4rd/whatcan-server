@@ -1054,9 +1054,16 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
       // A revision about the listings re-picks them server-side; a wording-only
       // revision leaves them alone (server returns null then). Links the broker
       // added by hand stay — they overrode the bot on purpose. (Nikita's ext71 fix.)
+      // But when the panel was curated, the server echoes the broker's own set
+      // back verbatim (see suggest.ts) — concatenating item.attachments' own
+      // _broker copy on top of that would just duplicate every link.
       if (Array.isArray(json?.attachments)) {
-        const keep = (item.attachments || []).filter((a) => a._broker);
-        item.attachments = json.attachments.concat(keep);
+        if (item._attachmentsCurated) {
+          item.attachments = json.attachments;
+        } else {
+          const keep = (item.attachments || []).filter((a) => a._broker);
+          item.attachments = json.attachments.concat(keep);
+        }
       }
       // Screenshot may reveal the real temperature — apply the bot's re-assessment.
       if (json?.reassessed_temperature) {

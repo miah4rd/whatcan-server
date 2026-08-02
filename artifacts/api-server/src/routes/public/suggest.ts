@@ -752,7 +752,17 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
                 ),
               ),
           );
-          if (composed.decision === "keep_current") {
+          if (curatedDetected) {
+            // The broker hand-curated the panel — that IS the answer, no matter
+            // what "decision" the model landed on. Letting "new_selection" through
+            // here was the gap: attachmentsCurated was fed to the prompt as a
+            // hint, not enforced in code, so a generic revision like "rewrite
+            // using the manual edits as guidance" let the model freely re-pick —
+            // dropping one of the broker's own links and pulling in one it had
+            // just removed. keep_current/none_this_message only covered two of
+            // the three decisions the model can return.
+            composed.listingIds = currentIds.map((i) => i.toUpperCase());
+          } else if (composed.decision === "keep_current") {
             composed.listingIds = currentIds.map((i) => i.toUpperCase());
           } else if (composed.decision === "none_this_message") {
             composed.listingIds = composed.listingIds.filter((id) => leadOwnIds.has(id));
