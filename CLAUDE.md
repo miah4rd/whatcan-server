@@ -212,6 +212,22 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   it. `buildRentalPromptParts` returns the two halves; `buildRentalSystemPrompt`
   still returns them joined, byte-identical, for callers that don't split.
   Anything new that varies per lead goes in the TAIL or the cache dies.
+- **Both funnels' prompts are split for caching, and Sales lives in ONE file now.**
+  `lib/rental-prompt.ts` and `lib/sales-prompt.ts` each expose
+  `build*PromptParts` → `{prefix, tail}`. The prefix (rules + knowledge base) is
+  sent as a cached block; the tail is the CRM stage plus the broker's lessons.
+  The sales prompt used to be the same 16,000-character literal duplicated in
+  `generate-suggestion.ts` AND `amocrm-webhook.ts`, and the copies had already
+  drifted — one carried corrections, the other didn't. Never re-inline it.
+  Verified character-for-character against the pre-split text before shipping.
+- **The property matcher CANNOT be cached — don't try again.** Its static rules
+  are 557 tokens, below Anthropic's 1024-token minimum, so a cache_control there
+  silently does nothing while still costing the write premium. The catalog is the
+  expensive part (up to 5,389 tokens) and it is filtered per lead by design
+  (bedrooms, budget, area, dedupe), so it is never byte-identical twice. Sending
+  the whole catalog uncached to make it cacheable would move budget enforcement
+  from code back into the prompt — the thing "A stated budget is enforced in
+  code, not asked of the model" exists to prevent.
 - **The knowledge base is a SALES guide — Rental gets only the part that applies.**
   It talks about developers, leasehold, ROI, resale and buyer objections, and it
   was pasted whole into every rental draft: a client asking about a villa for
