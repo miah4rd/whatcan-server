@@ -203,6 +203,24 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
 - **Every message in `/m` shows its time.** Without it a thread cannot be placed
   in time and the broker cannot tell a ten-minute-old reply from a three-day-old
   one. `fmtAt` is written with no backslashes (template-literal trap).
+- **The prompt is split where it stops being the same for everyone.** The Rental
+  system prompt is 8,840 tokens (5,961 of them the knowledge base) and was
+  re-sent in full on every draft. It is now two blocks: a cached prefix (rulebook
+  + KB, 1-hour TTL) and a per-lead tail of ~67 tokens (CRM stage + the broker's
+  learned lessons). The stage line HAD to move to the end — caching matches from
+  the start of the prompt, so a stage name in the middle threw away the KB behind
+  it. `buildRentalPromptParts` returns the two halves; `buildRentalSystemPrompt`
+  still returns them joined, byte-identical, for callers that don't split.
+  Anything new that varies per lead goes in the TAIL or the cache dies.
+- **Every AI call logs what it cost** (`ai usage` in `ai-client.ts`: input, output,
+  cache read, cache write). Before this, "the tokens are burning fast" could only
+  be answered by guesswork. Check a cache hit with
+  `pm2 logs whatcan --nostream | grep "ai usage"` — `cacheRead` should be ~8,835
+  on the main generation.
+- **Sonnet writes what a client reads; nothing else.** Objection labelling,
+  follow-up timing, and the is-this-lead-alive check are Haiku (`HELPER_MODEL`).
+  The owner's rule is "оставь соннет" for client-facing text — that is the line,
+  not a blanket ban on cheaper models.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
 
