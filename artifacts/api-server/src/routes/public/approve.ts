@@ -680,7 +680,15 @@ router.post("/approve", async (req, res) => {
             replyText: body.message ?? sug.suggestionText ?? "",
             attachmentsCount: (body.attachments ?? sug.attachments ?? []).length,
           });
-          if (cls && !cls.terminal) {
+          // Same reach/qualification guard as the draft-classifier path above: a
+          // lead on the 1st/2nd/final-follow-up ladder must NOT be pulled into a
+          // funnel stage off our own outbound. Only the follow-up advance moves it.
+          const ctxStageLower = (ctx.leadStage ?? "").toLowerCase();
+          const ctxInReach =
+            ctxStageLower.includes("1st follow up") ||
+            ctxStageLower.includes("2nd follow up") ||
+            ctxStageLower.includes("final follow up");
+          if (cls && !cls.terminal && !ctxInReach) {
             autoStage = { name: cls.stage.name, id: cls.stage.id };
             req.log.info(
               { leadId: sug.leadId, toStage: cls.stage.name, reason: cls.reason },
