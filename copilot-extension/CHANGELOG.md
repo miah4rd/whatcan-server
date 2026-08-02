@@ -6,6 +6,12 @@ release, so all changes are shared and visible. Build: zip the folder CONTENTS
 (files at the archive root) to `artifacts/landing/public/extNN.zip`, then copy to
 the VPS `artifacts/landing/dist/public/` (only that is served).
 
+## 1.0.90
+
+- Picker overlay fades/scales in instead of popping up, and the iframe stays
+  hidden behind the dark modal until it finishes loading — no more white
+  flash before the site paints.
+
 ## 1.0.89
 
 - New "🌐 Choose on site" button in the edit panel, next to the manual

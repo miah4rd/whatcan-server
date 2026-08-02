@@ -2303,18 +2303,21 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
   // actually cover the full viewport regardless of the panel's own box.
   function openPropertyPicker(onSelect) {
     const overlay = el(`
-      <div style="position:fixed;inset:0;z-index:2147483647;background:rgba(10,14,20,.72);display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;font-family:inherit">
-        <div style="width:100%;max-width:1100px;height:100%;max-height:860px;background:#273444;border:1px solid #3a4a5e;border-radius:10px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.55)">
+      <div style="position:fixed;inset:0;z-index:2147483647;background:rgba(10,14,20,.72);display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;font-family:inherit;opacity:0;transition:opacity .16s ease">
+        <div style="width:100%;max-width:1100px;height:100%;max-height:860px;background:#273444;border:1px solid #3a4a5e;border-radius:10px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.55);transform:scale(.97) translateY(6px);transition:transform .18s ease">
           <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#2c3e50;border-bottom:1px solid #3a4a5e">
             <span style="font-size:12.5px;font-weight:700;color:#e6e8ee">🌐 Choose listings — unicorn-properties.com</span>
             <button data-pickerclose style="background:none;border:none;color:#94a3b8;font-size:20px;line-height:1;cursor:pointer;padding:2px 6px;border-radius:4px">×</button>
           </div>
-          <iframe src="${PICKER_ORIGIN}/" style="flex:1 1 auto;border:none;width:100%;background:#0f1826"></iframe>
+          <iframe src="${PICKER_ORIGIN}/" style="flex:1 1 auto;border:none;width:100%;background:#273444;opacity:0;transition:opacity .25s ease"></iframe>
         </div>
       </div>
     `);
     document.body.appendChild(overlay);
     const iframe = overlay.querySelector("iframe");
+    const modalBox = overlay.firstElementChild;
+    requestAnimationFrame(() => { overlay.style.opacity = "1"; modalBox.style.transform = "none"; });
+    iframe.addEventListener("load", () => { iframe.style.opacity = "1"; });
 
     function close() {
       window.removeEventListener("message", onMessage);
