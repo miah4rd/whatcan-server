@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { chatCompletionJSON } from "../../lib/ai-client.js";
+import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
 
 const router = Router();
 
@@ -23,7 +23,7 @@ router.post("/parse-task", async (req, res) => {
 
   try {
     const parsed = await chatCompletionJSON<{ taskDate?: string; taskText?: string }>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
       system: `Today's date is ${today}.
 You are a CRM assistant. Parse the broker's voice instruction into a structured follow-up task.
 

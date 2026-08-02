@@ -214,6 +214,10 @@ const PAGE_HTML = `<!doctype html>
 
   var brokerName = localStorage.getItem("copilot_broker") || "";
   var activeTab = "live";
+  // Staged-delegation panel state: the broker dials "bot acts without approve
+  // up to stage X" from here. Settings live server-side (/api/public/autopilot).
+  var apOpen = false;
+  var apData = null;
   var items = { live: [], push: [], reach: [] };
   var openItem = null;
   var editing = false;
@@ -230,6 +234,37 @@ const PAGE_HTML = `<!doctype html>
     "Feedback / Handling Objections","Reservation","Negotiations",
     "Contract signed","Closed - won","Closed - lost"
   ];
+
+  // URLs in conversation bubbles are tappable: a client quoting a villa link
+  // ("this one looks good") was dead text, so the broker could not open the very
+  // villa being discussed. Linkified AFTER esc(), so nothing unescaped renders.
+  //
+  // Built WITHOUT a regex literal on purpose: this page is one big template
+  // literal, and the backslashes of a URL regex were eaten on the way out —
+  // the browser received a broken pattern, the whole script failed to parse and
+  // the app rendered a blank screen on the owner's phone.
+  function linkify(escaped) {
+    var out = "", rest = String(escaped);
+    for (;;) {
+      var at = rest.indexOf("http");
+      if (at === -1 || (rest.substr(at, 7) !== "http://" && rest.substr(at, 8) !== "https://")) break;
+      out += rest.slice(0, at);
+      rest = rest.slice(at);
+      var stop = rest.length;
+      for (var i = 0; i < rest.length; i++) {
+        // Compared by CHARACTER CODE, never by an escape sequence: this page is
+        // one template literal, so a backslash-n written anywhere here (even in
+        // a comment) arrives as a real line break and breaks the whole script.
+        var code = rest.charCodeAt(i);
+        if (code === 32 || code === 60 || code === 10 || code === 13 || code === 9) { stop = i; break; }
+      }
+      var url = rest.slice(0, stop);
+      while (url.length && ".,;:!?)".indexOf(url.charAt(url.length - 1)) !== -1) url = url.slice(0, -1);
+      out += '<a href="' + url + '" target="_blank" rel="noopener" style="color:#7dd3fc;text-decoration:underline;word-break:break-all">' + url + "</a>";
+      rest = rest.slice(url.length);
+    }
+    return out + rest;
+  }
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -267,6 +302,27 @@ const PAGE_HTML = `<!doctype html>
     if (item.lead_stage) html += '<span class="badge stagepill">' + esc(item.lead_stage) + '</span>';
     if (item.discard_flagged) html += '<span class="badge discard">\\u2298 Review</span>';
     return html;
+  }
+
+  // Every message shows when it was sent. Without it the broker opens a thread
+  // and cannot tell whether the last line is from ten minutes or three days ago.
+  // Times come from the phone's own clock, which on Bali is the client's clock.
+  var MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+  function sameDay(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+  function fmtAt(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    var hm = pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    var now = new Date();
+    if (sameDay(d, now)) return hm;
+    if (sameDay(d, new Date(now.getTime() - 86400000))) return "Yesterday " + hm;
+    var base = d.getDate() + " " + MON[d.getMonth()];
+    if (d.getFullYear() !== now.getFullYear()) base += " " + d.getFullYear();
+    return base + ", " + hm;
   }
 
   function fmtAgo(iso) {
@@ -409,6 +465,14 @@ const PAGE_HTML = `<!doctype html>
     }
     _voiceEl = edEl; _voiceBtn = btnEl;
     _voiceWanted = true;
+    // Dictating means the on-screen keyboard is dead weight — on iPhone it eats
+    // half the screen, hiding the very draft being corrected. Blur the field to
+    // dismiss it; the transcript still lands in the field's value, and the
+    // keyboard comes back the moment the broker taps the text to type.
+    try {
+      edEl.blur();
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    } catch (e) {}
     if (btnEl) { btnEl.textContent = "\\u23f3"; btnEl.title = "Starting microphone…"; }
     var sr = new SR();
     sr.lang = navigator.language || "ru-RU";
@@ -720,7 +784,13 @@ const PAGE_HTML = `<!doctype html>
           attachments: (item.attachments || []).filter(function (a) { return a.type === "link" && a.url; }),
         }),
       });
-      if (!res.ok) throw new Error("API " + res.status);
+      // Show what the server actually said. "API 502" told the broker nothing —
+      // the usual cause is the AI balance running out, which they can fix.
+      if (!res.ok) {
+        var errText = "API " + res.status;
+        try { var ej = await res.json(); if (ej && ej.error) errText = ej.error; } catch (e2) {}
+        throw new Error(errText);
+      }
       var json = await res.json();
       if (json && json.text) item.text = json.text;
       // A revision about the listings re-picks them server-side. Links the
@@ -823,7 +893,30 @@ const PAGE_HTML = `<!doctype html>
       html += '<button class="refresh-btn" id="toggle-push-btn" title="' + (pushOn ? "Disable notifications" : "Enable notifications") + '" style="' + (pushOn ? "" : "opacity:.45") + '">' + (pushOn ? "\\ud83d\\udd14" : "\\ud83d\\udd15") + '</button>';
     }
     html += '<button class="refresh-btn" id="refresh-btn" title="Refresh">\\u27f3</button>';
+    html += '<button class="refresh-btn" id="autopilot-btn" title="Autopilot">\\ud83e\\udd16</button>';
     html += "</div></div>";
+    if (apOpen) {
+      var apStages = apData && apData.stages ? apData.stages : [];
+      var apSet = (apData && apData.setting) || { mode: "off", upToStageName: null };
+      var apOn = apSet.mode === "on" && apSet.upToStageName;
+      html += '<div class="stage-hint" id="ap-panel" style="margin-top:8px">';
+      html += '<b>\\ud83e\\udd16 Autopilot</b> \\u2014 send without approval up to a chosen stage. Off = every message waits for you, as now.<br>';
+      html += '<select id="ap-sel" style="margin:6px 6px 0 0;max-width:75%">';
+      html += '<option value=""' + (!apOn ? " selected" : "") + '>Off</option>';
+      for (var ai = 0; ai < apStages.length; ai++) {
+        html += '<option value="' + esc(apStages[ai]) + '"' + (apOn && apSet.upToStageName === apStages[ai] ? " selected" : "") + '>Up to \\u201c' + esc(apStages[ai]) + '\\u201d</option>';
+      }
+      html += "</select>";
+      var bf = (apData && apData.bf) || { enabled: false, minMonthlyIdr: 0 };
+      html += '<div style="margin-top:8px"><b>\\ud83d\\udcb0 Budget filter</b> \\u2014 rental leads with a stated budget below this go to Closed Lost automatically, no tokens spent:</div>';
+      html += '<input id="bf-min" type="number" min="1" step="1" value="' + (bf.minMonthlyIdr ? Math.round(bf.minMonthlyIdr / 1000000) : 40) + '" style="width:70px;margin:6px 4px 0 0"> million IDR/mo ';
+      html += '<select id="bf-on" style="margin:6px 0">';
+      html += '<option value="off"' + (!bf.enabled ? " selected" : "") + '>Off</option>';
+      html += '<option value="on"' + (bf.enabled ? " selected" : "") + '>On</option>';
+      html += "</select><br>";
+      html += '<button class="refresh-btn" id="ap-save" style="margin-top:6px">Save</button>';
+      html += "</div>";
+    }
     html += '<div class="tabs">';
     for (var i = 0; i < tabDef.length; i++) {
       var key = tabDef[i][0], label = tabDef[i][1];
@@ -863,6 +956,41 @@ const PAGE_HTML = `<!doctype html>
     app.innerHTML = html;
 
     $("#refresh-btn").onclick = fetchInbox;
+    var apBtn = $("#autopilot-btn");
+    if (apBtn) apBtn.onclick = async function () {
+      apOpen = !apOpen;
+      if (apOpen && !apData) {
+        try {
+          var r = await fetch(API + "/autopilot?pipeline=rental");
+          apData = await r.json();
+          var rb = await fetch(API + "/budget-filter?pipeline=rental");
+          var jb = await rb.json();
+          apData.bf = (jb && jb.setting) || { enabled: false, minMonthlyIdr: 0 };
+        } catch (e) { apData = null; }
+      }
+      render();
+    };
+    var apSave = $("#ap-save");
+    if (apSave) apSave.onclick = async function () {
+      var v = $("#ap-sel").value;
+      var payload = v
+        ? { pipeline: "rental", mode: "on", upToStageName: v, dailyCap: 30 }
+        : { pipeline: "rental", mode: "off", upToStageName: null, dailyCap: 30 };
+      try {
+        var r2 = await fetch(API + "/autopilot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        var j2 = await r2.json();
+        var bfOn = $("#bf-on").value === "on";
+        var bfMin = Math.max(0, Math.round(Number($("#bf-min").value) || 0)) * 1000000;
+        var r3 = await fetch(API + "/budget-filter", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pipeline: "rental", enabled: bfOn, minMonthlyIdr: bfMin }) });
+        var j3 = await r3.json();
+        if (j2 && j2.ok && j3 && j3.ok) {
+          if (apData) { apData.setting = j2.setting; apData.bf = j3.setting; }
+          showToast((v ? "Autopilot up to \\u201c" + v + "\\u201d" : "Autopilot off") + " \\u00b7 Budget filter " + (bfOn ? "ON at " + Math.round(bfMin / 1000000) + "M" : "off"));
+          apOpen = false; render();
+        }
+        else showToast((j2 && j2.error) || (j3 && j3.error) || "Could not save");
+      } catch (e) { showToast("Could not save: " + (e && e.message)); }
+    };
     var togglePushBtn = $("#toggle-push-btn");
     if (togglePushBtn) togglePushBtn.onclick = togglePush;
     document.querySelectorAll(".tab").forEach(function (el) {
@@ -912,8 +1040,9 @@ const PAGE_HTML = `<!doctype html>
         var m = msgs[i];
         var isUs = m.from === "us";
         html += '<div class="tmsg ' + (isUs ? "us" : "lead") + '">';
-        html += '<div class="tmsg-hdr"><span class="tsender">' + (isUs ? "You" : "Lead") + '</span></div>';
-        html += '<div class="tbubble">' + esc(m.text) + '</div>';
+        var _at = fmtAt(m.at);
+        html += '<div class="tmsg-hdr"><span class="tsender">' + (isUs ? "You" : "Lead") + '</span>' + (_at ? '<span class="tat">' + esc(_at) + '</span>' : '') + '</div>';
+        html += '<div class="tbubble">' + linkify(esc(m.text)) + '</div>';
         html += '</div>';
       }
     }
@@ -944,7 +1073,7 @@ const PAGE_HTML = `<!doctype html>
       html += '<div class="skel"><div></div><div></div><div></div><div></div></div>';
     } else {
       html += '<label class="section">Suggested message</label>';
-      html += '<div class="msg-text">' + esc(it.text) + '</div>';
+      html += '<div class="msg-text">' + linkify(esc(it.text)) + '</div>';
       html += renderAttachments(it, false);
     }
     if (it.error) html += '<div class="err-text">' + esc(it.error) + '</div>';

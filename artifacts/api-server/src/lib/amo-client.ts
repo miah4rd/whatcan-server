@@ -256,15 +256,41 @@ export async function getAmoLead(leadId: string): Promise<{ id: number; responsi
  * Returns the count (0/1 = safe, >=2 = risk). Returns 1 on any API error so a
  * transient amoCRM hiccup never blocks a normal send — fail open, not closed.
  */
+/**
+ * WhatsApp channel origins as amoCRM reports them on a talk.
+ * A lead who also messages on Instagram or Telegram has a second ACTIVE talk —
+ * but a Salesbot send goes out on the WhatsApp line only, so another channel
+ * cannot duplicate it. Counting every active talk made this refuse to send to
+ * perfectly normal Instagram-sourced leads (Josua: one wahelp thread + one
+ * instagram_business thread, and the send was blocked as a "duplicate").
+ */
+const WHATSAPP_TALK_ORIGINS = /wahelp|wababa|whatsapp|wapp|wa\./i;
+
 export async function countActiveWhatsappChats(leadId: string): Promise<number> {
   try {
     const data = await amoFetch<{
-      _embedded?: { talks?: Array<{ chat_id?: string; is_in_work?: boolean; status?: string }> };
+      _embedded?: {
+        talks?: Array<{ chat_id?: string; is_in_work?: boolean; status?: string; origin?: string }>;
+      };
     }>(`/api/v4/talks?filter[entity_id]=${leadId}&filter[entity_type]=lead`);
     const talks = data?._embedded?.talks ?? [];
     const activeChatIds = new Set<string>();
+    const skipped: string[] = [];
     for (const t of talks) {
-      if (t.is_in_work && t.chat_id) activeChatIds.add(t.chat_id);
+      if (!t.is_in_work || !t.chat_id) continue;
+      // Missing origin counts as WhatsApp — keeps the original protection when
+      // amoCRM tells us nothing about the channel.
+      if (t.origin && !WHATSAPP_TALK_ORIGINS.test(t.origin)) {
+        skipped.push(t.origin);
+        continue;
+      }
+      activeChatIds.add(t.chat_id);
+    }
+    if (skipped.length > 0) {
+      logger.info(
+        { leadId, whatsappThreads: activeChatIds.size, otherChannels: skipped },
+        "duplicate-thread check: ignored active talks on other channels",
+      );
     }
     return activeChatIds.size;
   } catch {

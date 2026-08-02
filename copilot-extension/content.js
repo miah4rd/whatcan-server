@@ -1481,7 +1481,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
                 <span style="font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:${senderColor}">${esc(senderLabel)}</span>
                 ${timeStr ? `<span style="font-size:10px;color:#6e8099">${esc(timeStr)}</span>` : ""}
               </div>
-              <div style="padding:8px 11px;border-radius:6px;font-size:13px;line-height:1.52;white-space:pre-wrap;word-break:break-word;width:100%;box-sizing:border-box;background:${bubbleBg};border:1px solid ${bubbleBorder};border-left:3px solid ${bubbleAccent};color:${bubbleColor}">${esc(m.text)}</div>
+              <div style="padding:8px 11px;border-radius:6px;font-size:13px;line-height:1.52;white-space:pre-wrap;word-break:break-word;width:100%;box-sizing:border-box;background:${bubbleBg};border:1px solid ${bubbleBorder};border-left:3px solid ${bubbleAccent};color:${bubbleColor}">${linkify(esc(m.text))}</div>
             </div>`;
           }).join("")
         : `<div style="font-size:12px;color:#5e6e82;text-align:center;padding:8px 0">No conversation history yet</div>`;
@@ -2316,6 +2316,9 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
     _voiceEdEl  = edEl;
     _voiceEdBtn = btnEl;
     _voiceEdHint = hintEl;
+    // Dictating means the on-screen keyboard is dead weight — on a phone it eats
+    // half the screen, hiding the very draft being corrected. Harmless on desktop.
+    try { edEl.blur(); if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch {}
     if (btnEl) { btnEl.textContent = "⏳"; btnEl.title = "Starting microphone…"; }
 
     const sr = new SR();
@@ -2467,6 +2470,11 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
     return `${Math.floor(h / 24)}d ago`;
   }
   function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+  // URLs in conversation bubbles are tappable (client-quoted villa links were
+  // dead text). Applied AFTER esc(), so nothing unescaped renders.
+  function linkify(escaped) {
+    return escaped.replace(/(https?:\/\/[^\s<]+)/g, (u) => `<a href="${u}" target="_blank" rel="noopener" style="color:#7dd3fc;text-decoration:underline;word-break:break-all">${u}</a>`);
+  }
   function el(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 
   try {

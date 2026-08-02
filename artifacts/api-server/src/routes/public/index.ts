@@ -21,10 +21,16 @@ import whoamiRouter from "./whoami";
 import setTemperatureRouter from "./set-temperature";
 import rescheduleTaskRouter from "./reschedule-task";
 import noReplyNeededRouter from "./no-reply-needed";
+import autopilotRouter from "./autopilot";
+import budgetFilterRouter from "./budget-filter";
+import aiSpendRouter from "./ai-spend";
 
 const router = Router();
 
 router.use(suggestRouter);
+router.use(autopilotRouter);
+router.use(budgetFilterRouter);
+router.use(aiSpendRouter);
 router.use(suggestionsRouter);
 router.use(feedbackRouter);
 router.use(approveRouter);

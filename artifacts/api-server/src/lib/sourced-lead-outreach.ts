@@ -22,6 +22,8 @@ import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, isNull, isNotNull, or, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch } from "./amo-client";
+import { describePropertiesByIds } from "./property-catalog";
+import { enforceBudgetFilter } from "./budget-filter";
 
 type AmoNote = { note_type?: string; params?: { text?: string } };
 
@@ -38,6 +40,38 @@ async function fetchLeadNote(leadId: string): Promise<string | null> {
   } catch (err) {
     logger.warn({ err, leadId }, "sourced-lead: notes fetch failed");
     return null;
+  }
+}
+
+/**
+ * The PERSON's name, from the lead's contact. For an ad lead the lead name is the
+ * listing code ("R-YUD-018 - 3BR Villa…"), so using it as the sender would have
+ * the bot greeting the client as "Hi R-YUD-018".
+ */
+async function fetchContactName(leadId: string): Promise<string> {
+  try {
+    const lead = await amoFetch<{ _embedded?: { contacts?: Array<{ id: number }> } }>(
+      `/api/v4/leads/${leadId}?with=contacts`,
+    );
+    const contactId = lead?._embedded?.contacts?.[0]?.id;
+    if (!contactId) return "";
+    const contact = await amoFetch<{ name?: string }>(`/api/v4/contacts/${contactId}`);
+    const name = (contact?.name ?? "").trim();
+    // amoCRM placeholders are worse than no name at all.
+    if (!name || /^<|dummy|test lead|full_name/i.test(name)) return "";
+    return name;
+  } catch {
+    return "";
+  }
+}
+
+/** The lead's amoCRM name exactly as it is — ad leads carry the listing code in it. */
+async function fetchRawLeadName(leadId: string): Promise<string> {
+  try {
+    const lead = await amoFetch<{ name?: string }>(`/api/v4/leads/${leadId}`);
+    return (lead?.name ?? "").trim();
+  } catch {
+    return "";
   }
 }
 
@@ -83,7 +117,7 @@ function formatAsLeadMessage(at: Date, leadName: string, text: string): string {
   return `${stamp} ${leadName} (клиент - Facebook) → ${oneLine}`;
 }
 
-export async function processSourcedLeadOutreach(): Promise<void> {
+export async function processSourcedLeadOutreach(): Promise<number> {
   const candidates = await db
     .select({
       leadId: leadsSyncTable.leadId,
@@ -107,7 +141,7 @@ export async function processSourcedLeadOutreach(): Promise<void> {
       ),
     );
 
-  if (candidates.length === 0) return;
+  if (candidates.length === 0) return 0;
 
   let seeded = 0;
   for (const lead of candidates) {
@@ -131,17 +165,43 @@ export async function processSourcedLeadOutreach(): Promise<void> {
 
       let note = lead.leadNotes?.trim() || "";
       if (!note) note = (await fetchLeadNote(lead.leadId)) ?? "";
-      if (!note || !looksLikeClientRequest(note)) continue;
 
-      const leadName = await fetchLeadName(lead.leadId);
+      // Meta Ads leads (via Albato) arrive with the LISTING CODE in the lead's
+      // NAME — "R-YUD-018 - 3BR Villa for Long-Term Rental in Umalas" — and
+      // nothing else: no conversation, no note. So the bot saw nothing to answer
+      // and the +24h push delay meant silence for a day on a paid lead. The code
+      // in the name IS the enquiry: seed it as the listing they asked about, and
+      // the existing anchor logic offers that villa plus comparable ones.
+      let adListing: { id: string; title: string; url: string } | null = null;
+      const rawName = await fetchRawLeadName(lead.leadId);
+      const codeMatch = rawName.match(/\b([A-Z]{1,4}-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b/);
+      if (codeMatch?.[1]) {
+        const known = await describePropertiesByIds([codeMatch[1]]).catch(() => new Map());
+        const hit = known.get(codeMatch[1].toUpperCase());
+        if (hit) adListing = { id: codeMatch[1].toUpperCase(), title: hit.title, url: hit.url };
+      }
+
+      if (!adListing && (!note || !looksLikeClientRequest(note))) continue;
+
+      // The ad/scout form may carry the budget — a below-threshold lead goes to
+      // the bin instead of being seeded and worked.
+      if (await enforceBudgetFilter(lead.leadId, [note])) continue;
+
+      // The person, not the lead title — for ad leads those are different things.
+      const leadName = (await fetchContactName(lead.leadId)) || (await fetchLeadName(lead.leadId));
       const at = lead.amoCreatedAt ?? new Date();
-      const content = formatAsLeadMessage(at, leadName, note);
+      // Only ever state what is actually known: which listing the ad was for.
+      // Never invent requirements the person has not given.
+      const enquiry = adListing
+        ? `Hi! I saw this villa and I'm interested: ${adListing.url}`
+        : note;
+      const content = formatAsLeadMessage(at, leadName, enquiry);
 
       await db
         .update(leadsSyncTable)
         .set({
           content,
-          leadNotes: note,
+          leadNotes: note || (adListing ? `Ad enquiry: ${adListing.id} — ${adListing.title}` : null),
           // It IS an inbound message — say so, and the normal LIVE pass takes over.
           lastMessageFrom: "lead",
           lastMessageAt: at,
@@ -152,8 +212,10 @@ export async function processSourcedLeadOutreach(): Promise<void> {
 
       seeded++;
       logger.info(
-        { leadId: lead.leadId, leadName, stage: lead.leadStage },
-        "sourced-lead: request note seeded as the lead's first message — LIVE will pick it up",
+        { leadId: lead.leadId, leadName, stage: lead.leadStage, adListing: adListing?.id ?? null },
+        adListing
+          ? "ad lead: listing code read from the lead name and seeded as the enquiry — LIVE will pick it up"
+          : "sourced-lead: request note seeded as the lead's first message — LIVE will pick it up",
       );
     } catch (err) {
       logger.error({ err, leadId: lead.leadId }, "sourced-lead seeding failed");
@@ -161,4 +223,5 @@ export async function processSourcedLeadOutreach(): Promise<void> {
   }
 
   if (seeded > 0) logger.info({ seeded }, "sourced-lead seeding pass complete");
+  return seeded;
 }

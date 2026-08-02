@@ -1,7 +1,7 @@
 import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable, leadMessagesTable } from "@workspace/db";
 import { lt, isNotNull, eq, and, or, isNull, inArray, desc, sql } from "drizzle-orm";
-import { chatCompletion, chatCompletionJSON } from "./ai-client";
-import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming } from "./dialog-parser";
+import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL } from "./ai-client";
+import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming, conversationWindow } from "./dialog-parser";
 import { getFollowupSteps, getQualificationSteps } from "./settings";
 import { logger } from "./logger";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
@@ -14,8 +14,11 @@ import { generateSuggestion } from "./generate-suggestion";
 import { isAdaptiveBroker } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
-import { isBroker, brokerKey } from "./broker-identity";
+import { isBroker, brokerKey, brokerDisplayName } from "./broker-identity";
 import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
+import { correctionsPromptBlock } from "./broker-corrections";
+import { maybeAutopilot } from "./autopilot";
+import { enforceBudgetFilter } from "./budget-filter";
 
 /**
  * True when the timeline (lead_messages) holds a message FROM THE LEAD that is
@@ -56,7 +59,10 @@ async function classifyObjection(
   ).join("\n");
 
   const completion = await chatCompletion({
-    model: "claude-sonnet-5",
+    // Picks one label off a list — mechanical, never read by a client. Sonnet
+    // was three times the price for a twenty-token answer.
+    model: HELPER_MODEL,
+    label: "objection",
     system: "You are a Bali real estate sales coach. Based on the conversation snippet, identify which hidden objection is most likely blocking the lead. Reply with ONLY the id from the list, nothing else.",
     messages: [
       {
@@ -81,7 +87,8 @@ export async function generateFollowup(opts: {
   /** Pre-built corrections block to inject into system prompt */
   correctionsBlock?: string;
 }): Promise<{ text: string; entry: PlaybookEntry; rationale: string; formattedDialog: string }> {
-  const brokerName = opts.responsibleUser ?? "Broker";
+  // The SIGNING name, not the login: "HoS" is an account, the person is Nick.
+  const brokerName = brokerDisplayName(opts.responsibleUser) || opts.responsibleUser || "Broker";
   const parsedDialog = parseDialogContent(opts.lastContent);
   const formattedDialog = formatDialogForAI(parsedDialog.messages);
   const leadName =
@@ -104,7 +111,8 @@ export async function generateFollowup(opts: {
 
   // Write the follow-up from scratch, fully driven by conversation context.
   const completion = await chatCompletion({
-    model: "claude-sonnet-5",
+    model: WRITER_MODEL,
+    label: "followup",
     system: `You are ${brokerName}, a senior broker at Unicorn Property, Bali real estate. You are writing a WhatsApp follow-up to a lead who has not replied to your last message.
 
 RULES:
@@ -121,7 +129,7 @@ RULES:
 - Return ONLY the message body — no preamble, no quotes, no subject line
 
 AVAILABLE TACTICS (use only if genuinely relevant to the conversation, not forced):
-${tacticsHint}${opts.correctionsBlock ?? ""}${AVOID_PHRASES_REMINDER}`,
+${tacticsHint}${opts.correctionsBlock ?? ""}${await correctionsPromptBlock(opts.responsibleUser)}${AVOID_PHRASES_REMINDER}`,
     messages: [
       {
         role: "user",
@@ -184,7 +192,8 @@ export async function generatePushFollowup(opts: {
     : "";
 
   const completion = await chatCompletion({
-    model: "claude-sonnet-5",
+    model: WRITER_MODEL,
+    label: "followup",
     system: `You are ${brokerName}, a senior Bali real estate broker at Unicorn Property, writing a WhatsApp follow-up to a lead currently at CRM stage "${opts.leadStage}".
 
 LANGUAGE RULE (absolute): Detect the language the lead writes in. Respond 100% in that language. Never mix languages. Default to English if unclear.
@@ -249,7 +258,8 @@ async function estimateContextualDelay(
 ): Promise<{ delayMs: number; reason: string; contextual: boolean }> {
   try {
     const parsed = await chatCompletionJSON<{ delayHours?: number | null; reason?: string }>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
+      label: "followup-timing",
       system: `You analyze a real estate sales conversation and decide the ideal timing for the next follow-up.
 
 Look for concrete signals:
@@ -264,7 +274,7 @@ Constraints: minimum 6 hours, maximum 360 hours (15 days). Return null if no cle
       messages: [
         {
           role: "user",
-          content: formattedDialog.slice(-3000),
+          content: conversationWindow(formattedDialog),
         },
       ],
       max_tokens: 80,
@@ -303,9 +313,10 @@ Constraints: minimum 6 hours, maximum 360 hours (15 days). Return null if no cle
  */
 async function isLeadActiveForFollowup(content: string, stage: string): Promise<boolean> {
   try {
-    const snippet = content.slice(-3000);
+    const snippet = conversationWindow(content, 1000, 3000);
     const parsed = await chatCompletionJSON<{ active?: boolean; reason?: string }>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
+      label: "lead-alive",
       system: `You are a CRM analyst. Given a sales conversation, decide if the lead is still a viable prospect worth following up with.
 
 Return JSON: {"active": true/false, "reason": "one short line"}
@@ -732,6 +743,7 @@ export async function processFollowups(): Promise<void> {
             objectionCategory: warmupEntry.id,
             attachments: [],
           });
+          void maybeAutopilot(lead.leadId);
         }
 
         // Mark as level 1 done. nextFollowupAt = null — the amoCRM task
@@ -858,10 +870,19 @@ export async function processFollowups(): Promise<void> {
         const qualStep = qualSteps[qualScriptIndexForStage(lead.leadStage)];
         const qualScriptMsg = qualStep?.message?.trim() ?? "";
 
-        // ── Then try hardcoded stage template ────────────────────────────────
+        // Only a message the BROKER wrote (Settings preset / qualification
+        // script) is used verbatim. The hardcoded TOUCH_TEMPLATES fallback is
+        // gone for Rental: it produced canned text the owner never loaded,
+        // signed with a default broker name, identical for every lead — and
+        // because nothing generated it, none of his edits could ever teach it.
+        // "Он точно обучается на моих исправлениях?" — on this path he was
+        // right: it never called the model at all.
+        const isRentalFollowup = (lead.pipeline ?? "").trim().toLowerCase() === "rental";
         const tplText = qualScriptMsg
           ? qualScriptMsg.replace(/\[Name\]/g, leadFirstName).replace(/\[name\]/g, leadFirstName)
-          : buildFollowupTemplateByLevel(nextLevel, lead.leadId, leadFirstName, lead.responsibleUser ?? "Robert");
+          : isRentalFollowup
+            ? null
+            : buildFollowupTemplateByLevel(nextLevel, lead.leadId, leadFirstName, lead.responsibleUser ?? "Robert");
 
         if (tplText) {
           text = tplText;
@@ -934,6 +955,7 @@ export async function processFollowups(): Promise<void> {
           objectionCategory: entry.id,
           attachments: [],
         });
+        void maybeAutopilot(lead.leadId);
       }
 
       // Update followupLevel to the stage-derived level.
@@ -1123,6 +1145,8 @@ export async function processUnansweredLive(): Promise<void> {
 
   for (const lead of batch) {
     try {
+      // Below-budget rentals are binned before any generation spends a token.
+      if (await enforceBudgetFilter(lead.leadId)) continue;
       const content = lead.content ?? "";
       if (!content) continue;
 
@@ -1202,6 +1226,7 @@ export async function processUnansweredLive(): Promise<void> {
       }).catch(() => {});
 
       logger.info({ leadId: lead.leadId }, "live suggestion generated for unanswered lead");
+      void maybeAutopilot(lead.leadId);
     } catch (err) {
       logger.error({ err, leadId: lead.leadId }, "unanswered live generation error");
     }
@@ -1221,8 +1246,20 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
   schedulerHandle = setInterval(() => {
     processFollowups().catch((err) => logger.error({ err }, "followup scheduler error"));
     processUnansweredLive().catch((err) => logger.error({ err }, "unanswered live error"));
-    processSourcedLeadOutreach().catch((err) => logger.error({ err }, "sourced lead outreach error"));
   }, intervalMs);
+
+  // A paid ad lead sat unnoticed for up to ten minutes: one 5-min pass to seed
+  // it, ANOTHER to write its draft. Seeding is a cheap SELECT, so it runs every
+  // minute — and when it actually seeded someone, their draft is generated right
+  // away instead of waiting for the next general pass.
+  setInterval(() => {
+    processSourcedLeadOutreach()
+      .then((seeded) => {
+        if (seeded > 0) return processUnansweredLive();
+        return undefined;
+      })
+      .catch((err) => logger.error({ err }, "sourced lead outreach error"));
+  }, 60_000);
 }
 
 export function stopFollowupScheduler(): void {

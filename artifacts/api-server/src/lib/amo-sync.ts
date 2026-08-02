@@ -8,6 +8,7 @@ import { eq, and, inArray, isNull, or, ilike } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch, getAccessToken, getAllOpenLeadTasksPaginated, createAmoTask } from "./amo-client";
 import { shouldSuppressPush } from "./stage-routing";
+import { followupClockAfterReply } from "./rental-followup";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
 import { notifyBrokerForLead } from "./push-notifications";
 
@@ -579,6 +580,7 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
         nextFollowupAt: leadsSyncTable.nextFollowupAt,
         followupLevel: leadsSyncTable.followupLevel,
         leadStage: leadsSyncTable.leadStage,
+        pipeline: leadsSyncTable.pipeline,
       })
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, leadId))
@@ -611,7 +613,7 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
         ...(leadHadReplied ? { followupLevel: 0 } : {}),
         nextFollowupAt: stageBlocksFollowup
           ? null
-          : new Date(eventAt.getTime() + 24 * 60 * 60 * 1000),
+          : followupClockAfterReply(eventAt, existing.pipeline),
         updatedAt: new Date(),
       })
       .where(eq(leadsSyncTable.leadId, leadId));

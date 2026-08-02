@@ -4,13 +4,15 @@ import { db, pendingSuggestionsTable, sentMessagesTable, leadsSyncTable, stageEv
 import { eq, and } from "drizzle-orm";
 import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-followup";
-import { chatCompletionJSON } from "../../lib/ai-client.js";
+import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost, countActiveWhatsappChats } from "../../lib/amo-client.js";
 import { stripEmojiForDelivery } from "../../lib/message-delivery.js";
+import { classifyStage } from "../../lib/stage-classifier";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
 import { resolveOutboundSource } from "../../lib/amo-messenger-field";
-import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL } from "../../lib/rental-followup.js";
+import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL, followupClockAfterReply } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
+import { recordCommitment } from "../../lib/commitment-scheduler.js";
 
 // amoCRM status IDs for the Unicorn Property pipeline (PIPELINE 8347534)
 // Maps each follow-up stage to the NEXT stage — bot auto-advances on approve.
@@ -234,7 +236,7 @@ async function learnFromManualEdit(
 ): Promise<void> {
   try {
     const parsed = await chatCompletionJSON<{ instruction?: string }>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
       system: `You are a writing coach analyzing how a real estate broker edited an AI-generated message.
 Extract a SHORT, REUSABLE instruction (max 120 chars) that describes WHAT the broker changed and WHY, 
 so an AI can apply this preference to future messages automatically.
@@ -418,7 +420,7 @@ router.post("/approve", async (req, res) => {
         ok: false,
         error: "channel_unresolved",
         message:
-          "Не удалось определить канал отправки для этого лида — сообщение НЕ отправлено. Отправьте вручную из amoCRM (подсказка осталась в инбоксе).",
+          "Could not resolve the sending channel for this lead — the message was NOT sent. Send it manually from amoCRM (the draft stays in your inbox).",
       });
       return;
     }
@@ -447,7 +449,7 @@ router.post("/approve", async (req, res) => {
           ok: false,
           error: "multiple_chat_threads",
           message:
-            "У этого лида в WhatsApp сейчас 2 активные беседы на один номер — авто-отправка ушла бы клиенту дважды. Сообщение НЕ отправлено. Отправьте его вручную из amoCRM в основную переписку (подсказка осталась в инбоксе). Причина — дубль-тред в WAhelp, чинится на стороне интеграции.",
+            "This lead has 2 active WhatsApp threads on the same number — auto-sending would deliver the message twice. It was NOT sent. Send it manually from amoCRM into the main thread (the draft stays in your inbox). Cause: a duplicate thread in WAhelp, fixed on the integration side.",
         });
         return;
       }
@@ -455,7 +457,11 @@ router.post("/approve", async (req, res) => {
 
     // ── Update leads_sync BEFORE sending message ────────────────────────────
     const [prevSyncRow] = await db
-      .select({ lastMessageFrom: leadsSyncTable.lastMessageFrom, leadStage: leadsSyncTable.leadStage })
+      .select({
+        lastMessageFrom: leadsSyncTable.lastMessageFrom,
+        leadStage: leadsSyncTable.leadStage,
+        pipeline: leadsSyncTable.pipeline,
+      })
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, sug.leadId))
       .limit(1);
@@ -464,9 +470,16 @@ router.post("/approve", async (req, res) => {
     if (sug.kind === "push") {
       const sentLevel = sug.followupLevel ?? 1;
       const level = Math.max(0, sentLevel);
+      // Rental: its own 1-day spacing, counted exactly from this send, so a
+      // day's follow-ups no longer all land on the same minute.
+      const isRentalSend = (prevSyncRow?.pipeline ?? "").trim().toLowerCase() === "rental";
       const precomputedNextAt =
-        nextFollowupDate(approveNow, level) ??
-        new Date(approveNow.getTime() + 7 * 24 * 60 * 60 * 1000);
+        nextFollowupDate(
+          approveNow,
+          level,
+          isRentalSend ? FOLLOWUP_DELAY_DAYS_RENTAL : undefined,
+          isRentalSend,
+        ) ?? new Date(approveNow.getTime() + 7 * 24 * 60 * 60 * 1000);
       await db
         .update(leadsSyncTable)
         .set({
@@ -486,15 +499,14 @@ router.post("/approve", async (req, res) => {
       // reminder, and every LIVE-answered lead had the same hole.
       // followupLevel resets to 0 because the lead engaged — the next chase is #1.
       const stageBlocksFollowup = shouldSuppressPush(prevSyncRow?.leadStage ?? "");
+      const liveClock = followupClockAfterReply(approveNow, prevSyncRow?.pipeline ?? null);
       await db
         .update(leadsSyncTable)
         .set({
           lastMessageFrom: "us",
           lastOurMessageAt: approveNow,
           followupLevel: 0,
-          nextFollowupAt: stageBlocksFollowup
-            ? null
-            : new Date(approveNow.getTime() + 24 * 60 * 60 * 1000),
+          nextFollowupAt: stageBlocksFollowup ? null : liveClock,
           updatedAt: approveNow,
         })
         .where(eq(leadsSyncTable.leadId, sug.leadId));
@@ -513,6 +525,25 @@ router.post("/approve", async (req, res) => {
         chatSent = botTriggered;
         hookStatus = botTriggered ? 200 : 500;
         hookBody = botTriggered ? `Salesbot ${botId} triggered` : "Salesbot trigger failed";
+
+        // The broker promised the CLIENT something ("I'll check with the owner
+        // and get back to you"). The lead may stay silent — correctly — while
+        // the ball is with US, so the follow-up-on-silence clock never covers
+        // this case and the promise lived only in the broker's head. A CRM task
+        // in a few hours makes the promise impossible to forget.
+        if (botTriggered) {
+          const OWNER_PROMISE =
+            /(check|confirm|double.?check|ask|уточн|провер|спрошу|узнаю|запрошу)[^.!?\n]{0,50}(owner|собственник|владел)|(owner|собственник|владел)[^.!?\n]{0,40}(get back|come back|confirm|вернусь|отвечу)|вернусь (к вам|к тебе|с ответом)|get back to you (with|once|after)/i;
+          if (OWNER_PROMISE.test(body.message)) {
+            const due = new Date(Date.now() + 4 * 60 * 60 * 1000);
+            void createAmoTask(
+              sug.leadId,
+              "Обещали клиенту вернуться с ответом собственника — узнать и написать (клиент может молчать, мяч у нас)",
+              due,
+            ).catch((err) => req.log.warn({ err }, "owner-promise task failed (non-fatal)"));
+            req.log.info({ leadId: sug.leadId }, "owner promise detected — broker task set for +4h");
+          }
+        }
       } else {
         hookStatus = 500;
         hookBody = "Custom field update failed";
@@ -578,6 +609,10 @@ router.post("/approve", async (req, res) => {
       prevLastMessageFrom,
     ).catch(() => {});
 
+    // ── Detect "I'll check and get back to you" promises — the client is
+    // waiting on US here, so the normal wait-for-reply clock never fires.
+    recordCommitment(sug.leadId, sug.responsibleUser, body.message).catch(() => {});
+
     // ── Track property picks — personalizes future matching for this broker ──
     if (sug.responsibleUser && effectiveAttachments.length > 0) {
       for (const att of effectiveAttachments) {
@@ -619,6 +654,42 @@ router.post("/approve", async (req, res) => {
           { leadId: sug.leadId, toStage: sug.suggestedStage, reason: sug.suggestedStageReason },
           "auto stage: applied from conversation classification",
         );
+      }
+    } else if (!explicitNewStage && !sug.suggestedStage) {
+      // Not every draft arrives pre-classified: the unanswered-lead pass and the
+      // autopilot insert rows directly, so their sends carried no stage and the
+      // card silently stayed put ("я лиду ответил, но этап не поменялся" —
+      // options delivered, lead still in New LEAD). The send moment is the one
+      // place every path goes through, so the missing classification happens
+      // HERE, whatever produced the draft.
+      try {
+        const [ctx] = await db
+          .select({
+            pipeline: leadsSyncTable.pipeline,
+            leadStage: leadsSyncTable.leadStage,
+            content: leadsSyncTable.content,
+          })
+          .from(leadsSyncTable)
+          .where(eq(leadsSyncTable.leadId, sug.leadId))
+          .limit(1);
+        if (ctx) {
+          const cls = await classifyStage({
+            pipeline: ctx.pipeline,
+            currentStage: ctx.leadStage,
+            conversationText: ctx.content ?? "",
+            replyText: body.message ?? sug.suggestionText ?? "",
+            attachmentsCount: (body.attachments ?? sug.attachments ?? []).length,
+          });
+          if (cls && !cls.terminal) {
+            autoStage = { name: cls.stage.name, id: cls.stage.id };
+            req.log.info(
+              { leadId: sug.leadId, toStage: cls.stage.name, reason: cls.reason },
+              "auto stage: classified at send time (draft carried none)",
+            );
+          }
+        }
+      } catch (err) {
+        req.log.warn({ err, leadId: sug.leadId }, "send-time stage classification failed (non-fatal)");
       }
     }
   }

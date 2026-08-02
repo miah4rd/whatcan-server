@@ -22,9 +22,10 @@
  *    weight, so it's surfaced pre-filled for the broker to confirm.
  *  - A broker's own explicit stage pick always wins over the classification.
  */
-import { chatCompletionJSON } from "./ai-client";
+import { HELPER_MODEL, chatCompletionJSON } from "./ai-client";
 import { amoFetch } from "./amo-client";
 import { logger } from "./logger";
+import { conversationWindow } from "./dialog-parser";
 
 export type StageDef = { name: string; id: number };
 
@@ -96,7 +97,7 @@ function isWorkflowStage(stageName: string): boolean {
 type AmoStatus = { id: number; name: string; sort: number };
 type AmoPipeline = { id: number; name: string; _embedded: { statuses: AmoStatus[] } };
 
-type PipelineStages = {
+export type PipelineStages = {
   /** Every stage in funnel order — used to resolve the lead's CURRENT stage. */
   all: StageDef[];
   /** Stages the classifier may choose, with what each means in a chat. */
@@ -124,6 +125,17 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
     const selectable = ordered
       .filter((s) => !isWorkflowStage(s.name))
       .map((s) => {
+        // The owner's Rental funnel uses "Need Assessed" as "the first outreach
+        // was made" — not the generic "requirements are known". Wrong meaning
+        // here made the classifier hold cards in New LEAD after the welcome.
+        if (key === "rental" && /need.?s? assess/i.test(s.name)) {
+          return {
+            name: s.name,
+            id: s.id,
+            meaning:
+              "The FIRST outreach message has been sent to this client (the first touch is done) and the conversation is in early qualifying — the client has not necessarily shared requirements yet.",
+          };
+        }
         const meaning =
           meaningFor(s.name) ??
           // Unrecognised name: still selectable, positioned by funnel order so
@@ -155,6 +167,11 @@ function findStage(stages: StageDef[], name: string | null | undefined): { def: 
   const wanted = name.trim().toLowerCase();
   const index = stages.findIndex((s) => s.name.trim().toLowerCase() === wanted);
   return index === -1 ? null : { def: stages[index]!, index };
+}
+
+/** The live stage map for one pipeline — autopilot needs the funnel's own order. */
+export async function getPipelineStages(pipeline: string): Promise<PipelineStages | null> {
+  return (await loadPipelines()).get(pipeline.trim().toLowerCase()) ?? null;
 }
 
 export type StageClassification = {
@@ -194,7 +211,8 @@ export async function classifyStage(opts: {
   try {
     const catalog = stages.selectable.map((s) => `- ${s.name}: ${s.meaning}`).join("\n");
     const result = await chatCompletionJSON<{ stage?: string; reason?: string }>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
+      label: "stage",
       system: `You classify which CRM funnel stage a sales conversation is currently in.
 
 Available stages, in funnel order:
@@ -215,7 +233,7 @@ Respond with JSON only, using a stage name EXACTLY as written above: {"stage": "
 Property links attached to the pending reply: ${opts.attachmentsCount}
 
 Conversation (oldest → newest):
-${opts.conversationText.slice(-4000)}
+${conversationWindow(opts.conversationText, 1500, 4000)}
 
 Broker's pending reply (not sent yet):
 ${opts.replyText.slice(0, 1200)}`,

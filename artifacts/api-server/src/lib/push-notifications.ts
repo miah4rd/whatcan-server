@@ -179,7 +179,7 @@ function extractLeadName(content: string | null | undefined): string | null {
 export async function notifyBrokerForLead(
   brokerId: string | null,
   leadId: string,
-  action: "replied" | "assigned",
+  action: "replied" | "assigned" | "reminder",
   body: string,
   hint?: { content?: string | null; leadStage?: string | null; leadName?: string | null },
 ): Promise<void> {
@@ -199,7 +199,7 @@ export async function notifyBrokerForLead(
 
   const name = hint?.leadName ?? extractLeadName(content);
   const label = name ? `${name} #${leadId}` : `Lead #${leadId}`;
-  const icon = action === "replied" ? "\u{1F4AC}" : "\u{1F195}";
+  const icon = action === "replied" ? "\u{1F4AC}" : action === "reminder" ? "\u{23F0}" : "\u{1F195}";
   const title = stage ? `${icon} ${label} · ${stage}` : `${icon} ${label}`;
 
   // Deep-link straight to this lead instead of the general inbox list.

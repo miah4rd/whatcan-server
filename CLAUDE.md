@@ -17,7 +17,7 @@ tap. Two surfaces, one server:
   (owner, Nikita, Alexander) edits there and commits, so every change is shared
   and versioned; no more parallel local copies. (History: two lines had forked —
   Nikita's served `ext71` and the owner's local `v85` that the brokers actually
-  ran; `v86` reconciles them, see `copilot-extension/CHANGELOG.md`.) Current: **ext87.zip (1.0.87)**.
+  ran; `v86` reconciles them, see `copilot-extension/CHANGELOG.md`.) Current: **ext88.zip (1.0.88)**.
   To release a change: edit files in `copilot-extension/`, bump
   `manifest.json` version + add a `CHANGELOG.md` line, rebuild the zip **with the
   files at the archive ROOT** (`Compress-Archive -Path copilot-extension/* -Dest
@@ -113,6 +113,25 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   same-named units and the client reads the repeat as a mistake (`dedupeByTitle`).
 - **Budget unknown → spread the three across price points** rather than asking.
   The reaction names the budget for us (`spreadByPrice`).
+- **Core criteria, the owner's hierarchy: bedrooms → area → budget.** Everything
+  else (style, features, views) is secondary and only breaks ties. An ad lead
+  inherits missing core criteria from the anchor villa they clicked (bedrooms
+  exact-or-bigger, area widened to the parent district); the client's own words
+  always override the inherited values.
+- **A lead quoting our own link back must not un-exclude it.** The "already
+  sent" list was built by scanning the whole conversation, then subtracting any
+  link found in the LEAD's own messages — a real earlier fix, because an
+  ad-lead's opening message names the villa they clicked, and that link is
+  theirs, not ours. But quoting a link back ("is this one available?") is the
+  ordinary way a listing comes up a second time on WhatsApp, and it looked
+  identical to the ad-lead case: either way the ID sat in the lead's own text,
+  so either way it got erased from the exclusion list. A villa already sent
+  came back next message as a "similar alternative" and got re-attached as
+  new — while the reply TEXT, built from the same conversation, correctly
+  remembered it as sent ("of the three I sent earlier"). Text and links looked
+  desynced, but the real fault was the exclusion state itself, wrong before
+  either ran. Now a lead-mentioned ID is subtracted only when it does NOT also
+  appear in what WE sent (`alreadySentPropertyIds`'s new `ourSentText` param).
 - **A lead who arrives on a specific listing anchors the shortlist**: that listing
   plus comparable alternatives. The anchor is read ONLY from what the LEAD wrote —
   reading the whole conversation fed our own sent links back as "the answer".
@@ -127,6 +146,44 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   rather than pretending the budget was met.
 - **Each property link is sent as its own WhatsApp message** — glued together,
   WhatsApp only unfurls a preview banner for the first one.
+- **Every edit teaches, server-side.** The correction store existed but only the
+  Chrome extension wrote to it — edits from the mobile page taught nothing, which
+  read as "the bot never learns". `learnFromRevision` now distils and stores the
+  lesson on the `/suggest` endpoint itself, and `correctionsPromptBlock` injects
+  the lessons into BOTH generation paths via `buildPromptAdditions` (they used to
+  reach only the revision prompt, so fresh drafts ignored everything taught).
+- **The broker signs with their display name, never the login.** A prompt rule
+  said "sign off as 'HoS'" with absolute priority — fighting the owner's repeated
+  correction to sign as Nick. `brokerDisplayName` (broker-identity.ts) maps
+  account labels to real names; nothing reaches for the raw login anymore.
+- **Earlier instructions in an editing session still stand.** Each revision pass
+  saw only the newest feedback, so a name fixed in step one silently reverted in
+  step two; the composer now receives the whole chain as standing instructions.
+- **On the edit path the broker's instruction is LAW.** Baseline rules exist for
+  the bot's own drafts; a dictated edit means the broker has seen the result and
+  decided. The one-pass composer (`composeReplyWithListings`) gets the
+  instruction as highest authority and decides text + links together; the code
+  applies its choice without budget swaps, language overrides or dedupe on this
+  path. Only facts survive as hard limits: no invented prices/demand, no URLs in
+  the body, no internal codes. Named listings even disable the budget swap.
+  Known ways this law has been silently broken — check for their pattern before
+  adding ANY logic to the edit path: a keyword layer guessing intent between the
+  command and the execution; the server inferring "hand-curated" from a link
+  diff the bot's own re-pick created; a parser distorting the world (a yearly
+  budget read as monthly, "3 or 4" read as exactly 4) so the bot obeyed inside
+  a wrong picture. Any "я сказал X, бот сделал Y" report outranks feature work,
+  and the fix is verified by replaying the broker's EXACT edit sequence.
+- **A pure-text edit must not attach a link nobody asked for.** The
+  `composeReplyWithListings` "none_this_message" branch carried a carve-out —
+  attach the villa the CLIENT themselves named, "usually []" otherwise — meant
+  for a lead's first message on an ad-lead villa. It fired instead on an
+  ordinary mid-conversation "is this available?", attaching a link the client
+  already had, on a message whose whole point was "let me check and get back
+  to you" — the broker never asked for a link, only for words. His own
+  description: "ссылки в своей жизни живут." Fixed: this mode now returns
+  `listing_ids: []` unless the BROKER'S OWN INSTRUCTION says to send/attach/
+  confirm a link — the reply text naming a villa is not itself a request to
+  attach it.
 - **An edit must move the links too, not just the words.** `/suggest` returned
   text only, so a broker dictating "these are too expensive" got a rewritten
   message with the same expensive links. The revision now feeds the matcher
@@ -137,10 +194,127 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   re-pick from scratch and append their additions, so removing two listings and
   adding one came back as four. The surfaces send `attachmentsCurated` and the
   server then rewrites only the words.
+- **A stated budget RANGE has a floor too, and one code path never read it.**
+  `extractBudgetIdr` on "40-50 million" returns 50 — the ceiling, correct for
+  "don't show anything over budget". The 40 was simply discarded, everywhere.
+  A lead's own two-sided budget therefore filtered nothing on the low end: two
+  of three slots filled with villas well under her stated floor, and a broker
+  edit repeating "stay in that range" didn't move them either, because nothing
+  downstream had ever been told where the range started. `extractBudgetFloorIdr`
+  reads the other half (null when it's a single figure, not a range — a bare
+  ceiling isn't a promise of no cheaper option) and now ranks in-range listings
+  above merely-under-ceiling ones in BOTH shortlist implementations
+  (`matchProperties` and `candidatesForLead` — the one the edit path's composer
+  reads from).
+- **A budget range's floor still has to survive contact with the AI.** Fixing
+  the shortlist BUILDER to know the floor (above) wasn't enough — the edit
+  path's actual attachments come from `composeReplyWithListings`, an AI call
+  that picks freely, and the only code-level guard on its picks was the
+  ceiling swap. A model picking a villa well under a stated "60-65 million"
+  sailed straight through, since being cheap is never "over budget."
+  `enforceBudgetFloor` (suggest.ts) mirrors the ceiling-swap logic for the
+  low side: drop a below-floor pick only when a genuinely better in-range
+  alternative exists, never below two.
+- **The floor gets the same +15% headroom the ceiling gets, mirrored down
+  (floor × 0.85).** A villa at 55 against a stated 60-65 range is a fair
+  answer — the owner's own words were "that one's right" — a villa at 39.8 is
+  not. Comparing against the floor exactly instead of with headroom stripped
+  a real shortlist down to one villa on the first pass. Applied consistently
+  in the ranking (`matchProperties`, `candidatesForLead`) and in
+  `enforceBudgetFloor`, or the composer's candidate order and the code-level
+  swap disagree about what "in range" means.
+- **`areaMatches` compared a listing's area as one whole string.** Two catalog
+  listings carry the sub-area AND its parent combined in one field
+  ("Tumbak Bayuh, Pererenan"), which matched neither name in it — a lead
+  asking for Pererenan was never shown a villa that is, in fact, in Pererenan.
+  Split on the comma, match either part.
 - **A stated budget is enforced in code, not asked of the model.** Handed an
   affordable-first catalog it still picked villas at double the figure; told the
   broker objected to the current links it dropped even the cheapest. The ceiling
   is applied to the final shortlist, and it may not cut it below two.
+- **The rental budget gate (owner's explicit exception to "never auto-close").**
+  `lib/budget-filter.ts`: Rental leads whose own stated budget (or ad/scout form
+  note) parses below the broker-set threshold are closed to Lost BEFORE any
+  generation — "чтобы не тратить ни время, ни энергию, ни токены". Ranges take
+  the upper bound, equal-to-threshold stays, no parsed budget = worked normally.
+  The dial lives in the mobile 🤖 panel next to the autopilot.
+- **Rental changes must not leak into Unicorn.** The sales funnel is configured
+  the way the owner wants it — leave its cadence and flow alone. Anything shaped
+  for Rental is gated: the ad-lead and scout seeding is `pipeline='rental'` only,
+  the rupiah formatting keys off `listing_type='rent'`, the budget filter is
+  rentals-only, and the follow-up clock after a reply uses each funnel's OWN
+  cadence via `followupClockAfterReply` (Rental 1 day, Unicorn 1/3/5) rather than
+  a flat 24h. Fixes to genuine bugs (a reply scheduling no follow-up at all, an
+  invented price, a wrong-language message) do apply everywhere — those were
+  never anyone's configuration.
+- **A follow-up is timed from THAT lead's own last message.** `nextFollowupDate`
+  snapped every result to 23:59:59 Bali of the target day, which collapsed a
+  whole day of leads onto one instant — seven follow-ups arrived "ровно в
+  двенадцать". Rental sends pass `exact` so the time is literally last message
+  + 24h; the day-snap remains for the funnels that were built around it.
+- **A follow-up nobody wrote cannot learn anything.** Rental used to fall back
+  to a hardcoded `TOUCH_TEMPLATES` variant when the broker had configured no
+  script: canned text he never loaded, signed with a default name, identical
+  across leads, and — since no model ran — untouched by every correction he had
+  dictated. That fallback is Rental-off; the message is generated with the
+  conversation, `correctionsPromptBlock`, and `brokerDisplayName`. Non-Rental
+  funnels keep the templates: theirs are configured, not accidental.
+- **Every message in `/m` shows its time.** Without it a thread cannot be placed
+  in time and the broker cannot tell a ten-minute-old reply from a three-day-old
+  one. `fmtAt` is written with no backslashes (template-literal trap).
+- **The prompt is split where it stops being the same for everyone.** The Rental
+  system prompt is 8,840 tokens (5,961 of them the knowledge base) and was
+  re-sent in full on every draft. It is now two blocks: a cached prefix (rulebook
+  + KB, 1-hour TTL) and a per-lead tail of ~67 tokens (CRM stage + the broker's
+  learned lessons). The stage line HAD to move to the end — caching matches from
+  the start of the prompt, so a stage name in the middle threw away the KB behind
+  it. `buildRentalPromptParts` returns the two halves; `buildRentalSystemPrompt`
+  still returns them joined, byte-identical, for callers that don't split.
+  Anything new that varies per lead goes in the TAIL or the cache dies.
+- **Both funnels' prompts are split for caching, and Sales lives in ONE file now.**
+  `lib/rental-prompt.ts` and `lib/sales-prompt.ts` each expose
+  `build*PromptParts` → `{prefix, tail}`. The prefix (rules + knowledge base) is
+  sent as a cached block; the tail is the CRM stage plus the broker's lessons.
+  The sales prompt used to be the same 16,000-character literal duplicated in
+  `generate-suggestion.ts` AND `amocrm-webhook.ts`, and the copies had already
+  drifted — one carried corrections, the other didn't. Never re-inline it.
+  Verified character-for-character against the pre-split text before shipping.
+- **The daily bill is recorded, not estimated.** `ai_usage` gets a row per API
+  call with its cost already worked out (`PRICE_PER_MTOK` in ai-client.ts) and a
+  `label` saying what it was for. `GET /api/public/ai-spend` totals it by day in
+  Bali time plus today by purpose. Give every new AI call a label — unlabelled
+  ones land in "other" and the breakdown stops being useful. Note the API path:
+  public routes are mounted at **/api/public/**, not /api/.
+- **The property matcher CANNOT be cached — don't try again.** Its static rules
+  are 557 tokens, below Anthropic's 1024-token minimum, so a cache_control there
+  silently does nothing while still costing the write premium. The catalog is the
+  expensive part (up to 5,389 tokens) and it is filtered per lead by design
+  (bedrooms, budget, area, dedupe), so it is never byte-identical twice. Sending
+  the whole catalog uncached to make it cacheable would move budget enforcement
+  from code back into the prompt — the thing "A stated budget is enforced in
+  code, not asked of the model" exists to prevent.
+- **The knowledge base is a SALES guide — Rental gets only the part that applies.**
+  It talks about developers, leasehold, ROI, resale and buyer objections, and it
+  was pasted whole into every rental draft: a client asking about a villa for
+  three months was answered by a bot holding 6,000 tokens of investment material.
+  `filterKnowledgeBaseForRental` keeps tone of voice, message endings, the Bali
+  area map, the do-not list and the mission (8,840 tok → 4,188), and strips any
+  surviving line about buying. It DERIVES from the stored text, so the broker's
+  own edits still reach rental — do not fork it into a second copy. Sales keeps
+  the full guide.
+- **A version bump must never overwrite a knowledge base the broker edited.**
+  `ensureKnowledgeBaseVersion` used to replace it unconditionally, so a deploy
+  silently destroyed his wording. It now installs the new default only when the
+  stored text is still the untouched old one.
+- **Every AI call logs what it cost** (`ai usage` in `ai-client.ts`: input, output,
+  cache read, cache write). Before this, "the tokens are burning fast" could only
+  be answered by guesswork. Check a cache hit with
+  `pm2 logs whatcan --nostream | grep "ai usage"` — `cacheRead` should be ~8,835
+  on the main generation.
+- **Sonnet writes what a client reads; nothing else.** Objection labelling,
+  follow-up timing, and the is-this-lead-alive check are Haiku (`HELPER_MODEL`).
+  The owner's rule is "оставь соннет" for client-facing text — that is the line,
+  not a blanket ban on cheaper models.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
 

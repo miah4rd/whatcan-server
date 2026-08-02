@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, brokerCorrectionsTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
-import { chatCompletionJSON } from "../../lib/ai-client.js";
+import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
 
 const router = Router();
 
@@ -17,7 +17,7 @@ router.options("/correction", (_req, res) => res.sendStatus(204));
 async function distillInstruction(raw: string): Promise<string | null> {
   try {
     const parsed = await chatCompletionJSON<{ instruction?: string }>({
-      model: "claude-sonnet-5",
+      model: HELPER_MODEL,
       system: `You are a writing coach analyzing feedback a real estate broker gave about AI-generated messages.
 Extract a SHORT, REUSABLE instruction (max 120 chars) that describes the broker's general preference,
 so it can be applied to future messages automatically. Ignore any specific lead name, property, or one-off detail.

@@ -10,6 +10,7 @@ import { startFollowupScheduler } from "./lib/followup-scheduler";
 import { startAmoSyncScheduler } from "./lib/amo-sync";
 import { startFunnelSnapshotScheduler } from "./lib/funnel-snapshot";
 import { startTimelineSyncScheduler } from "./lib/amo-timeline-sync";
+import { startCommitmentScheduler } from "./lib/commitment-scheduler";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
 
@@ -60,11 +61,50 @@ startFollowupScheduler();
 startAmoSyncScheduler();
 startFunnelSnapshotScheduler();
 startTimelineSyncScheduler();
+startCommitmentScheduler();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
 pool.query(`ALTER TABLE leads_sync ADD COLUMN IF NOT EXISTS pipeline text`)
   .then(() => logger.info("startup migration: pipeline column ensured"))
   .catch((err) => logger.error({ err }, "startup migration failed"));
+
+pool.query(`CREATE TABLE IF NOT EXISTS autopilot_settings (
+  pipeline TEXT PRIMARY KEY,
+  mode TEXT NOT NULL DEFAULT 'off',
+  up_to_stage_name TEXT,
+  daily_cap INTEGER NOT NULL DEFAULT 30,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`)
+  .catch((err) => logger.error({ err }, "startup migration: autopilot_settings failed"));
+
+pool.query(`CREATE TABLE IF NOT EXISTS budget_filter_settings (
+  pipeline TEXT PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  min_monthly_idr BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`)
+  .catch((err) => logger.error({ err }, "startup migration: budget_filter_settings failed"));
+
+// Every AI call, with what it cost. Nothing recorded this before, so the only
+// answer to "how much are we spending a day" was arithmetic on estimates.
+pool.query(`CREATE TABLE IF NOT EXISTS ai_usage (
+  id BIGSERIAL PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  model TEXT NOT NULL,
+  label TEXT,
+  in_tokens INTEGER NOT NULL DEFAULT 0,
+  out_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd NUMERIC(12, 6) NOT NULL DEFAULT 0
+)`)
+  // The index has to wait for the table: fired side by side, it lost the race
+  // and logged "relation ai_usage does not exist" on every boot.
+  .then(() => pool.query(`CREATE INDEX IF NOT EXISTS ai_usage_created_at_idx ON ai_usage (created_at)`))
+  .catch((err) => logger.error({ err }, "startup migration: ai_usage failed"));
+
+pool.query(`ALTER TABLE pending_suggestions ADD COLUMN IF NOT EXISTS auto_sent BOOLEAN DEFAULT FALSE`)
+  .catch((err) => logger.error({ err }, "startup migration: auto_sent failed"));
 
 pool.query(`ALTER TABLE pending_suggestions ADD COLUMN IF NOT EXISTS requested_at TIMESTAMPTZ`)
   .catch((err) => logger.error({ err }, "startup migration: pending_suggestions.requested_at failed"));
@@ -224,5 +264,24 @@ pool.query(`
   )
 `).then(() => logger.info("startup migration: push_subscriptions table ensured"))
   .catch((err) => logger.error({ err }, "push_subscriptions migration failed"));
+
+// ── lead_commitments table (see lib/commitment-scheduler.ts) ────────────────
+pool.query(`
+  CREATE TABLE IF NOT EXISTS lead_commitments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    lead_id TEXT NOT NULL,
+    responsible_user TEXT,
+    promise_text TEXT NOT NULL,
+    source_excerpt TEXT,
+    due_at TIMESTAMPTZ NOT NULL,
+    notified_at TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT 'open',
+    resolved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )
+`).then(() => pool.query(`
+  CREATE INDEX IF NOT EXISTS lead_commitments_due_idx ON lead_commitments (status, notified_at, due_at)
+`)).then(() => logger.info("startup migration: lead_commitments table ensured"))
+  .catch((err) => logger.error({ err }, "lead_commitments migration failed"));
 
 export default app;

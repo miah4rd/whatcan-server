@@ -20,6 +20,21 @@ export const FOLLOWUP_STAGE_ADVANCE_RENTAL: Record<number, number> = {
 // Rental qualification touches are spaced 1 calendar day apart (vs Unicorn's 1/3/5).
 export const FOLLOWUP_DELAY_DAYS_RENTAL = [1, 1, 1];
 
+/**
+ * When to chase, after WE answered a lead — following each funnel's OWN cadence.
+ *
+ * A flat "+24 hours" was applied to every pipeline at first, which quietly
+ * changed Unicorn's rhythm (1/3/5 days, end of the Bali day) — and the sales
+ * funnel is configured the way the owner wants it. Rental keeps its own 1-day
+ * spacing. Nothing here invents a number: each side gets its own.
+ */
+export function followupClockAfterReply(from: Date, pipeline: string | null | undefined): Date | null {
+  const isRental = (pipeline ?? "").trim().toLowerCase() === "rental";
+  // Rental counts EXACTLY 24h from this lead's own last message — answered at
+  // 8pm, chased at 8pm. Unicorn keeps its configured end-of-day cadence.
+  return nextFollowupDate(from, 0, isRental ? FOLLOWUP_DELAY_DAYS_RENTAL : undefined, isRental);
+}
+
 /** Map a Rental lead's current stage name to its touch-sequence level (0 = New LEAD / touch 0). */
 export function rentalStageToFollowupLevel(stage: string | null | undefined): number {
   const s = (stage ?? "").toLowerCase();

@@ -20,6 +20,8 @@ import { getLastMessengerFieldId, updateLastMessengerField } from "./amo-messeng
 // the same burst of WhatsApp messages, so both route through the same debounce.
 import { scheduleLiveReply } from "./live-reply-debounce.js";
 import { shouldSuppressPush } from "./stage-routing";
+import { followupClockAfterReply } from "./rental-followup";
+import { enforceBudgetFilter } from "./budget-filter";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
 const AMO_BASE = `https://${AMO_SUBDOMAIN}.amocrm.ru`;
@@ -350,6 +352,7 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
           lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
           lastMessageFrom: leadsSyncTable.lastMessageFrom,
           leadStage: leadsSyncTable.leadStage,
+          pipeline: leadsSyncTable.pipeline,
           botExcluded: leadsSyncTable.botExcluded,
         })
         .from(leadsSyncTable)
@@ -365,7 +368,7 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
           lastMessageFrom: "us",
           lastOurMessageAt: newest.sentAt,
           ...(row.lastMessageFrom === "lead" ? { followupLevel: 0 } : {}),
-          nextFollowupAt: new Date(newest.sentAt.getTime() + 24 * 60 * 60 * 1000),
+          nextFollowupAt: followupClockAfterReply(newest.sentAt, row.pipeline),
           updatedAt: new Date(),
         })
         .where(eq(leadsSyncTable.leadId, leadId));
@@ -681,6 +684,7 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
             // duplicate replies a couple minutes apart.
             scheduleLiveReply(lead.leadId, async () => {
               try {
+                if (await enforceBudgetFilter(lead.leadId)) return;
                 const [freshLead] = await db
                   .select({
                     content: leadsSyncTable.content,
@@ -947,6 +951,7 @@ async function processQuickPollLead(
     // without coalescing, each fires its own generation.
     scheduleLiveReply(leadId, async () => {
       try {
+        if (await enforceBudgetFilter(leadId)) return;
         const [freshLead] = await db
           .select({
             content: leadsSyncTable.content,
