@@ -1062,6 +1062,7 @@ export async function matchProperties(opts: {
 
     const result = await chatCompletionJSON<{ ids?: string[] }>({
       model: "claude-sonnet-5",
+      label: "listing-match",
       system: `You decide whether to attach property listings to a broker's next reply, and if so which ones.
 
 Return an EMPTY list when sending listings would be the wrong move:

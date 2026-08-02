@@ -157,6 +157,7 @@ export async function refreshLeadProfile(opts: {
   try {
     const raw = await chatCompletionJSON<Partial<LeadProfile>>({
       model: HELPER_MODEL,
+      label: "lead-profile",
       system: `You maintain a compact intelligence profile for a real-estate lead, for a Bali property brokerage. Read the conversation and output a JSON profile.
 
 CRITICAL — real estate reality: a long SILENCE does NOT mean the lead is dead. Buyers visit Bali on long, seasonal cycles and often go quiet for months, then re-engage perfectly when they're back or ready. Judge "alive" vs "dead_candidate" ONLY from the CONTENT of what the lead actually said — never from how long they've been silent.

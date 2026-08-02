@@ -62,6 +62,7 @@ async function classifyObjection(
     // Picks one label off a list — mechanical, never read by a client. Sonnet
     // was three times the price for a twenty-token answer.
     model: HELPER_MODEL,
+    label: "objection",
     system: "You are a Bali real estate sales coach. Based on the conversation snippet, identify which hidden objection is most likely blocking the lead. Reply with ONLY the id from the list, nothing else.",
     messages: [
       {
@@ -111,6 +112,7 @@ export async function generateFollowup(opts: {
   // Write the follow-up from scratch, fully driven by conversation context.
   const completion = await chatCompletion({
     model: WRITER_MODEL,
+    label: "followup",
     system: `You are ${brokerName}, a senior broker at Unicorn Property, Bali real estate. You are writing a WhatsApp follow-up to a lead who has not replied to your last message.
 
 RULES:
@@ -191,6 +193,7 @@ export async function generatePushFollowup(opts: {
 
   const completion = await chatCompletion({
     model: WRITER_MODEL,
+    label: "followup",
     system: `You are ${brokerName}, a senior Bali real estate broker at Unicorn Property, writing a WhatsApp follow-up to a lead currently at CRM stage "${opts.leadStage}".
 
 LANGUAGE RULE (absolute): Detect the language the lead writes in. Respond 100% in that language. Never mix languages. Default to English if unclear.
@@ -256,6 +259,7 @@ async function estimateContextualDelay(
   try {
     const parsed = await chatCompletionJSON<{ delayHours?: number | null; reason?: string }>({
       model: HELPER_MODEL,
+      label: "followup-timing",
       system: `You analyze a real estate sales conversation and decide the ideal timing for the next follow-up.
 
 Look for concrete signals:
@@ -312,6 +316,7 @@ async function isLeadActiveForFollowup(content: string, stage: string): Promise<
     const snippet = conversationWindow(content, 1000, 3000);
     const parsed = await chatCompletionJSON<{ active?: boolean; reason?: string }>({
       model: HELPER_MODEL,
+      label: "lead-alive",
       system: `You are a CRM analyst. Given a sales conversation, decide if the lead is still a viable prospect worth following up with.
 
 Return JSON: {"active": true/false, "reason": "one short line"}

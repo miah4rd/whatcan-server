@@ -83,6 +83,24 @@ pool.query(`CREATE TABLE IF NOT EXISTS budget_filter_settings (
 )`)
   .catch((err) => logger.error({ err }, "startup migration: budget_filter_settings failed"));
 
+// Every AI call, with what it cost. Nothing recorded this before, so the only
+// answer to "how much are we spending a day" was arithmetic on estimates.
+pool.query(`CREATE TABLE IF NOT EXISTS ai_usage (
+  id BIGSERIAL PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  model TEXT NOT NULL,
+  label TEXT,
+  in_tokens INTEGER NOT NULL DEFAULT 0,
+  out_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd NUMERIC(12, 6) NOT NULL DEFAULT 0
+)`)
+  .catch((err) => logger.error({ err }, "startup migration: ai_usage failed"));
+
+pool.query(`CREATE INDEX IF NOT EXISTS ai_usage_created_at_idx ON ai_usage (created_at)`)
+  .catch((err) => logger.error({ err }, "startup migration: ai_usage index failed"));
+
 pool.query(`ALTER TABLE pending_suggestions ADD COLUMN IF NOT EXISTS auto_sent BOOLEAN DEFAULT FALSE`)
   .catch((err) => logger.error({ err }, "startup migration: auto_sent failed"));
 

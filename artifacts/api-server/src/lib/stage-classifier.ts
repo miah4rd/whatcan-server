@@ -212,6 +212,7 @@ export async function classifyStage(opts: {
     const catalog = stages.selectable.map((s) => `- ${s.name}: ${s.meaning}`).join("\n");
     const result = await chatCompletionJSON<{ stage?: string; reason?: string }>({
       model: HELPER_MODEL,
+      label: "stage",
       system: `You classify which CRM funnel stage a sales conversation is currently in.
 
 Available stages, in funnel order:

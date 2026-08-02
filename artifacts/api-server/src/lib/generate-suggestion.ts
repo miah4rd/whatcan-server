@@ -295,6 +295,7 @@ export async function enforceLanguage(text: string, required: string | null | un
   try {
     const fixed = await chatCompletion({
       model: WRITER_MODEL,
+      label: "language-fix",
       system: `Rewrite the WhatsApp message below in ${required}. Keep the meaning, the tone, the line breaks, the names, the numbers and the links EXACTLY as they are — only the language changes. Property names stay as written. Output only the rewritten message, nothing else.`,
       messages: [{ role: "user", content: text }],
       max_tokens: 500,
@@ -353,6 +354,7 @@ export async function composeReplyWithListings(opts: {
       attachments_decision?: string;
     }>({
       model: WRITER_MODEL,
+      label: "compose-edit",
       system: `${opts.systemPrompt}
 
 ──────────────────────────────────────────
@@ -513,6 +515,7 @@ export async function reconcileTextWithAttachments(
   try {
     const fixed = await chatCompletion({
       model: WRITER_MODEL,
+      label: "reconcile",
       system: `You correct one specific inconsistency in a WhatsApp message a broker is about to send.
 
 These ${attachments.length} property links are attached to that exact message and will arrive with it:
@@ -780,6 +783,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   const [completion, attachments] = await Promise.all([
     chatCompletion({
       model: WRITER_MODEL,
+      label: "draft",
       system: systemPrompt,
       ...(cachePrefix ? { cachePrefix } : {}),
       messages: [{ role: "user", content: prompt + promptAdditions }],

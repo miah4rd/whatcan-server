@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { logger } from "./logger";
+import { pool } from "@workspace/db";
 
 let _client: Anthropic | null = null;
 
@@ -47,6 +48,9 @@ interface ChatCompletionOpts {
    * changing character early throws away everything behind it.
    */
   cachePrefix?: string;
+  /** What this call was for — so the daily bill can be read by purpose, not
+   * just as one number. Free text; unlabelled calls show up as "other". */
+  label?: string;
 }
 
 interface ChatCompletionResult {
@@ -64,6 +68,35 @@ interface ChatCompletionResult {
 // future sonnet/opus 5+ ids are covered without another code change.
 function modelRejectsTemperature(model: string): boolean {
   return /claude-(sonnet|opus|fable)-[5-9]/.test(model);
+}
+
+
+/**
+ * Price per million tokens, from Anthropic's published rates. Kept here so the
+ * daily bill is computed once, at the point we already know the model, rather
+ * than reconstructed later from guesses about which call used what.
+ * The cache-write rate is the 1-hour one (2x base) — that is the TTL we send.
+ */
+const PRICE_PER_MTOK: Record<string, { in: number; out: number }> = {
+  "claude-sonnet-5": { in: 3, out: 15 },
+  "claude-opus-5": { in: 5, out: 25 },
+  "claude-haiku-4-5-20251001": { in: 1, out: 5 },
+  "claude-haiku-4-5": { in: 1, out: 5 },
+};
+
+function callCostUsd(
+  model: string,
+  u: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number },
+): number {
+  const p = PRICE_PER_MTOK[model] ?? PRICE_PER_MTOK["claude-sonnet-5"]!;
+  const m = 1_000_000;
+  return (
+    ((u.input_tokens ?? 0) * p.in +
+      (u.cache_read_input_tokens ?? 0) * p.in * 0.1 +
+      (u.cache_creation_input_tokens ?? 0) * p.in * 2 +
+      (u.output_tokens ?? 0) * p.out) /
+    m
+  );
 }
 
 export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatCompletionResult> {
@@ -114,16 +147,35 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatComp
       cache_read_input_tokens?: number;
       cache_creation_input_tokens?: number;
     };
+    const cost = callCostUsd(opts.model, u);
     logger.info(
       {
         model: opts.model,
+        label: opts.label ?? "other",
         inTok: u.input_tokens ?? 0,
         outTok: u.output_tokens ?? 0,
         cacheRead: u.cache_read_input_tokens ?? 0,
         cacheWrite: u.cache_creation_input_tokens ?? 0,
+        costUsd: Number(cost.toFixed(6)),
       },
       "ai usage",
     );
+    // Fire and forget: the bill must never be the reason a lead waits.
+    void pool
+      .query(
+        `INSERT INTO ai_usage (model, label, in_tokens, out_tokens, cache_read_tokens, cache_write_tokens, cost_usd)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          opts.model,
+          opts.label ?? "other",
+          u.input_tokens ?? 0,
+          u.output_tokens ?? 0,
+          u.cache_read_input_tokens ?? 0,
+          u.cache_creation_input_tokens ?? 0,
+          cost.toFixed(6),
+        ],
+      )
+      .catch(() => {});
   } catch { /* accounting must never break a reply */ }
 
   const text = response.content

@@ -454,6 +454,7 @@ ${transcript || "(no messages yet)"}`;
       const today = new Date().toISOString().slice(0, 10);
       const parsed = await chatCompletionJSON<{ taskDate?: string | null; taskText?: string | null }>({
         model: HELPER_MODEL,
+        label: "edit-helper",
         system: `Today is ${today}. You analyze a real estate sales conversation.
 Detect if the lead explicitly stated a concrete future contact date — vacation return, scheduled call, scheduled viewing, or similar committed date.
 
@@ -492,6 +493,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
       const lastFb = body.feedback || body.revisionChain?.[body.revisionChain.length - 1]?.feedback || "";
       const tj = await chatCompletionJSON<{ temperature?: string }>({
         model: HELPER_MODEL,
+        label: "edit-helper",
         system: `You re-assess a real-estate lead's temperature from the conversation AND the attached screenshot (the SOURCE OF TRUTH). Output JSON {"temperature":"hot|warm|cold"}. hot = active buying intent / positive signals; warm = genuine engagement; cold = minimal / terse / no real signal.`,
         messages: [{ role: "user", content: [{ type: "text", text: `Conversation (stored, may be stale):\n${conversationWindow(transcript, 1000, 3000)}\n\nBroker note: ${lastFb || "(none)"}` }, imageBlock] }],
         max_tokens: 30,
@@ -967,6 +969,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         try {
           const cleaned = await chatCompletion({
             model: WRITER_MODEL,
+            label: "revise",
             system: `You are editing a WhatsApp message a broker is about to send a client.
 
 No properties are being sent with this message — the broker is asking the client a question first and will pick options once they answer.
