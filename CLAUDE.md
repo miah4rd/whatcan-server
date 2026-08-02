@@ -118,6 +118,20 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   inherits missing core criteria from the anchor villa they clicked (bedrooms
   exact-or-bigger, area widened to the parent district); the client's own words
   always override the inherited values.
+- **A lead quoting our own link back must not un-exclude it.** The "already
+  sent" list was built by scanning the whole conversation, then subtracting any
+  link found in the LEAD's own messages — a real earlier fix, because an
+  ad-lead's opening message names the villa they clicked, and that link is
+  theirs, not ours. But quoting a link back ("is this one available?") is the
+  ordinary way a listing comes up a second time on WhatsApp, and it looked
+  identical to the ad-lead case: either way the ID sat in the lead's own text,
+  so either way it got erased from the exclusion list. A villa already sent
+  came back next message as a "similar alternative" and got re-attached as
+  new — while the reply TEXT, built from the same conversation, correctly
+  remembered it as sent ("of the three I sent earlier"). Text and links looked
+  desynced, but the real fault was the exclusion state itself, wrong before
+  either ran. Now a lead-mentioned ID is subtracted only when it does NOT also
+  appear in what WE sent (`alreadySentPropertyIds`'s new `ourSentText` param).
 - **A lead who arrives on a specific listing anchors the shortlist**: that listing
   plus comparable alternatives. The anchor is read ONLY from what the LEAD wrote —
   reading the whole conversation fed our own sent links back as "the answer".
