@@ -206,6 +206,23 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   above merely-under-ceiling ones in BOTH shortlist implementations
   (`matchProperties` and `candidatesForLead` — the one the edit path's composer
   reads from).
+- **A budget range's floor still has to survive contact with the AI.** Fixing
+  the shortlist BUILDER to know the floor (above) wasn't enough — the edit
+  path's actual attachments come from `composeReplyWithListings`, an AI call
+  that picks freely, and the only code-level guard on its picks was the
+  ceiling swap. A model picking a villa well under a stated "60-65 million"
+  sailed straight through, since being cheap is never "over budget."
+  `enforceBudgetFloor` (suggest.ts) mirrors the ceiling-swap logic for the
+  low side: drop a below-floor pick only when a genuinely better in-range
+  alternative exists, never below two.
+- **The floor gets the same +15% headroom the ceiling gets, mirrored down
+  (floor × 0.85).** A villa at 55 against a stated 60-65 range is a fair
+  answer — the owner's own words were "that one's right" — a villa at 39.8 is
+  not. Comparing against the floor exactly instead of with headroom stripped
+  a real shortlist down to one villa on the first pass. Applied consistently
+  in the ranking (`matchProperties`, `candidatesForLead`) and in
+  `enforceBudgetFloor`, or the composer's candidate order and the code-level
+  swap disagree about what "in range" means.
 - **`areaMatches` compared a listing's area as one whole string.** Two catalog
   listings carry the sub-area AND its parent combined in one field
   ("Tumbak Bayuh, Pererenan"), which matched neither name in it — a lead
