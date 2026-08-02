@@ -1521,7 +1521,10 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
               : editing
                 ? `<textarea class="ta" data-ed placeholder="Edit message…">${esc(editValue)}</textarea>
                    ${renderAttachments(it, true)}
-                   <div class="att-add-row" style="display:flex;gap:6px;margin-top:8px"><input class="att-add-input" data-attaddurl placeholder="Paste a property link to add…" style="flex:1;min-width:0;background:#0f1826;color:#e6e8ee;border:1px solid #2a3a50;border-radius:6px;padding:7px 9px;font-size:12px;font-family:inherit"><button class="att-add-btn" data-attadd style="background:#1b2740;color:#b6bccd;border:1px solid #2a3a50;border-radius:6px;padding:7px 11px;font-size:12px;font-weight:600;cursor:pointer;flex:none">+ Add</button></div>
+                   <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+                     <button data-attpick style="background:rgba(96,165,250,.14);color:#60a5fa;border:1px solid rgba(96,165,250,.35);border-radius:6px;padding:8px 11px;font-size:12px;font-weight:700;cursor:pointer;width:100%">🌐 Choose on site</button>
+                     <div class="att-add-row" style="display:flex;gap:6px"><input class="att-add-input" data-attaddurl placeholder="…or paste a property link" style="flex:1;min-width:0;background:#0f1826;color:#e6e8ee;border:1px solid #2a3a50;border-radius:6px;padding:7px 9px;font-size:12px;font-family:inherit"><button class="att-add-btn" data-attadd style="background:#1b2740;color:#b6bccd;border:1px solid #2a3a50;border-radius:6px;padding:7px 11px;font-size:12px;font-weight:600;cursor:pointer;flex:none">+ Add</button></div>
+                   </div>
                    <input type="file" data-fileinput accept="image/*" style="display:none">
                    <div class="ai-input-wrap" style="border-top:1px solid #2a3a50;padding-top:10px;margin:0 -2px;"><textarea class="aiinput" data-ai placeholder="Tell AI what to change — or paste a screenshot…" rows="2" style="resize:none;line-height:1.4;"></textarea><div class="ai-btn-row"><button class="ai-mic-btn" data-voice title="Voice input">🎤 Dictate</button><button class="ai-send-btn" data-rewrite ${it.loading ? "disabled" : ""} title="Send">↑ Send</button></div></div>
                    `
@@ -1949,12 +1952,15 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
         const _url = (_inp?.value || "").trim();
         if (!_url) return;
         if (!/^https?:\/\//i.test(_url)) { alert("Needs to be a full link (https://…)"); return; }
-        it.attachments = it.attachments || [];
-        const _m = _url.match(/\/property\/([A-Za-z0-9-]+)/i);
-        it.attachments.push({ type: "link", label: _m ? _m[1] : _url, url: _url, _broker: true });
-        it._attachmentsCurated = true;
+        addAttachmentLink(it, _url);
         if (_inp) _inp.value = "";
         render();
+      });
+      view.querySelector("[data-attpick]")?.addEventListener("click", () => {
+        openPropertyPicker((urls) => {
+          urls.forEach((u) => addAttachmentLink(it, u));
+          render();
+        });
       });
 
       view.querySelectorAll("[data-rate]").forEach((btn) => {
@@ -2115,7 +2121,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
           ${!editing ? `<div class="label">${esc(L("suggestedLabel","Suggested message"))}</div>` : ""}
           ${item.loading && !item.suggestion ? `<div class="skel"><div style="width:100%"></div><div style="width:92%"></div><div style="width:80%"></div><div style="width:60%"></div></div>` :
             item.error ? `<div class="err">${esc(item.error)}</div>` :
-            editing ? `<textarea class="ta" data-ed placeholder="Edit message…">${esc(editValue)}</textarea>${renderAttachments(item, true)}<div class="att-add-row" style="display:flex;gap:6px;margin-top:8px"><input class="att-add-input" data-attaddurl placeholder="Paste a property link to add…" style="flex:1;min-width:0;background:#0f1826;color:#e6e8ee;border:1px solid #2a3a50;border-radius:6px;padding:7px 9px;font-size:12px;font-family:inherit"><button class="att-add-btn" data-attadd style="background:#1b2740;color:#b6bccd;border:1px solid #2a3a50;border-radius:6px;padding:7px 11px;font-size:12px;font-weight:600;cursor:pointer;flex:none">+ Add</button></div><input type="file" data-fileinput accept="image/*" style="display:none"><div class="ai-input-wrap" style="border-top:1px solid #2a3a50;padding-top:10px;"><textarea class="aiinput" data-ai placeholder="Tell AI what to change — or paste a screenshot…" rows="2" style="resize:none;line-height:1.4;"></textarea><div class="ai-btn-row"><button class="ai-mic-btn" data-voice title="Voice input">🎤 Dictate</button><button class="ai-send-btn" data-rewrite ${item.loading ? "disabled" : ""} title="Send">↑ Send</button></div></div>` :
+            editing ? `<textarea class="ta" data-ed placeholder="Edit message…">${esc(editValue)}</textarea>${renderAttachments(item, true)}<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px"><button data-attpick style="background:rgba(96,165,250,.14);color:#60a5fa;border:1px solid rgba(96,165,250,.35);border-radius:6px;padding:8px 11px;font-size:12px;font-weight:700;cursor:pointer;width:100%">🌐 Choose on site</button><div class="att-add-row" style="display:flex;gap:6px"><input class="att-add-input" data-attaddurl placeholder="…or paste a property link" style="flex:1;min-width:0;background:#0f1826;color:#e6e8ee;border:1px solid #2a3a50;border-radius:6px;padding:7px 9px;font-size:12px;font-family:inherit"><button class="att-add-btn" data-attadd style="background:#1b2740;color:#b6bccd;border:1px solid #2a3a50;border-radius:6px;padding:7px 11px;font-size:12px;font-weight:600;cursor:pointer;flex:none">+ Add</button></div></div><input type="file" data-fileinput accept="image/*" style="display:none"><div class="ai-input-wrap" style="border-top:1px solid #2a3a50;padding-top:10px;"><textarea class="aiinput" data-ai placeholder="Tell AI what to change — or paste a screenshot…" rows="2" style="resize:none;line-height:1.4;"></textarea><div class="ai-btn-row"><button class="ai-mic-btn" data-voice title="Voice input">🎤 Dictate</button><button class="ai-send-btn" data-rewrite ${item.loading ? "disabled" : ""} title="Send">↑ Send</button></div></div>` :
             `<div class="msg">${esc(item.suggestion)}</div>${renderAttachments(item, false)}${renderRating(item)}`}
         </div>
 
@@ -2199,12 +2205,15 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
         const _url = (_inp?.value || "").trim();
         if (!_url) return;
         if (!/^https?:\/\//i.test(_url)) { alert("Needs to be a full link (https://…)"); return; }
-        item.attachments = item.attachments || [];
-        const _m = _url.match(/\/property\/([A-Za-z0-9-]+)/i);
-        item.attachments.push({ type: "link", label: _m ? _m[1] : _url, url: _url, _broker: true });
-        item._attachmentsCurated = true;
+        addAttachmentLink(item, _url);
         if (_inp) _inp.value = "";
         render();
+      });
+      panel.querySelector("[data-attpick]")?.addEventListener("click", () => {
+        openPropertyPicker((urls) => {
+          urls.forEach((u) => addAttachmentLink(item, u));
+          render();
+        });
       });
 
     const ed = panel.querySelector("[data-ed]");
@@ -2271,6 +2280,70 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
       }
       return "";
     }).join("")}</div>`;
+  }
+
+  // Shared by the manual "+ Add" paste box and the site picker below, so both
+  // paths dedupe and label a link the same way.
+  function addAttachmentLink(entity, url) {
+    entity.attachments = entity.attachments || [];
+    if (entity.attachments.some((a) => a.type === "link" && a.url === url)) return false;
+    const m = url.match(/\/property\/([A-Za-z0-9-]+)/i);
+    entity.attachments.push({ type: "link", label: m ? m[1] : url, url, _broker: true });
+    entity._attachmentsCurated = true;
+    return true;
+  }
+
+  const PICKER_ORIGIN = "https://unicorn-properties.com";
+
+  // Opens unicorn-properties.com in a full-screen overlay so the broker can
+  // click listings there instead of copy-pasting links. The site renders a
+  // "picker mode" (only active behind ?copilotPicker=1 + being framed) that
+  // posts the chosen bare property URLs back via postMessage on "Send to
+  // Copilot". Appended to document.body (not the shadow-DOM panel) so it can
+  // actually cover the full viewport regardless of the panel's own box.
+  function openPropertyPicker(onSelect) {
+    const overlay = el(`
+      <div style="position:fixed;inset:0;z-index:2147483647;background:rgba(10,14,20,.72);display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;font-family:inherit">
+        <div style="width:100%;max-width:1100px;height:100%;max-height:860px;background:#273444;border:1px solid #3a4a5e;border-radius:10px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.55)">
+          <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#2c3e50;border-bottom:1px solid #3a4a5e">
+            <span style="font-size:12.5px;font-weight:700;color:#e6e8ee">🌐 Choose listings — unicorn-properties.com</span>
+            <button data-pickerclose style="background:none;border:none;color:#94a3b8;font-size:20px;line-height:1;cursor:pointer;padding:2px 6px;border-radius:4px">×</button>
+          </div>
+          <iframe src="${PICKER_ORIGIN}/" style="flex:1 1 auto;border:none;width:100%;background:#0f1826"></iframe>
+        </div>
+      </div>
+    `);
+    document.body.appendChild(overlay);
+    const iframe = overlay.querySelector("iframe");
+
+    function close() {
+      window.removeEventListener("message", onMessage);
+      window.removeEventListener("keydown", onKey);
+      overlay.remove();
+    }
+    // The site itself may rewrite its own URL on load (route-sync effects
+    // reset the query string / hash), so a URL flag isn't reliable. Instead
+    // the site announces "ready" once mounted and we reply "activate" —
+    // a handshake immune to whatever the site's own router does afterwards.
+    function onMessage(e) {
+      if (e.origin !== PICKER_ORIGIN) return;
+      if (e.source !== iframe.contentWindow) return;
+      const d = e.data;
+      if (!d) return;
+      if (d.source === "unicorn-site" && d.type === "ready") {
+        iframe.contentWindow.postMessage({ source: "unicorn-picker-host", type: "activate" }, PICKER_ORIGIN);
+        return;
+      }
+      if (d.source === "unicorn-picker" && d.type === "selection" && Array.isArray(d.urls)) {
+        onSelect(d.urls);
+        close();
+      }
+    }
+    function onKey(e) { if (e.key === "Escape") close(); }
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    overlay.querySelector("[data-pickerclose]")?.addEventListener("click", close);
+    window.addEventListener("message", onMessage);
+    window.addEventListener("keydown", onKey);
   }
   function renderRating(_item) {
     // Removed the manual 👍/👎 "Train AI" row — brokers won't spend the extra

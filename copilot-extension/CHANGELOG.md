@@ -6,6 +6,16 @@ release, so all changes are shared and visible. Build: zip the folder CONTENTS
 (files at the archive root) to `artifacts/landing/public/extNN.zip`, then copy to
 the VPS `artifacts/landing/dist/public/` (only that is served).
 
+## 1.0.89
+
+- New "🌐 Choose on site" button in the edit panel, next to the manual
+  "paste a link" box. Opens unicorn-properties.com in a full-screen overlay
+  in picker mode; the broker clicks listings there, hits "Send to Copilot" on
+  the site, and the chosen links land in the attachments automatically — no
+  more tabbing to the site, copying a URL, and pasting it back by hand.
+  Requires the matching site-side picker mode (unicorn-properties.com) to be
+  live. The manual paste box stays as a fallback.
+
 ## 1.0.87
 
 - Links the broker curated by hand are no longer overwritten. Removing the bot's

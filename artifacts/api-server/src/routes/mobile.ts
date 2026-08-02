@@ -148,6 +148,12 @@ const PAGE_HTML = `<!doctype html>
   .att-add-input { flex: 1; min-width: 0; background: #141827; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; font-family: inherit; }
   .att-add-input:focus { outline: none; border-color: #2dd4bf; }
   .att-add-btn { background: #23293b; color: #b6bccd; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; flex: none; }
+  .att-pick-btn { display: block; width: 100%; background: rgba(45,212,191,.14); color: #2dd4bf; border: 1px solid rgba(45,212,191,.4); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; margin-top: 8px; }
+  .picker-overlay { position: fixed; inset: 0; z-index: 999; background: rgba(6,10,16,.78); display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; }
+  .picker-modal { width: 100%; height: 100%; max-width: 720px; background: #181d2e; border: 1px solid #2a3146; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+  .picker-hdr { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: #141827; border-bottom: 1px solid #2a3146; font-size: 12.5px; font-weight: 700; color: #e6e8ee; }
+  .picker-close { background: none; border: none; color: #94a3b8; font-size: 20px; line-height: 1; cursor: pointer; padding: 2px 6px; }
+  .picker-modal iframe { flex: 1 1 auto; border: none; width: 100%; background: #141827; }
   .stage-toggle { background: none; border: none; color: #6b7488; font-size: 12px; padding: 6px 0; margin-bottom: 4px; cursor: pointer; text-decoration: underline; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #181d2e; border: 1px solid #2a3146; color: #e6e8ee; padding: 10px 18px; border-radius: 10px; font-size: 13px; z-index: 20; max-width: 90vw; text-align: center; }
   .setup { max-width: 340px; margin: 80px auto; padding: 24px; text-align: center; }
@@ -418,6 +424,66 @@ const PAGE_HTML = `<!doctype html>
     }
     html += '</div>';
     return html;
+  }
+
+  // Shared by the manual "+ Add" paste box and the site picker below, so both
+  // paths dedupe and label a link the same way.
+  function addAttachmentLink(item, url) {
+    item.attachments = item.attachments || [];
+    for (var i = 0; i < item.attachments.length; i++) {
+      if (item.attachments[i].type === "link" && item.attachments[i].url === url) return false;
+    }
+    var m = url.match(/\\/property\\/([A-Za-z0-9-]+)/i);
+    item.attachments.push({ type: "link", label: m ? m[1] : url, url: url, _broker: true });
+    item._attachmentsCurated = true;
+    return true;
+  }
+
+  var PICKER_ORIGIN = "https://unicorn-properties.com";
+
+  // Opens unicorn-properties.com in a full-screen overlay so the broker can
+  // click listings there instead of copy-pasting links. The site renders a
+  // "picker mode" (only active behind ?copilotPicker=1 + being framed) that
+  // posts the chosen bare property URLs back via postMessage on "Send to
+  // Copilot" — same message contract the extension listens for.
+  function openPropertyPicker(onSelect) {
+    var overlay = document.createElement("div");
+    overlay.className = "picker-overlay";
+    overlay.innerHTML = '<div class="picker-modal">' +
+      '<div class="picker-hdr"><span>\\ud83c\\udf10 Choose listings \\u2014 unicorn-properties.com</span><button class="picker-close" id="picker-close">\\u00d7</button></div>' +
+      '<iframe src="' + PICKER_ORIGIN + '/"></iframe>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    var iframe = overlay.querySelector("iframe");
+
+    function close() {
+      window.removeEventListener("message", onMessage);
+      window.removeEventListener("keydown", onKey);
+      overlay.remove();
+    }
+    // The site's own route-sync effects can rewrite its URL on load, so a URL
+    // flag isn't reliable. Instead the site announces "ready" once mounted and
+    // we reply "activate" — a handshake immune to whatever the router does next.
+    function onMessage(e) {
+      if (e.origin !== PICKER_ORIGIN) return;
+      if (e.source !== iframe.contentWindow) return;
+      var d = e.data;
+      if (!d) return;
+      if (d.source === "unicorn-site" && d.type === "ready") {
+        iframe.contentWindow.postMessage({ source: "unicorn-picker-host", type: "activate" }, PICKER_ORIGIN);
+        return;
+      }
+      if (d.source === "unicorn-picker" && d.type === "selection" && Array.isArray(d.urls)) {
+        onSelect(d.urls);
+        close();
+      }
+    }
+    function onKey(e) { if (e.key === "Escape") close(); }
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) close(); });
+    var closeBtn = overlay.querySelector("#picker-close");
+    if (closeBtn) closeBtn.onclick = close;
+    window.addEventListener("message", onMessage);
+    window.addEventListener("keydown", onKey);
   }
   // ── Voice dictation (Web Speech API — same as extension; gracefully absent on iOS Safari) ─
   var _voiceEl = null, _voiceBtn = null, _directSR = null, _wakeLock = null, _voiceWanted = false;
@@ -1054,7 +1120,8 @@ const PAGE_HTML = `<!doctype html>
       html += '<label class="section">Edit message</label>';
       html += '<textarea id="msg-text" placeholder="Edit message…">' + esc(editValue) + '</textarea>';
       html += renderAttachments(it, true);
-      html += '<div class="att-add-row"><input class="att-add-input" id="att-add-url" placeholder="Paste a property link to add…"><button class="att-add-btn" id="att-add-btn">+ Add</button></div>';
+      html += '<button class="att-pick-btn" id="att-pick-btn">\\ud83c\\udf10 Choose on site</button>';
+      html += '<div class="att-add-row"><input class="att-add-input" id="att-add-url" placeholder="…or paste a property link"><button class="att-add-btn" id="att-add-btn">+ Add</button></div>';
       html += '<input type="file" id="file-input" accept="image/*" style="display:none">';
       html += '<div class="ai-input-wrap">';
       html += '<textarea class="aiinput" id="ai-input" placeholder="Tell AI what to change…" rows="2"></textarea>';
@@ -1253,12 +1320,18 @@ const PAGE_HTML = `<!doctype html>
           var url = (input.value || "").trim();
           if (!url) return;
           if (!/^https?:\\/\\//i.test(url)) { showToast("Needs to be a full link (https://…)"); return; }
-          it.attachments = it.attachments || [];
-          var idMatch = url.match(/\\/property\\/([A-Za-z0-9-]+)/i);
-          it.attachments.push({ type: "link", label: idMatch ? idMatch[1] : url, url: url, _broker: true });
-          it._attachmentsCurated = true;
+          addAttachmentLink(it, url);
           input.value = "";
           renderDetail();
+        };
+      }
+      var attPickBtn = $("#att-pick-btn");
+      if (attPickBtn) {
+        attPickBtn.onclick = function () {
+          openPropertyPicker(function (urls) {
+            for (var i = 0; i < urls.length; i++) addAttachmentLink(it, urls[i]);
+            renderDetail();
+          });
         };
       }
       var fileInput = $("#file-input");
