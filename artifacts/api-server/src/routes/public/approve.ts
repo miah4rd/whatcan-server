@@ -596,7 +596,18 @@ router.post("/approve", async (req, res) => {
     // Two guards: a stage the broker picked themselves always wins, and a
     // terminal stage (Closed won/lost) is never applied automatically — those
     // carry money and reporting weight, so the broker confirms them explicitly.
-    if (!explicitNewStage && sug.suggestedStage && sug.suggestedStageId) {
+    // Third guard: a lead in a REACH / qualification follow-up stage (1st / 2nd /
+    // final follow up) that never got a reply must ONLY move along the
+    // qualification ladder (1st→2nd→final, advanced below) — the conversation
+    // classifier must NOT pull it into a funnel stage like "Contact established"
+    // off our own outbound follow-up. If the client actually replies, that's a
+    // LIVE turn and the broker moves the stage themselves.
+    const curStageLower = (prevSyncRow?.leadStage ?? "").toLowerCase();
+    const inReachStage =
+      curStageLower.includes("1st follow up") ||
+      curStageLower.includes("2nd follow up") ||
+      curStageLower.includes("final follow up");
+    if (!explicitNewStage && !inReachStage && sug.suggestedStage && sug.suggestedStageId) {
       if (sug.suggestedStageTerminal) {
         req.log.info(
           { leadId: sug.leadId, stage: sug.suggestedStage },
