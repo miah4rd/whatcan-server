@@ -364,7 +364,7 @@ function hasPrice(p: SupabaseProperty): boolean {
 }
 
 /** Comparable monthly figure for rentals, headline price for sales. */
-function priceOf(p: SupabaseProperty): number {
+export function priceOf(p: SupabaseProperty): number {
   if (p.listing_type === "rent") {
     // Rupiah only — every rental that carries a dollar figure carries the rupiah
     // one too, so the tiers compare like with like and nothing is converted.
@@ -695,6 +695,12 @@ export async function candidatesForLead(opts: {
   candidates: SupabaseProperty[];
   budgetIdr: number | null;
   budgetCeiling: number | null;
+  /** The bottom of a stated range ("40-50 million" -> 40M), null when the lead
+   * gave a single figure. affordableIds below is ordered around it, but a
+   * caller enforcing the ceiling in code needs the number itself to also
+   * enforce the floor — a model picking villas UNDER it is not "over budget"
+   * and slips straight past a ceiling-only check. */
+  budgetFloorIdr: number | null;
   lines: Array<{ id: string; line: string }>;
   /** Priced candidates inside the ceiling (or simply priced, when no budget),
    * in shortlist order — the composer's minimum-choice top-up draws from here. */
@@ -755,14 +761,16 @@ export async function candidatesForLead(opts: {
   // so a broker's own "stay in that 40-50 range" instruction had nothing
   // correctly ordered to draw from.
   const budgetFloorIdr = opts.listingType === "rent" ? extractBudgetFloorIdr(criteriaSource) : null;
+  // Same 15% headroom as the ceiling, mirrored downward — see matchProperties.
+  const budgetFloorFloor = budgetFloorIdr ? Math.round(budgetFloorIdr * 0.85) : null;
   if (budgetCeiling) {
     const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
     const abovePriced = candidates.filter((p) => priceOf(p) > budgetCeiling).sort((a, b) => priceOf(a) - priceOf(b));
     const unpriced = candidates.filter((p) => priceOf(p) === 0);
-    const sortedWithin = budgetFloorIdr
+    const sortedWithin = budgetFloorFloor
       ? [...within].sort((a, b) => {
-          const aIn = priceOf(a) >= budgetFloorIdr ? 0 : 1;
-          const bIn = priceOf(b) >= budgetFloorIdr ? 0 : 1;
+          const aIn = priceOf(a) >= budgetFloorFloor ? 0 : 1;
+          const bIn = priceOf(b) >= budgetFloorFloor ? 0 : 1;
           return aIn !== bIn ? aIn - bIn : rankForShortlist(a, b);
         })
       : within.sort(rankForShortlist);
@@ -776,6 +784,7 @@ export async function candidatesForLead(opts: {
     candidates,
     budgetIdr,
     budgetCeiling,
+    budgetFloorIdr,
     affordableIds: candidates
       .filter((p) => priceOf(p) > 0 && (!budgetCeiling || priceOf(p) <= budgetCeiling))
       .map((p) => p.id),
@@ -1043,6 +1052,12 @@ export async function matchProperties(opts: {
   // broker edit repeating "stay in that range" still didn't move them,
   // because nothing downstream had ever been told where the range started.
   const budgetFloorIdr = opts.listingType === "rent" ? extractBudgetFloorIdr(criteriaSource) : null;
+  // Same 15% the ceiling gets, mirrored downward: a villa just under the stated
+  // floor is still a real answer to "60-65 million" — the owner's own read of
+  // one at 55 was "that one's right". One at 39.8 (well past the headroom) is
+  // the actual complaint. Without this, only a floor-exact catalog ever
+  // satisfies a range, which one thin area rarely has.
+  const budgetFloorFloor = budgetFloorIdr ? Math.round(budgetFloorIdr * 0.85) : null;
   let withinBudgetCount = 0;
   if (budgetCeiling) {
     const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
@@ -1061,10 +1076,10 @@ export async function matchProperties(opts: {
     // below the stated floor is not "closer to what they asked for" just
     // because it's cheap, so it no longer competes on views/recency against
     // one that actually sits in the window they named.
-    const sortedWithin = budgetFloorIdr
+    const sortedWithin = budgetFloorFloor
       ? [...within].sort((a, b) => {
-          const aIn = priceOf(a) >= budgetFloorIdr ? 0 : 1;
-          const bIn = priceOf(b) >= budgetFloorIdr ? 0 : 1;
+          const aIn = priceOf(a) >= budgetFloorFloor ? 0 : 1;
+          const bIn = priceOf(b) >= budgetFloorFloor ? 0 : 1;
           return aIn !== bIn ? aIn - bIn : rankForShortlist(a, b);
         })
       : within.sort(rankForShortlist);

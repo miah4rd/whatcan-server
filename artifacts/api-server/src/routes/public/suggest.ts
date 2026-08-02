@@ -12,12 +12,76 @@ import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage,
 import { brokerDisplayName } from "../../lib/broker-identity";
 import { getLeadCardCriteria } from "../../lib/lead-card-fields";
 import { learnFromRevision } from "../../lib/broker-corrections";
-import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, toPickPublic, invalidatePropertyCache } from "../../lib/property-catalog";
+import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, toPickPublic, invalidatePropertyCache, priceOf, type SupabaseProperty } from "../../lib/property-catalog";
 
 const router = Router();
 
 type Msg = { from: "lead" | "broker"; text: string };
 type RevisionStep = { draft: string; feedback: string };
+
+/**
+ * Same swap mechanics as the ceiling enforcement above, mirrored for the
+ * bottom of a stated range: drop a below-floor pick only when a genuinely
+ * better (in-range) alternative exists, never below two, and never drop the
+ * only priced picks the lead has — a below-floor villa shown honestly beats
+ * no villa at all. Exported so the exact logic can be exercised in a
+ * standalone test rather than only ever run against a live lead.
+ */
+export function enforceBudgetFloor(
+  chosen: Array<{ type: "link"; url: string; label: string }>,
+  pool: {
+    candidates: SupabaseProperty[];
+    affordableIds: string[];
+    budgetFloorIdr: number | null;
+  },
+): { chosen: Array<{ type: "link"; url: string; label: string }>; changed: boolean; dropped: number } {
+  if (!pool.budgetFloorIdr) return { chosen, changed: false, dropped: 0 };
+  // Same 15% headroom the ranking gives the floor (mirroring the ceiling's own
+  // +15%) — a villa just under the stated range is still a fair answer to it;
+  // one well below is the actual complaint. Keep this in sync with
+  // property-catalog.ts's matchProperties/candidatesForLead, or the shortlist
+  // the composer sees and the shortlist this function enforces will disagree
+  // about what "in range" means.
+  const floor = Math.round(pool.budgetFloorIdr * 0.85);
+  const priceById = new Map(pool.candidates.map((p) => [p.id.toUpperCase(), p]));
+  const idOf = (c: { url: string }) => (c.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase();
+  const priceOfChosen = (c: { url: string }) => {
+    const cand = priceById.get(idOf(c));
+    return cand ? priceOf(cand) : null;
+  };
+  const under = chosen.filter((c) => {
+    const p = priceOfChosen(c);
+    return p !== null && p > 0 && p < floor;
+  });
+  if (under.length === 0) return { chosen, changed: false, dropped: 0 };
+
+  // affordableIds is already floor-sorted (in-range first) — an in-range
+  // replacement exists only if there's one beyond what's already kept.
+  const inRangeIds = pool.affordableIds.filter((id) => {
+    const cand = priceById.get(id.toUpperCase());
+    return cand ? priceOf(cand) >= floor : false;
+  });
+  if (chosen.length - under.length + inRangeIds.length < Math.min(chosen.length, 2)) {
+    return { chosen, changed: false, dropped: 0 };
+  }
+
+  const keep = chosen.filter((c) => !under.includes(c));
+  const have = new Set(keep.map(idOf));
+  for (const id of inRangeIds) {
+    if (keep.length >= chosen.length) break;
+    if (have.has(id.toUpperCase())) continue;
+    const cand = priceById.get(id.toUpperCase());
+    if (!cand) continue;
+    const pick = toPickPublic(cand);
+    keep.push({ type: "link" as const, url: pick.url, label: pick.label });
+    have.add(id.toUpperCase());
+  }
+  // Only replace what genuinely got covered — dropping a below-floor pick
+  // with nothing in range to put in its place would shrink the shortlist
+  // below what the lead was already shown.
+  if (keep.length < Math.min(chosen.length, 2)) return { chosen, changed: false, dropped: 0 };
+  return { chosen: keep, changed: true, dropped: under.length };
+}
 
 type Body = {
   guide: string;
@@ -825,6 +889,24 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
               );
               chosen.length = 0;
               chosen.push(...keep);
+              mustReconcile = true;
+            }
+          }
+
+          // A stated RANGE has a bottom too, and the ceiling check above never
+          // looks at it — a villa priced under the floor is not "over budget",
+          // so it sailed straight through. Ju's broker said "budget from 60 to
+          // 65 million" and the composed shortlist kept a villa at 39.8 million
+          // untouched, because nothing here had ever checked the low side.
+          if (composed.decision === "new_selection" && pool.budgetFloorIdr && !brokerNamedListings) {
+            const result = enforceBudgetFloor(chosen, pool);
+            if (result.changed) {
+              req.log.info(
+                { leadId: body.leadId, dropped: result.dropped, floor: pool.budgetFloorIdr },
+                "suggest: enforced the lead's budget floor on the composed shortlist",
+              );
+              chosen.length = 0;
+              chosen.push(...result.chosen);
               mustReconcile = true;
             }
           }
