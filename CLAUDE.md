@@ -194,6 +194,23 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   re-pick from scratch and append their additions, so removing two listings and
   adding one came back as four. The surfaces send `attachmentsCurated` and the
   server then rewrites only the words.
+- **A stated budget RANGE has a floor too, and one code path never read it.**
+  `extractBudgetIdr` on "40-50 million" returns 50 — the ceiling, correct for
+  "don't show anything over budget". The 40 was simply discarded, everywhere.
+  A lead's own two-sided budget therefore filtered nothing on the low end: two
+  of three slots filled with villas well under her stated floor, and a broker
+  edit repeating "stay in that range" didn't move them either, because nothing
+  downstream had ever been told where the range started. `extractBudgetFloorIdr`
+  reads the other half (null when it's a single figure, not a range — a bare
+  ceiling isn't a promise of no cheaper option) and now ranks in-range listings
+  above merely-under-ceiling ones in BOTH shortlist implementations
+  (`matchProperties` and `candidatesForLead` — the one the edit path's composer
+  reads from).
+- **`areaMatches` compared a listing's area as one whole string.** Two catalog
+  listings carry the sub-area AND its parent combined in one field
+  ("Tumbak Bayuh, Pererenan"), which matched neither name in it — a lead
+  asking for Pererenan was never shown a villa that is, in fact, in Pererenan.
+  Split on the comma, match either part.
 - **A stated budget is enforced in code, not asked of the model.** Handed an
   affordable-first catalog it still picked villas at double the figure; told the
   broker objected to the current links it dropped even the cheapest. The ceiling
