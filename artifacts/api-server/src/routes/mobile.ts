@@ -1339,7 +1339,14 @@ const PAGE_HTML = `<!doctype html>
       if (attPickBtn) {
         attPickBtn.onclick = function () {
           openPropertyPicker(function (urls) {
+            // Picking on the site IS the broker's new answer, not an addition to
+            // the bot's old one — drop whatever the bot originally suggested and
+            // was never explicitly re-added by hand, so a picker pick can't leave
+            // stale bot links mixed in with the fresh ones. Anything the broker
+            // already curated by hand this session (_broker) survives.
+            it.attachments = (it.attachments || []).filter(function (a) { return a._broker; });
             for (var i = 0; i < urls.length; i++) addAttachmentLink(it, urls[i]);
+            it._attachmentsCurated = true;
             renderDetail();
           });
         };

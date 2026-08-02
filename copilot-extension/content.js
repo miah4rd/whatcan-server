@@ -1958,7 +1958,13 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
       });
       view.querySelector("[data-attpick]")?.addEventListener("click", () => {
         openPropertyPicker((urls) => {
+          // Picking on the site IS the broker's new answer, not an addition to
+          // the bot's old one — drop whatever the bot originally suggested and
+          // was never explicitly re-added by hand. Anything the broker already
+          // curated by hand this session (_broker) survives.
+          it.attachments = (it.attachments || []).filter((a) => a._broker);
           urls.forEach((u) => addAttachmentLink(it, u));
+          it._attachmentsCurated = true;
           render();
         });
       });
@@ -2211,7 +2217,13 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
       });
       panel.querySelector("[data-attpick]")?.addEventListener("click", () => {
         openPropertyPicker((urls) => {
+          // Picking on the site IS the broker's new answer, not an addition to
+          // the bot's old one — drop whatever the bot originally suggested and
+          // was never explicitly re-added by hand. Anything the broker already
+          // curated by hand this session (_broker) survives.
+          item.attachments = (item.attachments || []).filter((a) => a._broker);
           urls.forEach((u) => addAttachmentLink(item, u));
+          item._attachmentsCurated = true;
           render();
         });
       });
