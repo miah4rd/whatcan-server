@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Copilot — AI follow-up nudges",
-  "version": "1.0.90",
+  "version": "1.0.91",
   "description": "Floating AI copilot that suggests the next follow-up message to your CRM leads, based on your playbook.",
   "options_page": "options.html",
   "permissions": [

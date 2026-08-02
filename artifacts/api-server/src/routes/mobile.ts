@@ -445,10 +445,11 @@ const PAGE_HTML = `<!doctype html>
   var PICKER_ORIGIN = "https://unicorn-properties.com";
 
   // Opens unicorn-properties.com in a full-screen overlay so the broker can
-  // click listings there instead of copy-pasting links. The site renders a
-  // "picker mode" (only active behind ?copilotPicker=1 + being framed) that
-  // posts the chosen bare property URLs back via postMessage on "Send to
-  // Copilot" — same message contract the extension listens for.
+  // click listings there instead of copy-pasting links. The site activates
+  // picker mode via a postMessage handshake (a URL flag isn't reliable — the
+  // site's own route-sync effects rewrite it away) and posts the chosen bare
+  // property URLs back via postMessage on "Send to Copilot" — same message
+  // contract the extension listens for.
   function openPropertyPicker(onSelect) {
     var overlay = document.createElement("div");
     overlay.className = "picker-overlay";
@@ -459,22 +460,26 @@ const PAGE_HTML = `<!doctype html>
     document.body.appendChild(overlay);
     var iframe = overlay.querySelector("iframe");
     requestAnimationFrame(function () { overlay.classList.add("show"); });
-    iframe.onload = function () { iframe.classList.add("loaded"); };
+    // Reveal on the site's own "ready" handshake (React mounted), not the
+    // iframe's load event — load waits for GTM/Meta Pixel/Yandex Metrika and
+    // every image too, a second-plus later than the page is actually visible.
+    // Timeout is just a safety net if the handshake never arrives.
+    var revealTimer = setTimeout(function () { iframe.classList.add("loaded"); }, 2500);
+    function reveal() { clearTimeout(revealTimer); iframe.classList.add("loaded"); }
 
     function close() {
+      clearTimeout(revealTimer);
       window.removeEventListener("message", onMessage);
       window.removeEventListener("keydown", onKey);
       overlay.remove();
     }
-    // The site's own route-sync effects can rewrite its URL on load, so a URL
-    // flag isn't reliable. Instead the site announces "ready" once mounted and
-    // we reply "activate" — a handshake immune to whatever the router does next.
     function onMessage(e) {
       if (e.origin !== PICKER_ORIGIN) return;
       if (e.source !== iframe.contentWindow) return;
       var d = e.data;
       if (!d) return;
       if (d.source === "unicorn-site" && d.type === "ready") {
+        reveal();
         iframe.contentWindow.postMessage({ source: "unicorn-picker-host", type: "activate" }, PICKER_ORIGIN);
         return;
       }

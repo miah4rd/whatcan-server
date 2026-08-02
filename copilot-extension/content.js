@@ -2317,9 +2317,15 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
     const iframe = overlay.querySelector("iframe");
     const modalBox = overlay.firstElementChild;
     requestAnimationFrame(() => { overlay.style.opacity = "1"; modalBox.style.transform = "none"; });
-    iframe.addEventListener("load", () => { iframe.style.opacity = "1"; });
+    // Reveal on the site's own "ready" handshake (React mounted), not the
+    // iframe's load event — load waits for GTM/Meta Pixel/Yandex Metrika and
+    // every image too, which is a second-plus later than the page is actually
+    // visible. Timeout is just a safety net if the handshake never arrives.
+    const revealTimer = setTimeout(() => { iframe.style.opacity = "1"; }, 2500);
+    function reveal() { clearTimeout(revealTimer); iframe.style.opacity = "1"; }
 
     function close() {
+      clearTimeout(revealTimer);
       window.removeEventListener("message", onMessage);
       window.removeEventListener("keydown", onKey);
       overlay.remove();
@@ -2334,6 +2340,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
       const d = e.data;
       if (!d) return;
       if (d.source === "unicorn-site" && d.type === "ready") {
+        reveal();
         iframe.contentWindow.postMessage({ source: "unicorn-picker-host", type: "activate" }, PICKER_ORIGIN);
         return;
       }

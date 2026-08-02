@@ -6,6 +6,12 @@ release, so all changes are shared and visible. Build: zip the folder CONTENTS
 (files at the archive root) to `artifacts/landing/public/extNN.zip`, then copy to
 the VPS `artifacts/landing/dist/public/` (only that is served).
 
+## 1.0.91
+
+- Picker overlay reveals faster: it now shows the site as soon as its React
+  app is actually ready, instead of waiting for the iframe's `load` event —
+  which was also waiting on GTM/Meta Pixel/Yandex Metrika and every image.
+
 ## 1.0.90
 
 - Picker overlay fades/scales in instead of popping up, and the iframe stays
