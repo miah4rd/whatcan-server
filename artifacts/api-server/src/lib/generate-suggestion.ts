@@ -407,7 +407,7 @@ ${opts.candidates.map((c) => c.line).join("\n")}
 
 First decide attachments_decision — ONE of exactly these three, by MEANING, not keywords:
 - "keep_current" — the instruction is about wording only (shorter, warmer, translate, fix tone). listing_ids = exactly what is currently attached.
-- "none_this_message" — the point of this message is something other than offering properties: asking the client something first with options to come AFTER they answer, collecting feedback on options already sent, arranging a viewing, nudging a quiet lead. listing_ids = only villas the CLIENT themselves brought up (the one they came in on from an ad); usually [].
+- "none_this_message" — the point of this message is something other than offering properties: asking the client something first with options to come AFTER they answer, collecting feedback on options already sent, arranging a viewing, nudging a quiet lead. listing_ids = []. This holds even when a villa the CLIENT themselves named is the whole subject of the message ("let me check on that one with the owner") — the client already has that link, they do not need it back, and re-sending it is not what the broker asked for. Attach it ONLY if the BROKER'S INSTRUCTION itself says to send, attach, share, or confirm a link — never because the text happens to talk about a specific villa.
 - "new_selection" — the broker wants different/other/cheaper properties, or names listings to add or remove. listing_ids = the new set, picked from the list.
 
 When in doubt between "none_this_message" and "new_selection", choose "none_this_message" — attaching villas to a message whose text is a question about the future is the single most complained-about failure of this system.
