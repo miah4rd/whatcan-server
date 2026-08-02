@@ -703,7 +703,15 @@ router.post("/approve", async (req, res) => {
   }
 
   // ── Stage change (applies for both normal approve and skip-message) ─────────
-  const effectiveNewStage = explicitNewStage ?? autoStage?.name ?? null;
+  // The bot SUGGESTS a stage but no longer MOVES the lead into a funnel stage on
+  // its own — the owner wants the broker to decide. It kept auto-moving leads
+  // wrongly (e.g. → "Options Sent" when no options were sent yet). So a funnel
+  // move now applies ONLY when the broker picked it themselves (explicitNewStage);
+  // the classifier's autoStage is surfaced as a hint, not applied. The
+  // qualification ladder (1st→2nd→final) still advances automatically below —
+  // that's the cadence, not a funnel judgement call.
+  const effectiveNewStage = explicitNewStage ?? null;
+  void autoStage; // computed for the hint/logs; intentionally not auto-applied
   if (effectiveNewStage) {
     const prevSync = await db
       .select({ leadStage: leadsSyncTable.leadStage })
