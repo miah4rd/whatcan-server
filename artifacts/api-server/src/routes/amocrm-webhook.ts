@@ -3,7 +3,7 @@ import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, contac
 import { eq, and } from "drizzle-orm";
 import { chatCompletion, WRITER_MODEL } from "../lib/ai-client";
 import { parseDialogContent, nextFollowupDate, formatDialogForAI } from "../lib/dialog-parser";
-import { getKnowledgeBase } from "../lib/knowledge-base";
+import { getKnowledgeBase, filterKnowledgeBaseForRental } from "../lib/knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "../lib/sanitize-suggestion";
 import { getPropertyCatalogSummary, fetchAllPropertiesForPriceLookup, matchProperties, type PropertyPick } from "../lib/property-catalog";
 import { getBrokerPicks } from "../lib/settings";
@@ -57,7 +57,9 @@ export async function generateSuggestion(opts: {
 
   // Same split as the library path — see generate-suggestion.ts. Both write
   // client-facing drafts with the identical rulebook, so both cache it.
-  const rentalParts = isRental ? buildRentalPromptParts({ leadStage: opts.leadStage, kb }) : null;
+  const rentalParts = isRental
+    ? buildRentalPromptParts({ leadStage: opts.leadStage, kb: filterKnowledgeBaseForRental(kb) })
+    : null;
   const cachePrefix = rentalParts?.prefix;
   const systemPrompt = rentalParts
     ? rentalParts.tail

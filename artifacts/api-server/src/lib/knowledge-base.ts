@@ -1,5 +1,6 @@
 import { db, brokerSettingsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { logger } from "./logger";
 
 const KB_KEY = "knowledge_base";
 // Bump this when DEFAULT_KNOWLEDGE_BASE changes — triggers auto-update in DB
@@ -202,6 +203,51 @@ Werner follow-up (Case 21):
 - Do NOT shame or pressure the client
 - Do NOT ignore human warmth and small talk`;
 
+
+/**
+ * The knowledge base above is a guide to SELLING property — developers,
+ * leasehold, ROI, resale, buyer objections. It was being pasted whole into the
+ * Rental prompt, so a client asking about a villa for three months was answered
+ * by a bot carrying six thousand tokens of investment sales material. These are
+ * the sections that actually apply to someone renting a place to live in.
+ */
+const RENTAL_KB_SECTIONS = [
+  "MAIN MISSION",
+  "TONE OF VOICE",
+  "MESSAGE ENDINGS",
+  "BALI AREAS: HOW THE CATALOG IS ORGANISED",
+  "CRITICAL DO-NOT LIST",
+];
+
+/** Lines that survive their section but still talk about buying. */
+const SALES_ONLY_LINE = /investment|invest\b|ROI|resale|leasehold|freehold|developer|off-plan|land plot|occupancy|buyer|buying/i;
+
+/**
+ * The same knowledge base, narrowed to what a rental conversation can use.
+ * Derived from the stored text rather than kept as a second copy, so anything
+ * the broker edits in settings still reaches the rental bot.
+ */
+export function filterKnowledgeBaseForRental(kb: string): string {
+  const parts = kb.split(/^--- (.+?) ---$/m);
+  // parts = [preamble, header1, body1, header2, body2, ...]
+  const kept: string[] = [];
+  for (let i = 1; i < parts.length; i += 2) {
+    const header = (parts[i] ?? "").trim();
+    if (!RENTAL_KB_SECTIONS.includes(header)) continue;
+    const body = (parts[i + 1] ?? "")
+      .split("\n")
+      .filter((line) => line.trim() === "" || !SALES_ONLY_LINE.test(line))
+      .join("\n")
+      .trim();
+    if (body) kept.push(`--- ${header} ---\n${body}`);
+  }
+  return kept.join("\n\n");
+}
+
+export async function getRentalKnowledgeBase(): Promise<string> {
+  return filterKnowledgeBaseForRental(await getKnowledgeBase());
+}
+
 let cachedKB: string | null = null;
 let cacheAt = 0;
 const CACHE_TTL_MS = 60_000;
@@ -252,7 +298,28 @@ export async function ensureKnowledgeBaseVersion(): Promise<void> {
   const currentVersion = versionRows[0]?.value ?? null;
   if (currentVersion === KB_VERSION) return;
 
-  // Version mismatch → overwrite KB with new default
+  // Bumping the version used to overwrite the knowledge base unconditionally —
+  // so anything the broker had written in settings was silently destroyed by a
+  // deploy. Only replace text that is still the default nobody touched.
+  const [storedRow] = await db
+    .select()
+    .from(brokerSettingsTable)
+    .where(eq(brokerSettingsTable.key, KB_KEY))
+    .limit(1);
+  const stored = storedRow?.value ?? null;
+  if (stored !== null && stored.trim() !== DEFAULT_KNOWLEDGE_BASE.trim()) {
+    logger.warn(
+      { KB_VERSION },
+      "knowledge base was edited by the broker — keeping their version, not overwriting with the new default",
+    );
+    await db
+      .insert(brokerSettingsTable)
+      .values({ key: KB_VERSION_KEY, value: KB_VERSION })
+      .onConflictDoUpdate({ target: brokerSettingsTable.key, set: { value: KB_VERSION, updatedAt: new Date() } });
+    return;
+  }
+
+  // Version mismatch and untouched text → safe to install the new default
   await db
     .insert(brokerSettingsTable)
     .values({ key: KB_KEY, value: DEFAULT_KNOWLEDGE_BASE })

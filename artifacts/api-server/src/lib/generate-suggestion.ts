@@ -4,7 +4,7 @@ import { getLeadCardCriteria } from "./lead-card-fields";
 import { correctionsPromptBlock } from "./broker-corrections";
 import { logger } from "./logger";
 import { parseDialogContent, formatDialogForAI, describeConversationTiming, conversationWindow } from "./dialog-parser";
-import { getKnowledgeBase } from "./knowledge-base";
+import { getKnowledgeBase, filterKnowledgeBaseForRental } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { buildRentalSystemPrompt, buildRentalPromptParts } from "./rental-prompt";
 import { matchProperties, availabilityForCriteria, describePropertiesByIds, type PropertyPick, type BrokerIntent } from "./property-catalog";
@@ -653,8 +653,15 @@ export async function generateSuggestion(opts: {
   // Rental splits its prompt: the rulebook and the knowledge base are the same
   // ~9,000 tokens for every lead and get cached; only the stage and the lessons
   // the broker taught ride along uncached.
+  // Rental gets the knowledge base narrowed to what a renting client can use —
+  // the sales half (leasehold, ROI, developers, buyer objections) is not just
+  // dead weight in a rental conversation, it pulls the bot toward selling.
   const rentalParts = isRental
-    ? buildRentalPromptParts({ leadStage: opts.leadStage, kb, correctionsBlock: opts.correctionsBlock })
+    ? buildRentalPromptParts({
+        leadStage: opts.leadStage,
+        kb: filterKnowledgeBaseForRental(kb),
+        correctionsBlock: opts.correctionsBlock,
+      })
     : null;
   const cachePrefix = rentalParts?.prefix;
   const systemPrompt = rentalParts
