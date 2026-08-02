@@ -1965,13 +1965,9 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
       });
       view.querySelector("[data-attpick]")?.addEventListener("click", () => {
         openPropertyPicker((urls) => {
-          // Picking on the site IS the broker's new answer, not an addition to
-          // the bot's old one — drop whatever the bot originally suggested and
-          // was never explicitly re-added by hand. Anything the broker already
-          // curated by hand this session (_broker) survives.
-          it.attachments = (it.attachments || []).filter((a) => a._broker);
+          // Purely additive — see addAttachmentLink's comment for why nothing
+          // gets auto-removed here. The × button is the only way a link leaves.
           urls.forEach((u) => addAttachmentLink(it, u));
-          it._attachmentsCurated = true;
           render();
         });
       });
@@ -2224,13 +2220,9 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
       });
       panel.querySelector("[data-attpick]")?.addEventListener("click", () => {
         openPropertyPicker((urls) => {
-          // Picking on the site IS the broker's new answer, not an addition to
-          // the bot's old one — drop whatever the bot originally suggested and
-          // was never explicitly re-added by hand. Anything the broker already
-          // curated by hand this session (_broker) survives.
-          item.attachments = (item.attachments || []).filter((a) => a._broker);
+          // Purely additive — see addAttachmentLink's comment for why nothing
+          // gets auto-removed here. The × button is the only way a link leaves.
           urls.forEach((u) => addAttachmentLink(item, u));
-          item._attachmentsCurated = true;
           render();
         });
       });
@@ -2303,12 +2295,24 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
 
   // Shared by the manual "+ Add" paste box and the site picker below, so both
   // paths dedupe and label a link the same way.
+  //
+  // Deliberately never removes anything on its own — only the × button removes
+  // a link. A version of this once cleared whatever the bot had suggested the
+  // moment the picker opened, which silently deleted a bot-picked villa the
+  // broker had NOT removed and genuinely meant to keep alongside the new pick.
+  // The system can't tell "forgot to remove" from "kept on purpose" — so it
+  // doesn't guess: it only ever acts on the explicit × tap, and instead warns
+  // when the list grows past what a client should be shown.
   function addAttachmentLink(entity, url) {
     entity.attachments = entity.attachments || [];
     if (entity.attachments.some((a) => a.type === "link" && a.url === url)) return false;
     const m = url.match(/\/property\/([A-Za-z0-9-]+)/i);
     entity.attachments.push({ type: "link", label: m ? m[1] : url, url, _broker: true });
     entity._attachmentsCurated = true;
+    const linkCount = entity.attachments.filter((a) => a.type === "link").length;
+    if (linkCount > 3) {
+      alert(`${linkCount} links attached — clients are usually shown 2-3, worth a check`);
+    }
     return true;
   }
 
