@@ -238,24 +238,16 @@ const WORD_NUMBERS: Record<string, number> = {
 };
 
 /**
- * Pull the lead's CURRENT area / bedroom requirements out of their own recent
- * messages, newest first, so a mid-conversation change wins outright.
- *
- * This is deliberately code and not a prompt instruction: the matching model was
- * told twice, in increasingly explicit terms, that the newest message overrides
- * the rest — and both times it still attached 2BR Pererenan listings to a lead
- * who had just asked for 3 bedrooms in Uluwatu, because the old criteria fill
- * most of the transcript. Filtering the candidate list before the model ever
- * sees it removes the chance to get this wrong.
+ * Regex fallback for extractLeadCriteria — used only when the AI extraction
+ * call itself fails (network/API error), so a shortlist can still be built
+ * instead of falling over completely. Kept deliberately dumb: it only needs
+ * to not crash, not to be right about every phrasing — that's the AI path's
+ * job now.
  */
-function extractLeadCriteria(
+function extractLeadCriteriaRegex(
   recentLeadMessages: string[],
   pool: SupabaseProperty[],
 ): { areas: string[]; bedrooms: number | null; bedroomsMax: number | null } {
-  // Vocabulary is the site's own area list (parents AND sub-areas), not just the
-  // strings that happen to appear in the catalog — a lead saying "Uluwatu" must
-  // be understood even when every Uluwatu listing is tagged Pecatu or Bingin.
-  // Longest first so "Uluwatu / Suluban" wins over a bare "Uluwatu" substring.
   const areaVocab = [...new Set([...allAreaNames(), ...pool.map((p) => (p.area ?? "").trim())])]
     .filter(Boolean)
     .sort((a, b) => b.length - a.length);
@@ -272,27 +264,11 @@ function extractLeadCriteria(
         areas.push(a);
       }
     }
-    // Same again for Russian spellings — the broker dictates by voice in Russian,
-    // and "поменяй район на Чангу" matched nothing at all while every name in the
-    // vocabulary is Latin.
     for (const a of areaNamesInText(lower)) {
       if (!areas.some((x) => x.toLowerCase() === a.toLowerCase())) areas.push(a);
     }
 
     if (bedrooms === null) {
-      // "3 or 4 bedrooms" / "3-4BR" is a RANGE. The single-digit pattern used to
-      // grab the "4" (the digit adjacent to "bedrooms"), silently turning
-      // "3 or 4" into "exactly 4" — which threw every 3BR out of Lukass's
-      // shortlist while he had said 3 was fine.
-      //
-      // The bed-word after the FIRST number is optional — "1BR or 2BR" and
-      // "1 bedroom or 2 bedroom" repeat it on both halves instead of stating it
-      // once at the end, and requiring it after the first number made this
-      // whole pattern fail to match at all: it fell through to the single-digit
-      // fallback below, which grabbed whichever number happened to come first
-      // ("2BR or 1BR" silently became "exactly 2") — the same failure this
-      // function already exists to prevent, just from a phrasing one word
-      // shorter than what it was written to catch.
       const range = lower.match(/(\d+)\s*(?:bed\b|beds\b|br\b|bedroom|bedrooms|спал)?\s*(?:-|–|to|or|или|до)\s*(\d+)\s*(?:bed\b|beds\b|br\b|bedroom|bedrooms|спал)/);
       if (range?.[1] && range?.[2]) {
         const a = parseInt(range[1], 10);
@@ -306,17 +282,85 @@ function extractLeadCriteria(
       if (digit?.[1]) {
         bedrooms = parseInt(digit[1], 10);
       } else {
-        // No \b here: JS word boundaries are ASCII-only, so \bтри never matched.
         const word = lower.match(/(one|two|three|four|five|six|один|одна|две|два|три|четыре|пять)\s+(?:bed|bedroom|спал)/);
         if (word?.[1]) bedrooms = WORD_NUMBERS[word[1]] ?? null;
       }
     }
 
-    // Stop at the newest message that pinned both — older ones are superseded.
     if (areas.length > 0 && bedrooms !== null) break;
   }
 
   return { areas, bedrooms, bedroomsMax };
+}
+
+/**
+ * Pull the lead's CURRENT area / bedroom requirements out of their own recent
+ * messages, newest first, so a mid-conversation change wins outright.
+ *
+ * Reading what someone asked for is exactly the kind of thing a model is good
+ * at — this used to be regex, and every new way of phrasing a range ("1BR or
+ * 2BR" vs "3 or 4 bedrooms" vs "1-2 bedroom") needed its own pattern added by
+ * hand, forever. What stays code is what happens AFTER extraction: the
+ * min/max filter, the budget ceiling/floor, never inventing a price — the
+ * places this codebase has repeatedly found the model can understand a rule
+ * correctly and still not apply it. Reading intent and enforcing a limit are
+ * different jobs; only the second one needs to be code.
+ */
+async function extractLeadCriteria(
+  recentLeadMessages: string[],
+  pool: SupabaseProperty[],
+): Promise<{ areas: string[]; bedrooms: number | null; bedroomsMax: number | null }> {
+  const nonEmpty = recentLeadMessages.filter((m) => (m ?? "").trim());
+  if (nonEmpty.length === 0) return { areas: [], bedrooms: null, bedroomsMax: null };
+
+  // Vocabulary is the site's own area list (parents AND sub-areas), not just the
+  // strings that happen to appear in the catalog — a lead saying "Uluwatu" must
+  // be understood even when every Uluwatu listing is tagged Pecatu or Bingin.
+  const areaVocab = [...new Set([...allAreaNames(), ...pool.map((p) => (p.area ?? "").trim())])].filter(Boolean);
+
+  try {
+    const result = await chatCompletionJSON<{
+      areas?: string[];
+      bedrooms_min?: number | null;
+      bedrooms_max?: number | null;
+    }>({
+      model: HELPER_MODEL,
+      label: "lead-criteria",
+      system: `You read a real-estate client's own messages (or a broker's instruction about them) and extract what property they're asking for. Messages are listed NEWEST FIRST — if the requirement changed partway through the conversation ("actually, let's look at Uluwatu instead"), the newest statement wins outright over anything said earlier.
+
+Valid area names (use these spellings, nothing else — map whatever the client said to the closest match, or omit if nothing matches):
+${areaVocab.join(", ")}
+
+Return JSON with exactly these keys:
+- "areas": array of area names from the list above the client wants, newest statement wins. Empty if none mentioned.
+- "bedrooms_min": the bedroom count they asked for. If they gave a range ("1-2BR", "1BR or 2BR", "one to two bedrooms", "studio to 1BR" → 0), this is the LOWER end. If they gave one number, this is that number. Null if no bedroom count was stated.
+- "bedrooms_max": the UPPER end of a stated range. Null when they gave a single number, not a range.
+
+Be literal — do not infer a count or area the client didn't actually say.`,
+      messages: [{ role: "user", content: nonEmpty.slice(0, 10).join("\n---\n").slice(0, 3000) }],
+      max_tokens: 200,
+      temperature: 0,
+    });
+
+    const areas = (result.areas ?? [])
+      .map((a) => areaVocab.find((k) => k.toLowerCase() === String(a).toLowerCase()))
+      .filter((a): a is string => !!a);
+    const min =
+      typeof result.bedrooms_min === "number" && result.bedrooms_min > 0 ? Math.round(result.bedrooms_min) : null;
+    const max =
+      typeof result.bedrooms_max === "number" && result.bedrooms_max > 0 ? Math.round(result.bedrooms_max) : null;
+
+    return {
+      areas,
+      bedrooms: min,
+      // A max below the min, or a max with no min, isn't a valid range — treat
+      // it as if only one number was given rather than passing along garbage.
+      bedroomsMax: min !== null && max !== null && max > min ? max : null,
+    };
+  } catch (err) {
+    logger.warn({ err }, "extractLeadCriteria: AI extraction failed, falling back to pattern matching");
+    return extractLeadCriteriaRegex(recentLeadMessages, pool);
+  }
 }
 
 /**
@@ -336,7 +380,7 @@ export async function availabilityForCriteria(opts: {
   const pool = all.filter((p) => p.listing_type === opts.listingType);
   if (pool.length === 0) return null;
 
-  const { areas, bedrooms, bedroomsMax } = extractLeadCriteria(opts.recentLeadMessages, pool);
+  const { areas, bedrooms, bedroomsMax } = await extractLeadCriteria(opts.recentLeadMessages, pool);
   if (areas.length === 0 && bedrooms === null) return null;
 
   let matching = pool;
@@ -515,6 +559,11 @@ export type BrokerIntent = {
   releaseArea: boolean;
   areas: string[];
   bedrooms: number | null;
+  /** Upper end of a stated range ("1-2BR" -> 2), null when the broker named a
+   * single count. Without this, a broker restating a range during an edit
+   * ("client wants 1 to 2 bedrooms") collapsed straight back to one number —
+   * this field only exists so that can't happen again. */
+  bedroomsMax: number | null;
   budgetIdrMonthly: number | null;
   listingsUnchanged: boolean;
   /** The broker wants this message to go out with NO property links at all —
@@ -540,10 +589,12 @@ export async function parseBrokerIntent(
       send_no_listings?: boolean;
       areas?: string[];
       bedrooms?: number | null;
+      bedrooms_max?: number | null;
       budget_idr_monthly?: number | null;
       listings_unchanged?: boolean;
     }>({
       model: HELPER_MODEL,
+      label: "broker-intent",
       system: `You read one instruction a real-estate broker just gave about the property links attached to a draft message, and turn it into a filter. The instruction may be in any language, often dictated by voice, and may be untidy.
 
 Valid area names (use these spellings, nothing else):
@@ -552,7 +603,8 @@ ${knownAreas.join(", ")}
 Return JSON with exactly these keys:
 - "release_area": true when the broker wants the search to STOP being restricted to the area the client named (e.g. "don't focus on this area", "nothing fits there, look elsewhere", "widen the search"). False otherwise.
 - "areas": the areas they want searched, as an array of names from the list above. Empty when they named none.
-- "bedrooms": the bedroom count they asked for, or null.
+- "bedrooms": the bedroom count they asked for. If they named a RANGE ("1-2BR", "1 to 2 bedrooms"), this is the LOWER end.
+- "bedrooms_max": the UPPER end of a stated range. Null when they named a single count, not a range.
 - "budget_idr_monthly": a budget the broker is telling you to FILTER BY, in rupiah, as a plain number ("show her something around 40 million" → 40000000). A yearly figure divided by 12. Never a dollar amount. Null when the broker is telling you to ASK the client what their budget is — a budget nobody has stated yet is not a filter.
 - "send_no_listings": true whenever this message should carry NO new property links. That covers every case where the point of the message is something other than offering properties:
   · asking the client for something first, options to follow ("get their budget so we can find suitable ones");
@@ -580,6 +632,13 @@ Be literal. Do not infer a preference the broker did not express.`,
       releaseArea: result.release_area === true,
       areas,
       bedrooms: typeof result.bedrooms === "number" && result.bedrooms > 0 ? result.bedrooms : null,
+      bedroomsMax:
+        typeof result.bedrooms === "number" &&
+        result.bedrooms > 0 &&
+        typeof result.bedrooms_max === "number" &&
+        result.bedrooms_max > result.bedrooms
+          ? result.bedrooms_max
+          : null,
       budgetIdrMonthly: Number.isFinite(budget) && budget >= 1_000_000 ? Math.round(budget) : null,
       listingsUnchanged: result.listings_unchanged === true,
     };
@@ -727,7 +786,7 @@ export async function candidatesForLead(opts: {
   const pool = all.filter((p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()));
 
   const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
-  const criteria = extractLeadCriteria(criteriaSource, pool);
+  const criteria = await extractLeadCriteria(criteriaSource, pool);
   inheritCriteriaFromAnchor(criteria, opts.recentLeadMessages ?? [], pool);
   // The ad form's answers fill whatever is still unknown — never override.
   if (opts.cardCriteria) {
@@ -980,7 +1039,7 @@ export async function matchProperties(opts: {
   // The broker's revision comes first: it is the newest and most authoritative
   // statement of what should be attached.
   const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
-  const criteria = extractLeadCriteria(criteriaSource, pool);
+  const criteria = await extractLeadCriteria(criteriaSource, pool);
 
   // The broker's own instruction, parsed rather than pattern-matched, and applied
   // over the criteria taken from the lead. Their words win for this one message.
@@ -1001,7 +1060,13 @@ export async function matchProperties(opts: {
     );
     criteria.areas = [];
   }
-  if (brokerIntent?.bedrooms) criteria.bedrooms = brokerIntent.bedrooms;
+  // Overwriting bedrooms alone and leaving bedroomsMax as whatever extractLeadCriteria
+  // found would mismatch the two if the broker names a single count while the
+  // lead had stated a range (or vice versa) — always set both together.
+  if (brokerIntent?.bedrooms) {
+    criteria.bedrooms = brokerIntent.bedrooms;
+    criteria.bedroomsMax = brokerIntent.bedroomsMax;
+  }
   let candidates = pool;
   if (criteria.areas.length > 0) {
     const byArea = candidates.filter((p) => areaMatches(p.area, criteria.areas));
