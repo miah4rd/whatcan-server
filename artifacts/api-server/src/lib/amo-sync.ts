@@ -487,9 +487,23 @@ export async function syncTaskSchedule(): Promise<void> {
         // Overdue task → nextFollowupAt = actualTaskDate (the real amoCRM due date).
         // This lets suggestions.ts sort PUSH by urgency: today → overdue ascending.
         // The stale guard is removed from the scheduler so overdue leads still generate.
+        //
+        // `now` here is ONE JS Date captured once at the top of this whole sync
+        // pass (line ~322) and reused for every lead this loop touches — so
+        // "today's task -> now" stamps every Rental lead whose task merely
+        // falls on today's CALENDAR DATE with the exact same millisecond,
+        // regardless of what hour their real task was actually due at. Rental
+        // promises a chase exactly 24h from that lead's own last touch — this
+        // collapsed that into "whenever this sync tick happened to run",
+        // clustering unrelated leads onto one instant (reported: "все
+        // уведомления пришли ровно в двенадцать ночи"). Rental's task dates
+        // are exact per-lead now (see rental-followup.ts, approve.ts) so there
+        // is no reason left to round them up — always use the real one.
+        // Unicorn's existing "today -> now" behavior is untouched.
+        const isRentalLead = (lead.pipeline ?? "").trim().toLowerCase() === "rental";
         const todayStartSec = todayMidnight - 86400; // seconds: today midnight Bali as UTC
         const actualTaskSec = actualTaskDate.getTime() / 1000;
-        const scheduleAt = actualTaskSec >= todayStartSec ? now : actualTaskDate;
+        const scheduleAt = !isRentalLead && actualTaskSec >= todayStartSec ? now : actualTaskDate;
         await db.update(leadsSyncTable).set({ nextFollowupAt: scheduleAt }).where(eq(leadsSyncTable.leadId, lead.leadId));
         scheduled++;
         continue;

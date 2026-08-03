@@ -126,7 +126,14 @@ async function autoCreateCrmTask(
       log.info({ leadId, streak, days, stage: pipelineRow?.leadStage, temp: pipelineRow?.profileTemperature }, "adaptive cadence: next task scheduled");
     } else if (kind === "push") {
       const level = Math.max(0, followupLevel ?? 0);
-      const nextLevelDate = delayDays ? nextFollowupDate(approveNow, level, delayDays) : nextFollowupDate(approveNow, level);
+      // exact: Rental chases exactly 24h from this send, never day-snapped to
+      // Bali midnight — this is the amoCRM TASK date, and amo-sync's
+      // task-driven scheduler reads it back into nextFollowupAt verbatim, so a
+      // day-snapped task here silently reintroduces the midnight clustering
+      // even after nextFollowupAt's own computation is fixed elsewhere.
+      const nextLevelDate = delayDays
+        ? nextFollowupDate(approveNow, level, delayDays, isRentalPipeline)
+        : nextFollowupDate(approveNow, level);
 
       if (nextLevelDate) {
         taskDate = nextLevelDate;

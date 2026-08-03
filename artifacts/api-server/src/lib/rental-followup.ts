@@ -73,7 +73,10 @@ export async function advanceRentalFollowup(
   }
 
   const level = Math.max(0, followupLevel);
-  const nextDate = nextFollowupDate(now, level, FOLLOWUP_DELAY_DAYS_RENTAL);
+  // exact: true — Rental chases exactly 24h from THIS touch, never day-snapped
+  // to Bali midnight. This function is Rental-only; the day-snap default
+  // exists for Unicorn's funnel, which never reaches this code path.
+  const nextDate = nextFollowupDate(now, level, FOLLOWUP_DELAY_DAYS_RENTAL, true);
   if (nextDate) {
     try {
       await createAmoTask(leadId, `Follow-up #${level + 1} due.`, nextDate);
