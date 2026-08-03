@@ -665,13 +665,18 @@ export async function processFollowups(): Promise<void> {
       // Brochures are sent automatically by ARGO — NEVER suggest the brochure here.
       // Priority: 1) qual script for level 1, 2) Touch 1 template, 3) AI generation.
       if (lead.followupLevel === -1) {
+        // qualification_steps is shared across pipelines and was written for a
+        // buyer — Rental never uses it (or the static template below) verbatim,
+        // same reasoning as the main follow-up path further down.
+        const warmupIsRental = (lead.pipeline ?? "").trim().toLowerCase() === "rental";
         // 1. Qual script for level 1 (configured in Settings UI)
-        const warmupQualMsg = qualSteps[0]?.message?.trim() ?? "";
+        const warmupQualMsg = warmupIsRental ? "" : (qualSteps[0]?.message?.trim() ?? "");
         const warmupQualText = warmupQualMsg
           ? warmupQualMsg.replace(/\[Name\]/g, leadFirstName).replace(/\[name\]/g, leadFirstName)
           : null;
-        // 2. Touch 1 template (never Touch 0 / brochure)
-        const warmupTemplateText = warmupQualText ?? buildFollowupTemplateByLevel(1, lead.leadId, leadFirstName, lead.responsibleUser ?? "Robert");
+        // 2. Touch 1 template (never Touch 0 / brochure) — skipped for Rental
+        const warmupTemplateText =
+          warmupQualText ?? (warmupIsRental ? null : buildFollowupTemplateByLevel(1, lead.leadId, leadFirstName, lead.responsibleUser ?? "Robert"));
 
         // ── Pick message: qual/template → AI fallback ─────────────────────
         let warmupText: string;
@@ -868,16 +873,21 @@ export async function processFollowups(): Promise<void> {
         // ── Try broker's qualification script (from Settings UI) — by STAGE ─
         // Use qualScriptIndexForStage (3-entry array: 0=1st, 1=2nd, 2=final) — matches Settings structure
         const qualStep = qualSteps[qualScriptIndexForStage(lead.leadStage)];
-        const qualScriptMsg = qualStep?.message?.trim() ?? "";
-
-        // Only a message the BROKER wrote (Settings preset / qualification
-        // script) is used verbatim. The hardcoded TOUCH_TEMPLATES fallback is
-        // gone for Rental: it produced canned text the owner never loaded,
-        // signed with a default broker name, identical for every lead — and
-        // because nothing generated it, none of his edits could ever teach it.
-        // "Он точно обучается на моих исправлениях?" — on this path he was
-        // right: it never called the model at all.
         const isRentalFollowup = (lead.pipeline ?? "").trim().toLowerCase() === "rental";
+        // qualification_steps is ONE setting shared by every pipeline, and the
+        // one that exists was written for a buyer ("returns", "the guide") —
+        // read verbatim, it went out unchanged to Rental tenants too, and being
+        // fixed text meant nothing a broker corrected in a live conversation
+        // could ever reach it. "Он точно обучается на моих исправлениях?" — on
+        // this path he was right: it never called the model at all. Rental
+        // ignores whatever is configured here and always composes the touch
+        // fresh, with the conversation and his own learned corrections; Unicorn
+        // keeps using its configured script verbatim, unchanged.
+        const qualScriptMsg = isRentalFollowup ? "" : (qualStep?.message?.trim() ?? "");
+
+        // The hardcoded TOUCH_TEMPLATES fallback is gone for Rental too, same
+        // reasoning — canned text nobody wrote for this lead, signed with a
+        // default broker name, identical for every lead.
         const tplText = qualScriptMsg
           ? qualScriptMsg.replace(/\[Name\]/g, leadFirstName).replace(/\[name\]/g, leadFirstName)
           : isRentalFollowup
