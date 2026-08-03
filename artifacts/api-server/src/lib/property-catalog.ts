@@ -284,7 +284,16 @@ function extractLeadCriteria(
       // grab the "4" (the digit adjacent to "bedrooms"), silently turning
       // "3 or 4" into "exactly 4" — which threw every 3BR out of Lukass's
       // shortlist while he had said 3 was fine.
-      const range = lower.match(/(\d+)\s*(?:-|–|to|or|или|до)\s*(\d+)\s*(?:bed\b|beds\b|br\b|bedroom|bedrooms|спал)/);
+      //
+      // The bed-word after the FIRST number is optional — "1BR or 2BR" and
+      // "1 bedroom or 2 bedroom" repeat it on both halves instead of stating it
+      // once at the end, and requiring it after the first number made this
+      // whole pattern fail to match at all: it fell through to the single-digit
+      // fallback below, which grabbed whichever number happened to come first
+      // ("2BR or 1BR" silently became "exactly 2") — the same failure this
+      // function already exists to prevent, just from a phrasing one word
+      // shorter than what it was written to catch.
+      const range = lower.match(/(\d+)\s*(?:bed\b|beds\b|br\b|bedroom|bedrooms|спал)?\s*(?:-|–|to|or|или|до)\s*(\d+)\s*(?:bed\b|beds\b|br\b|bedroom|bedrooms|спал)/);
       if (range?.[1] && range?.[2]) {
         const a = parseInt(range[1], 10);
         const b = parseInt(range[2], 10);
@@ -327,7 +336,7 @@ export async function availabilityForCriteria(opts: {
   const pool = all.filter((p) => p.listing_type === opts.listingType);
   if (pool.length === 0) return null;
 
-  const { areas, bedrooms } = extractLeadCriteria(opts.recentLeadMessages, pool);
+  const { areas, bedrooms, bedroomsMax } = extractLeadCriteria(opts.recentLeadMessages, pool);
   if (areas.length === 0 && bedrooms === null) return null;
 
   let matching = pool;
@@ -336,7 +345,14 @@ export async function availabilityForCriteria(opts: {
     matching = matching.filter((p) => areaMatches(p.area, areas));
   }
   if (bedrooms !== null) {
-    matching = matching.filter((p) => p.bedrooms === bedrooms);
+    // A stated range ("1-2BR") counts stock across the whole range — exact-match
+    // here undercounted a range down to just its floor, so the prompt told the
+    // model "not much stock" while the shortlist below it (matchProperties,
+    // which does read the range) filled fine.
+    matching =
+      bedroomsMax !== null
+        ? matching.filter((p) => p.bedrooms !== null && p.bedrooms >= bedrooms && p.bedrooms <= bedroomsMax)
+        : matching.filter((p) => p.bedrooms === bedrooms);
   }
 
   // What we could honestly offer instead when their area comes up empty.
