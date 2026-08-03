@@ -1395,6 +1395,15 @@ const PAGE_HTML = `<!doctype html>
       $("#rewrite-btn").onclick = function () {
         var fb = $("#ai-input").value.trim() || "Rewrite this draft using the manual edits as guidance.";
         if (editValue && editValue !== it.text) it.text = editValue;
+        // Same reasoning as voice dictation: on iPhone the keyboard eats half the
+        // screen, and rewriteServer's re-render swaps out the focused field from
+        // under it without ever telling Safari to dismiss it — the keyboard sat
+        // there covering the incoming response while it loaded. Blur explicitly
+        // before the async call, not after.
+        try {
+          $("#ai-input").blur();
+          if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        } catch (e) {}
         rewriteServer(it, fb);
         editing = false; editValue = "";
       };
