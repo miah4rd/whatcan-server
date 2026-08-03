@@ -558,9 +558,20 @@ router.post("/approve", async (req, res) => {
     // Send each property link as its OWN follow-up WhatsApp message — glued
     // into one message, WhatsApp only unfurls a rich preview banner for the
     // first link, so listings need their own message each to all get one.
+    //
+    // The text above and every attachment share ONE amoCRM custom field:
+    // write, trigger, then overwrite with the next value and trigger again.
+    // The gap before the FIRST attachment is the riskiest one — Salesbot has
+    // to actually read and dispatch the text message before this loop
+    // overwrites the field with a URL, and a lead amoCRM hasn't processed
+    // before (a fresh contact especially) appears to take longer than a
+    // routine reply. A flat 1200ms was cutting that close enough that the
+    // text sometimes never went out — only the link did, because by the time
+    // Salesbot got around to reading the field, it already held the URL.
     if (chatSent && effectiveAttachments.length > 0) {
-      for (const att of effectiveAttachments) {
-        await new Promise((r) => setTimeout(r, 1200));
+      for (let i = 0; i < effectiveAttachments.length; i++) {
+        const att = effectiveAttachments[i]!;
+        await new Promise((r) => setTimeout(r, i === 0 ? 3000 : 1200));
         try {
           const linkFieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, att.url as string);
           if (linkFieldOk) await triggerSalesbot(sug.leadId, botId);
