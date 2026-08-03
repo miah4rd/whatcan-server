@@ -18,6 +18,7 @@ import { isBroker, brokerKey } from "../lib/broker-identity";
 import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments } from "../lib/generate-suggestion";
 import { maybeAutopilot } from "../lib/autopilot";
 import { enforceBudgetFilter } from "../lib/budget-filter";
+import { recordCommitment } from "../lib/commitment-scheduler";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
 import { classifyStage } from "../lib/stage-classifier";
 import { logger } from "../lib/logger";
@@ -572,6 +573,18 @@ router.post("/amocrm/webhook", async (req, res) => {
           responsibleUser: responsibleUser ?? existing?.responsibleUser ?? undefined,
           source: "direct",
         }).catch(() => {});
+
+        // "I'll check with the owner and get back to you" said straight in
+        // WhatsApp is just as real a promise as one sent through the bot — the
+        // detector only ever saw text that went through /approve, so a broker
+        // typing this directly into the app never got a reminder at all.
+        if (dialog.lastOurMessage?.text) {
+          recordCommitment(
+            leadId,
+            responsibleUser ?? existing?.responsibleUser ?? null,
+            dialog.lastOurMessage.text,
+          ).catch(() => {});
+        }
 
         // Rental pipeline: a broker replying directly via WhatsApp (bypassing
         // the extension) still counts as "this touch is done" — advance the

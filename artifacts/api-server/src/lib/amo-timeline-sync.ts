@@ -22,6 +22,7 @@ import { scheduleLiveReply } from "./live-reply-debounce.js";
 import { shouldSuppressPush } from "./stage-routing";
 import { followupClockAfterReply } from "./rental-followup";
 import { enforceBudgetFilter } from "./budget-filter";
+import { recordCommitment } from "./commitment-scheduler";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
 const AMO_BASE = `https://${AMO_SUBDOMAIN}.amocrm.ru`;
@@ -354,6 +355,7 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
           leadStage: leadsSyncTable.leadStage,
           pipeline: leadsSyncTable.pipeline,
           botExcluded: leadsSyncTable.botExcluded,
+          responsibleUser: leadsSyncTable.responsibleUser,
         })
         .from(leadsSyncTable)
         .where(eq(leadsSyncTable.leadId, leadId))
@@ -372,6 +374,14 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
           updatedAt: new Date(),
         })
         .where(eq(leadsSyncTable.leadId, leadId));
+
+      // Same "I'll check with the owner" detector approve.ts and the real-time
+      // webhook use — this is the backup path for a message either one missed,
+      // so it needs the same hook or a commitment made in exactly that gap
+      // never gets a reminder.
+      if (newest.text) {
+        recordCommitment(leadId, row.responsibleUser, newest.text).catch(() => {});
+      }
 
       logger.info(
         { leadId, sentAt: newest.sentAt, by: newest.senderType },
