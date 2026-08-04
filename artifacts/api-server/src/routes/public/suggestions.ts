@@ -377,9 +377,10 @@ router.get("/suggestions", async (req, res) => {
           // it counts toward the daily proactive budget: PUSH flexes DOWN to keep
           // total proactive (push + reach) ≈ PUSH_DAILY_CAP, for WhatsApp-ban safety.
           const liveOrReach = enriched.filter((i) => i.kind !== "push" || isReachStage(i.lead_stage));
-          const reachCount = enriched.filter((i) => i.kind === "push" && isReachStage(i.lead_stage)).length;
           const activePush = enriched.filter((i) => i.kind === "push" && !isReachStage(i.lead_stage));
-          const pushTarget = Math.max(0, PUSH_DAILY_CAP - reachCount); // reach eats into the budget
+          // PUSH gets its OWN full daily quota of 30; REACH and LIVE are separate
+          // and uncapped (never hidden, and they do NOT eat into the push quota).
+          const pushTarget = PUSH_DAILY_CAP;
           const brokerKey = (responsibleUser ?? "").trim().toLowerCase();
           if (brokerKey) {
             const baliDay = new Date(nowMs + BALI_OFFSET_MS).toISOString().slice(0, 10);
