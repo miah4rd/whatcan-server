@@ -338,7 +338,7 @@ export async function queueSuggestion(opts: {
  * it's an extra AI round-trip and the stage isn't needed until the broker
  * actually approves, which is seconds away at the earliest.
  */
-async function classifyStageInBackground(
+export async function classifyStageInBackground(
   rowId: string,
   leadId: string,
   replyText: string,

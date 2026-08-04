@@ -19,6 +19,7 @@ import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
 import { correctionsPromptBlock } from "./broker-corrections";
 import { maybeAutopilot } from "./autopilot";
 import { enforceBudgetFilter } from "./budget-filter";
+import { classifyStageInBackground } from "../routes/amocrm-webhook.js";
 
 /**
  * True when the timeline (lead_messages) holds a message FROM THE LEAD that is
@@ -1214,26 +1215,38 @@ export async function processUnansweredLive(): Promise<void> {
         )
         .limit(1);
 
+      let rowId: string;
       if (existingPending) {
+        rowId = existingPending.id;
         await db
           .update(pendingSuggestionsTable)
           .set({ kind: "live", followupLevel: null, suggestionText: text, attachments })
-          .where(eq(pendingSuggestionsTable.id, existingPending.id));
+          .where(eq(pendingSuggestionsTable.id, rowId));
       } else {
-        await db.insert(pendingSuggestionsTable).values({
-          leadId: lead.leadId,
-          responsibleUser: lead.responsibleUser,
-          kind: "live",
-          followupLevel: null,
-          suggestionText: text,
-          status: "pending",
-          attachments,
-        });
+        const [inserted] = await db
+          .insert(pendingSuggestionsTable)
+          .values({
+            leadId: lead.leadId,
+            responsibleUser: lead.responsibleUser,
+            kind: "live",
+            followupLevel: null,
+            suggestionText: text,
+            status: "pending",
+            attachments,
+          })
+          .returning({ id: pendingSuggestionsTable.id });
+        rowId = inserted!.id;
       }
       notifyBrokerForLead(lead.responsibleUser, lead.leadId, "replied", lastLeadMessage, {
         content: lead.content,
         leadStage: lead.leadStage,
       }).catch(() => {});
+
+      // This path (a separate, independent generator from the webhook's own
+      // queueSuggestion) never called the stage classifier at all — every ad
+      // lead whose first reply came from here sat in "New LEAD" forever,
+      // because nothing ever populated suggestedStage for approve.ts to apply.
+      void classifyStageInBackground(rowId, lead.leadId, text, (attachments ?? []).length);
 
       logger.info({ leadId: lead.leadId }, "live suggestion generated for unanswered lead");
       void maybeAutopilot(lead.leadId);
