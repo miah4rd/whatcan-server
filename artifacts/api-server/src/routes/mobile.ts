@@ -657,6 +657,25 @@ const PAGE_HTML = `<!doctype html>
         push: all.filter(function (i) { return i.kind === "push" && !isReachStage(i.lead_stage); }),
       };
       updateAppBadge();
+      // fetchInbox only ever refreshed the background list — an already-open
+      // detail view is a snapshot taken once in openDetail() and nothing here
+      // touched it again, so "Refresh" while a lead was open did nothing: same
+      // text, same (possibly still-missing) attachments no matter how many
+      // times the broker pressed it. Re-sync the open card from the fresh
+      // fetch too, unless the broker is actively editing (never stomp that).
+      if (openItem && !editing) {
+        var freshOpen = all.find(function (i) { return i.id === openItem.id; });
+        if (freshOpen) {
+          openItem.text = freshOpen.suggestion_text || "";
+          openItem.original = freshOpen.suggestion_text || "";
+          openItem.attachments = Array.isArray(freshOpen.attachments) ? freshOpen.attachments.slice() : [];
+          openItem.recent_messages = Array.isArray(freshOpen.recent_messages) ? freshOpen.recent_messages : [];
+          openItem.lead_stage = freshOpen.lead_stage || null;
+          openItem.suggested_stage = freshOpen.suggested_stage || null;
+          openItem.suggested_stage_reason = freshOpen.suggested_stage_reason || null;
+          openItem.suggested_stage_terminal = !!freshOpen.suggested_stage_terminal;
+        }
+      }
       render();
     } catch (e) { /* network hiccup — keep last snapshot */ }
   }
@@ -1692,7 +1711,11 @@ const PAGE_HTML = `<!doctype html>
         fetchInbox().then(function () { if (d.leadId) openLeadById(d.leadId); });
       }
     }
-    if (d.type === "lead" && d.leadId) openLeadById(d.leadId);
+    // Fetch fresh before opening — items may be a stale snapshot (up to 20s
+    // old, or older still since the periodic refresh skips while a card is
+    // open) from before this lead's suggestion/attachments were ready, and
+    // openLeadById only ever searched whatever was already in memory.
+    if (d.type === "lead" && d.leadId) fetchInbox().then(function () { openLeadById(d.leadId); });
     if (d.type === "broker-replied" && d.leadId) {
       if (openItem && String(openItem.lead_id) === String(d.leadId)) { openItem = null; render(); }
       fetchInbox();
