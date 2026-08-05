@@ -295,8 +295,13 @@ router.post("/approve", async (req, res) => {
     /** Broker identifier — used to save correction */
     brokerId?: string;
     /** Property links as the broker left them — they can remove or add listings
-     * while editing, so this overrides the originally generated attachments. */
+     * while editing, so this overrides the originally generated attachments.
+     * Only trusted when attachmentsCurated is also true (see effectiveAttachments
+     * below) — a client that sends [] without ever having touched links is not
+     * "the broker's choice", it's an empty snapshot. */
     attachments?: Array<{ type?: string; label?: string; url?: string }>;
+    /** True only once the broker has actually added/removed a link by hand. */
+    attachmentsCurated?: boolean;
   };
 
   const explicitNewStage = typeof body?.newStage === "string" && body.newStage.trim() ? body.newStage.trim() : null;
@@ -354,9 +359,17 @@ router.post("/approve", async (req, res) => {
     sug.status = "pending";
   }
 
-  // The broker's edited list wins when the client sent one; older clients that
-  // don't send the field fall back to what was generated.
-  const effectiveAttachments = Array.isArray(body.attachments)
+  // The broker's edited list wins ONLY when they actually curated it
+  // (attachmentsCurated === true) — every current client always sends SOME
+  // attachments array on every approve, curated or not, so checking
+  // Array.isArray alone (the old check) took the "client wins" branch on
+  // literally every send and could never fall back. A lead got a reply
+  // promising "the link below" with no link because of exactly this: a stale
+  // client's never-populated attachments: [] silently overrode the
+  // suggestion's own correctly-generated links. Uncurated → trust what was
+  // generated; curated → trust the broker's edits, empty list included.
+  const clientCurated = body.attachmentsCurated === true;
+  const effectiveAttachments = clientCurated && Array.isArray(body.attachments)
     ? body.attachments
         .filter((a) => a?.type === "link" && typeof a.url === "string" && a.url)
         .map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url! }))
