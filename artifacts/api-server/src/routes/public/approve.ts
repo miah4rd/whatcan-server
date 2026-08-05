@@ -9,7 +9,7 @@ import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, clos
 import { stripEmojiForDelivery } from "../../lib/message-delivery.js";
 import { classifyStage } from "../../lib/stage-classifier";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
-import { resolveOutboundSource } from "../../lib/amo-messenger-field";
+import { resolveOutboundSource, fillMessengerFromResponsibleIfNoMessages } from "../../lib/amo-messenger-field";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL, followupClockAfterReply } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
 import { recordCommitment } from "../../lib/commitment-scheduler.js";
@@ -428,6 +428,16 @@ router.post("/approve", async (req, res) => {
       .where(eq(leadsSyncTable.leadId, sug.leadId))
       .limit(1);
     const currentResponsibleUser = currentOwnerRow?.responsibleUser ?? sug.responsibleUser;
+
+    // ── No-dialog guard: fill field 967477 from the responsible user ─────────
+    // If the lead has NO messages yet (fresh deal / sourced-lead with only a
+    // seeded request note), the timeline sync has nothing to derive the channel
+    // from, so point field 967477 at the responsible user's OWN line BEFORE
+    // resolveOutboundSource resolves it. If the lead DOES have a dialog, this is
+    // a no-op and the existing logic keeps determining the channel from it.
+    await fillMessengerFromResponsibleIfNoMessages(sug.leadId, currentResponsibleUser).catch((e) => {
+      req.log.warn({ leadId: sug.leadId, err: e }, "fillMessengerFromResponsible threw during approve");
+    });
 
     const messengerSource = await resolveOutboundSource(sug.leadId, currentResponsibleUser).catch((e) => {
       req.log.warn({ leadId: sug.leadId, err: e }, "resolveOutboundSource threw");
