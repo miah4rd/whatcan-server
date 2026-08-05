@@ -10,6 +10,7 @@ import { getBrokerPicks } from "../lib/settings";
 import { isStageWhitelisted, shouldSuppressPush } from "../lib/stage-routing";
 
 import { getAmoLead } from "../lib/amo-client";
+import { fillMessengerFromResponsibleIfNoMessages } from "../lib/amo-messenger-field";
 import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
 import { buildRentalPromptParts } from "../lib/rental-prompt";
 import { buildSalesPromptParts } from "../lib/sales-prompt";
@@ -464,6 +465,12 @@ router.post("/amocrm/webhook", async (req, res) => {
         // Only treat this as a true cold-open if there's no real conversation yet.
         const hasExistingDialog = parseDialogContent(content).messages.length > 0;
 
+        // Responsible just (re)assigned — if the deal has no messages yet, point
+        // the "last active chat messenger" field at the new responsible's OWN line
+        // so the Salesbot routes replies correctly. Has-messages → skip (real
+        // channel is authoritative).
+        await fillMessengerFromResponsibleIfNoMessages(leadId, responsibleUser).catch(() => null);
+
         const { text, attachments } = await generateSuggestion({
           leadId,
           responsibleUser,
@@ -809,6 +816,11 @@ router.post("/amocrm/webhook", async (req, res) => {
       .where(eq(leadsSyncTable.leadId, String(lead.id)))
       .limit(1);
     if (isBroker(lead.responsible_user_name, "HoS") && (syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
+
+    // Fresh deal with no messages yet — the "last active chat messenger" field
+    // gets the responsible user's OWN line so the Salesbot knows where to reply.
+    await fillMessengerFromResponsibleIfNoMessages(String(lead.id), lead.responsible_user_name).catch(() => null);
+
     const { text, attachments } = await generateSuggestion({
       leadId: String(lead.id),
       responsibleUser: lead.responsible_user_name ?? null,
@@ -832,11 +844,29 @@ router.post("/amocrm/webhook", async (req, res) => {
     if (!lead.id) continue;
     tasks.push(lead.id);
     const [syncRow] = await db
-      .select({ pipeline: leadsSyncTable.pipeline })
+      .select({ pipeline: leadsSyncTable.pipeline, responsibleUser: leadsSyncTable.responsibleUser })
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, String(lead.id)))
       .limit(1);
     if (isBroker(lead.responsible_user_name, "HoS") && (syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
+
+    // A deal's responsible user can change right after creation. If the new
+    // responsible differs from the one we know, and the deal still has no
+    // messages, re-point the "last active chat messenger" field at the new
+    // responsible's OWN line. When the deal DOES have messages the real channel
+    // is authoritative and must not be overwritten.
+    const incoming = (lead.responsible_user_name ?? "").trim().toLowerCase();
+    const stored = (syncRow?.responsibleUser ?? "").trim().toLowerCase();
+    if (incoming && incoming !== stored) {
+      req.log.info({ leadId: String(lead.id), from: syncRow?.responsibleUser, to: lead.responsible_user_name }, "responsible user reassigned");
+      await fillMessengerFromResponsibleIfNoMessages(String(lead.id), lead.responsible_user_name).catch(() => null);
+      await db
+        .update(leadsSyncTable)
+        .set({ responsibleUser: lead.responsible_user_name ?? null, updatedAt: new Date() })
+        .where(eq(leadsSyncTable.leadId, String(lead.id)))
+        .catch(() => null);
+    }
+
     const { text, attachments } = await generateSuggestion({
       leadId: String(lead.id),
       responsibleUser: lead.responsible_user_name ?? null,

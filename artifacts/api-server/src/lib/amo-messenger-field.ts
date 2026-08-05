@@ -8,6 +8,8 @@
  * 3. Fills the field
  */
 import { logger } from "./logger";
+import { db, leadMessagesTable, leadsSyncTable } from "@workspace/db";
+import { eq, sql } from "drizzle-orm";
 
 const AMO_BASE = `https://${process.env.AMO_SUBDOMAIN ?? "unicornproperty"}.amocrm.ru`;
 const LOGIN = process.env.AMO_LOGIN ?? "unicorn.properties.office@gmail.com";
@@ -333,6 +335,53 @@ export async function ensureMessengerField(leadId: string): Promise<string | nul
     logger.info({ leadId, channelName, sourceId }, "messenger field filled via Puppeteer scan");
   }
   return String(sourceId);
+}
+
+/**
+ * When a deal is brand-new (or its responsible user has just changed) and the
+ * deal has NO chat messages yet, fill field 967477 with the responsible
+ * broker's OWN line so the Salesbot knows where to send from — a human
+ * answering a fresh lead without an existing thread uses their own number.
+ *
+ * Called on lead creation and on responsible-user reassignment. Never touches
+ * the field when the deal already has messages: the real channel (from the
+ * timeline / lead page) is authoritative and must not be clobbered.
+ *
+ * "No messages" = the lead_messages table has no rows for this lead AND the
+ * synced content is empty/absent.
+ */
+export async function fillMessengerFromResponsibleIfNoMessages(
+  leadId: string,
+  responsibleUser: string | null | undefined,
+): Promise<void> {
+  if (!responsibleUser) return;
+  const sourceId = sourceIdForBroker(responsibleUser);
+  if (!sourceId) return;
+
+  const [msgRow] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(leadMessagesTable)
+    .where(eq(leadMessagesTable.leadId, leadId));
+  if ((msgRow?.n ?? 0) > 0) {
+    logger.info({ leadId, responsibleUser, messages: msgRow?.n }, "fillMessengerFromResponsible: deal has messages, skipping");
+    return;
+  }
+
+  const [syncRow] = await db
+    .select({ content: leadsSyncTable.content })
+    .from(leadsSyncTable)
+    .where(eq(leadsSyncTable.leadId, leadId))
+    .limit(1);
+  if (syncRow?.content && syncRow.content.trim().length > 0) {
+    logger.info({ leadId, responsibleUser }, "fillMessengerFromResponsible: deal has content, skipping");
+    return;
+  }
+
+  const ok = await updateLastMessengerField(leadId, String(sourceId), sourceId, LAST_MESSENGER_FIELD_ID);
+  logger.info(
+    { leadId, responsibleUser, sourceId, ok },
+    "fillMessengerFromResponsible: filled with responsible user's own line (deal has no messages)",
+  );
 }
 
 /**
