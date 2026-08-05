@@ -221,7 +221,24 @@ const PAGE_HTML = `<!doctype html>
     'If the lead mentions budget, timeline, location preference, or competitors -> suggest a short call immediately.'
   ].join('\\n');
 
-  var brokerName = localStorage.getItem("copilot_broker") || "";
+  // Embedded mode: the extension's bridge content script loads this exact
+  // page in an iframe inside amoCRM instead of maintaining its own separate
+  // UI. window.self !== window.top is a safe cross-origin read (never
+  // throws) and is the one signal that reliably distinguishes "running
+  // standalone as the PWA" from "running inside the bridge's iframe" —
+  // nothing else in this file assumed it could be either until now.
+  var EMBEDDED = (function () {
+    try { return window.self !== window.top; } catch (e) { return true; }
+  })();
+  var _qs = new URLSearchParams(location.search);
+  // The bridge knows the broker authoritatively (re-verified against the
+  // live amoCRM session on every load) — trust its URL param over whatever
+  // localStorage says, so an iframe never shows a stale or wrong broker's
+  // leads just because this browser profile last had someone else's name
+  // saved from the standalone PWA.
+  var brokerName = (EMBEDDED && _qs.get("broker")) || localStorage.getItem("copilot_broker") || "";
+  var embeddedGuide = EMBEDDED ? _qs.get("guide") : null;
+  var embeddedOutputLanguage = EMBEDDED ? _qs.get("outputLanguage") : null;
   // "" = server default (auto), "rental" or "unicorn" = broker explicitly
   // picked a side via the pipeline switcher. Only matters for a broker who
   // genuinely has leads in both pipelines — everyone else can ignore it.
@@ -864,7 +881,13 @@ const PAGE_HTML = `<!doctype html>
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          guide: DEFAULT_GUIDE,
+          // A broker who customized their guide/output-language via the
+          // extension's options page (embedded-mode-only, carried in via
+          // the ?guide=/?outputLanguage= URL params) keeps that preference
+          // here instead of silently falling back to the English default —
+          // this is the one place mobile.ts calls /suggest with a hardcoded
+          // guide, so it's the one place this needed wiring.
+          guide: embeddedGuide || DEFAULT_GUIDE,
           lead: { name: item.lead_name || ("Lead " + item.lead_id), company: "", stage: item.lead_stage || item.kind || "" },
           messages: messages,
           brokerName: brokerName,
@@ -872,7 +895,7 @@ const PAGE_HTML = `<!doctype html>
           leadId: item.lead_id,
           revisionChain: item.revisionChain,
           image: item._contextImage || undefined,
-          outputLanguage: "English",
+          outputLanguage: embeddedOutputLanguage || "English",
           attachments: (item.attachments || []).filter(function (a) { return a.type === "link" && a.url; }),
         }),
       });
@@ -975,6 +998,12 @@ const PAGE_HTML = `<!doctype html>
     window.scrollTo(0, 0);
   }
 
+  function renderConnecting() {
+    app.innerHTML =
+      '<div class="setup"><div class="brand"><span class="dot"></span> Copilot Inbox</div>' +
+      '<p style="color:#8a93a8;font-size:13px;margin-top:10px">Connecting…</p></div>';
+  }
+
   function renderSetup() {
     app.innerHTML =
       '<div class="setup">' +
@@ -1004,7 +1033,12 @@ const PAGE_HTML = `<!doctype html>
     html += '<span class="broker-chip">\\ud83d\\udc64 <b>' + esc(brokerName) + '</b></span>';
     html += '<button class="refresh-btn" id="pipeline-switch-btn" title="Pipeline: ' + (pipelineView ? esc(pipelineView) : "auto (both)") + ' \\u2014 tap to change" style="font-size:12px">' +
       (pipelineView === "rental" ? "\\ud83c\\udfe0 Rental" : pipelineView === "unicorn" ? "\\ud83e\\udd84 Unicorn" : "\\ud83d\\udd00 Auto") + '</button>';
-    if (pushSupported()) {
+    // Push relies on this document's own service-worker registration and
+    // Notification permission — both Permissions-Policy-gated to 'self' for
+    // a cross-origin iframe (amoCRM's domain vs. this server's), so offering
+    // it here would be a bell that silently never works. The standalone PWA
+    // (installed to the home screen) is the intended place for push.
+    if (pushSupported() && !EMBEDDED) {
       var pushOn = pushEnabled();
       html += '<button class="refresh-btn" id="toggle-push-btn" title="' + (pushOn ? "Disable notifications" : "Enable notifications") + '" style="' + (pushOn ? "" : "opacity:.45") + '">' + (pushOn ? "\\ud83d\\udd14" : "\\ud83d\\udd15") + '</button>';
     }
@@ -1586,7 +1620,16 @@ const PAGE_HTML = `<!doctype html>
   }
 
   function render() {
-    if (!brokerName) { renderSetup(); return; }
+    if (!brokerName) {
+      // Embedded mode never asks the broker to type their own name — the
+      // bridge is authoritative and posts it moments after the iframe loads.
+      // Showing the manual-entry form here would both be redundant and,
+      // worse, let someone accidentally type in the WRONG name inside a
+      // panel meant to auto-identify them.
+      if (EMBEDDED) { renderConnecting(); return; }
+      renderSetup();
+      return;
+    }
     if (openItem) renderDetail();
     else renderList();
 
@@ -1600,18 +1643,65 @@ const PAGE_HTML = `<!doctype html>
     }
   }
 
+  // Opens a lead already present in the currently-fetched inbox (push
+  // notification deep-link, or the bridge telling us amoCRM navigated to a
+  // new lead). Known gap: a lead with NO pending suggestion yet (not seen by
+  // any detector so far) finds nothing here and shows nothing — same as a
+  // push deep-link always has. Generating one on demand needs a real
+  // server-side "create a suggestion for this lead now" endpoint, which
+  // doesn't exist yet; not building one under time pressure to avoid a
+  // subtler bug (wrong kind, a duplicate suggestion).
+  function openLeadById(leadId) {
+    if (!leadId) return;
+    var found = null, foundKind = null;
+    ["live", "reach", "push"].forEach(function (k) {
+      if (found) return;
+      var match = (items[k] || []).find(function (i) { return String(i.lead_id) === String(leadId); });
+      if (match) { found = match; foundKind = k; }
+    });
+    if (found) { activeTab = foundKind; openDetail(found, foundKind); }
+  }
+
   function openDeepLinkedLead() {
     var params = new URLSearchParams(location.search);
     var targetLead = params.get("lead");
     if (!targetLead) return;
     history.replaceState(null, "", location.pathname);
-    var found = null, foundKind = null;
-    ["live", "reach", "push"].forEach(function (k) {
-      if (found) return;
-      var match = (items[k] || []).find(function (i) { return String(i.lead_id) === String(targetLead); });
-      if (match) { found = match; foundKind = k; }
-    });
-    if (found) { activeTab = foundKind; openDetail(found, foundKind); }
+    openLeadById(targetLead);
+  }
+
+  // ── Embedded-mode bridge: the extension's content script relays amoCRM
+  // page context (which broker, which lead) into this iframe. Modeled on
+  // openPropertyPicker's own postMessage handshake above — same
+  // origin-and-source-checked pattern, just host and guest swapped: there
+  // WE are the iframe talking to a nested one; here we're the iframe being
+  // talked to by our parent.
+  var BRIDGE_ORIGIN = "https://unicornproperty.amocrm.ru";
+  window.addEventListener("message", function (e) {
+    if (e.origin !== BRIDGE_ORIGIN) return;
+    if (e.source !== window.parent) return;
+    var d = e.data;
+    if (!d || d.source !== "copilot-bridge") return;
+    if ((d.type === "init" || d.type === "broker") && d.broker) {
+      var brokerWasEmpty = !brokerName;
+      brokerName = d.broker;
+      localStorage.setItem("copilot_broker", brokerName);
+      if (brokerWasEmpty) {
+        render();
+        fetchStageOptions();
+        fetchInbox().then(function () { if (d.leadId) openLeadById(d.leadId); });
+      }
+    }
+    if (d.type === "lead" && d.leadId) openLeadById(d.leadId);
+    if (d.type === "broker-replied" && d.leadId) {
+      if (openItem && String(openItem.lead_id) === String(d.leadId)) { openItem = null; render(); }
+      fetchInbox();
+    }
+  });
+  if (EMBEDDED) {
+    try {
+      window.parent.postMessage({ source: "copilot-embed", type: "ready" }, BRIDGE_ORIGIN);
+    } catch (e) { /* non-fatal — bridge may retry, or this instance is standalone despite the frame check */ }
   }
 
   render();
@@ -1626,6 +1716,10 @@ const PAGE_HTML = `<!doctype html>
 router.get("/m", (_req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
+  // Scoped to this route only — the extension's bridge embeds this exact
+  // page in an iframe inside amoCRM, which is otherwise unrestricted (no
+  // X-Frame-Options/CSP existed anywhere in this server before).
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'self' https://unicornproperty.amocrm.ru");
   res.send(PAGE_HTML);
 });
 
