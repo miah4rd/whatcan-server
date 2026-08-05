@@ -184,6 +184,8 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
     .resize-grip::before { content:""; position:absolute; top:4px; left:4px; width:8px; height:8px; border-top:2px solid #6b7d92; border-left:2px solid #6b7d92; border-radius:3px 0 0 0; opacity:.7; }
     .resize-grip:hover::before { opacity:1; border-color:#90caf9; }
     .copilot-embed { display:block; width: 100%; height: 100%; border: 0; }
+    .bubble { width: 52px; height: 52px; border-radius: 50%; background: #2196f3; border: 0; cursor: pointer; display: grid; place-items: center; box-shadow: 0 6px 20px rgba(0,0,0,.4); font-size: 22px; color: #fff; animation: in .2s ease-out; }
+    .bubble:hover { background: #1e88e5; }
   `;
   root.appendChild(style);
 
@@ -230,13 +232,34 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
   panel.appendChild(iframeEl);
   root.appendChild(panel);
 
-  let panelOpen = false; // starts closed, toolbar icon toggles it
+  // Always-visible bubble, same spot the old full-UI version lived — clicking
+  // the extension's toolbar icon opens the SAME panel too (COPILOT_TOGGLE
+  // below), but the bubble means there's no icon to hunt for, and it's a
+  // built-in sign the content script is actually running on this page.
+  const bubble = document.createElement("button");
+  bubble.className = "bubble";
+  bubble.title = "Copilot";
+  bubble.textContent = "✨";
+  bubble.addEventListener("click", () => togglePanel());
+  root.appendChild(bubble);
+
+  let panelOpen = false; // starts closed
   let currentBroker = "";
   let currentLead = null;
   let iframeSrcSet = false;
 
   function applyPanelVisibility() {
-    host.style.display = (matchesUrl() && panelOpen) ? "block" : "none";
+    const show = matchesUrl();
+    host.style.display = show ? "block" : "none";
+    if (!show) return;
+    panel.style.display = panelOpen ? "block" : "none";
+    bubble.style.display = panelOpen ? "none" : "grid";
+  }
+
+  function togglePanel() {
+    panelOpen = !panelOpen;
+    applyPanelVisibility();
+    if (panelOpen) ensureIframeLoaded();
   }
 
   function ensureIframeLoaded() {
@@ -324,6 +347,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
         panel.style.height = defaultH + "px";
       }
 
+      applyPanelVisibility(); // shows the bubble once we know matchesUrl()
       if (!matchesUrl()) return;
 
       // Auto-detect broker from the amoCRM logged-in user. Detection is
@@ -374,11 +398,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
 
   try {
     chrome.runtime.onMessage.addListener((m) => {
-      if (m?.type === "COPILOT_TOGGLE") {
-        panelOpen = !panelOpen;
-        applyPanelVisibility();
-        if (panelOpen) ensureIframeLoaded();
-      }
+      if (m?.type === "COPILOT_TOGGLE") togglePanel();
     });
   } catch { /* extension context invalidated — ignore */ }
 

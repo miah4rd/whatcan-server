@@ -6,6 +6,18 @@ release, so all changes are shared and visible. Build: zip the folder CONTENTS
 (files at the archive root) to `artifacts/landing/public/extNN.zip`, then copy to
 the VPS `artifacts/landing/dist/public/` (only that is served).
 
+## 1.0.94 — bring back the always-visible bubble
+
+1.0.93 required clicking the extension's Chrome toolbar icon to open the
+panel at all — no visible sign on the page itself that the extension was
+even running, which is exactly the "плагин обновился, но не вижу его в
+АМО" report this fixes. A small floating bubble (same spot the old
+full-UI version lived) is back: click it to open/close the same panel the
+toolbar icon also controls. Also a reminder for next time: after "Update"
+in chrome://extensions, the already-open amoCRM tab is still running the
+PREVIOUS content script — it needs a manual reload (F5) to pick up new
+code, same as any content-script update.
+
 ## 1.0.93 — the panel now IS `/m`, not a second copy of it
 
 `content.js` stopped reimplementing the suggestion/inbox UI a second time.
