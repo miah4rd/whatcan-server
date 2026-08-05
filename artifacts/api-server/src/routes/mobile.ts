@@ -222,6 +222,10 @@ const PAGE_HTML = `<!doctype html>
   ].join('\\n');
 
   var brokerName = localStorage.getItem("copilot_broker") || "";
+  // "" = server default (auto), "rental" or "unicorn" = broker explicitly
+  // picked a side via the pipeline switcher. Only matters for a broker who
+  // genuinely has leads in both pipelines — everyone else can ignore it.
+  var pipelineView = localStorage.getItem("copilot_pipeline_view") || "";
   var activeTab = "live";
   // Staged-delegation panel state: the broker dials "bot acts without approve
   // up to stage X" from here. Settings live server-side (/api/public/autopilot).
@@ -619,7 +623,9 @@ const PAGE_HTML = `<!doctype html>
   async function fetchInbox() {
     if (!brokerName) return;
     try {
-      var res = await fetch(API + "/suggestions?responsibleUser=" + encodeURIComponent(brokerName), { cache: "no-store" });
+      var url = API + "/suggestions?responsibleUser=" + encodeURIComponent(brokerName);
+      if (pipelineView) url += "&pipeline=" + encodeURIComponent(pipelineView);
+      var res = await fetch(url, { cache: "no-store" });
       var data = await res.json();
       var all = data.items || [];
       var REACH_STAGES = ["1st follow up", "2nd follow up", "final follow up"];
@@ -891,6 +897,21 @@ const PAGE_HTML = `<!doctype html>
           var keep = (item.attachments || []).filter(function (a) { return a._broker; });
           item.attachments = json.attachments.concat(keep);
         }
+        // _attachmentsCurated only reflects THIS round's edit — a link added by
+        // hand in an EARLIER revision round keeps its _broker flag while the
+        // curated flag itself doesn't carry forward, so the branch above can
+        // still concat a link the server already echoed back on its own.
+        // Dedupe by URL regardless of why, so the client never sees the same
+        // listing attached twice.
+        var seenUrls = {};
+        var deduped = [];
+        for (var di = 0; di < item.attachments.length; di++) {
+          var dUrl = item.attachments[di].url;
+          if (dUrl && seenUrls[dUrl]) continue;
+          if (dUrl) seenUrls[dUrl] = true;
+          deduped.push(item.attachments[di]);
+        }
+        item.attachments = deduped;
         showToast("Options updated: " + item.attachments.length + " link(s)");
       }
       // The bot re-read the temperature from the pasted screenshot — apply it so
@@ -981,6 +1002,8 @@ const PAGE_HTML = `<!doctype html>
     html += '<div class="brand"><span class="dot"></span> Copilot Inbox</div>';
     html += '<div style="display:flex;align-items:center;gap:6px">';
     html += '<span class="broker-chip">\\ud83d\\udc64 <b>' + esc(brokerName) + '</b></span>';
+    html += '<button class="refresh-btn" id="pipeline-switch-btn" title="Pipeline: ' + (pipelineView ? esc(pipelineView) : "auto (both)") + ' \\u2014 tap to change" style="font-size:12px">' +
+      (pipelineView === "rental" ? "\\ud83c\\udfe0 Rental" : pipelineView === "unicorn" ? "\\ud83e\\udd84 Unicorn" : "\\ud83d\\udd00 Auto") + '</button>';
     if (pushSupported()) {
       var pushOn = pushEnabled();
       html += '<button class="refresh-btn" id="toggle-push-btn" title="' + (pushOn ? "Disable notifications" : "Enable notifications") + '" style="' + (pushOn ? "" : "opacity:.45") + '">' + (pushOn ? "\\ud83d\\udd14" : "\\ud83d\\udd15") + '</button>';
@@ -1049,6 +1072,12 @@ const PAGE_HTML = `<!doctype html>
     app.innerHTML = html;
 
     $("#refresh-btn").onclick = fetchInbox;
+    var pipeBtn = $("#pipeline-switch-btn");
+    if (pipeBtn) pipeBtn.onclick = function () {
+      pipelineView = pipelineView === "" ? "rental" : pipelineView === "rental" ? "unicorn" : "";
+      localStorage.setItem("copilot_pipeline_view", pipelineView);
+      fetchInbox();
+    };
     var apBtn = $("#autopilot-btn");
     if (apBtn) apBtn.onclick = async function () {
       apOpen = !apOpen;

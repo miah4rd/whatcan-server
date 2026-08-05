@@ -6,6 +6,13 @@ release, so all changes are shared and visible. Build: zip the folder CONTENTS
 (files at the archive root) to `artifacts/landing/public/extNN.zip`, then copy to
 the VPS `artifacts/landing/dist/public/` (only that is served).
 
+## 1.0.92
+
+- Pipeline switcher: a broker who genuinely works both Rental and Unicorn
+  (not just the fully Rental-scoped roster) can now tap a small button in the
+  panel header to filter the inbox to one pipeline or back to auto/both.
+  Server honors an explicit `?pipeline=` override on `/api/suggestions`.
+
 ## 1.0.91
 
 - Picker overlay reveals faster: it now shows the site as soon as its React

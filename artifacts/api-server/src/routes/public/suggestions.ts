@@ -13,6 +13,7 @@ router.options("/suggestions", (_req, res) => res.sendStatus(204));
 router.get("/suggestions", async (req, res) => {
   const kind = req.query["kind"] as string | undefined;
   const responsibleUser = req.query["responsibleUser"] as string | undefined;
+  const pipelineParam = (req.query["pipeline"] as string | undefined)?.trim().toLowerCase();
 
   try {
     const [results, pushWhitelist] = await Promise.all([
@@ -122,10 +123,16 @@ router.get("/suggestions", async (req, res) => {
       items = items.filter((r) => (r.responsibleUser ?? "").trim().toLowerCase() === wanted);
     }
 
-    // Unicorn brokers see ONLY their Unicorn-pipeline leads — even if a lead of
-    // theirs sits in another pipeline (e.g. Rental), it must not surface here.
-    // Scoped to the adaptive (Unicorn) brokers so Rental brokers are unaffected.
-    if (isAdaptiveBroker(responsibleUser)) {
+    if (pipelineParam) {
+      // Broker explicitly picked a pipeline via the switcher — honor it over
+      // the default Unicorn-only auto-filter below, so a broker who genuinely
+      // works BOTH pipelines (unlike the fully Rental-scoped roster) can view
+      // either side on demand instead of being permanently locked to one.
+      items = items.filter((r) => (syncByLeadId.get(r.leadId)?.pipeline ?? "").toLowerCase() === pipelineParam);
+    } else if (isAdaptiveBroker(responsibleUser)) {
+      // Unicorn brokers see ONLY their Unicorn-pipeline leads — even if a lead of
+      // theirs sits in another pipeline (e.g. Rental), it must not surface here.
+      // Scoped to the adaptive (Unicorn) brokers so Rental brokers are unaffected.
       items = items.filter((r) => (syncByLeadId.get(r.leadId)?.pipeline ?? "").toUpperCase() === "UNICORN");
     }
 
@@ -220,6 +227,7 @@ router.get("/suggestions", async (req, res) => {
         lead_notes: sync?.leadNotes ?? null,
         lead_stage: sync?.leadStage ?? null,
         lead_stage_id: sync?.leadStageId ?? null,
+        pipeline: sync?.pipeline ?? null,
         last_message_at: sync?.lastMessageAt?.toISOString() ?? null,
         next_followup_at: sync?.nextFollowupAt?.toISOString() ?? null,
         last_lead_channel: lastLeadChannel,

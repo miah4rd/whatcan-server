@@ -155,6 +155,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
 
   // Server-backed inbox (Live + Push). Polled from /api/public/suggestions.
   let inbox = { live: [], reach: [], push: [] };
+  let pipelineView = ""; // "" | "rental" | "unicorn" — see load() for the storage key
   let activeTab = "live"; // 'live' | 'reach' | 'push'
   // When a server suggestion is opened for review, this holds its state.
   // { id, lead_id, kind, followup_level, responsible_user, text, original, busy, error }
@@ -423,7 +424,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
 
   function load() {
     try { if (!chrome?.runtime?.id) return; } catch { return; }
-    chrome.storage.local.get(["guide", "urlFilter", "brokerName", "apiUrl", "outputLanguage", "dictationLang", "copilotPanelSize", "copilotConvSplit"], async (data) => {
+    chrome.storage.local.get(["guide", "urlFilter", "brokerName", "apiUrl", "outputLanguage", "dictationLang", "copilotPanelSize", "copilotConvSplit", "copilotPipelineView"], async (data) => {
       settings = {
         guide: data.guide || DEFAULT_GUIDE,
         urlFilter: data.urlFilter || "unicornproperty.amocrm.ru",
@@ -432,6 +433,10 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
         outputLanguage: data.outputLanguage || "English",
         dictationLang: data.dictationLang || "",
       };
+      // "" = server default (auto), "rental" or "unicorn" = broker explicitly
+      // picked a side via the pipeline switcher — only matters for a broker
+      // who genuinely has leads in both pipelines.
+      pipelineView = data.copilotPipelineView || "";
       if (data.copilotPanelSize && data.copilotPanelSize.w) panelSize = data.copilotPanelSize;
       if (typeof data.copilotConvSplit === "number" && data.copilotConvSplit > 0.1 && data.copilotConvSplit < 0.9) convSplit = data.copilotConvSplit;
       if (!matchesUrl()) { host.style.display = "none"; return; }
@@ -552,7 +557,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
         render();
         return;
       }
-      const url = `${apiBase()}/suggestions?responsibleUser=${encodeURIComponent(settings.brokerName)}`;
+      const url = `${apiBase()}/suggestions?responsibleUser=${encodeURIComponent(settings.brokerName)}${pipelineView ? `&pipeline=${encodeURIComponent(pipelineView)}` : ""}`;
       const res = await fetch(url, { cache: "no-cache" });
       if (!res.ok) return;
       const json = await res.json();
@@ -1351,6 +1356,7 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
             </div>
           </div>
           <div class="icons">
+            <button class="ib" data-pipeswitch title="Pipeline: ${pipelineView ? esc(pipelineView) : "auto (both)"} — click to change" style="font-size:11px;width:auto;padding:0 6px">${pipelineView === "rental" ? "🏠" : pipelineView === "unicorn" ? "🦄" : "🔀"}</button>
             <button class="ib" data-refresh title="Refresh">⟳</button>
             <button class="ib" data-opts title="Settings">⚙</button>
             <button class="ib" data-min title="Hide">−</button>
@@ -1405,6 +1411,12 @@ If the lead mentions budget, timeline, location preference, or competitors -> su
     hd.querySelector("[data-opts]")?.addEventListener("click", (e) => { e.stopPropagation(); try { chrome.runtime.openOptionsPage?.(); } catch {} });
     hd.querySelector("[data-min]")?.addEventListener("click", (e) => { e.stopPropagation(); collapsed = true; manuallyOpen = false; openServerItem = null; render(); });
     hd.querySelector("[data-refresh]")?.addEventListener("click", (e) => { e.stopPropagation(); pollInbox(); });
+    hd.querySelector("[data-pipeswitch]")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      pipelineView = pipelineView === "" ? "rental" : pipelineView === "rental" ? "unicorn" : "";
+      try { chrome.storage.local.set({ copilotPipelineView: pipelineView }); } catch {}
+      pollInbox();
+    });
     tabs.querySelectorAll("[data-tab]").forEach((b) => {
       b.addEventListener("click", () => {
         activeTab = b.getAttribute("data-tab");
