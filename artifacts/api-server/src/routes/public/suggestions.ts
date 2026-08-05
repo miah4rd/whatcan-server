@@ -35,6 +35,7 @@ router.get("/suggestions", async (req, res) => {
         ? await db
             .select({
               leadId: leadsSyncTable.leadId,
+              responsibleUser: leadsSyncTable.responsibleUser,
               content: leadsSyncTable.content,
               leadNotes: leadsSyncTable.leadNotes,
               leadStage: leadsSyncTable.leadStage,
@@ -120,7 +121,17 @@ router.get("/suggestions", async (req, res) => {
     if (kind === "live" || kind === "push") items = items.filter((r) => r.kind === kind);
     if (responsibleUser) {
       const wanted = responsibleUser.trim().toLowerCase();
-      items = items.filter((r) => (r.responsibleUser ?? "").trim().toLowerCase() === wanted);
+      // pending_suggestions.responsible_user is stamped at CREATION time and
+      // never touched again — if the lead is reassigned in amoCRM afterward
+      // (e.g. a broker handover), the suggestion silently falls into a gap:
+      // invisible to the new owner (row still says the old name) AND the old
+      // owner has moved on. leads_sync.responsible_user is kept current by
+      // every sync/webhook pass, so prefer it; fall back to the row's own
+      // stamp only if the lead hasn't been synced at all yet.
+      items = items.filter((r) => {
+        const current = (syncByLeadId.get(r.leadId)?.responsibleUser ?? r.responsibleUser ?? "").trim().toLowerCase();
+        return current === wanted;
+      });
     }
 
     if (pipelineParam) {
@@ -217,7 +228,9 @@ router.get("/suggestions", async (req, res) => {
         ...i,
         suggestion_text: i.suggestionText,
         lead_id: i.leadId,
-        responsible_user: i.responsibleUser,
+        // Current synced owner, not the row's creation-time stamp — see the
+        // reassignment note above the responsibleUser filter.
+        responsible_user: sync?.responsibleUser ?? i.responsibleUser,
         followup_level: i.followupLevel,
         triggered_by_message_at: i.triggeredByMessageAt,
         created_at: i.createdAt,

@@ -404,7 +404,19 @@ router.post("/approve", async (req, res) => {
     // with a headless Chrome, whose memory spike tripped PM2's 512MB ceiling and
     // restarted the process mid-request, so the broker got a bare "Webhook 502"
     // and no message went out.
-    const messengerSource = await resolveOutboundSource(sug.leadId, sug.responsibleUser).catch((e) => {
+    // sug.responsibleUser is stamped at suggestion-creation time and goes stale
+    // the moment the lead is reassigned in amoCRM afterward (a broker handover)
+    // — sending on the STALE owner's line here would defeat the very purpose of
+    // resolveOutboundSource's own reassignment-guard, which trusts whatever
+    // responsibleUser it's given. leads_sync is kept current by every sync pass.
+    const [currentOwnerRow] = await db
+      .select({ responsibleUser: leadsSyncTable.responsibleUser })
+      .from(leadsSyncTable)
+      .where(eq(leadsSyncTable.leadId, sug.leadId))
+      .limit(1);
+    const currentResponsibleUser = currentOwnerRow?.responsibleUser ?? sug.responsibleUser;
+
+    const messengerSource = await resolveOutboundSource(sug.leadId, currentResponsibleUser).catch((e) => {
       req.log.warn({ leadId: sug.leadId, err: e }, "resolveOutboundSource threw");
       return null;
     });
@@ -595,7 +607,7 @@ router.post("/approve", async (req, res) => {
       suggestionId: sug.id as any,
       kind: sug.kind,
       messageText: deliveryText,
-      responsibleUser: sug.responsibleUser,
+      responsibleUser: currentResponsibleUser,
       webhookStatus: hookStatus,
       webhookResponse: hookBody,
     });
@@ -611,7 +623,7 @@ router.post("/approve", async (req, res) => {
         body.brokerId,
         body.originalText,
         body.message,
-        explicitNewStage ?? sug.responsibleUser ?? "",
+        explicitNewStage ?? currentResponsibleUser ?? "",
         req.log,
       ).catch(() => {});
     }
@@ -629,16 +641,16 @@ router.post("/approve", async (req, res) => {
 
     // ── Detect "I'll check and get back to you" promises — the client is
     // waiting on US here, so the normal wait-for-reply clock never fires.
-    recordCommitment(sug.leadId, sug.responsibleUser, body.message).catch(() => {});
+    recordCommitment(sug.leadId, currentResponsibleUser, body.message).catch(() => {});
 
     // ── Track property picks — personalizes future matching for this broker ──
-    if (sug.responsibleUser && effectiveAttachments.length > 0) {
+    if (currentResponsibleUser && effectiveAttachments.length > 0) {
       for (const att of effectiveAttachments) {
         const match = att.url.match(/\/property\/([A-Za-z0-9-]+)/i);
         if (!match) continue;
         const propertyId = match[1];
         const listingType = /^R-/i.test(propertyId) ? "rent" : "sale";
-        incrementBrokerPick(sug.responsibleUser, propertyId, listingType).catch(() => {});
+        incrementBrokerPick(currentResponsibleUser, propertyId, listingType).catch(() => {});
       }
     }
 
@@ -753,7 +765,7 @@ router.post("/approve", async (req, res) => {
         leadId: sug.leadId,
         fromStage: prevStage,
         toStage: effectiveNewStage,
-        responsibleUser: sug.responsibleUser,
+        responsibleUser: currentResponsibleUser,
       }).catch(() => {});
     }
 
