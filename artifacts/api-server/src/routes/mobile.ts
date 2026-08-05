@@ -243,6 +243,14 @@ const PAGE_HTML = `<!doctype html>
   // picked a side via the pipeline switcher. Only matters for a broker who
   // genuinely has leads in both pipelines — everyone else can ignore it.
   var pipelineView = localStorage.getItem("copilot_pipeline_view") || "";
+  // HoS-only: admin can view/act as any other broker without re-logging in.
+  // "" = viewing as HoS themselves. activeBroker() is what every API call
+  // actually uses — brokerName stays the real login so switching back is
+  // just picking "HoS (me)" again, not retyping the setup screen.
+  var HOS_ROSTER = ["Robert", "Amelia", "Sharon", "Yudi", "Saif", "Kristo", "Ferdian"];
+  var hosViewAs = localStorage.getItem("copilot_hos_view_as") || "";
+  function isHosLogin() { return (brokerName || "").trim().toLowerCase() === "hos"; }
+  function activeBroker() { return (isHosLogin() && hosViewAs) ? hosViewAs : brokerName; }
   var activeTab = "live";
   // Staged-delegation panel state: the broker dials "bot acts without approve
   // up to stage X" from here. Settings live server-side (/api/public/autopilot).
@@ -640,7 +648,7 @@ const PAGE_HTML = `<!doctype html>
   async function fetchInbox() {
     if (!brokerName) return;
     try {
-      var url = API + "/suggestions?responsibleUser=" + encodeURIComponent(brokerName);
+      var url = API + "/suggestions?responsibleUser=" + encodeURIComponent(activeBroker());
       if (pipelineView) url += "&pipeline=" + encodeURIComponent(pipelineView);
       var res = await fetch(url, { cache: "no-store" });
       var data = await res.json();
@@ -837,7 +845,7 @@ const PAGE_HTML = `<!doctype html>
           message: finalText,
           edited: finalText.trim() !== (item.original || "").trim(),
           originalText: item.original || "",
-          brokerId: brokerName,
+          brokerId: activeBroker(),
           // Send the CURRENT attachment list — the broker may have removed or
           // added property links while editing, and the server would otherwise
           // fall back to the originally generated set.
@@ -909,8 +917,8 @@ const PAGE_HTML = `<!doctype html>
           guide: embeddedGuide || DEFAULT_GUIDE,
           lead: { name: item.lead_name || ("Lead " + item.lead_id), company: "", stage: item.lead_stage || item.kind || "" },
           messages: messages,
-          brokerName: brokerName,
-          brokerId: brokerName,
+          brokerName: activeBroker(),
+          brokerId: activeBroker(),
           leadId: item.lead_id,
           revisionChain: item.revisionChain,
           image: item._contextImage || undefined,
@@ -1049,7 +1057,19 @@ const PAGE_HTML = `<!doctype html>
     html += '<div class="top-row">';
     html += '<div class="brand"><span class="dot"></span> Copilot Inbox</div>';
     html += '<div style="display:flex;align-items:center;gap:6px">';
-    html += '<span class="broker-chip">\\ud83d\\udc64 <b>' + esc(brokerName) + '</b></span>';
+    if (isHosLogin()) {
+      // HoS-only: view/act as any other broker without re-logging in. Every
+      // API call already reads activeBroker() instead of brokerName, so
+      // switching here is enough — no separate "impersonate" endpoint needed.
+      html += '<select id="hos-view-select" class="broker-chip" style="cursor:pointer;border-color:' + (hosViewAs ? "#fbbf24" : "#2a3146") + '">';
+      html += '<option value=""' + (!hosViewAs ? " selected" : "") + '>\\ud83d\\udc64 HoS (me)</option>';
+      HOS_ROSTER.forEach(function (name) {
+        html += '<option value="' + esc(name) + '"' + (hosViewAs === name ? " selected" : "") + '>\\ud83d\\udc41 ' + esc(name) + '</option>';
+      });
+      html += '</select>';
+    } else {
+      html += '<span class="broker-chip">\\ud83d\\udc64 <b>' + esc(brokerName) + '</b></span>';
+    }
     html += '<button class="refresh-btn" id="pipeline-switch-btn" title="Pipeline: ' + (pipelineView ? esc(pipelineView) : "auto (both)") + ' \\u2014 tap to change" style="font-size:12px">' +
       (pipelineView === "rental" ? "\\ud83c\\udfe0 Rental" : pipelineView === "unicorn" ? "\\ud83e\\udd84 Unicorn" : "\\ud83d\\udd00 Auto") + '</button>';
     // Push relies on this document's own service-worker registration and
@@ -1129,6 +1149,13 @@ const PAGE_HTML = `<!doctype html>
     if (pipeBtn) pipeBtn.onclick = function () {
       pipelineView = pipelineView === "" ? "rental" : pipelineView === "rental" ? "unicorn" : "";
       localStorage.setItem("copilot_pipeline_view", pipelineView);
+      fetchInbox();
+    };
+    var hosSelect = $("#hos-view-select");
+    if (hosSelect) hosSelect.onchange = function () {
+      hosViewAs = hosSelect.value;
+      localStorage.setItem("copilot_hos_view_as", hosViewAs);
+      openItem = null; editing = false;
       fetchInbox();
     };
     var apBtn = $("#autopilot-btn");
@@ -1357,7 +1384,7 @@ const PAGE_HTML = `<!doctype html>
         it.profile_temperature = t; it.profile_temperature_source = "broker";
         renderDetail();
         try {
-          await fetch(API + "/set-temperature", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: String(it.lead_id), temperature: t, brokerId: brokerName }) });
+          await fetch(API + "/set-temperature", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: String(it.lead_id), temperature: t, brokerId: activeBroker() }) });
           showToast("Temperature set: " + t);
         } catch (e) {
           it.profile_temperature = prev; it.profile_temperature_source = prevSrc; renderDetail();
@@ -1541,7 +1568,7 @@ const PAGE_HTML = `<!doctype html>
           await fetch(API + "/approve", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              suggestionId: it.id, message: text, brokerId: brokerName, newStage: newStage,
+              suggestionId: it.id, message: text, brokerId: activeBroker(), newStage: newStage,
               stageId: stageIdForName(newStage) || it.lead_stage_id || undefined, skipMessage: true,
             }),
           });
