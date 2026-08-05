@@ -70,7 +70,7 @@ export const FRESH_LEAD_MAX_AGE_DAYS = 30;
 /** Max PUSH suggestions surfaced per broker at once (daily focus cap). The rest
  * wait and rotate up as the top drains — keeps the list workable (WhatsApp-safe)
  * instead of dumping the whole overdue backlog. */
-export const PUSH_DAILY_CAP = 30;
+export const PUSH_DAILY_CAP = 25;
 
 /**
  * Days to wait before the next follow-up. `streak` should be the number of
