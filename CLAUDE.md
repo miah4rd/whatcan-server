@@ -17,15 +17,30 @@ tap. Two surfaces, one server:
   (owner, Nikita, Alexander) edits there and commits, so every change is shared
   and versioned; no more parallel local copies. (History: two lines had forked —
   Nikita's served `ext71` and the owner's local `v85` that the brokers actually
-  ran; `v86` reconciles them, see `copilot-extension/CHANGELOG.md`.) Current: **ext88.zip (1.0.88)**.
-  To release a change: edit files in `copilot-extension/`, bump
+  ran; `v86` reconciles them, see `copilot-extension/CHANGELOG.md`.) Current: **ext93.zip (1.0.93)**.
+  **As of 1.0.93, `content.js` is a thin bridge (~350 lines, was ~2600), not a
+  second UI.** It only does what needs page-level amoCRM access — which lead is
+  open, who's logged in, did the broker reply directly in amoCRM's own chat —
+  and embeds `/m` itself in an iframe for everything else (same postMessage
+  handshake shape as `/m`'s own `openPropertyPicker`, host and guest swapped).
+  Every past drift bug in this project's history (a fix landing in mobile.ts
+  but not content.js, or the reverse) happened because these were two separate
+  implementations of the same features; from 1.0.93 on, feature/bug work lives
+  in `mobile.ts` alone and reaches both surfaces the moment the page reloads —
+  the extension itself should rarely need a new version.
+  To release a bridge change (rare): edit files in `copilot-extension/`, bump
   `manifest.json` version + add a `CHANGELOG.md` line, rebuild the zip **with the
-  files at the archive ROOT** (`Compress-Archive -Path copilot-extension/* -Dest
-  artifacts/landing/public/extNN.zip`), commit, then on the VPS copy it to
-  `artifacts/landing/dist/public/` — only `dist/public` is actually served at
-  `https://copilot.globalapplab.ru/extNN.zip`. The extension does NOT auto-update;
-  brokers reinstall the new zip (see the open auto-update decision: Chrome Web
-  Store vs self-host).
+  files at the archive ROOT** (`zip -r extNN.zip copilot-extension/* ...` — files
+  at the archive root, not inside a `copilot-extension/` folder), commit, then on
+  the VPS copy it to `artifacts/landing/dist/public/` — only `dist/public` is
+  actually served at `https://copilot.globalapplab.ru/extNN.zip`.
+  **The extension is ALSO published to the Chrome Web Store** as "Copilot — AI
+  follow-up nudges" — this is a SEPARATE upload step (Chrome Web Store Developer
+  Dashboard, needs the owner's own Google account) that nothing in this repo or
+  deploy process pushes to automatically. It fell 6 versions behind self-host
+  once (stuck at 1.0.86 while self-host reached 1.0.92) purely because no one
+  remembered to also upload there — treat a Store update as a manual step every
+  release, not an assumption that self-host + Store stay in sync on their own.
 
 ## Deploy
 
