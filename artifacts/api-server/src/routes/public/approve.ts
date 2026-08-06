@@ -380,6 +380,13 @@ router.post("/approve", async (req, res) => {
   let hookBody = "";
   let stageOk = false;
   let chatSent = false;
+  // Reassigned below (send path only) to the freshly-read owner from leads_sync;
+  // falls back to the suggestion's stamped owner for skip-message (stage-only)
+  // requests, which never run the send path's lookup. Declared here, not with
+  // `const` inside the send branch, because the stage-change block below runs
+  // for BOTH paths and needs it in scope — a `const` scoped to the send branch
+  // threw ReferenceError on every stage-only move and crashed the process.
+  let currentResponsibleUser: string | null = sug.responsibleUser ?? null;
 
   // ── Atomic idempotency guard ──────────────────────────────────────────────
   const claimedStatus = skipMessage ? "skipped" : (body.edited ? "edited" : "approved");
@@ -427,7 +434,7 @@ router.post("/approve", async (req, res) => {
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, sug.leadId))
       .limit(1);
-    const currentResponsibleUser = currentOwnerRow?.responsibleUser ?? sug.responsibleUser;
+    currentResponsibleUser = currentOwnerRow?.responsibleUser ?? sug.responsibleUser;
 
     // ── No-dialog guard: fill field 967477 from the responsible user ─────────
     // If the lead has NO messages yet (fresh deal / sourced-lead with only a
