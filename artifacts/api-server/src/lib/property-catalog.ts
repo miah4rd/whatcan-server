@@ -453,10 +453,16 @@ export function extractBudgetIdr(messages: string[]): number | null {
   // "750mill / year" is a yearly figure — read as monthly it became a 750M/month
   // ceiling, which let anything through. Bali quotes both, so the period matters.
   const PER_YEAR = /\/\s*year|per\s*year|a\s*year|\/\s*yr\b|yearly|annual|в\s*год|годов/i;
+  // "15-18mln per month. Yearly contract" — PER_YEAR alone matched "Yearly"
+  // and divided an already-monthly rate by 12 (18M -> 1.5M), because "yearly"
+  // described the CONTRACT LENGTH, not the price's period; the same message
+  // also says "per month" outright. An explicit monthly marker in the same
+  // message always wins over a bare "yearly"/"annual" elsewhere in it.
+  const PER_MONTH = /\/\s*month|per\s*month|a\s*month|\/\s*mo\b|monthly|в\s*месяц|ежемесячно/i;
 
   for (const raw of messages) {
     const m = raw.toLowerCase();
-    const perYear = PER_YEAR.test(m);
+    const perYear = PER_YEAR.test(m) && !PER_MONTH.test(m);
     // People quoting a yearly figure often drop the "per year": Lukass wrote
     // "anything around 700 million or less" about a 3-year lease and the parser
     // read it as 700M PER MONTH — a ceiling that passes the entire island, so
@@ -522,11 +528,17 @@ export function extractBudgetIdr(messages: string[]): number | null {
  */
 export function extractBudgetFloorIdr(messages: string[]): number | null {
   const PER_YEAR = /\/\s*year|per\s*year|a\s*year|\/\s*yr\b|yearly|annual|в\s*год|годов/i;
+  // "15-18mln per month. Yearly contract" — PER_YEAR alone matched "Yearly"
+  // and divided an already-monthly rate by 12 (18M -> 1.5M), because "yearly"
+  // described the CONTRACT LENGTH, not the price's period; the same message
+  // also says "per month" outright. An explicit monthly marker in the same
+  // message always wins over a bare "yearly"/"annual" elsewhere in it.
+  const PER_MONTH = /\/\s*month|per\s*month|a\s*month|\/\s*mo\b|monthly|в\s*месяц|ежемесячно/i;
   const RANGE_SEP = /\s*(?:-|–|—|to|до)\s*/;
 
   for (const raw of messages) {
     const m = raw.toLowerCase();
-    const perYear = PER_YEAR.test(m);
+    const perYear = PER_YEAR.test(m) && !PER_MONTH.test(m);
     const toMonthly = (n: number) =>
       Math.round(perYear ? n / 12 : n > 200_000_000 ? n / 12 : n);
 
