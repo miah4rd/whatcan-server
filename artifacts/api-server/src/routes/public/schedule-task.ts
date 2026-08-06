@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, leadCrmTasksTable, leadsSyncTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
-import { createAmoTask, getAmoLead } from "../../lib/amo-client.js";
+import { eq, and } from "drizzle-orm";
+import { createAmoTask, getAmoLead, closeAmoTasksForLead } from "../../lib/amo-client.js";
 
 const router = Router();
 
@@ -26,6 +26,10 @@ router.post("/schedule-task", async (req, res) => {
   let amoOk = false;
   let amoError = "";
   try {
+    // Close the current open task FIRST so the manual task REPLACES it instead of
+    // piling on top — the broker set a manual date but the old task stayed open.
+    await db.update(leadCrmTasksTable).set({ status: "closed", closedAt: new Date() }).where(and(eq(leadCrmTasksTable.leadId, leadId), eq(leadCrmTasksTable.status, "open")));
+    await closeAmoTasksForLead(leadId).catch(() => {});
     const lead = await getAmoLead(leadId);
     const responsibleUserId = lead?.responsible_user_id ?? undefined;
     amoOk = await createAmoTask(leadId, taskText, parsedDate, responsibleUserId);

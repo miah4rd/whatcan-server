@@ -1,9 +1,11 @@
 import { Router } from "express";
-import { db, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
+import { db, pendingSuggestionsTable, leadsSyncTable, leadCrmTasksTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
-import { parseDialogContent, formatDialogForAI } from "../../lib/dialog-parser";
+import { parseDialogContent, formatDialogForAI, nextFollowupDate, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { generateSuggestion } from "../amocrm-webhook";
 import { isStageWhitelisted } from "../../lib/stage-routing";
+import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-followup";
+import { createAmoTask, closeAmoTasksForLead, getAmoLead } from "../../lib/amo-client.js";
 
 const router = Router();
 
@@ -51,6 +53,8 @@ router.post("/skip", async (req, res) => {
         .where(eq(leadsSyncTable.leadId, leadId))
         .limit(1);
 
+      let becameLive = false;
+
       if (
         sync?.lastMessageFrom === "lead" &&
         isStageWhitelisted(sync.leadStage) &&
@@ -97,12 +101,51 @@ router.post("/skip", async (req, res) => {
                   status: "pending",
                   attachments,
                 });
+                becameLive = true;
                 req.log.info({ leadId }, "skip: generated live suggestion after push skip");
               }
             }
           } catch (err) {
             req.log.warn({ err, leadId }, "skip: failed to generate live after push skip (non-fatal)");
           }
+        }
+      }
+
+      // Continue auto schedule: this touch was skipped, so ADVANCE the follow-up
+      // clock — close the current (due) task and schedule the next one, so the lead
+      // re-surfaces later instead of sitting due with nothing changed. (Skipped
+      // before: /skip only marked the suggestion, touched no task at all.)
+      if (!becameLive) {
+        try {
+          const isRental = (sync?.pipeline ?? "").toLowerCase() === "rental";
+          const stageLower = (sync?.leadStage ?? "").toLowerCase();
+          const isReach =
+            stageLower.includes("1st follow up") ||
+            stageLower.includes("2nd follow up") ||
+            stageLower.includes("final follow up");
+          let taskDate: Date;
+          if (!isRental && !isReach && isAdaptiveBroker(sync?.responsibleUser)) {
+            const parsed = parseDialogContent(sync?.content ?? "");
+            const streak = countTrailingOurMessages(parsed.messages) + 1;
+            const ageDays = sync?.amoCreatedAt ? Math.floor((Date.now() - sync.amoCreatedAt.getTime()) / 86400000) : null;
+            const d = computeNextFollowupDays({ streak, leadStage: sync?.leadStage, temperature: (sync?.profileTemperature as "cold" | "warm" | "hot" | null) ?? undefined, ageDays });
+            taskDate = new Date(Date.now() + d * 86400000);
+          } else {
+            const level = Math.max(0, suggestion.followupLevel ?? 0);
+            taskDate = nextFollowupDate(new Date(), level) ?? new Date(Date.now() + 3 * 86400000);
+          }
+          await db.update(leadCrmTasksTable).set({ status: "closed", closedAt: new Date() }).where(and(eq(leadCrmTasksTable.leadId, leadId), eq(leadCrmTasksTable.status, "open")));
+          await closeAmoTasksForLead(leadId).catch(() => {});
+          await db.update(leadsSyncTable).set({ nextFollowupAt: taskDate }).where(eq(leadsSyncTable.leadId, leadId));
+          let amoOk = false;
+          try {
+            const amoLead = await getAmoLead(leadId);
+            amoOk = await createAmoTask(leadId, "Follow-up отложен (skip) — следующий touch по графику", taskDate, amoLead?.responsible_user_id ?? undefined);
+          } catch { /* non-fatal */ }
+          await db.insert(leadCrmTasksTable).values({ leadId, taskDate, taskText: "Follow-up отложен (skip) — следующий touch", webhookStatus: amoOk ? 200 : 500, webhookResponse: amoOk ? "created via API (skip continue)" : "amo task create failed" });
+          req.log.info({ leadId, taskDate }, "skip continue: advanced follow-up schedule");
+        } catch (err) {
+          req.log.warn({ err, leadId }, "skip continue: reschedule failed (non-fatal)");
         }
       }
     }
