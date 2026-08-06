@@ -479,6 +479,26 @@ export function extractBudgetIdr(messages: string[]): number | null {
       if (n > 0 && n < 100000) return toMonthly(n * 1_000_000);
     }
 
+    // "30,000,000-50,000,000 IDR/mo" — a dash-separated range written in raw
+    // digits, not "30-50 million" words. The word-range above reads as the
+    // ceiling by accident (only the second number sits next to "million"),
+    // but the single-number match below stops at the dash and silently
+    // returned the FLOOR: a lead who stated 30-50 million got budget=30M,
+    // read as under a 40M threshold, and the rental budget gate auto-closed
+    // her — reopened by the broker, then closed again on the next pass,
+    // because nothing about the (wrong) parse ever changed. Take the larger
+    // side, same as the word-based range does.
+    if (/rp|idr|rupiah/.test(m)) {
+      const range = m.match(/(\d[\d\s.,]{6,})\s*(?:-|–|—|to|до)\s*(\d[\d\s.,]{6,})/);
+      if (range?.[1] && range[2]) {
+        const a = parseInt(range[1].replace(/[^\d]/g, ""), 10);
+        const b = parseInt(range[2].replace(/[^\d]/g, ""), 10);
+        if (a >= 1_000_000 && a < 100_000_000_000 && b >= 1_000_000 && b < 100_000_000_000) {
+          return toMonthly(Math.max(a, b));
+        }
+      }
+    }
+
     // "Rp 30.000.000" / "30 000 000 idr"
     const full = m.match(/(?:rp\.?\s*|idr\s*)?(\d[\d\s.,]{6,})\s*(?:idr|rupiah|rp\b)?/);
     if (full?.[1] && /rp|idr|rupiah/.test(m)) {
