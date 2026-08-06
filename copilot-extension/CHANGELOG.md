@@ -6,6 +6,54 @@ release, so all changes are shared and visible. Build: zip the folder CONTENTS
 (files at the archive root) to `artifacts/landing/public/extNN.zip`, then copy to
 the VPS `artifacts/landing/dist/public/` (only that is served).
 
+## 1.0.94 — bring back the always-visible bubble
+
+1.0.93 required clicking the extension's Chrome toolbar icon to open the
+panel at all — no visible sign on the page itself that the extension was
+even running, which is exactly the "плагин обновился, но не вижу его в
+АМО" report this fixes. A small floating bubble (same spot the old
+full-UI version lived) is back: click it to open/close the same panel the
+toolbar icon also controls. Also a reminder for next time: after "Update"
+in chrome://extensions, the already-open amoCRM tab is still running the
+PREVIOUS content script — it needs a manual reload (F5) to pick up new
+code, same as any content-script update.
+
+## 1.0.93 — the panel now IS `/m`, not a second copy of it
+
+`content.js` stopped reimplementing the suggestion/inbox UI a second time.
+Every single drift bug this session (curated-panel links overwritten, links
+duplicated on edit, stage never advancing past New LEAD, "choose on site"
+missing here) happened because this file and the server's own `/m` PWA were
+two separate implementations of the same features, and a fix only ever
+landed in one of them. `content.js` is now a small bridge (~350 lines, was
+~2600): it detects which amoCRM lead is open, who's logged in, and whether
+the broker replied directly in amoCRM's own chat (things only page-level
+access can do) — then embeds `/m` itself in an iframe for literally
+everything else. Every future feature/fix lives in `mobile.ts` and applies
+to both surfaces the moment the page reloads — no new extension version,
+no Store review wait.
+
+User-visible changes:
+- The panel is now `/m`'s own layout inside the iframe — same features,
+  same buttons, same "Choose on site" picker (which this file's old
+  version never had at all).
+- Push notifications inside the embedded panel are hidden — Notifications
+  permission doesn't reliably work from a cross-origin iframe; push still
+  works normally in the standalone `/m` PWA (install to home screen).
+- A broker's `guide`/`outputLanguage` set on the options page still applies
+  (carried into the iframe), same as before.
+- Known gap: opening a lead in amoCRM that has no pending suggestion yet
+  (created moments ago, nothing has processed it) shows nothing, same as a
+  push notification deep-link always did — generating one on the spot needs
+  a new server endpoint that doesn't exist yet, tracked as a follow-up.
+
+## 1.0.92
+
+- Pipeline switcher: a broker who genuinely works both Rental and Unicorn
+  (not just the fully Rental-scoped roster) can now tap a small button in the
+  panel header to filter the inbox to one pipeline or back to auto/both.
+  Server honors an explicit `?pipeline=` override on `/api/suggestions`.
+
 ## 1.0.91
 
 - Picker overlay reveals faster: it now shows the site as soon as its React

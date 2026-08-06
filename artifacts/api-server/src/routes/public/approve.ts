@@ -9,7 +9,7 @@ import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, clos
 import { stripEmojiForDelivery } from "../../lib/message-delivery.js";
 import { classifyStage } from "../../lib/stage-classifier";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
-import { resolveOutboundSource } from "../../lib/amo-messenger-field";
+import { resolveOutboundSource, fillMessengerFromResponsibleIfNoMessages } from "../../lib/amo-messenger-field";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL, followupClockAfterReply } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
 import { recordCommitment } from "../../lib/commitment-scheduler.js";
@@ -295,8 +295,13 @@ router.post("/approve", async (req, res) => {
     /** Broker identifier — used to save correction */
     brokerId?: string;
     /** Property links as the broker left them — they can remove or add listings
-     * while editing, so this overrides the originally generated attachments. */
+     * while editing, so this overrides the originally generated attachments.
+     * Only trusted when attachmentsCurated is also true (see effectiveAttachments
+     * below) — a client that sends [] without ever having touched links is not
+     * "the broker's choice", it's an empty snapshot. */
     attachments?: Array<{ type?: string; label?: string; url?: string }>;
+    /** True only once the broker has actually added/removed a link by hand. */
+    attachmentsCurated?: boolean;
   };
 
   const explicitNewStage = typeof body?.newStage === "string" && body.newStage.trim() ? body.newStage.trim() : null;
@@ -354,9 +359,17 @@ router.post("/approve", async (req, res) => {
     sug.status = "pending";
   }
 
-  // The broker's edited list wins when the client sent one; older clients that
-  // don't send the field fall back to what was generated.
-  const effectiveAttachments = Array.isArray(body.attachments)
+  // The broker's edited list wins ONLY when they actually curated it
+  // (attachmentsCurated === true) — every current client always sends SOME
+  // attachments array on every approve, curated or not, so checking
+  // Array.isArray alone (the old check) took the "client wins" branch on
+  // literally every send and could never fall back. A lead got a reply
+  // promising "the link below" with no link because of exactly this: a stale
+  // client's never-populated attachments: [] silently overrode the
+  // suggestion's own correctly-generated links. Uncurated → trust what was
+  // generated; curated → trust the broker's edits, empty list included.
+  const clientCurated = body.attachmentsCurated === true;
+  const effectiveAttachments = clientCurated && Array.isArray(body.attachments)
     ? body.attachments
         .filter((a) => a?.type === "link" && typeof a.url === "string" && a.url)
         .map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url! }))
@@ -367,6 +380,13 @@ router.post("/approve", async (req, res) => {
   let hookBody = "";
   let stageOk = false;
   let chatSent = false;
+  // Reassigned below (send path only) to the freshly-read owner from leads_sync;
+  // falls back to the suggestion's stamped owner for skip-message (stage-only)
+  // requests, which never run the send path's lookup. Declared here, not with
+  // `const` inside the send branch, because the stage-change block below runs
+  // for BOTH paths and needs it in scope — a `const` scoped to the send branch
+  // threw ReferenceError on every stage-only move and crashed the process.
+  let currentResponsibleUser: string | null = sug.responsibleUser ?? null;
 
   // ── Atomic idempotency guard ──────────────────────────────────────────────
   const claimedStatus = skipMessage ? "skipped" : (body.edited ? "edited" : "approved");
@@ -404,7 +424,29 @@ router.post("/approve", async (req, res) => {
     // with a headless Chrome, whose memory spike tripped PM2's 512MB ceiling and
     // restarted the process mid-request, so the broker got a bare "Webhook 502"
     // and no message went out.
-    const messengerSource = await resolveOutboundSource(sug.leadId, sug.responsibleUser).catch((e) => {
+    // sug.responsibleUser is stamped at suggestion-creation time and goes stale
+    // the moment the lead is reassigned in amoCRM afterward (a broker handover)
+    // — sending on the STALE owner's line here would defeat the very purpose of
+    // resolveOutboundSource's own reassignment-guard, which trusts whatever
+    // responsibleUser it's given. leads_sync is kept current by every sync pass.
+    const [currentOwnerRow] = await db
+      .select({ responsibleUser: leadsSyncTable.responsibleUser })
+      .from(leadsSyncTable)
+      .where(eq(leadsSyncTable.leadId, sug.leadId))
+      .limit(1);
+    currentResponsibleUser = currentOwnerRow?.responsibleUser ?? sug.responsibleUser;
+
+    // ── No-dialog guard: fill field 967477 from the responsible user ─────────
+    // If the lead has NO messages yet (fresh deal / sourced-lead with only a
+    // seeded request note), the timeline sync has nothing to derive the channel
+    // from, so point field 967477 at the responsible user's OWN line BEFORE
+    // resolveOutboundSource resolves it. If the lead DOES have a dialog, this is
+    // a no-op and the existing logic keeps determining the channel from it.
+    await fillMessengerFromResponsibleIfNoMessages(sug.leadId, currentResponsibleUser).catch((e) => {
+      req.log.warn({ leadId: sug.leadId, err: e }, "fillMessengerFromResponsible threw during approve");
+    });
+
+    const messengerSource = await resolveOutboundSource(sug.leadId, currentResponsibleUser).catch((e) => {
       req.log.warn({ leadId: sug.leadId, err: e }, "resolveOutboundSource threw");
       return null;
     });
@@ -595,7 +637,7 @@ router.post("/approve", async (req, res) => {
       suggestionId: sug.id as any,
       kind: sug.kind,
       messageText: deliveryText,
-      responsibleUser: sug.responsibleUser,
+      responsibleUser: currentResponsibleUser,
       webhookStatus: hookStatus,
       webhookResponse: hookBody,
     });
@@ -611,7 +653,7 @@ router.post("/approve", async (req, res) => {
         body.brokerId,
         body.originalText,
         body.message,
-        explicitNewStage ?? sug.responsibleUser ?? "",
+        explicitNewStage ?? currentResponsibleUser ?? "",
         req.log,
       ).catch(() => {});
     }
@@ -629,16 +671,16 @@ router.post("/approve", async (req, res) => {
 
     // ── Detect "I'll check and get back to you" promises — the client is
     // waiting on US here, so the normal wait-for-reply clock never fires.
-    recordCommitment(sug.leadId, sug.responsibleUser, body.message).catch(() => {});
+    recordCommitment(sug.leadId, currentResponsibleUser, body.message).catch(() => {});
 
     // ── Track property picks — personalizes future matching for this broker ──
-    if (sug.responsibleUser && effectiveAttachments.length > 0) {
+    if (currentResponsibleUser && effectiveAttachments.length > 0) {
       for (const att of effectiveAttachments) {
         const match = att.url.match(/\/property\/([A-Za-z0-9-]+)/i);
         if (!match) continue;
         const propertyId = match[1];
         const listingType = /^R-/i.test(propertyId) ? "rent" : "sale";
-        incrementBrokerPick(sug.responsibleUser, propertyId, listingType).catch(() => {});
+        incrementBrokerPick(currentResponsibleUser, propertyId, listingType).catch(() => {});
       }
     }
 
@@ -721,15 +763,19 @@ router.post("/approve", async (req, res) => {
   }
 
   // ── Stage change (applies for both normal approve and skip-message) ─────────
-  // The bot SUGGESTS a stage but no longer MOVES the lead into a funnel stage on
-  // its own — the owner wants the broker to decide. It kept auto-moving leads
-  // wrongly (e.g. → "Options Sent" when no options were sent yet). So a funnel
-  // move now applies ONLY when the broker picked it themselves (explicitNewStage);
-  // the classifier's autoStage is surfaced as a hint, not applied. The
-  // qualification ladder (1st→2nd→final) still advances automatically below —
-  // that's the cadence, not a funnel judgement call.
-  const effectiveNewStage = explicitNewStage ?? null;
-  void autoStage; // computed for the hint/logs; intentionally not auto-applied
+  // The classifier's stage is applied automatically on send — a stage the broker
+  // picked themselves (explicitNewStage) always wins over it. This was disabled
+  // for a few days (fcb6816, 2026-08-02) after the classifier moved leads on
+  // outbound promises rather than real progress (e.g. → "Options Sent" before
+  // options actually went out). Re-enabled 2026-08-06 per the owner — the guards
+  // that were meant to prevent exactly that stayed in place the whole time:
+  // suggestedStageTerminal is never auto-applied (line ~699), and a lead on the
+  // 1st/2nd/final follow-up ladder is never pulled into a funnel stage off our
+  // own outbound (inReachStage, both the draft-time and send-time classifier
+  // paths above). If a false "Options sent" jump shows up again, the fix is in
+  // the classifier's judgement (lib/stage-classifier.ts) or its guards here —
+  // not disabling auto-apply again, which just leaves leads stuck in New LEAD.
+  const effectiveNewStage = explicitNewStage ?? (autoStage ? autoStage.name : null);
   if (effectiveNewStage) {
     const prevSync = await db
       .select({ leadStage: leadsSyncTable.leadStage })
@@ -753,7 +799,7 @@ router.post("/approve", async (req, res) => {
         leadId: sug.leadId,
         fromStage: prevStage,
         toStage: effectiveNewStage,
-        responsibleUser: sug.responsibleUser,
+        responsibleUser: currentResponsibleUser,
       }).catch(() => {});
     }
 

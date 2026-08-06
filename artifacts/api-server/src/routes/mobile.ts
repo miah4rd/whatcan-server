@@ -221,7 +221,36 @@ const PAGE_HTML = `<!doctype html>
     'If the lead mentions budget, timeline, location preference, or competitors -> suggest a short call immediately.'
   ].join('\\n');
 
-  var brokerName = localStorage.getItem("copilot_broker") || "";
+  // Embedded mode: the extension's bridge content script loads this exact
+  // page in an iframe inside amoCRM instead of maintaining its own separate
+  // UI. window.self !== window.top is a safe cross-origin read (never
+  // throws) and is the one signal that reliably distinguishes "running
+  // standalone as the PWA" from "running inside the bridge's iframe" —
+  // nothing else in this file assumed it could be either until now.
+  var EMBEDDED = (function () {
+    try { return window.self !== window.top; } catch (e) { return true; }
+  })();
+  var _qs = new URLSearchParams(location.search);
+  // The bridge knows the broker authoritatively (re-verified against the
+  // live amoCRM session on every load) — trust its URL param over whatever
+  // localStorage says, so an iframe never shows a stale or wrong broker's
+  // leads just because this browser profile last had someone else's name
+  // saved from the standalone PWA.
+  var brokerName = (EMBEDDED && _qs.get("broker")) || localStorage.getItem("copilot_broker") || "";
+  var embeddedGuide = EMBEDDED ? _qs.get("guide") : null;
+  var embeddedOutputLanguage = EMBEDDED ? _qs.get("outputLanguage") : null;
+  // "" = server default (auto), "rental" or "unicorn" = broker explicitly
+  // picked a side via the pipeline switcher. Only matters for a broker who
+  // genuinely has leads in both pipelines — everyone else can ignore it.
+  var pipelineView = localStorage.getItem("copilot_pipeline_view") || "";
+  // HoS-only: admin can view/act as any other broker without re-logging in.
+  // "" = viewing as HoS themselves. activeBroker() is what every API call
+  // actually uses — brokerName stays the real login so switching back is
+  // just picking "HoS (me)" again, not retyping the setup screen.
+  var HOS_ROSTER = ["Robert", "Amelia", "Sharon", "Yudi", "Saif", "Kristo", "Ferdian"];
+  var hosViewAs = localStorage.getItem("copilot_hos_view_as") || "";
+  function isHosLogin() { return (brokerName || "").trim().toLowerCase() === "hos"; }
+  function activeBroker() { return (isHosLogin() && hosViewAs) ? hosViewAs : brokerName; }
   var activeTab = "live";
   // Staged-delegation panel state: the broker dials "bot acts without approve
   // up to stage X" from here. Settings live server-side (/api/public/autopilot).
@@ -619,7 +648,9 @@ const PAGE_HTML = `<!doctype html>
   async function fetchInbox() {
     if (!brokerName) return;
     try {
-      var res = await fetch(API + "/suggestions?responsibleUser=" + encodeURIComponent(brokerName), { cache: "no-store" });
+      var url = API + "/suggestions?responsibleUser=" + encodeURIComponent(activeBroker());
+      if (pipelineView) url += "&pipeline=" + encodeURIComponent(pipelineView);
+      var res = await fetch(url, { cache: "no-store" });
       var data = await res.json();
       var all = data.items || [];
       var REACH_STAGES = ["1st follow up", "2nd follow up", "final follow up"];
@@ -634,6 +665,25 @@ const PAGE_HTML = `<!doctype html>
         push: all.filter(function (i) { return i.kind === "push" && !isReachStage(i.lead_stage); }),
       };
       updateAppBadge();
+      // fetchInbox only ever refreshed the background list — an already-open
+      // detail view is a snapshot taken once in openDetail() and nothing here
+      // touched it again, so "Refresh" while a lead was open did nothing: same
+      // text, same (possibly still-missing) attachments no matter how many
+      // times the broker pressed it. Re-sync the open card from the fresh
+      // fetch too, unless the broker is actively editing (never stomp that).
+      if (openItem && !editing) {
+        var freshOpen = all.find(function (i) { return i.id === openItem.id; });
+        if (freshOpen) {
+          openItem.text = freshOpen.suggestion_text || "";
+          openItem.original = freshOpen.suggestion_text || "";
+          openItem.attachments = Array.isArray(freshOpen.attachments) ? freshOpen.attachments.slice() : [];
+          openItem.recent_messages = Array.isArray(freshOpen.recent_messages) ? freshOpen.recent_messages : [];
+          openItem.lead_stage = freshOpen.lead_stage || null;
+          openItem.suggested_stage = freshOpen.suggested_stage || null;
+          openItem.suggested_stage_reason = freshOpen.suggested_stage_reason || null;
+          openItem.suggested_stage_terminal = !!freshOpen.suggested_stage_terminal;
+        }
+      }
       render();
     } catch (e) { /* network hiccup — keep last snapshot */ }
   }
@@ -795,7 +845,7 @@ const PAGE_HTML = `<!doctype html>
           message: finalText,
           edited: finalText.trim() !== (item.original || "").trim(),
           originalText: item.original || "",
-          brokerId: brokerName,
+          brokerId: activeBroker(),
           // Send the CURRENT attachment list — the broker may have removed or
           // added property links while editing, and the server would otherwise
           // fall back to the originally generated set.
@@ -858,15 +908,21 @@ const PAGE_HTML = `<!doctype html>
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          guide: DEFAULT_GUIDE,
+          // A broker who customized their guide/output-language via the
+          // extension's options page (embedded-mode-only, carried in via
+          // the ?guide=/?outputLanguage= URL params) keeps that preference
+          // here instead of silently falling back to the English default —
+          // this is the one place mobile.ts calls /suggest with a hardcoded
+          // guide, so it's the one place this needed wiring.
+          guide: embeddedGuide || DEFAULT_GUIDE,
           lead: { name: item.lead_name || ("Lead " + item.lead_id), company: "", stage: item.lead_stage || item.kind || "" },
           messages: messages,
-          brokerName: brokerName,
-          brokerId: brokerName,
+          brokerName: activeBroker(),
+          brokerId: activeBroker(),
           leadId: item.lead_id,
           revisionChain: item.revisionChain,
           image: item._contextImage || undefined,
-          outputLanguage: "English",
+          outputLanguage: embeddedOutputLanguage || "English",
           attachments: (item.attachments || []).filter(function (a) { return a.type === "link" && a.url; }),
         }),
       });
@@ -891,6 +947,21 @@ const PAGE_HTML = `<!doctype html>
           var keep = (item.attachments || []).filter(function (a) { return a._broker; });
           item.attachments = json.attachments.concat(keep);
         }
+        // _attachmentsCurated only reflects THIS round's edit — a link added by
+        // hand in an EARLIER revision round keeps its _broker flag while the
+        // curated flag itself doesn't carry forward, so the branch above can
+        // still concat a link the server already echoed back on its own.
+        // Dedupe by URL regardless of why, so the client never sees the same
+        // listing attached twice.
+        var seenUrls = {};
+        var deduped = [];
+        for (var di = 0; di < item.attachments.length; di++) {
+          var dUrl = item.attachments[di].url;
+          if (dUrl && seenUrls[dUrl]) continue;
+          if (dUrl) seenUrls[dUrl] = true;
+          deduped.push(item.attachments[di]);
+        }
+        item.attachments = deduped;
         showToast("Options updated: " + item.attachments.length + " link(s)");
       }
       // The bot re-read the temperature from the pasted screenshot — apply it so
@@ -954,6 +1025,12 @@ const PAGE_HTML = `<!doctype html>
     window.scrollTo(0, 0);
   }
 
+  function renderConnecting() {
+    app.innerHTML =
+      '<div class="setup"><div class="brand"><span class="dot"></span> Copilot Inbox</div>' +
+      '<p style="color:#8a93a8;font-size:13px;margin-top:10px">Connecting…</p></div>';
+  }
+
   function renderSetup() {
     app.innerHTML =
       '<div class="setup">' +
@@ -980,8 +1057,27 @@ const PAGE_HTML = `<!doctype html>
     html += '<div class="top-row">';
     html += '<div class="brand"><span class="dot"></span> Copilot Inbox</div>';
     html += '<div style="display:flex;align-items:center;gap:6px">';
-    html += '<span class="broker-chip">\\ud83d\\udc64 <b>' + esc(brokerName) + '</b></span>';
-    if (pushSupported()) {
+    if (isHosLogin()) {
+      // HoS-only: view/act as any other broker without re-logging in. Every
+      // API call already reads activeBroker() instead of brokerName, so
+      // switching here is enough — no separate "impersonate" endpoint needed.
+      html += '<select id="hos-view-select" class="broker-chip" style="cursor:pointer;border-color:' + (hosViewAs ? "#fbbf24" : "#2a3146") + '">';
+      html += '<option value=""' + (!hosViewAs ? " selected" : "") + '>\\ud83d\\udc64 HoS (me)</option>';
+      HOS_ROSTER.forEach(function (name) {
+        html += '<option value="' + esc(name) + '"' + (hosViewAs === name ? " selected" : "") + '>\\ud83d\\udc41 ' + esc(name) + '</option>';
+      });
+      html += '</select>';
+    } else {
+      html += '<span class="broker-chip">\\ud83d\\udc64 <b>' + esc(brokerName) + '</b></span>';
+    }
+    html += '<button class="refresh-btn" id="pipeline-switch-btn" title="Pipeline: ' + (pipelineView ? esc(pipelineView) : "auto (both)") + ' \\u2014 tap to change" style="font-size:12px">' +
+      (pipelineView === "rental" ? "\\ud83c\\udfe0 Rental" : pipelineView === "unicorn" ? "\\ud83e\\udd84 Unicorn" : "\\ud83d\\udd00 Auto") + '</button>';
+    // Push relies on this document's own service-worker registration and
+    // Notification permission — both Permissions-Policy-gated to 'self' for
+    // a cross-origin iframe (amoCRM's domain vs. this server's), so offering
+    // it here would be a bell that silently never works. The standalone PWA
+    // (installed to the home screen) is the intended place for push.
+    if (pushSupported() && !EMBEDDED) {
       var pushOn = pushEnabled();
       html += '<button class="refresh-btn" id="toggle-push-btn" title="' + (pushOn ? "Disable notifications" : "Enable notifications") + '" style="' + (pushOn ? "" : "opacity:.45") + '">' + (pushOn ? "\\ud83d\\udd14" : "\\ud83d\\udd15") + '</button>';
     }
@@ -1049,6 +1145,19 @@ const PAGE_HTML = `<!doctype html>
     app.innerHTML = html;
 
     $("#refresh-btn").onclick = fetchInbox;
+    var pipeBtn = $("#pipeline-switch-btn");
+    if (pipeBtn) pipeBtn.onclick = function () {
+      pipelineView = pipelineView === "" ? "rental" : pipelineView === "rental" ? "unicorn" : "";
+      localStorage.setItem("copilot_pipeline_view", pipelineView);
+      fetchInbox();
+    };
+    var hosSelect = $("#hos-view-select");
+    if (hosSelect) hosSelect.onchange = function () {
+      hosViewAs = hosSelect.value;
+      localStorage.setItem("copilot_hos_view_as", hosViewAs);
+      openItem = null; editing = false;
+      fetchInbox();
+    };
     var apBtn = $("#autopilot-btn");
     if (apBtn) apBtn.onclick = async function () {
       apOpen = !apOpen;
@@ -1275,7 +1384,7 @@ const PAGE_HTML = `<!doctype html>
         it.profile_temperature = t; it.profile_temperature_source = "broker";
         renderDetail();
         try {
-          await fetch(API + "/set-temperature", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: String(it.lead_id), temperature: t, brokerId: brokerName }) });
+          await fetch(API + "/set-temperature", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: String(it.lead_id), temperature: t, brokerId: activeBroker() }) });
           showToast("Temperature set: " + t);
         } catch (e) {
           it.profile_temperature = prev; it.profile_temperature_source = prevSrc; renderDetail();
@@ -1459,7 +1568,7 @@ const PAGE_HTML = `<!doctype html>
           await fetch(API + "/approve", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              suggestionId: it.id, message: text, brokerId: brokerName, newStage: newStage,
+              suggestionId: it.id, message: text, brokerId: activeBroker(), newStage: newStage,
               stageId: stageIdForName(newStage) || it.lead_stage_id || undefined, skipMessage: true,
             }),
           });
@@ -1557,7 +1666,16 @@ const PAGE_HTML = `<!doctype html>
   }
 
   function render() {
-    if (!brokerName) { renderSetup(); return; }
+    if (!brokerName) {
+      // Embedded mode never asks the broker to type their own name — the
+      // bridge is authoritative and posts it moments after the iframe loads.
+      // Showing the manual-entry form here would both be redundant and,
+      // worse, let someone accidentally type in the WRONG name inside a
+      // panel meant to auto-identify them.
+      if (EMBEDDED) { renderConnecting(); return; }
+      renderSetup();
+      return;
+    }
     if (openItem) renderDetail();
     else renderList();
 
@@ -1571,18 +1689,69 @@ const PAGE_HTML = `<!doctype html>
     }
   }
 
+  // Opens a lead already present in the currently-fetched inbox (push
+  // notification deep-link, or the bridge telling us amoCRM navigated to a
+  // new lead). Known gap: a lead with NO pending suggestion yet (not seen by
+  // any detector so far) finds nothing here and shows nothing — same as a
+  // push deep-link always has. Generating one on demand needs a real
+  // server-side "create a suggestion for this lead now" endpoint, which
+  // doesn't exist yet; not building one under time pressure to avoid a
+  // subtler bug (wrong kind, a duplicate suggestion).
+  function openLeadById(leadId) {
+    if (!leadId) return;
+    var found = null, foundKind = null;
+    ["live", "reach", "push"].forEach(function (k) {
+      if (found) return;
+      var match = (items[k] || []).find(function (i) { return String(i.lead_id) === String(leadId); });
+      if (match) { found = match; foundKind = k; }
+    });
+    if (found) { activeTab = foundKind; openDetail(found, foundKind); }
+  }
+
   function openDeepLinkedLead() {
     var params = new URLSearchParams(location.search);
     var targetLead = params.get("lead");
     if (!targetLead) return;
     history.replaceState(null, "", location.pathname);
-    var found = null, foundKind = null;
-    ["live", "reach", "push"].forEach(function (k) {
-      if (found) return;
-      var match = (items[k] || []).find(function (i) { return String(i.lead_id) === String(targetLead); });
-      if (match) { found = match; foundKind = k; }
-    });
-    if (found) { activeTab = foundKind; openDetail(found, foundKind); }
+    openLeadById(targetLead);
+  }
+
+  // ── Embedded-mode bridge: the extension's content script relays amoCRM
+  // page context (which broker, which lead) into this iframe. Modeled on
+  // openPropertyPicker's own postMessage handshake above — same
+  // origin-and-source-checked pattern, just host and guest swapped: there
+  // WE are the iframe talking to a nested one; here we're the iframe being
+  // talked to by our parent.
+  var BRIDGE_ORIGIN = "https://unicornproperty.amocrm.ru";
+  window.addEventListener("message", function (e) {
+    if (e.origin !== BRIDGE_ORIGIN) return;
+    if (e.source !== window.parent) return;
+    var d = e.data;
+    if (!d || d.source !== "copilot-bridge") return;
+    if ((d.type === "init" || d.type === "broker") && d.broker) {
+      var brokerWasEmpty = !brokerName;
+      brokerName = d.broker;
+      localStorage.setItem("copilot_broker", brokerName);
+      if (brokerWasEmpty) {
+        render();
+        fetchStageOptions();
+        fetchInbox().then(function () { if (d.leadId) openLeadById(d.leadId); });
+      }
+    }
+    // Fetch fresh before opening — items may be a stale snapshot (up to 20s
+    // old, or older still since the periodic refresh skips while a card is
+    // open) from before this lead's suggestion/attachments were ready, and
+    // openLeadById only ever searched whatever was already in memory.
+    if (d.type === "lead" && d.leadId) fetchInbox().then(function () { openLeadById(d.leadId); });
+    if (d.type === "broker-replied" && d.leadId) {
+      if (openItem && String(openItem.lead_id) === String(d.leadId)) { openItem = null; render(); }
+      fetchInbox();
+    }
+  });
+  if (EMBEDDED) {
+    try {
+      window.parent.postMessage({ source: "copilot-embed", type: "ready" }, BRIDGE_ORIGIN);
+    } catch (e) { /* non-fatal — bridge may retry, or this instance is standalone despite the frame check */ }
   }
 
   render();
@@ -1597,6 +1766,10 @@ const PAGE_HTML = `<!doctype html>
 router.get("/m", (_req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
+  // Scoped to this route only — the extension's bridge embeds this exact
+  // page in an iframe inside amoCRM, which is otherwise unrestricted (no
+  // X-Frame-Options/CSP existed anywhere in this server before).
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'self' https://unicornproperty.amocrm.ru");
   res.send(PAGE_HTML);
 });
 

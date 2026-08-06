@@ -453,10 +453,16 @@ export function extractBudgetIdr(messages: string[]): number | null {
   // "750mill / year" is a yearly figure — read as monthly it became a 750M/month
   // ceiling, which let anything through. Bali quotes both, so the period matters.
   const PER_YEAR = /\/\s*year|per\s*year|a\s*year|\/\s*yr\b|yearly|annual|в\s*год|годов/i;
+  // "15-18mln per month. Yearly contract" — PER_YEAR alone matched "Yearly"
+  // and divided an already-monthly rate by 12 (18M -> 1.5M), because "yearly"
+  // described the CONTRACT LENGTH, not the price's period; the same message
+  // also says "per month" outright. An explicit monthly marker in the same
+  // message always wins over a bare "yearly"/"annual" elsewhere in it.
+  const PER_MONTH = /\/\s*month|per\s*month|a\s*month|\/\s*mo\b|monthly|в\s*месяц|ежемесячно/i;
 
   for (const raw of messages) {
     const m = raw.toLowerCase();
-    const perYear = PER_YEAR.test(m);
+    const perYear = PER_YEAR.test(m) && !PER_MONTH.test(m);
     // People quoting a yearly figure often drop the "per year": Lukass wrote
     // "anything around 700 million or less" about a 3-year lease and the parser
     // read it as 700M PER MONTH — a ceiling that passes the entire island, so
@@ -477,6 +483,26 @@ export function extractBudgetIdr(messages: string[]): number | null {
     if (short?.[1]) {
       const n = parseFloat(short[1].replace(/[.,](?=\d{3}\b)/g, "").replace(",", "."));
       if (n > 0 && n < 100000) return toMonthly(n * 1_000_000);
+    }
+
+    // "30,000,000-50,000,000 IDR/mo" — a dash-separated range written in raw
+    // digits, not "30-50 million" words. The word-range above reads as the
+    // ceiling by accident (only the second number sits next to "million"),
+    // but the single-number match below stops at the dash and silently
+    // returned the FLOOR: a lead who stated 30-50 million got budget=30M,
+    // read as under a 40M threshold, and the rental budget gate auto-closed
+    // her — reopened by the broker, then closed again on the next pass,
+    // because nothing about the (wrong) parse ever changed. Take the larger
+    // side, same as the word-based range does.
+    if (/rp|idr|rupiah/.test(m)) {
+      const range = m.match(/(\d[\d\s.,]{6,})\s*(?:-|–|—|to|до)\s*(\d[\d\s.,]{6,})/);
+      if (range?.[1] && range[2]) {
+        const a = parseInt(range[1].replace(/[^\d]/g, ""), 10);
+        const b = parseInt(range[2].replace(/[^\d]/g, ""), 10);
+        if (a >= 1_000_000 && a < 100_000_000_000 && b >= 1_000_000 && b < 100_000_000_000) {
+          return toMonthly(Math.max(a, b));
+        }
+      }
     }
 
     // "Rp 30.000.000" / "30 000 000 idr"
@@ -502,11 +528,17 @@ export function extractBudgetIdr(messages: string[]): number | null {
  */
 export function extractBudgetFloorIdr(messages: string[]): number | null {
   const PER_YEAR = /\/\s*year|per\s*year|a\s*year|\/\s*yr\b|yearly|annual|в\s*год|годов/i;
+  // "15-18mln per month. Yearly contract" — PER_YEAR alone matched "Yearly"
+  // and divided an already-monthly rate by 12 (18M -> 1.5M), because "yearly"
+  // described the CONTRACT LENGTH, not the price's period; the same message
+  // also says "per month" outright. An explicit monthly marker in the same
+  // message always wins over a bare "yearly"/"annual" elsewhere in it.
+  const PER_MONTH = /\/\s*month|per\s*month|a\s*month|\/\s*mo\b|monthly|в\s*месяц|ежемесячно/i;
   const RANGE_SEP = /\s*(?:-|–|—|to|до)\s*/;
 
   for (const raw of messages) {
     const m = raw.toLowerCase();
-    const perYear = PER_YEAR.test(m);
+    const perYear = PER_YEAR.test(m) && !PER_MONTH.test(m);
     const toMonthly = (n: number) =>
       Math.round(perYear ? n / 12 : n > 200_000_000 ? n / 12 : n);
 

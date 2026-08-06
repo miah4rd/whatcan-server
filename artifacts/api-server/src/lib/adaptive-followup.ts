@@ -16,16 +16,18 @@
 export type Temperature = "cold" | "warm" | "hot" | null | undefined;
 
 /**
- * Brokers for whom the adaptive follow-up system (lead profiles, adaptive
- * cadence, priority ranking, discard flags) is enabled. Roll out to a new
- * broker by adding their exact amoCRM name here — every gate reads this set.
+ * Brokers whose entire book of business is the Rental pipeline, not Unicorn.
+ * Their leads would be wrongly Unicorn-filtered by the adaptive path below,
+ * and pending-visibility.ts scopes them to Rental-only leads (live and push
+ * alike) using this same set — one roster, two gates, so onboarding a new
+ * 100%-Rental broker is a single-line change instead of a two-file hunt.
+ *
+ * Only for brokers with NO Unicorn leads at all. A broker who works BOTH
+ * pipelines (e.g. Yudi) does not belong here — this is a hard exclusion, not
+ * a view preference, and would permanently hide their Unicorn leads. Those
+ * brokers instead use the pipeline switcher (?pipeline= on /api/suggestions).
  */
-// Rolled out from the initial Robert+Amelia pilot to ALL brokers. The only
-// carve-out is HoS: that account runs the Rental pipeline (its leads would be
-// wrongly Unicorn-filtered by the adaptive path), and it already has its own
-// handling in pending-visibility. Every other broker is ~100% Unicorn, so the
-// adaptive follow-up / ranking / temperature system is safe and on for them.
-const NON_ADAPTIVE_BROKERS = new Set<string>(["hos"]);
+const RENTAL_SCOPED_BROKERS = new Set<string>(["hos"]);
 
 /**
  * Case-insensitive on purpose. The broker name arrives spelled differently
@@ -35,8 +37,19 @@ const NON_ADAPTIVE_BROKERS = new Set<string>(["hos"]);
  * Unicorn-only filter downstream, silently emptied their Rental inbox on mobile
  * while the extension showed it fine.
  */
+export function isRentalScopedBroker(user: string | null | undefined): boolean {
+  return !!user && RENTAL_SCOPED_BROKERS.has(user.trim().toLowerCase());
+}
+
+/**
+ * Brokers for whom the adaptive follow-up system (lead profiles, adaptive
+ * cadence, priority ranking, discard flags) is enabled. Rolled out from the
+ * initial Robert+Amelia pilot to everyone except the Rental-scoped roster
+ * above — every other broker is ~100% Unicorn, so the adaptive system is
+ * safe and on for them.
+ */
 export function isAdaptiveBroker(user: string | null | undefined): boolean {
-  return !!user && !NON_ADAPTIVE_BROKERS.has(user.trim().toLowerCase());
+  return !!user && !isRentalScopedBroker(user);
 }
 
 // Base wait (days) indexed by silence streak = consecutive unanswered touches.

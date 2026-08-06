@@ -13,6 +13,7 @@ router.options("/suggestions", (_req, res) => res.sendStatus(204));
 router.get("/suggestions", async (req, res) => {
   const kind = req.query["kind"] as string | undefined;
   const responsibleUser = req.query["responsibleUser"] as string | undefined;
+  const pipelineParam = (req.query["pipeline"] as string | undefined)?.trim().toLowerCase();
 
   try {
     const [results, pushWhitelist] = await Promise.all([
@@ -34,6 +35,7 @@ router.get("/suggestions", async (req, res) => {
         ? await db
             .select({
               leadId: leadsSyncTable.leadId,
+              responsibleUser: leadsSyncTable.responsibleUser,
               content: leadsSyncTable.content,
               leadNotes: leadsSyncTable.leadNotes,
               leadStage: leadsSyncTable.leadStage,
@@ -119,13 +121,29 @@ router.get("/suggestions", async (req, res) => {
     if (kind === "live" || kind === "push") items = items.filter((r) => r.kind === kind);
     if (responsibleUser) {
       const wanted = responsibleUser.trim().toLowerCase();
-      items = items.filter((r) => (r.responsibleUser ?? "").trim().toLowerCase() === wanted);
+      // pending_suggestions.responsible_user is stamped at CREATION time and
+      // never touched again — if the lead is reassigned in amoCRM afterward
+      // (e.g. a broker handover), the suggestion silently falls into a gap:
+      // invisible to the new owner (row still says the old name) AND the old
+      // owner has moved on. leads_sync.responsible_user is kept current by
+      // every sync/webhook pass, so prefer it; fall back to the row's own
+      // stamp only if the lead hasn't been synced at all yet.
+      items = items.filter((r) => {
+        const current = (syncByLeadId.get(r.leadId)?.responsibleUser ?? r.responsibleUser ?? "").trim().toLowerCase();
+        return current === wanted;
+      });
     }
 
-    // Unicorn brokers see ONLY their Unicorn-pipeline leads — even if a lead of
-    // theirs sits in another pipeline (e.g. Rental), it must not surface here.
-    // Scoped to the adaptive (Unicorn) brokers so Rental brokers are unaffected.
-    if (isAdaptiveBroker(responsibleUser)) {
+    if (pipelineParam) {
+      // Broker explicitly picked a pipeline via the switcher — honor it over
+      // the default Unicorn-only auto-filter below, so a broker who genuinely
+      // works BOTH pipelines (unlike the fully Rental-scoped roster) can view
+      // either side on demand instead of being permanently locked to one.
+      items = items.filter((r) => (syncByLeadId.get(r.leadId)?.pipeline ?? "").toLowerCase() === pipelineParam);
+    } else if (isAdaptiveBroker(responsibleUser)) {
+      // Unicorn brokers see ONLY their Unicorn-pipeline leads — even if a lead of
+      // theirs sits in another pipeline (e.g. Rental), it must not surface here.
+      // Scoped to the adaptive (Unicorn) brokers so Rental brokers are unaffected.
       items = items.filter((r) => (syncByLeadId.get(r.leadId)?.pipeline ?? "").toUpperCase() === "UNICORN");
     }
 
@@ -210,7 +228,9 @@ router.get("/suggestions", async (req, res) => {
         ...i,
         suggestion_text: i.suggestionText,
         lead_id: i.leadId,
-        responsible_user: i.responsibleUser,
+        // Current synced owner, not the row's creation-time stamp — see the
+        // reassignment note above the responsibleUser filter.
+        responsible_user: sync?.responsibleUser ?? i.responsibleUser,
         followup_level: i.followupLevel,
         triggered_by_message_at: i.triggeredByMessageAt,
         created_at: i.createdAt,
@@ -220,6 +240,7 @@ router.get("/suggestions", async (req, res) => {
         lead_notes: sync?.leadNotes ?? null,
         lead_stage: sync?.leadStage ?? null,
         lead_stage_id: sync?.leadStageId ?? null,
+        pipeline: sync?.pipeline ?? null,
         last_message_at: sync?.lastMessageAt?.toISOString() ?? null,
         next_followup_at: sync?.nextFollowupAt?.toISOString() ?? null,
         last_lead_channel: lastLeadChannel,
