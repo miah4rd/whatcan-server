@@ -756,15 +756,19 @@ router.post("/approve", async (req, res) => {
   }
 
   // ── Stage change (applies for both normal approve and skip-message) ─────────
-  // The bot SUGGESTS a stage but no longer MOVES the lead into a funnel stage on
-  // its own — the owner wants the broker to decide. It kept auto-moving leads
-  // wrongly (e.g. → "Options Sent" when no options were sent yet). So a funnel
-  // move now applies ONLY when the broker picked it themselves (explicitNewStage);
-  // the classifier's autoStage is surfaced as a hint, not applied. The
-  // qualification ladder (1st→2nd→final) still advances automatically below —
-  // that's the cadence, not a funnel judgement call.
-  const effectiveNewStage = explicitNewStage ?? null;
-  void autoStage; // computed for the hint/logs; intentionally not auto-applied
+  // The classifier's stage is applied automatically on send — a stage the broker
+  // picked themselves (explicitNewStage) always wins over it. This was disabled
+  // for a few days (fcb6816, 2026-08-02) after the classifier moved leads on
+  // outbound promises rather than real progress (e.g. → "Options Sent" before
+  // options actually went out). Re-enabled 2026-08-06 per the owner — the guards
+  // that were meant to prevent exactly that stayed in place the whole time:
+  // suggestedStageTerminal is never auto-applied (line ~699), and a lead on the
+  // 1st/2nd/final follow-up ladder is never pulled into a funnel stage off our
+  // own outbound (inReachStage, both the draft-time and send-time classifier
+  // paths above). If a false "Options sent" jump shows up again, the fix is in
+  // the classifier's judgement (lib/stage-classifier.ts) or its guards here —
+  // not disabling auto-apply again, which just leaves leads stuck in New LEAD.
+  const effectiveNewStage = explicitNewStage ?? (autoStage ? autoStage.name : null);
   if (effectiveNewStage) {
     const prevSync = await db
       .select({ leadStage: leadsSyncTable.leadStage })
