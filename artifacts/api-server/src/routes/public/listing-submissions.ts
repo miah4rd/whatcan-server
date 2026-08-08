@@ -114,7 +114,7 @@ router.get("/listing-submissions", async (req, res) => {
       status === "all"
         ? await db.select().from(listingSubmissionsTable)
         : await db.select().from(listingSubmissionsTable).where(eq(listingSubmissionsTable.status, status));
-    rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    rows.sort((a: ListingSubmission, b: ListingSubmission) => b.createdAt.getTime() - a.createdAt.getTime());
     res.json({ submissions: rows });
   } catch (err) {
     logger.error({ err }, "list listing submissions failed");
