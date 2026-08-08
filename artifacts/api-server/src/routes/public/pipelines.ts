@@ -1,33 +1,32 @@
 import { Router } from "express";
-import { sql } from "drizzle-orm";
-import { db, leadsSyncTable } from "@workspace/db";
+import { amoFetch } from "../../lib/amo-client";
 
 const router = Router();
 
-// GET /api/public/pipelines — unique pipelines actually present among tracked
-// leads. Sourced from our own synced data (not amoCRM's raw pipeline list,
-// which also includes pipelines we deliberately don't sync, e.g. "Shanti
-// Agencies") — so the picker only ever offers something that can return
-// results, and a newly-tracked pipeline appears here automatically the
-// moment amo-sync starts syncing it, no code change needed on this end.
-router.get("/pipelines", async (_req, res) => {
-  try {
-    const rows = await db
-      .select({
-        pipeline: leadsSyncTable.pipeline,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(leadsSyncTable)
-      .where(sql`${leadsSyncTable.pipeline} IS NOT NULL AND ${leadsSyncTable.pipeline} != ''`)
-      .groupBy(leadsSyncTable.pipeline)
-      .orderBy(sql`count(*) DESC`);
+interface AmoPipeline {
+  id: number;
+  name: string;
+}
 
-    res.json(rows.map((r) => ({
-      name: r.pipeline,
-      leadCount: r.count,
-    })));
+// GET /api/public/pipelines — every pipeline that exists in amoCRM right now,
+// straight from the source (not filtered to what our own sync tracks). A
+// brand new pipeline the owner adds shows up here the moment it's created —
+// no code change needed on this end. Whether the bot actually generates
+// suggestions for leads in a given pipeline is a separate concern
+// (amo-sync.ts's own allowlist) — this endpoint is purely "what can I pick
+// in the switcher", matching the owner's own pipeline list 1:1.
+router.get("/pipelines", async (req, res) => {
+  try {
+    const data = await amoFetch<{ _embedded: { pipelines: AmoPipeline[] } }>(
+      "/api/v4/leads/pipelines?limit=50",
+    );
+    if (!data) {
+      res.status(502).json({ error: "amoCRM fetch failed" });
+      return;
+    }
+    res.json(data._embedded.pipelines.map((p) => ({ name: p.name })));
   } catch (err) {
-    _req.log.error({ err }, "get pipelines failed");
+    req.log.error({ err }, "get pipelines failed");
     res.status(500).json({ error: "internal" });
   }
 });
