@@ -239,10 +239,14 @@ const PAGE_HTML = `<!doctype html>
   var brokerName = (EMBEDDED && _qs.get("broker")) || localStorage.getItem("copilot_broker") || "";
   var embeddedGuide = EMBEDDED ? _qs.get("guide") : null;
   var embeddedOutputLanguage = EMBEDDED ? _qs.get("outputLanguage") : null;
-  // "" = server default (auto), "rental" or "unicorn" = broker explicitly
-  // picked a side via the pipeline switcher. Only matters for a broker who
-  // genuinely has leads in both pipelines — everyone else can ignore it.
+  // "" = all pipelines, otherwise the exact pipeline name the broker picked
+  // via the switcher. Only matters for a broker who genuinely has leads in
+  // more than one pipeline — everyone else can leave it on "All pipelines".
   var pipelineView = localStorage.getItem("copilot_pipeline_view") || "";
+  // Populated from /api/public/pipelines — whatever pipelines currently have
+  // tracked leads. Empty until that first fetch resolves; the dropdown just
+  // shows "All pipelines" alone until then.
+  var pipelineOptions = [];
   // HoS-only: admin can view/act as any other broker without re-logging in.
   // "" = viewing as HoS themselves. activeBroker() is what every API call
   // actually uses — brokerName stays the real login so switching back is
@@ -407,6 +411,17 @@ const PAGE_HTML = `<!doctype html>
       var json = await res.json();
       if (Array.isArray(json.stages) && json.stages.length > 0) PIPELINE_STAGES = json.stages;
     } catch (e) { /* keep built-in defaults */ }
+  }
+  async function fetchPipelineOptions() {
+    try {
+      var res = await fetch(API + "/pipelines", { cache: "no-cache" });
+      if (!res.ok) return;
+      var json = await res.json();
+      if (Array.isArray(json)) {
+        pipelineOptions = json.map(function (p) { return p.name; }).filter(Boolean);
+        render();
+      }
+    } catch (e) { /* dropdown just stays "All pipelines" */ }
   }
 
   // ── PUSH tab sort: stage → task urgency → warmth (mirrors suggestions.ts) ─
@@ -1070,8 +1085,16 @@ const PAGE_HTML = `<!doctype html>
     } else {
       html += '<span class="broker-chip">\\ud83d\\udc64 <b>' + esc(brokerName) + '</b></span>';
     }
-    html += '<button class="refresh-btn" id="pipeline-switch-btn" title="Pipeline: ' + (pipelineView ? esc(pipelineView) : "auto (both)") + ' \\u2014 tap to change" style="font-size:12px">' +
-      (pipelineView === "rental" ? "\\ud83c\\udfe0 Rental" : pipelineView === "unicorn" ? "\\ud83e\\udd84 Unicorn" : "\\ud83d\\udd00 Auto") + '</button>';
+    // Live list from /api/public/pipelines — whatever pipelines actually have
+    // tracked leads right now, so a newly-synced pipeline shows up here on
+    // its own with no code change. "All pipelines" (unset) is the plain-
+    // language default instead of an unexplained "Auto".
+    html += '<select id="pipeline-select" class="broker-chip" style="cursor:pointer" title="Which pipeline\\'s leads to show">';
+    html += '<option value=""' + (!pipelineView ? " selected" : "") + '>\\ud83d\\udd00 All pipelines</option>';
+    pipelineOptions.forEach(function (name) {
+      html += '<option value="' + esc(name) + '"' + (pipelineView.toLowerCase() === name.toLowerCase() ? " selected" : "") + '>' + esc(name) + '</option>';
+    });
+    html += '</select>';
     // Push relies on this document's own service-worker registration and
     // Notification permission — both Permissions-Policy-gated to 'self' for
     // a cross-origin iframe (amoCRM's domain vs. this server's), so offering
@@ -1145,10 +1168,11 @@ const PAGE_HTML = `<!doctype html>
     app.innerHTML = html;
 
     $("#refresh-btn").onclick = fetchInbox;
-    var pipeBtn = $("#pipeline-switch-btn");
-    if (pipeBtn) pipeBtn.onclick = function () {
-      pipelineView = pipelineView === "" ? "rental" : pipelineView === "rental" ? "unicorn" : "";
+    var pipeSelect = $("#pipeline-select");
+    if (pipeSelect) pipeSelect.onchange = function () {
+      pipelineView = pipeSelect.value;
       localStorage.setItem("copilot_pipeline_view", pipelineView);
+      openItem = null; editing = false;
       fetchInbox();
     };
     var hosSelect = $("#hos-view-select");
@@ -1756,6 +1780,7 @@ const PAGE_HTML = `<!doctype html>
 
   render();
   fetchStageOptions();
+  fetchPipelineOptions();
   if (brokerName) fetchInbox().then(openDeepLinkedLead);
   setInterval(function () { if (!openItem) fetchInbox(); }, 20000);
 })();
