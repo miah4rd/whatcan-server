@@ -24,6 +24,7 @@ import noReplyNeededRouter from "./no-reply-needed";
 import autopilotRouter from "./autopilot";
 import budgetFilterRouter from "./budget-filter";
 import aiSpendRouter from "./ai-spend";
+import listingSubmissionsRouter from "./listing-submissions";
 
 const router = Router();
 
@@ -52,5 +53,6 @@ router.use(whoamiRouter);
 router.use(setTemperatureRouter);
 router.use(rescheduleTaskRouter);
 router.use(noReplyNeededRouter);
+router.use(listingSubmissionsRouter);
 
 export default router;

@@ -6,7 +6,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import Dashboard from "@/pages/Dashboard";
 import Tasks from "@/pages/Tasks";
 import Login from "@/pages/Login";
-import SettingsPage from "@/pages/Settings";
+import Listings from "@/pages/Listings";
+import ListingSubmit from "@/pages/ListingSubmit";
 import { motion, useInView } from "framer-motion";
 import { ArrowRight, MessageSquare, Zap, Crosshair, Target, Shield, Check, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -451,7 +452,8 @@ function Router() {
     <Switch>
       <Route path="/dashboard" component={Dashboard} />
       <Route path="/tasks" component={Tasks} />
-      <Route path="/settings" component={SettingsPage} />
+      <Route path="/listings/new" component={ListingSubmit} />
+      <Route path="/listings" component={Listings} />
       <Route path="/login" component={Login} />
       <Route path="/" component={Home} />
       <Route component={Home} />

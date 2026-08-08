@@ -524,11 +524,11 @@ export default function Dashboard() {
         >
           Tasks
         </a>
-        <a href="/settings"
+        <a href="/listings"
           className="text-xs font-medium px-2.5 py-1 rounded-lg border transition-colors"
           style={{ color: "rgba(96,165,250,0.8)", borderColor: "rgba(96,165,250,0.2)", background: "rgba(96,165,250,0.06)" }}
         >
-          Settings
+          Listings
         </a>
         <div className="mr-2">
           <h1 className="text-sm font-bold text-white">{t.dash_title}</h1>
