@@ -28,8 +28,15 @@ const PAGE_HTML = `<!doctype html>
     position: sticky; top: 0; z-index: 5; background: #141827; border-bottom: 1px solid #2a3146;
     padding: 12px 16px calc(10px + env(safe-area-inset-top)) 16px; padding-top: max(12px, env(safe-area-inset-top));
   }
-  .top-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .brand { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 6px; }
+  /* Wrap, or the header runs off the phone. At 375px the controls group is
+     366px wide on its own: with the brand beside it the row measured 457px,
+     so the refresh, notification and autopilot buttons sat entirely past the
+     right edge — unreachable on a phone, with the page scrolling sideways. */
+  .top-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .top-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
+  /* A select will not shrink below its longest option unless told to. */
+  .top-actions select.broker-chip { min-width: 0; max-width: 46vw; }
+  .brand { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .brand .dot { width: 8px; height: 8px; border-radius: 50%; background: #2dd4bf; }
   .broker-chip {
     font-size: 12px; color: #8a93a8; background: #181d2e; border: 1px solid #2a3146;
@@ -1071,7 +1078,7 @@ const PAGE_HTML = `<!doctype html>
     html += '<header>';
     html += '<div class="top-row">';
     html += '<div class="brand"><span class="dot"></span> Copilot Inbox</div>';
-    html += '<div style="display:flex;align-items:center;gap:6px">';
+    html += '<div class="top-actions">';
     if (isHosLogin()) {
       // HoS-only: view/act as any other broker without re-logging in. Every
       // API call already reads activeBroker() instead of brokerName, so
