@@ -54,16 +54,26 @@ export function isActionBrief(text: string): boolean {
   return /^\s*=*\s*ACTION BRIEF/i.test(text);
 }
 
-/** A section heading in either layout — where the preceding section stops. */
+/**
+ * The scout's own section headings — an explicit list, matched CASE-SENSITIVELY.
+ *
+ * A generic "this line looks like a heading" test (all-caps, ends in a colon)
+ * cannot work here: rental ads shout. "DIRECT OWNER. NO CONSTRUCTION AROUND.
+ * LONG TERM ONLY." and "PRICE (minimum three months upfront):" are ad copy, and
+ * the heuristic version of this function treated the first one as a section
+ * break — trimming a 900-character listing down to its title line, which the
+ * bot would then have answered knowing nothing but "2BR in Pererenan".
+ * Case-sensitivity is what keeps the ad's own "WhatsApp ..." and "Contact: ..."
+ * lines from being mistaken for the scout's "=== WHATSAPP ===" section.
+ */
+const SCOUT_HEADING =
+  /^\s*(?:={2,}|!{2,})?\s*(SOURCE|ORIGINAL TEXT|IDENTIFIED VILLA|GOOGLE MAPS|WHATSAPP|PROPERTY|ACTION BRIEF|POSSIBLE DUPLICATE)\b/;
+
 function isHeading(raw: string): boolean {
   const t = raw.trim();
   if (!t) return false;
-  if (/^={2,}/.test(t)) return true; // === SECTION ===
-  // "IDENTIFIED VILLA (Google Lens on exterior photo):" — the parenthetical is
-  // lowercase, so judge only the part before it.
-  const core = t.replace(/\([^)]*\)/g, "").replace(/:$/, "").trim();
-  if (core.length < 5) return false;
-  return /^[A-Z0-9][A-Z0-9 /,'!.-]*$/.test(core) && /[A-Z]{3,}/.test(core);
+  if (/^={2,}/.test(t)) return true; // === SECTION === (layout B, unambiguous)
+  return SCOUT_HEADING.test(t);
 }
 
 /** The body under `headingRe`, up to the next heading. */
