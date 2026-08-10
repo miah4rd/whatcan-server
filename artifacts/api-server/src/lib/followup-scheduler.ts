@@ -17,6 +17,7 @@ import { refreshLeadProfile } from "./lead-profile";
 import { isBroker, brokerKey, brokerDisplayName } from "./broker-identity";
 import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
 import { processListingAcquisitionOutreach } from "./listing-acquisition-outreach";
+import { isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { correctionsPromptBlock } from "./broker-corrections";
 import { maybeAutopilot } from "./autopilot";
 import { enforceBudgetFilter } from "./budget-filter";
@@ -482,6 +483,22 @@ export async function processFollowups(): Promise<void> {
           { leadId: lead.leadId, leadStage },
           "scheduler: push suppressed — stage requires broker-driven handling",
         );
+        continue;
+      }
+
+      // Rental Listings owns its own outbound: the acquisition pass seeds the
+      // owner's ad and the LIVE path answers it. Nothing templated may go out
+      // here. `qualification_steps` is ONE setting shared by every pipeline and
+      // the configured one is a BUYER script — villa owners were queued
+      // "Saw you grabbed the guide, ! 👋 Bali's still outperforming most markets
+      // on rental returns", empty name and all. That is the exact bug the Rental
+      // carve-out further down already exists for. Clear the task so it stops
+      // re-queuing; follow-up cadence for this funnel is a later phase.
+      if (isListingAcquisitionPipeline(lead.pipeline)) {
+        await db
+          .update(leadsSyncTable)
+          .set({ nextFollowupAt: null })
+          .where(eq(leadsSyncTable.leadId, lead.leadId));
         continue;
       }
 

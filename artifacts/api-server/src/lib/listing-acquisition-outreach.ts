@@ -195,21 +195,26 @@ export async function processListingAcquisitionOutreach(): Promise<number> {
   let seeded = 0;
   for (const lead of candidates) {
     try {
-      // Someone already worked this lead — don't rewrite history under them.
-      // Only a live card or a real send counts; a `skipped` row must not make
-      // the lead permanently unseedable (that bug is documented in
-      // sourced-lead-outreach.ts).
-      const [everQueued] = await db
+      // Only a REAL send blocks seeding — a broker approved or edited something,
+      // and rewriting the conversation under them would be dishonest.
+      //
+      // Counting 'pending' here let the bot lock itself out: the follow-up
+      // scheduler queued a draft for these leads before this pass reached them,
+      // and from then on every pass skipped the lead as "already worked", so it
+      // kept the draft written with no listing context forever. A draft nobody
+      // has approved is not history worth protecting. (A `skipped` row must not
+      // block either — that bug is documented in sourced-lead-outreach.ts.)
+      const [alreadySent] = await db
         .select({ id: pendingSuggestionsTable.id })
         .from(pendingSuggestionsTable)
         .where(
           and(
             eq(pendingSuggestionsTable.leadId, lead.leadId),
-            sql`${pendingSuggestionsTable.status} IN ('pending','approved','edited')`,
+            sql`${pendingSuggestionsTable.status} IN ('approved','edited')`,
           ),
         )
         .limit(1);
-      if (everQueued) continue;
+      if (alreadySent) continue;
 
       const { ad, brief, research } = await fetchLeadNotes(lead.leadId);
       // No ad text means no idea what this listing even is. Seeding a blank
@@ -227,6 +232,19 @@ export async function processListingAcquisitionOutreach(): Promise<number> {
       // The scout's research and brief reach the prompt as LEAD CARD INFO —
       // guidance for the bot, never quoted to the poster.
       const notesForPrompt = [research, brief].filter(Boolean).join("\n\n").slice(0, 6000);
+
+      // Retire any draft written before we had the ad — it was composed blind,
+      // and on this pipeline that meant a buyer-funnel template addressed to a
+      // villa owner. The LIVE pass writes a fresh one from the seeded ad.
+      await db
+        .update(pendingSuggestionsTable)
+        .set({ status: "skipped" })
+        .where(
+          and(
+            eq(pendingSuggestionsTable.leadId, lead.leadId),
+            eq(pendingSuggestionsTable.status, "pending"),
+          ),
+        );
 
       await db
         .update(leadsSyncTable)
