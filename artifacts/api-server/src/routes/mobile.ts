@@ -34,8 +34,11 @@ const PAGE_HTML = `<!doctype html>
      right edge — unreachable on a phone, with the page scrolling sideways. */
   .top-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
   .top-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
-  /* A select will not shrink below its longest option unless told to. */
-  .top-actions select.broker-chip { min-width: 0; max-width: 46vw; }
+  /* A select will not shrink below its longest option unless told to, and at
+     its natural 173px the five controls needed 364px in a 343px row — which
+     bounced the autopilot button onto a line of its own. Capped so the whole
+     group stays on one row; the option text ellipsises, which is fine. */
+  .top-actions select.broker-chip { min-width: 0; max-width: 34vw; }
   .brand { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .brand .dot { width: 8px; height: 8px; border-radius: 50%; background: #2dd4bf; }
   .broker-chip {
