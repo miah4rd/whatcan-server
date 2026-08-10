@@ -40,6 +40,26 @@ function messageId(leadId: string, eventTs: number, authorId: string, text: stri
 let cachedCookies: { cookieStr: string; expiresAt: number } | null = null;
 
 /**
+ * Circuit breaker for the Puppeteer login.
+ *
+ * amoCRM now puts a reCaptcha on the login form ("Пожалуйста, пройдите проверку
+ * reCaptcha"), so this login cannot complete and no access_token is ever issued.
+ * Without a breaker every caller kept retrying it on its own schedule: launch
+ * Chrome, fill the form, wait 30s for a navigation that never happens, give up —
+ * ~42 seconds of a pegged event loop every ~45 seconds, around the clock. That
+ * is what made the copilot panel feel like it was freezing, and it logged
+ * "Failed to obtain access_token cookie" 4,600+ times while doing it.
+ *
+ * A captcha does not clear itself, so that case backs off for hours rather than
+ * minutes. Solving it automatically is not on the table; the fix is either a
+ * session the OWNER establishes by hand or the official API.
+ */
+let loginBackoffUntil = 0;
+let loginFailures = 0;
+const LOGIN_BACKOFF_CAPTCHA_MS = 6 * 60 * 60 * 1000;
+const LOGIN_BACKOFF_MAX_MS = 30 * 60 * 1000;
+
+/**
  * Login via Puppeteer and extract access_token + other cookies.
  * The access_token cookie is used for direct HTTP requests to /ajax/ endpoints.
  */
@@ -48,6 +68,9 @@ async function getAmoCookies(): Promise<string | null> {
   if (cachedCookies && cachedCookies.expiresAt > Date.now() + 5 * 60 * 1000) {
     return cachedCookies.cookieStr;
   }
+
+  // Don't pay 40s to fail the same way again — see the breaker above.
+  if (Date.now() < loginBackoffUntil) return null;
 
   let puppeteerCore: any;
   try {
@@ -96,14 +119,42 @@ async function getAmoCookies(): Promise<string | null> {
 
     if (accessTokenCookie) {
       cachedCookies = { cookieStr, expiresAt };
+      loginFailures = 0;
+      loginBackoffUntil = 0;
       logger.info({ expiresAt: new Date(expiresAt).toISOString(), cookieCount: cookies.length }, "amoCRM cookies obtained");
-    } else {
-      logger.error("Failed to obtain access_token cookie from amoCRM");
+      return cookieStr;
     }
 
-    return cookieStr;
+    // No access_token means the session was never established. Returning the
+    // cookie string anyway (what this used to do) sent every caller off to make
+    // requests that 401 — so the logs blamed the endpoint instead of the login.
+    const blockedByCaptcha = await page
+      .evaluate(() => /captcha/i.test(document.body?.innerHTML ?? ""))
+      .catch(() => false);
+
+    loginFailures++;
+    loginBackoffUntil = Date.now() + (blockedByCaptcha
+      ? LOGIN_BACKOFF_CAPTCHA_MS
+      : Math.min(LOGIN_BACKOFF_MAX_MS, 60_000 * 2 ** Math.min(loginFailures, 5)));
+
+    logger.error(
+      {
+        blockedByCaptcha,
+        failures: loginFailures,
+        retryAt: new Date(loginBackoffUntil).toISOString(),
+        cookies: cookies.map((c) => c.name).join(","),
+      },
+      blockedByCaptcha
+        ? "amoCRM login is behind a reCaptcha — the timeline poll (webhook safety net) is OFF until a session is provided by hand. Webhooks remain the primary detector."
+        : "amoCRM login failed, no access_token — backing off",
+    );
+    return null;
   } catch (err) {
-    logger.error({ err }, "Puppeteer login failed");
+    // Back off here too — a launch/navigation crash retried every 45s costs the
+    // same pegged event loop as the captcha case did.
+    loginFailures++;
+    loginBackoffUntil = Date.now() + Math.min(LOGIN_BACKOFF_MAX_MS, 60_000 * 2 ** Math.min(loginFailures, 5));
+    logger.error({ err, failures: loginFailures, retryAt: new Date(loginBackoffUntil).toISOString() }, "Puppeteer login failed");
     return null;
   } finally {
     await browser.close().catch(() => {});
