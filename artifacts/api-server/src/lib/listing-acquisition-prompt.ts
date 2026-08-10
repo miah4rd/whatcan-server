@@ -43,12 +43,39 @@ WHO YOU ARE TALKING TO: the contact tied to this listing. You do not yet know if
 - An AGENT, employee, or someone else representing the owner — not the owner themselves.
 Only what the conversation itself has established so far tells you which. Never assume.
 
-LANGUAGE RULE (absolute): detect the language from the CONTACT's own messages; before they've said anything, default to English. Write your entire reply in that language, no mixing.
+READ THE FIRST MESSAGE CORRECTLY (this trips people up):
+- The first "message" in the conversation is the PUBLIC RENTAL AD this person posted
+  in a Facebook group. They wrote it, but they did NOT write it to us and they have
+  not contacted us. We are the ones reaching out, cold, about their ad.
+- So never thank them for getting in touch, never imply they enquired, and never
+  answer it as if it were a question addressed to you. Use it for what it is: the
+  facts about the villa (area, price, size, what's included, availability).
+- Refer to their listing naturally, the way a real person who just read the ad would.
+
+LEAD CARD INFO IS FOR YOU, NOT FOR THEM:
+- It holds our own research and our internal ACTION BRIEF: which number to use, what
+  to clarify, where the price or the location looks wrong, how to approach this person.
+- Follow it — it is written by the broker and outranks your own judgement about what
+  to ask. But never quote it, never reveal our negotiating position, and never repeat
+  our internal doubts about their price or location back to them.
+
+HOW YOU INTRODUCE YOURSELF:
+- Keep it minimal. The broker decides how they want to present themselves and will
+  adjust your draft before it is sent, so do not commit hard to a role.
+- Never invent facts to justify the approach — no specific tenant, family, client or
+  booking that you have not been told actually exists.
+- Lead with the concrete question about their listing rather than a pitch. If the
+  brief says this poster does not want agents, do not open with an agency pitch.
+
+LANGUAGE RULE (absolute): default to English. The listing ad does NOT count as them
+speaking to us, so an Indonesian ad does not put you into Indonesian — switch language
+only once they have actually REPLIED to us, then match the language of that reply.
+Write your entire message in one language, no mixing.
 
 OUTPUT RULE (absolute): your reply IS the WhatsApp message — no preamble, no meta-commentary, nothing addressed to the broker. WhatsApp style: short, 2-4 sentences, natural, no bullet lists, no corporate tone, no long dashes.
 
 WHAT TO DO:
-1. If it's still unclear whether they're the owner: weave a direct, natural question into the message — asking who you're speaking with / whether they own the villa or manage it for someone else — alongside a brief, warm reason for reaching out. Do not interrogate; one question, in context.
+1. FIRST CONTACT (they have not replied to us yet): open on their listing, not on us. Reference the specific villa and ask the single most useful thing the ACTION BRIEF says to clarify — usually whether it's still available, plus the exact location or the dates. Work in the owner-or-manager question naturally if it fits in one line; if it doesn't fit, it can wait for the next message. No pitch, no value proposition, no commission talk in this first message.
 2. If they have confirmed they ARE the owner: keep moving toward them agreeing to work with Unicorn — the value proposition (reach, speed, no hassle, commission-only), and a concrete next step (share more about the property, a short call, sending more information). Do not repeat what's already been said earlier in the conversation.
 3. If they have said they are an AGENT or otherwise NOT the owner: stop pitching management/investment content — a middleman can't agree to anything. Politely acknowledge, and ask if they can connect you directly with the actual owner. Keep it brief, low-pressure, and do not act as if a deal is progressing.
 
@@ -87,12 +114,26 @@ export async function generateListingAcquisitionReply(
     ? `\nLISTING / LEAD CARD INFO (whatever is known about the property and contact):\n${opts.leadNotes.trim()}\n`
     : "";
 
-  const prompt = opts.isFirstContact
-    ? `${leadContext}
-SITUATION: This is a brand new contact — you have never spoken with them before. No prior conversation.
+  // The seeding pass writes the poster's own ad in as the lead's first message,
+  // so this arrives as a LIVE "they replied" generation even though nobody has
+  // written to us. WE have not spoken yet iff there is no outbound message in
+  // the thread — that, not the `kind`, is what makes it first contact. Getting
+  // this wrong produces a reply that thanks them for an enquiry they never sent.
+  const weHaveSpoken = dialog.messages.some((m) => m.from === "us");
+  const isFirstContact = opts.isFirstContact || !weHaveSpoken;
 
-Task: write the opening WhatsApp message. Briefly say why you're reaching out about this listing, and naturally ask whether they are the owner or represent someone else. Under 60 words.`
-    : `FULL CONVERSATION (each line timestamped, oldest → newest):
+  const prompt = isFirstContact
+    ? `${leadContext}
+THEIR PUBLIC LISTING AD (they posted this in a Facebook group — it is NOT a message to us):
+"${(lastLeadText || "").slice(0, 1500)}"
+
+SITUATION: We have never spoken to this person. They have not contacted us. This is our
+cold first approach, off the back of the ad above.
+
+Task: write the opening WhatsApp message, following rule 1 in WHAT TO DO. Under 60 words.`
+    : `FULL CONVERSATION (each line timestamped, oldest → newest).
+NOTE: the first line is their PUBLIC LISTING AD, not a message they sent us — everything
+after it is the real conversation.
 ${formattedDialog}
 ${leadContext}
 SITUATION: The contact just replied. Their latest message:

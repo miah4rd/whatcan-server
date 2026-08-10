@@ -1287,12 +1287,13 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
       .catch((err) => logger.error({ err }, "sourced lead outreach error"));
   }, 60_000);
 
-  // Rental Listings: the bot has to write first (see the module doc) — same
-  // cheap-poll cadence as the sourced-lead pass above.
+  // Rental Listings: seed the owner's own ad as the first message, then answer
+  // it right away instead of waiting for the next general pass — same
+  // seed-then-generate shape (and cadence) as the sourced-lead pass above.
   setInterval(() => {
-    processListingAcquisitionOutreach().catch((err) =>
-      logger.error({ err }, "listing acquisition outreach error"),
-    );
+    processListingAcquisitionOutreach()
+      .then((seeded) => (seeded > 0 ? processUnansweredLive() : undefined))
+      .catch((err) => logger.error({ err }, "listing acquisition outreach error"));
   }, 60_000);
 }
 
