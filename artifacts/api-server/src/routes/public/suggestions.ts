@@ -405,15 +405,46 @@ router.get("/suggestions", async (req, res) => {
           const brokerKey = (responsibleUser ?? "").trim().toLowerCase();
           if (brokerKey) {
             const baliDay = new Date(nowMs + BALI_OFFSET_MS).toISOString().slice(0, 10);
-            const focusKey = `daily_focus:${brokerKey}`;
+            // The quota is per broker AND PER PIPELINE. A single shared bucket
+            // meant a second pipeline could never appear at all: Yudi's 25
+            // Unicorn leads filled the day before Rental Listings existed, and
+            // because the quota is applied AFTER the pipeline filter, switching
+            // the picker to Rental Listings showed an empty inbox with 11 ready
+            // drafts sitting behind it — "no same-day backfill" is deliberate,
+            // so it would have stayed empty until the Unicorn queue drained.
+            // Each pipeline now gets its own daily budget (owner's call, weighed
+            // against the WhatsApp-ban reason the cap exists for).
+            const defaultScope = isAdaptiveBroker(responsibleUser) ? "unicorn" : "all";
+            const quotaScope = pipelineParam || defaultScope;
+            const focusKey = `daily_focus:${brokerKey}:${quotaScope}`;
             let served: string[] = [];
+            let loadedToday = false;
             try {
               const [row] = await db.select().from(brokerSettingsTable).where(eq(brokerSettingsTable.key, focusKey));
               if (row?.value) {
                 const parsed = JSON.parse(row.value) as { day?: string; leadIds?: string[] };
-                if (parsed.day === baliDay && Array.isArray(parsed.leadIds)) served = parsed.leadIds.slice();
+                if (parsed.day === baliDay && Array.isArray(parsed.leadIds)) {
+                  served = parsed.leadIds.slice();
+                  loadedToday = true;
+                }
               }
             } catch { /* fail open → fresh quota */ }
+            // Carry today's already-served leads over from the pre-split single
+            // bucket — but ONLY into the scope that bucket actually held. Without
+            // this the split would hand every broker a fresh quota mid-day on
+            // deploy, letting them send a second full batch on the same line.
+            if (!loadedToday && quotaScope === defaultScope) {
+              try {
+                const [legacy] = await db
+                  .select()
+                  .from(brokerSettingsTable)
+                  .where(eq(brokerSettingsTable.key, `daily_focus:${brokerKey}`));
+                if (legacy?.value) {
+                  const parsed = JSON.parse(legacy.value) as { day?: string; leadIds?: string[] };
+                  if (parsed.day === baliDay && Array.isArray(parsed.leadIds)) served = parsed.leadIds.slice();
+                }
+              } catch { /* no legacy bucket → fresh quota */ }
+            }
             // Top up today's PUSH quota (budget minus reach) with the highest-ranked
             // active-push not yet served. Drains as worked; no same-day backfill.
             const servedSet = new Set(served);
