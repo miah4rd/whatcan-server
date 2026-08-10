@@ -52,6 +52,27 @@ export function invalidatePushStageCache(): void {
   _cacheAt = 0;
 }
 
+/**
+ * Pipelines whose stages have nothing to do with the whitelist above.
+ *
+ * The whitelist is Unicorn's vocabulary (Contact Established, Needs Assessed,
+ * Options Sent...). A pipeline that names its stages differently matches none
+ * of it, so applying the whitelist to one hides EVERY push it ever produces —
+ * silently, with no error anywhere. That is exactly what happened to Rental
+ * Listings on its first day: 11 leads were synced, 11 opening messages were
+ * generated and queued, and the broker's inbox showed nothing, because
+ * "Initial Contact" is not "contact established".
+ *
+ * Rental was already exempt via a bare `=== "rental"` comparison at each call
+ * site; adding a second such pipeline is what turned that duplication into a
+ * bug. One predicate, so the next pipeline only has to be added here.
+ */
+const OWN_STAGE_VOCABULARY = new Set<string>(["rental", "rental listings"]);
+
+export function usesOwnStageVocabulary(pipeline: string | null | undefined): boolean {
+  return OWN_STAGE_VOCABULARY.has((pipeline ?? "").trim().toLowerCase());
+}
+
 export function isPushStageAllowed(whitelist: string[], rawStage: string | null | undefined): boolean {
   if (whitelist.length === 0) return true;
   if (!rawStage) return true;

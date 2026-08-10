@@ -1,6 +1,6 @@
 import { parseDialogContent } from "./dialog-parser";
 import { shouldSuppressPush, isClosedWonStage } from "./stage-routing";
-import { isPushStageAllowed } from "./push-stage-whitelist";
+import { isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whitelist";
 import { isRentalScopedBroker, isHosTrackedPipeline } from "./adaptive-followup";
 
 // Shared visibility rules for pending suggestions. This is the single source of
@@ -74,17 +74,18 @@ export function isPendingVisible(
   }
 
   // Push tab: only show stages in the dynamic whitelist (configurable via /api/admin/push-stages).
-  // Rental pipeline uses its own stage vocabulary (Qualified, New LEAD, Options sent,
-  // N foolow up) that doesn't overlap with this Unicorn-oriented whitelist, so it's
-  // exempted here the same way it's exempted during generation in followup-scheduler.ts.
+  // Pipelines with their own stage vocabulary (Rental, Rental Listings) match none of this
+  // Unicorn-oriented whitelist, so they're exempted here the same way they're exempted during
+  // generation in followup-scheduler.ts — see usesOwnStageVocabulary for what a missed
+  // exemption costs.
   // REACH-stage leads (1st/2nd/final follow up = qualification) are ALSO push-kind but
   // live in the extension's REACH tab — they're never in the CE/NA/OS whitelist, so
   // exempt them too (same bypass the scheduler uses), otherwise the REACH tab is empty.
-  const isRentalLead = (sync?.pipeline ?? "").toLowerCase() === "rental";
+  const ownVocabulary = usesOwnStageVocabulary(sync?.pipeline);
   const isReachStage = ["1st follow up", "2nd follow up", "final follow up"].some((k) =>
     stage.toLowerCase().includes(k),
   );
-  if (r.kind === "push" && !isRentalLead && !isReachStage && !isPushStageAllowed(pushWhitelist, stage)) return false;
+  if (r.kind === "push" && !ownVocabulary && !isReachStage && !isPushStageAllowed(pushWhitelist, stage)) return false;
 
   // Push tab: exclude Shanti Agencies pipeline — different business, not part of this copilot
   if (r.kind === "push" && sync?.pipeline === "Shanti Agencies") return false;
