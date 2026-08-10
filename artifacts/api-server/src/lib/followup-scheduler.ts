@@ -587,7 +587,7 @@ export async function processFollowups(): Promise<void> {
       // template fallback (see generatePushFollowup below) — it always needs
       // real conversation content, so this bypass only applies to Reach/Rental.
       const hasStageTpl =
-        (isReachStage || isRentalPipeline) &&
+        (isReachStage || ownVocabulary) &&
         (qualSteps.some((s) => s.message?.trim()) ||
           !!buildFollowupTemplateByLevel(1, lead.leadId, ""));
       if (!hasStageTpl && (!lead.content || lead.content.trim().length < 30)) {
@@ -785,7 +785,7 @@ export async function processFollowups(): Promise<void> {
       let rationale: string;
       let formattedDialog: string;
 
-      if (!isReachStage && !isRentalPipeline) {
+      if (!isReachStage && !ownVocabulary) {
         // ── Active-funnel PUSH (CE / Needs Assessed / Options Sent) ─────────
         // (Reached only for Robert — the whitelist gate above already `continue`d
         // every other broker, so profile/discard work here is Robert-scoped.)
