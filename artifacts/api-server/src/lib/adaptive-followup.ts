@@ -42,6 +42,22 @@ export function isRentalScopedBroker(user: string | null | undefined): boolean {
 }
 
 /**
+ * Pipelines HoS is responsible for outside their normal Unicorn exclusion —
+ * i.e. the pipelines the "isBroker(user, 'HoS') && pipeline !== ...' skips
+ * scattered across amocrm-webhook.ts/followup-scheduler.ts/pending-visibility.ts
+ * are meant to let through. Rental Listings (owner/agent acquisition) is a
+ * second HoS-run funnel alongside Rental itself — comparing against the single
+ * string "rental" at each call site would silently zero out generation AND
+ * visibility for it the same way an unlisted pipeline already did for Rental
+ * before this set existed. One roster, every call site reads it.
+ */
+const HOS_TRACKED_PIPELINES = new Set<string>(["rental", "rental listings"]);
+
+export function isHosTrackedPipeline(pipeline: string | null | undefined): boolean {
+  return HOS_TRACKED_PIPELINES.has((pipeline ?? "").trim().toLowerCase());
+}
+
+/**
  * Brokers for whom the adaptive follow-up system (lead profiles, adaptive
  * cadence, priority ranking, discard flags) is enabled. Rolled out from the
  * initial Robert+Amelia pilot to everyone except the Rental-scoped roster

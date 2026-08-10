@@ -11,11 +11,12 @@ import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelis
 import { getMergedConversation } from "./merged-conversation";
 import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
 import { generateSuggestion } from "./generate-suggestion";
-import { isAdaptiveBroker } from "./adaptive-followup";
+import { isAdaptiveBroker, isHosTrackedPipeline } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
 import { isBroker, brokerKey, brokerDisplayName } from "./broker-identity";
 import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
+import { processListingAcquisitionOutreach } from "./listing-acquisition-outreach";
 import { correctionsPromptBlock } from "./broker-corrections";
 import { maybeAutopilot } from "./autopilot";
 import { enforceBudgetFilter } from "./budget-filter";
@@ -485,8 +486,9 @@ export async function processFollowups(): Promise<void> {
       }
 
       // HoS is also responsible for leads outside the Rental pipeline (e.g. a
-      // separate hiring/HR track) — this bot only handles Rental for that account.
-      if (isBroker(lead.responsibleUser, "HoS") && (lead.pipeline ?? "").toLowerCase() !== "rental") {
+      // separate hiring/HR track) — this bot only handles Rental (and Rental
+      // Listings) for that account.
+      if (isBroker(lead.responsibleUser, "HoS") && !isHosTrackedPipeline(lead.pipeline)) {
         await db
           .update(leadsSyncTable)
           .set({ nextFollowupAt: null })
@@ -1144,9 +1146,10 @@ export async function processUnansweredLive(): Promise<void> {
     const stage = (l.leadStage ?? "").toLowerCase();
     if (shouldSuppressPush(stage)) return false;
     // HoS is also responsible for leads outside the Rental pipeline (e.g. a
-    // separate hiring/HR track) — this bot only handles Rental for that account,
-    // so skip generation entirely rather than burning an AI call just to hide it later.
-    if (isBroker(l.responsibleUser, "HoS") && (l.pipeline ?? "").toLowerCase() !== "rental") return false;
+    // separate hiring/HR track) — this bot only handles Rental (and Rental
+    // Listings) for that account, so skip generation entirely rather than
+    // burning an AI call just to hide it later.
+    if (isBroker(l.responsibleUser, "HoS") && !isHosTrackedPipeline(l.pipeline)) return false;
     return true;
   });
   if (toProcess.length === 0) return;
@@ -1282,6 +1285,14 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
         return undefined;
       })
       .catch((err) => logger.error({ err }, "sourced lead outreach error"));
+  }, 60_000);
+
+  // Rental Listings: the bot has to write first (see the module doc) — same
+  // cheap-poll cadence as the sourced-lead pass above.
+  setInterval(() => {
+    processListingAcquisitionOutreach().catch((err) =>
+      logger.error({ err }, "listing acquisition outreach error"),
+    );
   }, 60_000);
 }
 

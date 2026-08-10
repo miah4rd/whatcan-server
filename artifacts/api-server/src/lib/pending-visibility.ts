@@ -1,7 +1,7 @@
 import { parseDialogContent } from "./dialog-parser";
 import { shouldSuppressPush, isClosedWonStage } from "./stage-routing";
 import { isPushStageAllowed } from "./push-stage-whitelist";
-import { isRentalScopedBroker } from "./adaptive-followup";
+import { isRentalScopedBroker, isHosTrackedPipeline } from "./adaptive-followup";
 
 // Shared visibility rules for pending suggestions. This is the single source of
 // truth used both by the /suggestions inbox route AND the push-notification
@@ -92,7 +92,7 @@ export function isPendingVisible(
   // Rental-scoped brokers (HoS, Yudi, ...): scoped to Rental pipeline only —
   // leads from other pipelines (e.g. Unicorn) are excluded entirely, live and
   // push alike. Roster shared with isAdaptiveBroker (adaptive-followup.ts).
-  if (isRentalScopedBroker(r.responsibleUser) && (sync?.pipeline ?? "").toLowerCase() !== "rental") return false;
+  if (isRentalScopedBroker(r.responsibleUser) && !isHosTrackedPipeline(sync?.pipeline)) return false;
 
   // Push tab: hide if lead has a FUTURE task — broker has already scheduled it.
   // amo-sync Pass 0 deletes these, but there's a 0–5 min window. This real-time

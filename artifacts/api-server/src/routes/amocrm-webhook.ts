@@ -16,7 +16,9 @@ import { buildRentalPromptParts } from "../lib/rental-prompt";
 import { buildSalesPromptParts } from "../lib/sales-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
+import { isHosTrackedPipeline } from "../lib/adaptive-followup";
 import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments } from "../lib/generate-suggestion";
+import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
 import { enforceBudgetFilter } from "../lib/budget-filter";
 import { recordCommitment } from "../lib/commitment-scheduler";
@@ -47,6 +49,16 @@ export async function generateSuggestion(opts: {
   /** "rental" swaps in the villa-rental prompt/qualifying logic instead of the Sales one */
   pipeline?: string | null;
 }): Promise<GeneratedSuggestion> {
+  // Rental Listings (acquiring rental listings from owners/agents) is a
+  // different conversation entirely — no property matching, no client
+  // qualifying logic. Handled by its own module so it can't fall through to
+  // the sales/Unicorn branch below, which would pitch villas to the owner
+  // instead of asking to manage theirs.
+  if (isListingAcquisitionPipeline(opts.pipeline)) {
+    const { text } = await generateListingAcquisitionReply(opts);
+    return { text, attachments: [] };
+  }
+
   const isRental = (opts.pipeline ?? "").toLowerCase() === "rental";
 
   // Property catalog is not included in AI suggestions (broker selects properties manually)
@@ -418,9 +430,10 @@ router.post("/amocrm/webhook", async (req, res) => {
     res.json({ ok: true, leadId });
 
     // HoS is also responsible for leads outside the Rental pipeline (e.g. a
-    // separate hiring/HR track) — this bot only handles Rental for that account,
-    // so skip generation entirely rather than burning an AI call just to hide it later.
-    if (isBroker(responsibleUser, "HoS") && (pipeline ?? "").toLowerCase() !== "rental") {
+    // separate hiring/HR track) — this bot only handles Rental (and Rental
+    // Listings) for that account, so skip generation entirely rather than
+    // burning an AI call just to hide it later.
+    if (isBroker(responsibleUser, "HoS") && !isHosTrackedPipeline(pipeline)) {
       return;
     }
 
@@ -771,8 +784,9 @@ router.post("/amocrm/webhook", async (req, res) => {
       .limit(1);
 
     // HoS is also responsible for leads outside the Rental pipeline (e.g. a
-    // separate hiring/HR track) — this bot only handles Rental for that account.
-    if (isBroker(responsibleUser, "HoS") && (legacySyncRow?.pipeline ?? "").toLowerCase() !== "rental") {
+    // separate hiring/HR track) — this bot only handles Rental (and Rental
+    // Listings) for that account.
+    if (isBroker(responsibleUser, "HoS") && !isHosTrackedPipeline(legacySyncRow?.pipeline)) {
       return;
     }
 
@@ -815,7 +829,7 @@ router.post("/amocrm/webhook", async (req, res) => {
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, String(lead.id)))
       .limit(1);
-    if (isBroker(lead.responsible_user_name, "HoS") && (syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
+    if (isBroker(lead.responsible_user_name, "HoS") && !isHosTrackedPipeline(syncRow?.pipeline)) continue;
 
     // Fresh deal with no messages yet — the "last active chat messenger" field
     // gets the responsible user's OWN line so the Salesbot knows where to reply.
@@ -848,7 +862,7 @@ router.post("/amocrm/webhook", async (req, res) => {
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, String(lead.id)))
       .limit(1);
-    if (isBroker(lead.responsible_user_name, "HoS") && (syncRow?.pipeline ?? "").toLowerCase() !== "rental") continue;
+    if (isBroker(lead.responsible_user_name, "HoS") && !isHosTrackedPipeline(syncRow?.pipeline)) continue;
 
     // A deal's responsible user can change right after creation. If the new
     // responsible differs from the one we know, and the deal still has no

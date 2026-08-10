@@ -8,6 +8,7 @@ import { getKnowledgeBase, filterKnowledgeBaseForRental } from "./knowledge-base
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { buildRentalPromptParts } from "./rental-prompt";
 import { buildSalesPromptParts } from "./sales-prompt";
+import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { matchProperties, availabilityForCriteria, describePropertiesByIds, type PropertyPick, type BrokerIntent } from "./property-catalog";
 import { db, pendingSuggestionsTable } from "@workspace/db";
 import { eq, inArray, and } from "drizzle-orm";
@@ -663,6 +664,17 @@ export async function generateSuggestion(opts: {
   /** "rental" swaps in the villa-rental prompt/qualifying logic instead of the Sales one */
   pipeline?: string | null;
 }): Promise<GeneratedSuggestion> {
+  // Rental Listings (acquiring rental listings from owners/agents) is a
+  // different conversation entirely — no property matching, no client
+  // qualifying logic. Own module so it can't fall through to the sales/
+  // Unicorn branch below, which would pitch villas to the owner instead of
+  // asking to manage theirs. Mirrored in routes/amocrm-webhook.ts's own
+  // generateSuggestion — see its top for why there are two.
+  if (isListingAcquisitionPipeline(opts.pipeline)) {
+    const { text } = await generateListingAcquisitionReply(opts);
+    return { text, attachments: [] };
+  }
+
   const isRental = (opts.pipeline ?? "").toLowerCase() === "rental";
 
   const [kb] = await Promise.all([

@@ -342,7 +342,7 @@ const PAGE_HTML = `<!doctype html>
     var html = taskStatusBadge(item.next_followup_at);
     if (item.profile_temperature) html += tempBadge(item.profile_temperature);
     if (item.lead_stage) html += '<span class="badge stagepill">' + esc(item.lead_stage) + '</span>';
-    if (item.discard_flagged) html += '<span class="badge discard">\\u2298 Review</span>';
+    if (item.discard_flagged) html += '<span class="badge discard" title="' + esc(item.discard_reason || '') + '">\\u2298 Review</span>';
     return html;
   }
 
