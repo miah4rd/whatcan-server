@@ -42,31 +42,60 @@ function decodeEntities(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
-function isActionBrief(text: string): boolean {
-  return /^\s*ACTION BRIEF/i.test(text);
+// The scout writes notes in TWO layouts and they must both parse. Assuming a
+// single format silently dropped 4 of 11 leads on the first run — they logged
+// "no ORIGINAL TEXT" and were skipped forever, which looks identical to "no
+// leads today":
+//   A) "SOURCE - ..." / "ORIGINAL TEXT:" / "IDENTIFIED VILLA (...)" / "GOOGLE MAPS"
+//   B) "=== SOURCE / FULL CHAIN ===" / "=== PROPERTY (from post) ===" /
+//      "=== ACTION BRIEF FOR LISTING AGENT ==="
+/** Exported for the note-parsing test — both layouts must keep parsing. */
+export function isActionBrief(text: string): boolean {
+  return /^\s*=*\s*ACTION BRIEF/i.test(text);
 }
 
-/**
- * The poster's own words, from the "ORIGINAL TEXT:" block. Everything after it
- * (IDENTIFIED VILLA, GOOGLE MAPS) is the scout's research, not theirs — it stops
- * at the next all-caps section heading. Falls back to the whole note when the
- * scout used a different layout, so a format change degrades to "too much
- * context" rather than to none at all.
- */
-function extractOriginalAd(note: string): string | null {
-  const start = note.search(/ORIGINAL TEXT\s*:/i);
+/** A section heading in either layout — where the preceding section stops. */
+function isHeading(raw: string): boolean {
+  const t = raw.trim();
+  if (!t) return false;
+  if (/^={2,}/.test(t)) return true; // === SECTION ===
+  // "IDENTIFIED VILLA (Google Lens on exterior photo):" — the parenthetical is
+  // lowercase, so judge only the part before it.
+  const core = t.replace(/\([^)]*\)/g, "").replace(/:$/, "").trim();
+  if (core.length < 5) return false;
+  return /^[A-Z0-9][A-Z0-9 /,'!.-]*$/.test(core) && /[A-Z]{3,}/.test(core);
+}
+
+/** The body under `headingRe`, up to the next heading. */
+function sectionAfter(note: string, headingRe: RegExp): string | null {
+  const lines = note.split("\n");
+  const start = lines.findIndex((l) => headingRe.test(l));
   if (start === -1) return null;
-  const after = note.slice(start).replace(/^ORIGINAL TEXT\s*:/i, "");
-  const lines = after.split("\n");
   const kept: string[] = [];
-  for (const line of lines) {
-    // A heading line: all-caps words, no lowercase letters, e.g.
-    // "IDENTIFIED VILLA (Google Lens on exterior photo):" or "GOOGLE MAPS ...".
-    if (kept.length > 0 && /^[A-Z][A-Z0-9 ()/,'-]{6,}/.test(line.trim()) && !/[a-z]/.test(line.trim().split("(")[0] ?? "")) break;
-    kept.push(line);
+  const sameLine = lines[start].replace(headingRe, "").replace(/^[\s:=]+/, "").replace(/=+$/, "").trim();
+  if (sameLine) kept.push(sameLine);
+  for (let i = start + 1; i < lines.length; i++) {
+    if (isHeading(lines[i])) break;
+    kept.push(lines[i]);
   }
   const text = kept.join("\n").trim();
   return text.length > 20 ? text : null;
+}
+
+/**
+ * What the poster themselves put out about the villa.
+ *
+ * Layout A gives the ad verbatim under "ORIGINAL TEXT:". Layout B has no
+ * verbatim copy — "PROPERTY (from post)" is the same content restated as
+ * bullets. Both are the poster's own facts, which is what the draft needs;
+ * everything else in the note (our research, the duplicate warning, the brief)
+ * is ours and stays out of the conversation.
+ */
+export function extractOriginalAd(note: string): string | null {
+  return (
+    sectionAfter(note, /ORIGINAL TEXT\s*:/i) ??
+    sectionAfter(note, /^\s*=*\s*PROPERTY\b[^=]*=*\s*$/i)
+  );
 }
 
 async function fetchLeadNotes(leadId: string): Promise<{ ad: string | null; brief: string; research: string }> {
