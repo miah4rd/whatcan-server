@@ -330,6 +330,19 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   follow-up timing, and the is-this-lead-alive check are Haiku (`HELPER_MODEL`).
   The owner's rule is "оставь соннет" for client-facing text — that is the line,
   not a blanket ban on cheaper models.
+- **A send is a 10-15 second request, and a restart used to cut it in half.**
+  Approving writes the amoCRM field, triggers Salesbot, then paces the property
+  links out one message at a time. The delivery was recorded in `sent_messages`
+  only at the END of that request — and that row is exactly what the retry guard
+  reads to answer "did this already go out?". A `pm2 restart` (i.e. any deploy)
+  landing in the gap left no trace of a message the client already had, so the
+  broker's retry delivered the whole thing a second time; all they saw was a
+  bare "Webhook 502". Now: the row is written the instant the text leaves and
+  carries `links k/n` as each link lands, so a retry resumes with the missing
+  links and never replays the text; `index.ts` drains in-flight requests on
+  SIGINT/SIGTERM (and on an uncaught exception) with PM2's `kill_timeout` at
+  25s to allow it; a stray unhandled rejection is logged, not fatal. Never move
+  the delivery record back behind the attachment loop.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
 
