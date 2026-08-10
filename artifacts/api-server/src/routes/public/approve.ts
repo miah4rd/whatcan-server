@@ -35,6 +35,71 @@ const COMPANION_FIELD_ID = 965907;
 const COMPANION_ROBERT_BOT_ID = 22127;
 
 /**
+ * How far a send got, stamped into the delivery record's webhookResponse.
+ * "…| links 2/3" means the text and two of three links reached the client.
+ */
+const LINK_PROGRESS = /\|\s*links (\d+)\/(\d+)/;
+
+/**
+ * Deliver the property links, each as its OWN WhatsApp message — glued into one
+ * message, WhatsApp only unfurls a rich preview banner for the first link.
+ *
+ * The text and every link share ONE amoCRM custom field: write, trigger, then
+ * overwrite with the next value and trigger again. The gap before the FIRST
+ * link is the riskiest one — Salesbot has to actually read and dispatch the text
+ * message before this loop overwrites the field with a URL, and a lead amoCRM
+ * hasn't processed before (a fresh contact especially) appears to take longer
+ * than a routine reply. A flat 1200ms was cutting that close enough that the
+ * text sometimes never went out — only the link did, because by the time
+ * Salesbot got around to reading the field, it already held the URL.
+ *
+ * Every link that lands is stamped into the delivery record as "links k/n".
+ * That marker is the ONLY thing that lets an interrupted send resume from where
+ * it stopped instead of replaying the whole message at the client.
+ *
+ * @param startIndex first link to send — > 0 when resuming an interrupted send.
+ * @returns how many links have now been delivered in total.
+ */
+async function sendAttachmentLinks(
+  leadId: string,
+  attachments: Array<{ url?: string | null }>,
+  startIndex: number,
+  sentMessageId: string | null,
+  hookBody: string,
+  log: { warn: (obj: object, msg: string) => void },
+): Promise<number> {
+  const total = attachments.length;
+  let delivered = startIndex;
+  for (let i = startIndex; i < total; i++) {
+    const url = attachments[i]?.url;
+    // Still counts as "done" — the progress marker is an index into this list,
+    // so a skipped entry must advance it or a resume would replay the wrong link.
+    if (!url) {
+      delivered = i + 1;
+      continue;
+    }
+    await new Promise((r) => setTimeout(r, i === 0 ? 3000 : 1200));
+    try {
+      const linkFieldOk = await updateLeadCustomField(leadId, COMPANION_FIELD_ID, url);
+      if (linkFieldOk) {
+        await triggerSalesbot(leadId, COMPANION_ROBERT_BOT_ID);
+        delivered = i + 1;
+        if (sentMessageId) {
+          await db
+            .update(sentMessagesTable)
+            .set({ webhookResponse: `${hookBody} | links ${delivered}/${total}` })
+            .where(eq(sentMessagesTable.id, sentMessageId as any))
+            .catch(() => {});
+        }
+      }
+    } catch (e) {
+      log.warn({ leadId, url, err: e }, "attachment send failed (non-fatal)");
+    }
+  }
+  return delivered;
+}
+
+/**
  * Close any open CRM tasks for this lead (in DB + amoCRM directly via API),
  * then create a new task scheduled for the NEXT follow-up interval.
  * Fire-and-forget — never blocks the approve response.
@@ -331,33 +396,6 @@ router.post("/approve", async (req, res) => {
     res.status(404).json({ error: "Suggestion not found" });
     return;
   }
-  if (sug.status !== "pending") {
-    // The status is claimed BEFORE the send, so a crash between the two leaves a
-    // suggestion permanently marked "sent" that never actually went out — the
-    // broker then gets a bare 409 on a message the client never received.
-    // sent_messages is the record of an actual delivery attempt: no row means
-    // nothing left the building, so let the broker retry instead of blocking.
-    const [alreadySent] = await db
-      .select({ id: sentMessagesTable.id })
-      .from(sentMessagesTable)
-      .where(eq(sentMessagesTable.suggestionId, sug.id as any))
-      .limit(1);
-
-    if (alreadySent) {
-      res.status(409).json({ error: "Already processed" });
-      return;
-    }
-
-    req.log.warn(
-      { leadId: sug.leadId, suggestionId: sug.id, status: sug.status },
-      "suggestion was claimed but never sent (interrupted send) — reopening for retry",
-    );
-    await db
-      .update(pendingSuggestionsTable)
-      .set({ status: "pending", finalText: null })
-      .where(eq(pendingSuggestionsTable.id, sug.id));
-    sug.status = "pending";
-  }
 
   // The broker's edited list wins ONLY when they actually curated it
   // (attachmentsCurated === true) — every current client always sends SOME
@@ -374,6 +412,74 @@ router.post("/approve", async (req, res) => {
         .filter((a) => a?.type === "link" && typeof a.url === "string" && a.url)
         .map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url! }))
     : (sug.attachments ?? []).filter((a) => a.type === "link" && a.url);
+
+  if (sug.status !== "pending") {
+    // The status is claimed BEFORE the send, so an interruption between the two
+    // leaves a suggestion marked "sent" that never actually went out — the
+    // broker then gets a bare 409 on a message the client never received.
+    // sent_messages is the record of a real delivery: it is written the INSTANT
+    // the text leaves (see the send path below), and it carries how many links
+    // followed it.
+    const [alreadySent] = await db
+      .select({
+        id: sentMessagesTable.id,
+        webhookStatus: sentMessagesTable.webhookStatus,
+        webhookResponse: sentMessagesTable.webhookResponse,
+      })
+      .from(sentMessagesTable)
+      .where(eq(sentMessagesTable.suggestionId, sug.id as any))
+      .limit(1);
+
+    // A row recording a FAILED attempt is not a delivery — it used to block the
+    // retry all the same, so a Salesbot error left the broker unable to resend
+    // a message the client never got.
+    const status = alreadySent?.webhookStatus ?? 0;
+    const delivered = !!alreadySent && status >= 200 && status < 300;
+
+    if (delivered) {
+      // The client ALREADY has this text — re-sending it is the one outcome we
+      // must never produce. It happened to lead 23166131 on 2026-08-10: the
+      // delivery was recorded only at the very END of the request, a restart cut
+      // the request between the text and its links, so the retry saw "nothing
+      // sent" and the client received the whole message a second time.
+      // Resume instead: deliver only the links that never made it.
+      const base = (alreadySent!.webhookResponse ?? "").replace(LINK_PROGRESS, "").trim();
+      const progress = LINK_PROGRESS.exec(alreadySent!.webhookResponse ?? "");
+      // No marker = a record written before this resume logic existed. Assume
+      // everything went out: a missing link is a nuisance, a duplicate is not.
+      const linksSent = progress ? Number(progress[1]) : effectiveAttachments.length;
+      const missing = Math.max(0, effectiveAttachments.length - linksSent);
+
+      if (missing > 0) {
+        req.log.warn(
+          { leadId: sug.leadId, suggestionId: sug.id, linksSent, total: effectiveAttachments.length },
+          "interrupted send resumed — text already delivered, sending only the missing links",
+        );
+        await sendAttachmentLinks(sug.leadId, effectiveAttachments, linksSent, alreadySent!.id, base, req.log);
+      }
+
+      res.json({
+        ok: true,
+        resumed: true,
+        hookStatus: status,
+        stageOk: false,
+        message: missing > 0
+          ? `This message had already reached the client — only the ${missing} missing link${missing > 1 ? "s" : ""} were sent just now. Nothing was sent twice.`
+          : "Already sent — the client has this message. Nothing was sent again.",
+      });
+      return;
+    }
+
+    req.log.warn(
+      { leadId: sug.leadId, suggestionId: sug.id, status: sug.status },
+      "suggestion was claimed but never sent (interrupted send) — reopening for retry",
+    );
+    await db
+      .update(pendingSuggestionsTable)
+      .set({ status: "pending", finalText: null })
+      .where(eq(pendingSuggestionsTable.id, sug.id));
+    sug.status = "pending";
+  }
 
   const approveNow = new Date();
   let hookStatus = 0;
@@ -604,43 +710,39 @@ router.post("/approve", async (req, res) => {
     }
     req.log.info({ leadId: sug.leadId, messengerSource, hookStatus, chatSent, hookBody }, "Salesbot response");
 
-    // Send each property link as its OWN follow-up WhatsApp message — glued
-    // into one message, WhatsApp only unfurls a rich preview banner for the
-    // first link, so listings need their own message each to all get one.
-    //
-    // The text above and every attachment share ONE amoCRM custom field:
-    // write, trigger, then overwrite with the next value and trigger again.
-    // The gap before the FIRST attachment is the riskiest one — Salesbot has
-    // to actually read and dispatch the text message before this loop
-    // overwrites the field with a URL, and a lead amoCRM hasn't processed
-    // before (a fresh contact especially) appears to take longer than a
-    // routine reply. A flat 1200ms was cutting that close enough that the
-    // text sometimes never went out — only the link did, because by the time
-    // Salesbot got around to reading the field, it already held the URL.
+    // ── Record the delivery BEFORE the links go out ───────────────────────────
+    // This row is the only proof the client already has the text, and the retry
+    // guard at the top of this handler reads it. It used to be written at the
+    // very END of the request — after ~5s of deliberate pacing plus several
+    // amoCRM round-trips — so a restart in that window left no trace of a
+    // message the client had already received, and the broker's retry delivered
+    // the whole thing a second time (lead 23166131, 2026-08-10).
+    // Note: suggestion status was already set atomically above (claimed update).
+    const [deliveryRow] = await db
+      .insert(sentMessagesTable)
+      .values({
+        leadId: sug.leadId,
+        suggestionId: sug.id as any,
+        kind: sug.kind,
+        messageText: deliveryText,
+        responsibleUser: currentResponsibleUser,
+        webhookStatus: hookStatus,
+        webhookResponse: chatSent && effectiveAttachments.length > 0
+          ? `${hookBody} | links 0/${effectiveAttachments.length}`
+          : hookBody,
+      })
+      .returning({ id: sentMessagesTable.id });
+
     if (chatSent && effectiveAttachments.length > 0) {
-      for (let i = 0; i < effectiveAttachments.length; i++) {
-        const att = effectiveAttachments[i]!;
-        await new Promise((r) => setTimeout(r, i === 0 ? 3000 : 1200));
-        try {
-          const linkFieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, att.url as string);
-          if (linkFieldOk) await triggerSalesbot(sug.leadId, botId);
-        } catch (e) {
-          req.log.warn({ leadId: sug.leadId, url: att.url, err: e }, "attachment send failed (non-fatal)");
-        }
-      }
+      await sendAttachmentLinks(
+        sug.leadId,
+        effectiveAttachments,
+        0,
+        deliveryRow?.id ?? null,
+        hookBody,
+        req.log,
+      );
     }
-
-    // Note: suggestion status already set atomically above (claimed update).
-
-    await db.insert(sentMessagesTable).values({
-      leadId: sug.leadId,
-      suggestionId: sug.id as any,
-      kind: sug.kind,
-      messageText: deliveryText,
-      responsibleUser: currentResponsibleUser,
-      webhookStatus: hookStatus,
-      webhookResponse: hookBody,
-    });
 
     // ── Learn from manual edits ─────────────────────────────────────────────
     if (
@@ -676,7 +778,7 @@ router.post("/approve", async (req, res) => {
     // ── Track property picks — personalizes future matching for this broker ──
     if (currentResponsibleUser && effectiveAttachments.length > 0) {
       for (const att of effectiveAttachments) {
-        const match = att.url.match(/\/property\/([A-Za-z0-9-]+)/i);
+        const match = att.url?.match(/\/property\/([A-Za-z0-9-]+)/i);
         if (!match) continue;
         const propertyId = match[1];
         const listingType = /^R-/i.test(propertyId) ? "rent" : "sale";

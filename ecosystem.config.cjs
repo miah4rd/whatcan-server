@@ -28,6 +28,12 @@ module.exports = {
     cwd: '/opt/whatcan',
     max_memory_restart: '512M',
     log: '/var/log/whatcan.log',
+    // A send takes 10-15s (amoCRM field write, Salesbot trigger, then the
+    // property links paced out one per message). PM2's default kill_timeout is
+    // 1600ms, so every deploy SIGKILLed the server mid-send: the client had the
+    // message, the broker saw "Webhook 502", and the retry delivered it twice.
+    // index.ts drains in-flight requests on SIGINT — this gives it the time.
+    kill_timeout: 25000,
     env: {
       ...loadEnv(),
       // Non-secret defaults (override .env if present)

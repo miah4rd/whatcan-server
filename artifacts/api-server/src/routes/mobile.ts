@@ -859,6 +859,21 @@ const PAGE_HTML = `<!doctype html>
     return typeof Notification !== "undefined" && Notification.permission === "granted" && localStorage.getItem("copilot_push_enabled") === "1";
   }
 
+  // A status code is not an answer to the only question a broker has after a
+  // failed send: does the client have this message or not? 502/503/504 mean the
+  // server went away mid-request (a deploy restart, typically) and the send may
+  // have got part-way; anything else means it never started.
+  var INTERRUPTED_SEND =
+    "Connection to the server dropped while sending. Part of the message may already have reached the client - open the chat in amoCRM and check before you press Send again.";
+
+  function sendErrorText(httpStatus, hookStatus) {
+    if (httpStatus === 502 || httpStatus === 503 || httpStatus === 504) return INTERRUPTED_SEND;
+    if (hookStatus != null && hookStatus !== 0 && (hookStatus < 200 || hookStatus >= 300)) {
+      return "amoCRM refused the send (code " + hookStatus + ") - the message was NOT sent. Try again, and if it repeats send it by hand from amoCRM.";
+    }
+    return "Could not send (code " + httpStatus + ") - the message was NOT sent. Try again.";
+  }
+
   async function approveServer(item, finalText) {
     item.busy = true; render();
     try {
@@ -885,17 +900,21 @@ const PAGE_HTML = `<!doctype html>
         // The server refuses to send when it can't resolve the outbound channel —
         // say so in plain words instead of a bare status code, because the action
         // the broker must take (send it by hand) is completely different.
-        item.error = json.message
-          ? json.message
-          : "Webhook " + (json.hookStatus != null ? json.hookStatus : res.status);
+        // Everything else used to read "Webhook 502", which told a broker nothing
+        // about the only thing that matters: did the client get it or not.
+        item.error = json.message ? json.message : sendErrorText(res.status, json.hookStatus);
         item.busy = false; item._approving = false; render();
         return;
       }
       openItem = null; editing = false;
-      showToast("Sent");
+      // A resumed send explains itself (part of it had already reached the
+      // client) — say that instead of a plain "Sent".
+      showToast(json.message ? json.message : "Sent");
       await fetchInbox();
     } catch (e) {
-      item.error = String((e && e.message) || e);
+      // The fetch itself failed (server gone, connection dropped) — same
+      // uncertainty as a 502, so give the broker the same instruction.
+      item.error = INTERRUPTED_SEND;
       item.busy = false; item._approving = false;
       render();
     }
