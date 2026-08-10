@@ -63,3 +63,22 @@ function shutdown(signal: string): void {
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => shutdown(signal));
 }
+
+// The drain above only covers an ORDERLY stop. Node's own defaults kill the
+// process on the spot for these two, which cuts an in-flight send exactly the
+// way a restart used to — that is how the "currentResponsibleUser is not
+// defined" bug took the server down mid-request.
+//
+// A stray rejection is almost always a fire-and-forget background promise (a
+// scheduler, a CRM task, a push) and is no reason to drop a broker's send: log
+// it and keep serving. An uncaught exception leaves the process in an unknown
+// state, so we do exit — but through the drain, so whatever is already being
+// delivered gets to finish first.
+process.on("unhandledRejection", (reason) => {
+  logger.error({ err: reason }, "unhandled promise rejection — logged, server kept alive");
+});
+
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "uncaught exception — draining before exit");
+  shutdown("uncaughtException");
+});
