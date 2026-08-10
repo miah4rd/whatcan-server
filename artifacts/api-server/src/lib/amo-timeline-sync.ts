@@ -128,9 +128,10 @@ async function getAmoCookies(): Promise<string | null> {
     // No access_token means the session was never established. Returning the
     // cookie string anyway (what this used to do) sent every caller off to make
     // requests that 401 — so the logs blamed the endpoint instead of the login.
-    const blockedByCaptcha = await page
-      .evaluate(() => /captcha/i.test(document.body?.innerHTML ?? ""))
-      .catch(() => false);
+    // page.content() rather than an in-page evaluate: this file is compiled
+    // without the DOM lib, so touching `document` here is a type error.
+    const pageHtml: string = await page.content().catch(() => "");
+    const blockedByCaptcha = /captcha/i.test(pageHtml);
 
     loginFailures++;
     loginBackoffUntil = Date.now() + (blockedByCaptcha
