@@ -110,8 +110,10 @@ const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = 
     meaning: "The owner is on board enough to be handing over what we need to publish the villa: photos, exact address or pin, available dates, prices, size, documents." },
   { match: /qualified|квалифиц/i,
     meaning: "CONFIRMED that this contact is the actual OWNER (or someone who can genuinely decide for the property), and they are open to hearing our offer. Not merely that they replied — the owner question must actually be answered." },
+  { match: /taken to work|взят.? в работу/i,
+    meaning: "Outreach HAS been sent and we are in conversation with the contact, but it is still NOT established whether they are the owner or an agent acting for someone else. Qualification is in progress. This is the right stage as soon as the first message goes out, and it stays until the owner question is actually answered." },
   { match: /initial contact|первичн|контакт/i,
-    meaning: "We have reached out about their listing and the conversation has started, but it is NOT yet established whether they are the owner or an agent acting for someone else. This is where qualification is still in progress." },
+    meaning: "A brand new listing card that we have NOT contacted yet — no message has gone out to this person at all. Only for leads where the conversation has not started." },
 ];
 
 function meaningFor(stageName: string, pipelineKey?: string): string | null {
@@ -122,7 +124,13 @@ function meaningFor(stageName: string, pipelineKey?: string): string | null {
   return null;
 }
 
-function isWorkflowStage(stageName: string): boolean {
+function isWorkflowStage(stageName: string, pipelineKey?: string): boolean {
+  // "TAKEN TO WORK" is administrative in Unicorn and Rental — it records that
+  // someone picked the card up, not where the conversation stands, which is why
+  // it is on the never-auto-set list. On the acquisition funnel the owner has
+  // given it a genuine conversational meaning: outreach sent, still finding out
+  // whether this is the real owner. Honour that here only.
+  if (pipelineKey === LISTING_ACQUISITION && /taken to work/i.test(stageName)) return false;
   return WORKFLOW_STAGE_PATTERNS.some((re) => re.test(stageName));
 }
 
@@ -156,7 +164,7 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
     const all: StageDef[] = ordered.map((s) => ({ name: s.name, id: s.id }));
 
     const selectable = ordered
-      .filter((s) => !isWorkflowStage(s.name))
+      .filter((s) => !isWorkflowStage(s.name, key))
       // On the acquisition funnel an unnamed-in-our-table stage is not merely
       // unlabelled, it is one we deliberately do not auto-set ("live",
       // "RENTED" — see LISTING_ACQUISITION_MEANINGS). The generic
