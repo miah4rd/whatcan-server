@@ -109,9 +109,9 @@ const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = 
   { match: /details|детал|информац/i,
     meaning: "The owner is on board enough to be handing over what we need to publish the villa: photos, exact address or pin, available dates, prices, size, documents." },
   { match: /qualified|квалифиц/i,
-    meaning: "CONFIRMED that this contact is the actual OWNER (or someone who can genuinely decide for the property), and they are open to hearing our offer. Not merely that they replied — the owner question must actually be answered." },
+    meaning: "The contact has CONFIRMED they are the owner (or can genuinely decide for the property). Choose this the moment that is confirmed, even if NOTHING else has been collected yet — do not wait for photos, prices, dates or documents, that is the next stage. Merely replying is not enough; the owner question must actually be answered." },
   { match: /taken to work|взят.? в работу/i,
-    meaning: "Outreach HAS been sent and we are in conversation with the contact, but it is still NOT established whether they are the owner or an agent acting for someone else. Qualification is in progress. This is the right stage as soon as the first message goes out, and it stays until the owner question is actually answered." },
+    meaning: "Outreach HAS been sent and we are in conversation, but it is still NOT established whether they are the owner or an agent acting for someone else. This is right as soon as the first message goes out. The moment they say who they are — owner or not — this stage stops being correct." },
   { match: /initial contact|первичн|контакт/i,
     meaning: "A brand new listing card that we have NOT contacted yet — no message has gone out to this person at all. Only for leads where the conversation has not started." },
 ];
