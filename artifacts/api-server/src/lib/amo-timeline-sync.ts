@@ -1,7 +1,8 @@
 /**
  * Fetches chat messages from amoCRM via internal /ajax/v3/leads/{id}/events_timeline/
- * endpoint. Uses Puppeteer to login and extract access_token cookie, then makes
- * direct HTTP requests with that cookie.
+ * endpoint, authenticated with the ordinary API Bearer token (see getAmoAuth —
+ * this used to drive a headless Chrome through the login form, which a reCaptcha
+ * later broke; the browser was never necessary).
  *
  * Types 89 = incoming message from client
  * Types 90 = outgoing message (bot/broker)
@@ -24,6 +25,8 @@ import { followupClockAfterReply } from "./rental-followup";
 import { enforceBudgetFilter } from "./budget-filter";
 import { recordCommitment } from "./commitment-scheduler";
 import { getAccessToken } from "./amo-client";
+import { getMergedConversation } from "./merged-conversation";
+import { renderDialogContent } from "./dialog-parser";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
 const AMO_BASE = `https://${AMO_SUBDOMAIN}.amocrm.ru`;
@@ -861,9 +864,27 @@ async function processQuickPollLead(
 
   // New incoming detected! Update DB
   const incomingAt = new Date(latestIncoming * 1000);
+  // Refresh the conversation itself, not just the flags. content is normally
+  // maintained by the Chrome extension when a broker opens the lead — on a
+  // funnel nobody opens by hand it stayed frozen at the seeded advert, so every
+  // draft was written as a cold first contact even though the owner had already
+  // answered, and the classifier tried to drag QUALIFIED leads back down.
+  let refreshedContent: string | null = null;
+  try {
+    const merged = await getMergedConversation(leadId, leadRow.content);
+    if (merged.length > 0) refreshedContent = renderDialogContent(merged);
+  } catch (err) {
+    logger.warn({ err, leadId }, "timeline: could not rebuild content, keeping the old one");
+  }
+
   await db
     .update(leadsSyncTable)
-    .set({ lastMessageFrom: "lead", lastMessageAt: incomingAt, updatedAt: new Date() })
+    .set({
+      lastMessageFrom: "lead",
+      lastMessageAt: incomingAt,
+      ...(refreshedContent ? { content: refreshedContent } : {}),
+      updatedAt: new Date(),
+    })
     .where(eq(leadsSyncTable.leadId, leadId));
 
   // Update messenger field

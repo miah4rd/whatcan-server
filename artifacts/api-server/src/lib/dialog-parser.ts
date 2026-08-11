@@ -307,3 +307,39 @@ export function conversationWindow(text: string, headChars = 2500, tailChars = 1
     t.slice(-tailChars)
   );
 }
+
+/**
+ * The inverse of parseDialogContent: turns messages back into the `content`
+ * string amoCRM produces, so the timeline poll can keep leads_sync.content
+ * current on its own.
+ *
+ * It normally isn't the poll's job — the Chrome extension refreshes content
+ * whenever a broker opens a lead, which is why the older funnels stay in sync.
+ * On a funnel nobody opens by hand (Rental Listings), content froze at the
+ * seeded advert: every draft was written as though the owner had never
+ * replied, and the stage classifier tried to pull QUALIFIED leads backwards
+ * because, as far as content was concerned, no conversation had happened.
+ *
+ * Timestamps are written +3h because parseDialogContent reads them as Moscow
+ * time and subtracts the offset — this round-trips.
+ */
+export function renderDialogContent(messages: ParsedMessage[]): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return messages
+    .slice()
+    .sort((a, b) => a.at.getTime() - b.at.getTime())
+    .map((m) => {
+      const s = new Date(m.at.getTime() + 3 * 60 * 60 * 1000);
+      const stamp =
+        `${p(s.getUTCDate())}.${p(s.getUTCMonth() + 1)}.${s.getUTCFullYear()} ` +
+        `${p(s.getUTCHours())}:${p(s.getUTCMinutes())}:${p(s.getUTCSeconds())}`;
+      // isOurSender() decides side purely by the "(клиент - …)" marker, so the
+      // sender label has to carry it for inbound and must not for outbound.
+      const sender =
+        m.from === "lead"
+          ? (/\((клиент|client)\s*[-–]/i.test(m.senderName ?? "") ? m.senderName : `${m.senderName || "Lead"} (клиент - whatsapp)`)
+          : (m.senderName && !/\((клиент|client)\s*[-–]/i.test(m.senderName) ? m.senderName : "Manager (менеджер - whatsapp)");
+      return `${stamp} ${sender} → ${(m.text ?? "").replace(/\s*\n+\s*/g, " ").trim()}`;
+    })
+    .join("\n");
+}
