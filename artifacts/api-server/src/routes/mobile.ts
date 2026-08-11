@@ -257,13 +257,14 @@ const PAGE_HTML = `<!doctype html>
   // tracked leads. Empty until that first fetch resolves; the dropdown just
   // shows "All pipelines" alone until then.
   var pipelineOptions = [];
-  // HoS-only: admin can view/act as any other broker without re-logging in.
-  // "" = viewing as HoS themselves. activeBroker() is what every API call
-  // actually uses — brokerName stays the real login so switching back is
-  // just picking "HoS (me)" again, not retyping the setup screen.
+  // Admin-only: HoS or Admin can view/act as any other broker without
+  // re-logging in. "" = viewing as themselves. activeBroker() is what every
+  // API call actually uses — brokerName stays the real login so switching
+  // back is just picking "(me)" again, not retyping the setup screen.
+  var ADMIN_LOGINS = ["hos", "admin"];
   var HOS_ROSTER = ["Robert", "Amelia", "Sharon", "Yudi", "Saif", "Kristo", "Ferdian"];
   var hosViewAs = localStorage.getItem("copilot_hos_view_as") || "";
-  function isHosLogin() { return (brokerName || "").trim().toLowerCase() === "hos"; }
+  function isHosLogin() { return ADMIN_LOGINS.indexOf((brokerName || "").trim().toLowerCase()) !== -1; }
   function activeBroker() { return (isHosLogin() && hosViewAs) ? hosViewAs : brokerName; }
   var activeTab = "live";
   // Staged-delegation panel state: the broker dials "bot acts without approve
@@ -1106,7 +1107,7 @@ const PAGE_HTML = `<!doctype html>
       // API call already reads activeBroker() instead of brokerName, so
       // switching here is enough — no separate "impersonate" endpoint needed.
       html += '<select id="hos-view-select" class="broker-chip" style="cursor:pointer;border-color:' + (hosViewAs ? "#fbbf24" : "#2a3146") + '">';
-      html += '<option value=""' + (!hosViewAs ? " selected" : "") + '>\\ud83d\\udc64 HoS (me)</option>';
+      html += '<option value=""' + (!hosViewAs ? " selected" : "") + '>\\ud83d\\udc64 ' + esc(brokerName) + ' (me)</option>';
       HOS_ROSTER.forEach(function (name) {
         html += '<option value="' + esc(name) + '"' + (hosViewAs === name ? " selected" : "") + '>\\ud83d\\udc41 ' + esc(name) + '</option>';
       });
