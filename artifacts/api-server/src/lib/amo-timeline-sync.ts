@@ -23,12 +23,10 @@ import { shouldSuppressPush } from "./stage-routing";
 import { followupClockAfterReply } from "./rental-followup";
 import { enforceBudgetFilter } from "./budget-filter";
 import { recordCommitment } from "./commitment-scheduler";
+import { getAccessToken } from "./amo-client";
 
 const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN ?? "unicornproperty";
 const AMO_BASE = `https://${AMO_SUBDOMAIN}.amocrm.ru`;
-const LOGIN = process.env.AMO_LOGIN ?? "unicorn.properties.office@gmail.com";
-const PASSWORD = process.env.AMO_PASSWORD ?? "UnicornProperty00!";
-const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH ?? undefined;
 
 // ── Deterministic message ID ───────────────────────────────────────────────────
 function messageId(leadId: string, eventTs: number, authorId: string, text: string): string {
@@ -36,130 +34,28 @@ function messageId(leadId: string, eventTs: number, authorId: string, text: stri
   return createHash("sha256").update(payload).digest("hex").slice(0, 32);
 }
 
-// ── Cookie cache ───────────────────────────────────────────────────────────────
-let cachedCookies: { cookieStr: string; expiresAt: number } | null = null;
-
+// ── Auth for the internal /ajax/ endpoints ────────────────────────────────────
 /**
- * Circuit breaker for the Puppeteer login.
+ * The ajax timeline accepts the ordinary API Bearer token.
  *
- * amoCRM now puts a reCaptcha on the login form ("Пожалуйста, пройдите проверку
- * reCaptcha"), so this login cannot complete and no access_token is ever issued.
- * Without a breaker every caller kept retrying it on its own schedule: launch
- * Chrome, fill the form, wait 30s for a navigation that never happens, give up —
- * ~42 seconds of a pegged event loop every ~45 seconds, around the clock. That
- * is what made the copilot panel feel like it was freezing, and it logged
- * "Failed to obtain access_token cookie" 4,600+ times while doing it.
+ * This used to drive a headless Chrome through the amoCRM login form purely to
+ * scrape an access_token cookie. amoCRM then put a reCaptcha on that form, so
+ * the login could never complete: ~42 seconds of pegged event loop every ~45
+ * seconds, "Failed to obtain access_token cookie" 4,600+ times, and — the part
+ * that actually hurt — no incoming messages detected at all. Leads replied and
+ * the bot stayed blind.
  *
- * A captcha does not clear itself, so that case backs off for hours rather than
- * minutes. Solving it automatically is not on the table; the fix is either a
- * session the OWNER establishes by hand or the official API.
+ * The Puppeteer round trip was never needed. /ajax/v3/leads/{id}/events_timeline/
+ * answers 200 to the same Bearer token every other call in this codebase uses,
+ * message text included. No browser, no captcha, nothing to configure.
  */
-let loginBackoffUntil = 0;
-let loginFailures = 0;
-const LOGIN_BACKOFF_CAPTCHA_MS = 6 * 60 * 60 * 1000;
-const LOGIN_BACKOFF_MAX_MS = 30 * 60 * 1000;
-
-/**
- * Login via Puppeteer and extract access_token + other cookies.
- * The access_token cookie is used for direct HTTP requests to /ajax/ endpoints.
- */
-async function getAmoCookies(): Promise<string | null> {
-  // Return cached if still valid (with 5 min buffer)
-  if (cachedCookies && cachedCookies.expiresAt > Date.now() + 5 * 60 * 1000) {
-    return cachedCookies.cookieStr;
-  }
-
-  // Don't pay 40s to fail the same way again — see the breaker above.
-  if (Date.now() < loginBackoffUntil) return null;
-
-  let puppeteerCore: any;
-  try {
-    puppeteerCore = await import("puppeteer-core");
-  } catch {
-    logger.error("puppeteer-core not installed — run: pnpm add -w puppeteer-core");
+async function getAmoAuth(): Promise<string | null> {
+  const token = await getAccessToken();
+  if (!token) {
+    logger.error("timeline sync: no amoCRM access token available");
     return null;
   }
-
-  const chromePath = CHROME_PATH || "/root/.cache/puppeteer/chrome/linux-150.0.7871.24/chrome-linux64/chrome";
-  const browser = await puppeteerCore.default.launch({
-    headless: true,
-    executablePath: chromePath,
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-  });
-  try {
-    const page = await browser.newPage();
-
-    // Login
-    await page.goto(AMO_BASE + "/", { waitUntil: "networkidle2", timeout: 30000 });
-    const loginInput = await page.$('input[name="login"], input[type="email"], input[type="text"]');
-    const passInput = await page.$('input[name="password"], input[type="password"]');
-    if (loginInput && passInput) {
-      await loginInput.click({ clickCount: 3 });
-      await loginInput.type(LOGIN, { delay: 15 });
-      await passInput.click({ clickCount: 3 });
-      await passInput.type(PASSWORD, { delay: 15 });
-      const btn = await page.$('button[type="submit"], input[type="submit"]');
-      if (btn) await btn.click();
-      else await page.keyboard.press("Enter");
-      await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }).catch(() => {});
-    }
-
-    // Navigate to a lead page to ensure session is fully established
-    await page.goto(AMO_BASE + "/leads/detail/22609833", { waitUntil: "networkidle2", timeout: 30000 });
-    await new Promise((r) => setTimeout(r, 5000));
-
-    // Extract cookies
-    const cookies = await page.cookies();
-    const cookieStr = cookies.map((c) => c.name + "=" + c.value).join("; ");
-
-    // Find access_token expiry from cookie
-    const accessTokenCookie = cookies.find((c) => c.name === "access_token");
-    const expiresAtCookie = cookies.find((c) => c.name === "access_token_expires_at");
-    const expiresAt = expiresAtCookie ? parseInt(expiresAtCookie.value, 10) * 1000 : Date.now() + 3600 * 1000;
-
-    if (accessTokenCookie) {
-      cachedCookies = { cookieStr, expiresAt };
-      loginFailures = 0;
-      loginBackoffUntil = 0;
-      logger.info({ expiresAt: new Date(expiresAt).toISOString(), cookieCount: cookies.length }, "amoCRM cookies obtained");
-      return cookieStr;
-    }
-
-    // No access_token means the session was never established. Returning the
-    // cookie string anyway (what this used to do) sent every caller off to make
-    // requests that 401 — so the logs blamed the endpoint instead of the login.
-    // page.content() rather than an in-page evaluate: this file is compiled
-    // without the DOM lib, so touching `document` here is a type error.
-    const pageHtml: string = await page.content().catch(() => "");
-    const blockedByCaptcha = /captcha/i.test(pageHtml);
-
-    loginFailures++;
-    loginBackoffUntil = Date.now() + (blockedByCaptcha
-      ? LOGIN_BACKOFF_CAPTCHA_MS
-      : Math.min(LOGIN_BACKOFF_MAX_MS, 60_000 * 2 ** Math.min(loginFailures, 5)));
-
-    logger.error(
-      {
-        blockedByCaptcha,
-        failures: loginFailures,
-        retryAt: new Date(loginBackoffUntil).toISOString(),
-        cookies: cookies.map((c) => c.name).join(","),
-      },
-      blockedByCaptcha
-        ? "amoCRM login is behind a reCaptcha — the timeline poll (webhook safety net) is OFF until a session is provided by hand. Webhooks remain the primary detector."
-        : "amoCRM login failed, no access_token — backing off",
-    );
-    return null;
-  } catch (err) {
-    // Back off here too — a launch/navigation crash retried every 45s costs the
-    // same pegged event loop as the captcha case did.
-    loginFailures++;
-    loginBackoffUntil = Date.now() + Math.min(LOGIN_BACKOFF_MAX_MS, 60_000 * 2 ** Math.min(loginFailures, 5));
-    logger.error({ err, failures: loginFailures, retryAt: new Date(loginBackoffUntil).toISOString() }, "Puppeteer login failed");
-    return null;
-  } finally {
-    await browser.close().catch(() => {});
-  }
+  return `Bearer ${token}`;
 }
 
 // ── Fetch events_timeline for a lead ───────────────────────────────────────────
@@ -207,7 +103,7 @@ function eventTs(ev: TimelineEvent): number {
 }
 
 async function fetchTimeline(
-  cookieStr: string,
+  authHeader: string,
   leadId: string,
   limit = 200,
   beforeTs?: number,
@@ -217,7 +113,7 @@ async function fetchTimeline(
 
   const res = await fetch(url, {
     headers: {
-      Cookie: cookieStr,
+      Authorization: authHeader,
       "Content-Type": "application/json",
     },
     signal: AbortSignal.timeout(15_000),
@@ -452,8 +348,8 @@ export async function syncLeadMessagesFromTimeline(): Promise<{
   errors: number;
 }> {
   // Get cookies
-  const cookieStr = await getAmoCookies();
-  if (!cookieStr) {
+  const authHeader = await getAmoAuth();
+  if (!authHeader) {
     logger.error("Cannot sync messages: no cookies");
     return { synced: 0, leads: 0, errors: 0 };
   }
@@ -499,7 +395,7 @@ export async function syncLeadMessagesFromTimeline(): Promise<{
           const MAX_PAGES = 10;
 
           while (pageNum < MAX_PAGES) {
-            const events = await fetchTimeline(cookieStr, lead.leadId, 200, beforeTs);
+            const events = await fetchTimeline(authHeader, lead.leadId, 200, beforeTs);
             if (events.length === 0) break;
             allEvents.push(...events);
 
@@ -562,11 +458,11 @@ export async function syncLeadMessagesFromTimeline(): Promise<{
 // ── Source ID → channel name mapping (from /ajax/v1/chats/origin/sources) ─────
 let sourceMap: Record<string, string> = {};
 
-async function loadSourceMap(cookieStr: string): Promise<void> {
+async function loadSourceMap(authHeader: string): Promise<void> {
   if (Object.keys(sourceMap).length > 0) return; // Already loaded
   try {
     const res = await fetch(`${AMO_BASE}/ajax/v1/chats/origin/sources`, {
-      headers: { Cookie: cookieStr },
+      headers: { Authorization: authHeader },
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return;
@@ -594,8 +490,8 @@ async function loadSourceMap(cookieStr: string): Promise<void> {
  * This catches: manager replies from phone/amoCRM, new client messages, etc.
  */
 export async function syncIncomingMessageDetection(): Promise<{ detected: number; liveGenerated: number }> {
-  const cookieStr = await getAmoCookies();
-  if (!cookieStr) {
+  const authHeader = await getAmoAuth();
+  if (!authHeader) {
     logger.error("incoming detection: no cookies");
     return { detected: 0, liveGenerated: 0 };
   }
@@ -630,7 +526,7 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
   logger.info({ leadCount: leads.length }, "incoming detection started");
 
   // Load source map for channel name resolution
-  await loadSourceMap(cookieStr);
+  await loadSourceMap(authHeader);
   const fieldId = getLastMessengerFieldId();
 
   let detected = 0;
@@ -647,7 +543,7 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
     const results = await Promise.allSettled(
       batch.map(async (lead) => {
         try {
-          const events = await fetchTimeline(cookieStr, lead.leadId, RECENT_LIMIT);
+          const events = await fetchTimeline(authHeader, lead.leadId, RECENT_LIMIT);
           if (events.length === 0) return { leadId: lead.leadId, detected: false };
 
           // Find most recent type 89 (incoming)
@@ -760,7 +656,7 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
                   .limit(1);
                 if (!freshLead) return;
 
-                const fullEvents = await fetchTimeline(cookieStr, lead.leadId, 20);
+                const fullEvents = await fetchTimeline(authHeader, lead.leadId, 20);
                 const allMsgs = parseTimelineEvents(lead.leadId, fullEvents);
                 const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
                 const timelineTail = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
@@ -844,13 +740,13 @@ if (process.argv[1]?.includes("amo-timeline-sync")) {
  * incoming_chat_message events. Returns unique lead IDs that have new messages.
  * Uses cookie-based auth (not Bearer token).
  */
-async function pollNewIncomingLeadIds(cookieStr: string, lookbackMs = 5 * 60 * 1000): Promise<string[]> {
+async function pollNewIncomingLeadIds(authHeader: string, lookbackMs = 5 * 60 * 1000): Promise<string[]> {
   const fromTs = Math.floor((Date.now() - lookbackMs) / 1000);
   const url = `${AMO_BASE}/api/v4/events?filter[type][]=incoming_chat_message&filter[created_at][from]=${fromTs}&limit=250`;
 
   try {
     const res = await fetch(url, {
-      headers: { Cookie: cookieStr, "Content-Type": "application/json" },
+      headers: { Authorization: authHeader, "Content-Type": "application/json" },
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
@@ -888,10 +784,10 @@ async function pollNewIncomingLeadIds(cookieStr: string, lookbackMs = 5 * 60 * 1
 export async function refreshLeadFromTimeline(
   leadId: string,
 ): Promise<{ ok: boolean; stored?: number; detected?: boolean; liveCreated?: boolean; error?: string }> {
-  const cookieStr = await getAmoCookies();
-  if (!cookieStr) return { ok: false, error: "no amoCRM cookies" };
+  const authHeader = await getAmoAuth();
+  if (!authHeader) return { ok: false, error: "no amoCRM cookies" };
   try {
-    const r = await processQuickPollLead(cookieStr, leadId);
+    const r = await processQuickPollLead(authHeader, leadId);
     logger.info({ leadId, ...r }, "refreshLeadFromTimeline: done");
     return { ok: true, ...r };
   } catch (err) {
@@ -901,14 +797,14 @@ export async function refreshLeadFromTimeline(
 }
 
 async function processQuickPollLead(
-  cookieStr: string,
+  authHeader: string,
   leadId: string,
 ): Promise<{ stored: number; detected: boolean; liveCreated: boolean }> {
   // Fetch full timeline for this lead
   let allEvents: TimelineEvent[] = [];
   let beforeTs: number | undefined;
   for (let pageNum = 0; pageNum < 10; pageNum++) {
-    const events = await fetchTimeline(cookieStr, leadId, 200, beforeTs);
+    const events = await fetchTimeline(authHeader, leadId, 200, beforeTs);
     if (events.length === 0) break;
     allEvents.push(...events);
     const oldest = events[events.length - 1];
@@ -1027,7 +923,7 @@ async function processQuickPollLead(
           .limit(1);
         if (!freshLead) return;
 
-        const fullEvents = await fetchTimeline(cookieStr, leadId, 20);
+        const fullEvents = await fetchTimeline(authHeader, leadId, 20);
         const allMsgs = parseTimelineEvents(leadId, fullEvents);
         const lastLeadMsg = allMsgs.filter((m) => m.direction === "inbound").pop();
         const timelineTail = allMsgs.map((m) => `${m.senderName}: ${m.text}`).join("\n");
@@ -1101,15 +997,15 @@ async function runQuickPoll(): Promise<void> {
 }
 
 async function runQuickPollInner(): Promise<void> {
-  const cookieStr = await getAmoCookies();
-  if (!cookieStr) {
+  const authHeader = await getAmoAuth();
+  if (!authHeader) {
     logger.error("quick poll: no cookies");
     return;
   }
 
-  await loadSourceMap(cookieStr);
+  await loadSourceMap(authHeader);
 
-  const leadIds = await pollNewIncomingLeadIds(cookieStr, QUICK_POLL_LOOKBACK_MS);
+  const leadIds = await pollNewIncomingLeadIds(authHeader, QUICK_POLL_LOOKBACK_MS);
   if (leadIds.length === 0) return;
 
   const BATCH_SIZE = 5;
@@ -1121,7 +1017,7 @@ async function runQuickPollInner(): Promise<void> {
     const results = await Promise.allSettled(
       batch.map((leadId) =>
         Promise.race([
-          processQuickPollLead(cookieStr, leadId),
+          processQuickPollLead(authHeader, leadId),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error(`lead ${leadId} timed out`)), 20_000)
           ),
