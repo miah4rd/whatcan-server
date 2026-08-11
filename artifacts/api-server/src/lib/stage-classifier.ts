@@ -32,9 +32,12 @@ export type StageDef = { name: string; id: number };
 /** amoCRM's universal closing statuses — the same ids in every pipeline. */
 const TERMINAL_STAGE_IDS = new Set([142, 143]);
 
-/** Pipelines that are client sales conversations. Others (hiring, listing
- * management, Shanti) are different businesses — leave their stages alone. */
-const CONVERSATIONAL_PIPELINES = new Set(["rental", "unicorn"]);
+/** Pipelines whose stages the classifier may move. Others (hiring, Shanti) are
+ * different businesses — leave their stages alone. */
+const CONVERSATIONAL_PIPELINES = new Set(["rental", "unicorn", "rental listings"]);
+
+/** The acquisition funnel talks to a SUPPLIER, not a client — see below. */
+const LISTING_ACQUISITION = "rental listings";
 
 /** Stages that describe internal workflow, not where the conversation is. */
 const WORKFLOW_STAGE_PATTERNS: RegExp[] = [
@@ -82,8 +85,38 @@ const STAGE_MEANINGS: Array<{ match: RegExp; meaning: string }> = [
     meaning: "Just arrived, or only greetings exchanged. The client has not shared any real requirement yet." },
 ];
 
-function meaningFor(stageName: string): string | null {
-  for (const { match, meaning } of STAGE_MEANINGS) {
+/**
+ * Rental Listings runs the opposite way round: we are chasing a villa OWNER to
+ * win their listing, not selling to a client. Reusing the meanings above would
+ * be actively wrong, not merely vague — "QUALIFIED" matches the client pattern
+ * and would be read as "the client shared their requirements (dates, budget,
+ * area)", when in this funnel it means "we have confirmed we are talking to the
+ * real owner and they are open to working with us".
+ *
+ * Deliberately absent: "live" and "RENTED". Those describe OUR work and the
+ * world — the listing is published on the site, a tenant has moved in — and
+ * neither is knowable from a WhatsApp thread with the owner. Leaving them out
+ * keeps them broker-set, the same principle that keeps Mailing and Long-Term
+ * Cycle out of the classifier's hands.
+ */
+const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = [
+  { match: /closed[-\s]*won|выигран/i,
+    meaning: "The owner has agreed to work with us and the listing is secured. Only on an unambiguous confirmation." },
+  { match: /closed[-\s]*lost|проигран|отказ/i,
+    meaning: "Dead: the contact turned out to be an agent or middleman we cannot work through, the owner refused, or the villa is already committed elsewhere. Only on an unambiguous statement, NEVER on mere silence." },
+  { match: /agreement|договор|соглашен/i,
+    meaning: "The owner is willing in principle and the conversation is now about TERMS: commission, exclusivity, contract length, who handles what, signing." },
+  { match: /details|детал|информац/i,
+    meaning: "The owner is on board enough to be handing over what we need to publish the villa: photos, exact address or pin, available dates, prices, size, documents." },
+  { match: /qualified|квалифиц/i,
+    meaning: "CONFIRMED that this contact is the actual OWNER (or someone who can genuinely decide for the property), and they are open to hearing our offer. Not merely that they replied — the owner question must actually be answered." },
+  { match: /initial contact|первичн|контакт/i,
+    meaning: "We have reached out about their listing and the conversation has started, but it is NOT yet established whether they are the owner or an agent acting for someone else. This is where qualification is still in progress." },
+];
+
+function meaningFor(stageName: string, pipelineKey?: string): string | null {
+  const table = pipelineKey === LISTING_ACQUISITION ? LISTING_ACQUISITION_MEANINGS : STAGE_MEANINGS;
+  for (const { match, meaning } of table) {
     if (match.test(stageName)) return meaning;
   }
   return null;
@@ -124,6 +157,11 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
 
     const selectable = ordered
       .filter((s) => !isWorkflowStage(s.name))
+      // On the acquisition funnel an unnamed-in-our-table stage is not merely
+      // unlabelled, it is one we deliberately do not auto-set ("live",
+      // "RENTED" — see LISTING_ACQUISITION_MEANINGS). The generic
+      // "Funnel step N of M" fallback below would hand them to the model.
+      .filter((s) => key !== LISTING_ACQUISITION || meaningFor(s.name, key) !== null)
       .map((s) => {
         // The owner's Rental funnel uses "Need Assessed" as "the first outreach
         // was made" — not the generic "requirements are known". Wrong meaning
@@ -137,7 +175,7 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
           };
         }
         const meaning =
-          meaningFor(s.name) ??
+          meaningFor(s.name, key) ??
           // Unrecognised name: still selectable, positioned by funnel order so
           // the model can reason about it, rather than silently dropped.
           `Funnel step ${ordered.indexOf(s) + 1} of ${ordered.length}, named "${s.name}".`;
@@ -210,10 +248,19 @@ export async function classifyStage(opts: {
 
   try {
     const catalog = stages.selectable.map((s) => `- ${s.name}: ${s.meaning}`).join("\n");
+    // Who the other party is decides how every signal reads. On the acquisition
+    // funnel "I'm not the owner, I just manage it" is the single most important
+    // thing in the thread; on a client funnel it would be noise.
+    const domain =
+      pipelineKey === LISTING_ACQUISITION
+        ? `This is a LISTING ACQUISITION conversation. We contacted the person who advertised a villa for rent, to win the right to market and manage it. The other party is a SUPPLIER (the owner, or an agent acting for them) — they are NOT a client renting from us. Establishing whether they are the actual owner is the first job of this funnel.`
+        : `This is a sales conversation with a client.`;
     const result = await chatCompletionJSON<{ stage?: string; reason?: string }>({
       model: HELPER_MODEL,
       label: "stage",
-      system: `You classify which CRM funnel stage a sales conversation is currently in.
+      system: `You classify which CRM funnel stage a conversation is currently in.
+
+${domain}
 
 Available stages, in funnel order:
 ${catalog}
