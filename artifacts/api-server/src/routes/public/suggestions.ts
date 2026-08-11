@@ -135,17 +135,21 @@ router.get("/suggestions", async (req, res) => {
     }
 
     if (pipelineParam) {
-      // Broker explicitly picked a pipeline via the switcher — honor it over
-      // the default Unicorn-only auto-filter below, so a broker who genuinely
-      // works BOTH pipelines (unlike the fully Rental-scoped roster) can view
-      // either side on demand instead of being permanently locked to one.
+      // Broker explicitly picked a pipeline via the switcher — narrow to it.
+      // With no param the view is genuinely ALL pipelines (see below).
       items = items.filter((r) => (syncByLeadId.get(r.leadId)?.pipeline ?? "").toLowerCase() === pipelineParam);
-    } else if (isAdaptiveBroker(responsibleUser)) {
-      // Unicorn brokers see ONLY their Unicorn-pipeline leads — even if a lead of
-      // theirs sits in another pipeline (e.g. Rental), it must not surface here.
-      // Scoped to the adaptive (Unicorn) brokers so Rental brokers are unaffected.
-      items = items.filter((r) => (syncByLeadId.get(r.leadId)?.pipeline ?? "").toUpperCase() === "UNICORN");
     }
+    // No pipeline param = every pipeline this broker works, and that is the
+    // default. It used to mean "Unicorn only", which quietly broke the promise
+    // the switcher's own "All pipelines" option makes — and worse, it disagreed
+    // with the two things a broker actually reacts to: the push notification and
+    // the badge count, neither of which has ever filtered by pipeline. Amelia
+    // had three untouched Rental leads with drafts ready while her inbox said
+    // "All caught up" (2026-08-10). Brokers here run several funnels at once for
+    // different clients; the inbox has to show all of them, and each card
+    // carries its pipeline so a mixed list still reads clearly.
+    // The one real scoping rule that remains is isPendingVisible's Rental-scoped
+    // roster (HoS), which is a deliberate exclusion, not a view preference.
 
     items = dedupePushPerLead(items);
 

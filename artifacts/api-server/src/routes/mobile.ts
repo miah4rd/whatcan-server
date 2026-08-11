@@ -352,6 +352,9 @@ const PAGE_HTML = `<!doctype html>
   function cardBadges(item) {
     var html = taskStatusBadge(item.next_followup_at);
     if (item.profile_temperature) html += tempBadge(item.profile_temperature);
+    // Which funnel this lead lives in. Only while viewing ALL pipelines — once
+    // the broker has narrowed to one, every card would repeat the same word.
+    if (!pipelineView && item.pipeline) html += '<span class="badge stagepill">' + esc(item.pipeline) + '</span>';
     if (item.lead_stage) html += '<span class="badge stagepill">' + esc(item.lead_stage) + '</span>';
     if (item.discard_flagged) html += '<span class="badge discard" title="' + esc(item.discard_reason || '') + '">\\u2298 Review</span>';
     return html;
