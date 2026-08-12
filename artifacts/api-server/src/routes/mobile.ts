@@ -836,24 +836,35 @@ const PAGE_HTML = `<!doctype html>
   // case that is invisible to the broker - permission still granted while the
   // push endpoint was rotated or dropped by the browser, which left them
   // permanently unreachable with a bell that still looked switched on.
+  // Does THIS device hold a live push subscription? The one authoritative
+  // answer to "is this person already sorted", and the only one the banner is
+  // allowed to act on: server-side coverage is about a broker, not a device,
+  // and reading it here asked an owner with notifications working perfectly to
+  // switch them on again on every single launch.
+  var pushLocalSub = null;
+
   async function syncPushSubscription() {
     if (!pushSupported() || EMBEDDED) return;
-    if (Notification.permission !== "granted") { render(); return; }
+    if (Notification.permission !== "granted") { pushLocalSub = false; render(); return; }
     try {
       await subscribeAndSave(await ensureSwRegistration());
+      pushLocalSub = true;
     } catch (e) {
       // Never a toast: this runs unprompted on load, and a broker who asked for
-      // nothing should not be handed an error. The banner stays up instead.
+      // nothing should not be handed an error.
+      pushLocalSub = false;
     }
     render();
   }
 
-  // Is this broker reachable at all? Answered by the server, so the extension
-  // (which cannot ask the browser this from inside a cross-origin iframe) can
-  // still tell them their phone is not set up.
+  // Is this broker reachable on ANY device? Server-answered, for the extension
+  // panel, which cannot read permission or subscriptions from inside a
+  // cross-origin iframe. Keyed on the real login, never on an admin's
+  // "view as" selection — the subscription belongs to whoever is logged in
+  // here, not to the broker whose leads they are looking at.
   var pushCovered = null;
   function fetchPushCoverage() {
-    var me = (activeBroker() || "").trim().toLowerCase();
+    var me = (brokerName || "").trim().toLowerCase();
     if (!me) return;
     fetch(API + "/push/coverage")
       .then(function (r) { return r.json(); })
@@ -905,6 +916,7 @@ const PAGE_HTML = `<!doctype html>
     }
 
     pushCovered = true;
+    pushLocalSub = true;
     pushMsg("Notifications on. You will get client replies and the morning report.");
     render();
   }
@@ -928,6 +940,10 @@ const PAGE_HTML = `<!doctype html>
       if ("setAppBadge" in navigator) { try { await navigator.clearAppBadge(); } catch (e) {} }
     } catch (e) {}
     localStorage.removeItem("copilot_push_enabled");
+    // Switched off on purpose from the bell — do not turn round and offer to
+    // switch it back on. The bell is the way back.
+    localStorage.setItem("copilot_push_banner_off", "1");
+    pushLocalSub = false;
     showToast("Notifications disabled");
     render();
   }
@@ -1308,23 +1324,48 @@ const PAGE_HTML = `<!doctype html>
   }
 
   // The banner that should have existed from the first day push was built.
-  // Silence is the failure mode here: a broker with notifications off looks
-  // exactly like a broker with nothing to do.
+  // Silence is the failure mode it exists for: a broker with notifications off
+  // looks exactly like a broker with nothing to do.
+  //
+  // It is a one-time prompt, NOT a state indicator, and the difference is the
+  // whole design. The first version asked again on every launch of an app whose
+  // notifications were already working — because it read server-side coverage
+  // (a fact about a broker) to decide something about a device, and because
+  // nothing let anyone say "understood, stop asking". A prompt that repeats
+  // after it has been answered is worse than no prompt: it trains people to
+  // ignore the one place we put real warnings. Hence: local subscription is the
+  // only test, and a dismissal is permanent. The bell in the header stays the
+  // way to change your mind.
+  function pushBannerDismissed() {
+    return localStorage.getItem("copilot_push_banner_off") === "1";
+  }
+  function dismissBtn() {
+    return '<button id="push-dismiss-btn" title="Do not show again" style="float:right;background:none;border:none;color:inherit;opacity:.6;font-size:17px;line-height:1;padding:0 0 0 10px;cursor:pointer">\\u00d7</button>';
+  }
   function pushBannerHtml() {
+    if (pushBannerDismissed()) return "";
     if (EMBEDDED) {
+      // In the panel there is nothing local to read, so the server's answer is
+      // all there is — but it still only ever appears while genuinely dark.
       if (pushCovered !== false) return "";
-      return '<div class="push-banner">\\ud83d\\udd15 <b>Your phone is not set up for notifications.</b><br>' +
+      return '<div class="push-banner">' + dismissBtn() + '\\ud83d\\udd15 <b>Your phone is not set up for notifications.</b><br>' +
         'You will not know a client replied until you open this panel, and the morning report will not reach you. ' +
         'Notifications can only be switched on from the app itself, on the device that should ring.' +
         '<br><a class="act" href="' + location.origin + '/m" target="_blank" rel="noopener">Open the app</a></div>';
     }
     if (!pushSupported()) return "";
-    if (Notification.permission === "granted" && pushCovered !== false) return "";
+    // Already subscribed on this device, or permission granted (in which case
+    // syncPushSubscription has just subscribed): nothing to ask, ever.
+    if (pushLocalSub === true) return "";
+    if (Notification.permission === "granted") return "";
+    // Still unknown (the check has not resolved): stay quiet rather than flash
+    // a prompt at someone who turns out to be fine.
+    if (pushLocalSub === null) return "";
     if (Notification.permission === "denied") {
-      return '<div class="push-banner">\\ud83d\\udd15 <b>Notifications are blocked for this app.</b><br>' +
+      return '<div class="push-banner">' + dismissBtn() + '\\ud83d\\udd15 <b>Notifications are blocked for this app.</b><br>' +
         'Remove the icon from your home screen, add it again via Share \\u2192 Add to Home Screen, then turn them on.</div>';
     }
-    return '<div class="push-banner">\\ud83d\\udd15 <b>Notifications are off.</b><br>' +
+    return '<div class="push-banner">' + dismissBtn() + '\\ud83d\\udd15 <b>Notifications are off.</b><br>' +
       'Client replies and your 8am report will not reach you until you turn them on.' +
       '<br><button class="act" id="push-enable-btn">Turn on notifications</button></div>';
   }
@@ -1494,6 +1535,11 @@ const PAGE_HTML = `<!doctype html>
     if (togglePushBtn) togglePushBtn.onclick = togglePush;
     var pushEnableBtn = $("#push-enable-btn");
     if (pushEnableBtn) pushEnableBtn.onclick = enablePush;
+    var pushDismissBtn = $("#push-dismiss-btn");
+    if (pushDismissBtn) pushDismissBtn.onclick = function () {
+      localStorage.setItem("copilot_push_banner_off", "1");
+      render();
+    };
     document.querySelectorAll(".rep-periods .p").forEach(function (el) {
       el.onclick = function () {
         reportPeriod = el.getAttribute("data-period");
