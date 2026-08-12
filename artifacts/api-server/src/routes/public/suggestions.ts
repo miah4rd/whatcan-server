@@ -5,6 +5,7 @@ import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-p
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
 import { computePushPriority, computeNextFollowupDays, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
 import { isPendingVisible, dedupePushPerLead, repliedSignalFromTimeline } from "../../lib/pending-visibility";
+import { findStuckLeads } from "../../lib/stuck-leads";
 
 const router = Router();
 
@@ -543,6 +544,21 @@ router.post("/broker-replied", async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     req.log.error({ err }, "broker-replied error");
+    res.status(500).json({ error: "DB error" });
+  }
+});
+
+/**
+ * GET /api/public/stuck-leads?responsibleUser=X
+ * Leads sitting in a tracked pipeline that the bot has produced nothing for.
+ * Exists so a silent failure stops looking like a quiet day — see lib/stuck-leads.ts.
+ */
+router.options("/stuck-leads", (_req, res) => res.sendStatus(204));
+router.get("/stuck-leads", async (req, res) => {
+  try {
+    const stuck = await findStuckLeads(req.query["responsibleUser"] as string | undefined);
+    res.json({ count: stuck.length, leads: stuck.slice(0, 50) });
+  } catch {
     res.status(500).json({ error: "DB error" });
   }
 });

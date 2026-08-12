@@ -18,6 +18,7 @@ import { isBroker, brokerKey, brokerDisplayName } from "./broker-identity";
 import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
 import { processListingAcquisitionOutreach } from "./listing-acquisition-outreach";
 import { isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
+import { logStuckLeads } from "./stuck-leads";
 import { correctionsPromptBlock } from "./broker-corrections";
 import { maybeAutopilot } from "./autopilot";
 import { enforceBudgetFilter } from "./budget-filter";
@@ -1303,6 +1304,12 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
       })
       .catch((err) => logger.error({ err }, "sourced lead outreach error"));
   }, 60_000);
+
+  // Say it out loud when leads are stuck. Cheap query, and it is the only
+  // record of "since when" once someone finally notices.
+  setInterval(() => {
+    logStuckLeads().catch((err) => logger.error({ err }, "stuck-lead check error"));
+  }, 15 * 60 * 1000);
 
   // Rental Listings: seed the owner's own ad as the first message, then answer
   // it right away instead of waiting for the next general pass — same

@@ -731,6 +731,8 @@ const PAGE_HTML = `<!doctype html>
         push: all.filter(function (i) { return i.kind === "push" && !isReachStage(i.lead_stage); }),
       };
       updateAppBadge();
+      // Checked on the same beat as the inbox, so a fault surfaces as fast as work does.
+      refreshStuck();
       // fetchInbox only ever refreshed the background list — an already-open
       // detail view is a snapshot taken once in openDetail() and nothing here
       // touched it again, so "Refresh" while a lead was open did nothing: same
@@ -1336,6 +1338,25 @@ const PAGE_HTML = `<!doctype html>
   // ignore the one place we put real warnings. Hence: local subscription is the
   // only test, and a dismissal is permanent. The bell in the header stays the
   // way to change your mind.
+  // Leads the bot could not take on at all. Unlike the notification banner this
+  // is NOT dismissible and NOT a prompt: it is a live fault. Every outage on
+  // this project has looked like an empty inbox, so an empty inbox must be able
+  // to tell the difference between "nothing to do" and "I am broken".
+  var stuckCount = 0;
+  async function refreshStuck() {
+    try {
+      var r = await fetch(API + "/stuck-leads?responsibleUser=" + encodeURIComponent(activeBroker()), { cache: "no-store" });
+      var d = await r.json();
+      stuckCount = d && typeof d.count === "number" ? d.count : 0;
+    } catch (e) { /* never let this break the inbox */ }
+  }
+  function stuckBannerHtml() {
+    if (!stuckCount) return "";
+    return '<div class="push-banner">\u26a0\ufe0f <b>' + stuckCount + ' lead(s) the bot could not pick up.</b><br>' +
+      'They are in a tracked pipeline but have no conversation and no draft, so they will not appear in any tab. ' +
+      'Usually the scout note arrived in a layout the parser did not recognise. Worth a look in amoCRM.</div>';
+  }
+
   function pushBannerDismissed() {
     return localStorage.getItem("copilot_push_banner_off") === "1";
   }
@@ -1447,6 +1468,7 @@ const PAGE_HTML = `<!doctype html>
     }
     html += "</header><main>";
 
+    html += stuckBannerHtml();
     html += pushBannerHtml();
 
     if (reportView) {
