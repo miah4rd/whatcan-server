@@ -81,6 +81,32 @@ const PAGE_HTML = `<!doctype html>
   .badge.temp-warm { background: rgba(251,146,60,.16); color: #fdba74; }
   .badge.temp-cold { background: rgba(96,165,250,.14); color: #93c5fd; }
   .badge.discard { background: rgba(148,163,184,.16); color: #cbd5e1; }
+  /* Report tab. Deliberately not a dashboard: one headline, a few big
+     numbers, then plain lines. Anything denser gets swiped past. */
+  .rep-hero { background: #181d2e; border: 1px solid #2a3146; border-radius: 12px; padding: 16px; margin-bottom: 10px; }
+  .rep-hero .when { font-size: 11px; color: #6b7488; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
+  .rep-headline { font-size: 16px; font-weight: 700; line-height: 1.35; margin-top: 6px; }
+  .rep-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .rep-stat { flex: 1 1 88px; background: #141827; border: 1px solid #2a3146; border-radius: 10px; padding: 10px 12px; }
+  .rep-stat .n { font-size: 22px; font-weight: 800; line-height: 1.1; }
+  .rep-stat .l { font-size: 10.5px; color: #8a93a8; margin-top: 3px; line-height: 1.3; }
+  .rep-alert { color: #f87171; }
+  .rep-good { color: #4ade80; }
+  .rep-head { font-size: 11px; font-weight: 700; color: #7a8699; text-transform: uppercase; letter-spacing: .05em; margin: 16px 0 6px; }
+  .rep-line { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; padding: 8px 2px; border-bottom: 1px solid #232a3d; }
+  .rep-line:last-child { border-bottom: none; }
+  .rep-line .v { font-weight: 700; white-space: nowrap; }
+  .rep-delta { font-size: 11px; color: #6b7488; font-weight: 600; margin-left: 6px; }
+  .rep-periods { display: flex; gap: 6px; margin-bottom: 12px; }
+  .rep-periods .p { flex: 1; text-align: center; padding: 7px 4px; border-radius: 8px; font-size: 12px; font-weight: 700; background: #181d2e; color: #8a93a8; border: 1px solid #2a3146; cursor: pointer; }
+  .rep-periods .p.on { background: #2a3146; color: #e6e8ee; }
+  .rep-name { font-size: 14px; font-weight: 800; margin-bottom: 2px; }
+  /* Notification enrolment. A browser only ever hands out a push subscription
+     to the device that granted permission, so the server cannot switch anyone
+     on — the one thing the page CAN do is refuse to be quiet about it. */
+  .push-banner { background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.35); color: #fbbf24; border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; font-size: 13px; line-height: 1.5; }
+  .push-banner b { color: #fde68a; }
+  .push-banner .act { display: inline-block; margin-top: 9px; background: #fbbf24; color: #241a04; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 700; font-size: 13px; cursor: pointer; text-decoration: none; }
   .stage-hint { font-size: 11.5px; color: #7dd3fc; background: rgba(45,212,191,.08); border: 1px solid rgba(45,212,191,.2); border-radius: 8px; padding: 7px 10px; margin-bottom: 8px; }
   .stage-hint .dim { color: #6b7488; }
   .card-preview { font-size: 13px; color: #b6bccd; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
@@ -278,6 +304,12 @@ const PAGE_HTML = `<!doctype html>
   var toastMsg = "";
   var toastTimer = null;
   var convSplit = Number(localStorage.getItem("copilot_convsplit")) || 0;
+  // Report tab state. reportCard is this broker's own; reportTeam is every
+  // broker side by side and is fetched only for an admin login.
+  var reportPeriod = "day";
+  var reportCard = null;
+  var reportTeam = null;
+  var reportBusy = false;
 
   var PIPELINE_STAGES = [
     "NEW LEAD","IN PROGRESS","1ST FOLLOW UP (NEXT DAY)","2ND FOLLOW UP (3 DAYS AFTER)",
@@ -744,6 +776,90 @@ const PAGE_HTML = `<!doctype html>
     showToast(msg);
   }
 
+  // Registers (or re-uses) this page's own service worker. Shared by the tap
+  // path and the silent re-sync below, so there is one copy of the scope trap
+  // rather than two that can drift apart.
+  async function ensureSwRegistration() {
+    var reg = await navigator.serviceWorker.register("/m/sw.js", { scope: "/m/" });
+    // Do NOT use navigator.serviceWorker.ready here: the page lives at /m
+    // (no trailing slash) which is outside scope "/m/", so .ready never
+    // resolves and the whole flow hangs silently. Wait on the registration's
+    // own worker instead, with a hard timeout.
+    await new Promise(function (resolve, reject) {
+      if (reg.active) return resolve();
+      var pending = reg.installing || reg.waiting;
+      if (!pending) return reject(new Error("no worker installing"));
+      var timer = setTimeout(function () { reject(new Error("activation timed out")); }, 15000);
+      pending.addEventListener("statechange", function () {
+        if (pending.state === "activated") { clearTimeout(timer); resolve(); }
+        else if (pending.state === "redundant") { clearTimeout(timer); reject(new Error("worker became redundant")); }
+      });
+    });
+    return reg;
+  }
+
+  async function subscribeAndSave(reg) {
+    var sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      var keyRes = await fetch(API + "/push/vapid-public-key");
+      var keyData = await keyRes.json();
+      if (!keyData.key) throw new Error("push not configured on server");
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(keyData.key),
+      });
+    }
+    var saveRes = await fetch(API + "/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brokerId: brokerName, subscription: sub.toJSON() }),
+    });
+    if (!saveRes.ok) throw new Error("server rejected it (" + saveRes.status + ")");
+    localStorage.setItem("copilot_push_enabled", "1");
+    return sub;
+  }
+
+  // Silent re-enrolment, on every load.
+  //
+  // Notifications used to be a bell nobody was told about: opt-in, one tap, and
+  // hidden entirely inside the extension - so they reached 2 brokers out of 12
+  // while the other 10 never learned a client had written. A browser genuinely
+  // cannot be subscribed from the server (the subscription is minted by THIS
+  // device, only after the person grants permission), but everything after that
+  // grant is ours to do, and now we do it: permission already granted means
+  // subscribed, silently, here and on every future device. It also repairs the
+  // case that is invisible to the broker - permission still granted while the
+  // push endpoint was rotated or dropped by the browser, which left them
+  // permanently unreachable with a bell that still looked switched on.
+  async function syncPushSubscription() {
+    if (!pushSupported() || EMBEDDED) return;
+    if (Notification.permission !== "granted") { render(); return; }
+    try {
+      await subscribeAndSave(await ensureSwRegistration());
+    } catch (e) {
+      // Never a toast: this runs unprompted on load, and a broker who asked for
+      // nothing should not be handed an error. The banner stays up instead.
+    }
+    render();
+  }
+
+  // Is this broker reachable at all? Answered by the server, so the extension
+  // (which cannot ask the browser this from inside a cross-origin iframe) can
+  // still tell them their phone is not set up.
+  var pushCovered = null;
+  function fetchPushCoverage() {
+    var me = (activeBroker() || "").trim().toLowerCase();
+    if (!me) return;
+    fetch(API + "/push/coverage")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var row = (d.brokers || []).find(function (x) { return String(x.broker).trim().toLowerCase() === me; });
+        pushCovered = row ? !!row.enabled : null;
+        render();
+      })
+      .catch(function () {});
+  }
+
   async function enablePush() {
     if (!pushSupported()) {
       pushMsg("Push not supported on this browser");
@@ -770,64 +886,21 @@ const PAGE_HTML = `<!doctype html>
 
     var reg;
     try {
-      reg = await navigator.serviceWorker.register("/m/sw.js", { scope: "/m/" });
-      // Do NOT use navigator.serviceWorker.ready here: the page lives at /m
-      // (no trailing slash) which is outside scope "/m/", so .ready never
-      // resolves and the whole flow hangs silently. Wait on the registration's
-      // own worker instead, with a hard timeout.
-      await new Promise(function (resolve, reject) {
-        if (reg.active) return resolve();
-        var pending = reg.installing || reg.waiting;
-        if (!pending) return reject(new Error("no worker installing"));
-        var timer = setTimeout(function () { reject(new Error("activation timed out")); }, 15000);
-        pending.addEventListener("statechange", function () {
-          if (pending.state === "activated") { clearTimeout(timer); resolve(); }
-          else if (pending.state === "redundant") { clearTimeout(timer); reject(new Error("worker became redundant")); }
-        });
-      });
+      reg = await ensureSwRegistration();
     } catch (e) {
       pushMsg("Service worker failed: " + ((e && e.message) || e));
       return;
     }
 
-    var keyData;
     try {
-      var keyRes = await fetch(API + "/push/vapid-public-key");
-      keyData = await keyRes.json();
+      await subscribeAndSave(reg);
     } catch (e) {
-      pushMsg("Could not reach server for push key");
-      return;
-    }
-    if (!keyData.key) { pushMsg("Push not configured on server"); return; }
-
-    var sub;
-    try {
-      sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(keyData.key),
-      });
-    } catch (e) {
-      pushMsg("Subscribe failed: " + ((e && e.message) || e));
+      pushMsg("Could not turn on notifications: " + ((e && e.message) || e));
       return;
     }
 
-    try {
-      var saveRes = await fetch(API + "/push/subscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brokerId: brokerName, subscription: sub.toJSON() }),
-      });
-      if (!saveRes.ok) {
-        pushMsg("Server rejected subscription (" + saveRes.status + ")");
-        return;
-      }
-    } catch (e) {
-      pushMsg("Could not save subscription to server");
-      return;
-    }
-
-    localStorage.setItem("copilot_push_enabled", "1");
-    pushMsg("Notifications enabled");
+    pushCovered = true;
+    pushMsg("Notifications on. You will get client replies and the morning report.");
     render();
   }
 
@@ -1097,9 +1170,163 @@ const PAGE_HTML = `<!doctype html>
     };
   }
 
+  // ── Report ───────────────────────────────────────────────────────────────
+  function fetchReport() {
+    var b = activeBroker();
+    if (!b) return;
+    reportBusy = true;
+    var pipeQ = pipelineView ? "&pipeline=" + encodeURIComponent(pipelineView) : "";
+    var mine = fetch(API + "/report?broker=" + encodeURIComponent(b) + "&period=" + reportPeriod + pipeQ)
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (!d.error) reportCard = d; })
+      .catch(function () {});
+    var team = isHosLogin()
+      ? fetch(API + "/report/team?period=" + reportPeriod + pipeQ)
+          .then(function (r) { return r.json(); })
+          .then(function (d) { if (!d.error) reportTeam = d; })
+          .catch(function () {})
+      : Promise.resolve();
+    return Promise.all([mine, team]).then(function () {
+      reportBusy = false;
+      if (activeTab === "report") render();
+    });
+  }
+
+  function fmtMins(m) {
+    if (m == null) return "\\u2014";
+    if (m < 60) return Math.round(m) + " min";
+    if (m < 60 * 24) return (Math.round(m / 6) / 10) + " h";
+    return Math.round(m / 60 / 24) + " d";
+  }
+
+  // Movement against the previous period. Shown only where a direction has an
+  // obvious meaning — "12 lost, up 4" reads as a warning, which it is.
+  function delta(now, before, higherIsBetter) {
+    if (before == null || before === now) return "";
+    var diff = now - before;
+    var up = diff > 0;
+    var good = higherIsBetter ? up : !up;
+    var cls = good ? "rep-good" : "rep-alert";
+    return '<span class="rep-delta ' + cls + '">' + (up ? "\\u2191" : "\\u2193") + Math.abs(diff) + "</span>";
+  }
+
+  function statBox(n, label, alert) {
+    return '<div class="rep-stat"><div class="n' + (alert && n > 0 ? " rep-alert" : "") + '">' + n +
+      '</div><div class="l">' + label + "</div></div>";
+  }
+
+  function line(label, value, extra) {
+    return '<div class="rep-line"><span>' + label + '</span><span class="v">' + value + (extra || "") + "</span></div>";
+  }
+
+  function renderReportCard(c, withName) {
+    var html = "";
+    if (withName) {
+      html += '<div class="rep-name">' + esc(c.broker) +
+        (c.notifications === "off" ? ' <span class="rep-delta rep-alert">\\ud83d\\udd15 no notifications</span>' : "") +
+        "</div>";
+    }
+    html += '<div class="rep-hero">';
+    html += '<div class="when">' + esc(c.label) + "</div>";
+    html += '<div class="rep-headline">' + esc(c.headline) + "</div>";
+    html += '<div class="rep-row">';
+    html += statBox(c.waiting, "waiting for<br>an answer", true);
+    html += statBox(c.waitingOverdue, "of them over<br>24 hours", true);
+    html += statBox(c.overdueFollowups, "follow-ups<br>overdue", true);
+    html += statBox(c.hotStalled, "warm, no contact<br>3+ days", true);
+    html += "</div>";
+    if (c.hotStalledNames && c.hotStalledNames.length) {
+      html += '<div class="l" style="font-size:11.5px;color:#8a93a8;margin-top:10px">Going cold: ' +
+        esc(c.hotStalledNames.join(", ")) + "</div>";
+    }
+    html += "</div>";
+
+    if (c.waitingByPipeline && c.waitingByPipeline.length > 1) {
+      html += '<div class="rep-head">Waiting, by funnel</div>';
+      for (var p = 0; p < c.waitingByPipeline.length; p++) {
+        var wp = c.waitingByPipeline[p];
+        html += line(esc(wp.pipeline), wp.waiting + (wp.overdue > 0 ? ' <span class="rep-alert">(' + wp.overdue + " over a day)</span>" : ""));
+      }
+    }
+
+    var prev = c.previous;
+    html += '<div class="rep-head">' + (c.period === "day" ? "Today" : c.period === "week" ? "This week" : "This month") + "</div>";
+    html += line("Messages sent", c.activity.sent, prev ? delta(c.activity.sent, prev.sent, true) : "");
+    html += line("Drafts skipped", c.activity.skipped, prev ? delta(c.activity.skipped, prev.skipped, false) : "");
+    html += line("Drafts never opened", c.activity.untouched);
+    html += line("New leads", c.newLeads, prev ? delta(c.newLeads, prev.newLeads, true) : "");
+    html += line("Median reply time", fmtMins(c.medianReplyMin));
+    if (c.yesterday) {
+      html += '<div class="rep-head">Yesterday</div>';
+      html += line("Sent / skipped / never opened",
+        c.yesterday.sent + " / " + c.yesterday.skipped + " / " + c.yesterday.untouched);
+    }
+
+    html += '<div class="rep-head">Result</div>';
+    html += line("Moved forward in the funnel", c.advanced, prev ? delta(c.advanced, prev.advanced, true) : "");
+    html += line("Viewings arranged", c.viewings, prev ? delta(c.viewings, prev.viewings, true) : "");
+    html += line("Listings taken on", c.listingsTaken, prev ? delta(c.listingsTaken, prev.listingsTaken, true) : "");
+    html += line("Lost", c.lost, prev ? delta(c.lost, prev.lost, false) : "");
+    return html;
+  }
+
+  function renderReport() {
+    var html = "";
+    html += '<div class="rep-periods">';
+    [["day", "Day"], ["week", "Week"], ["month", "Month"]].forEach(function (p) {
+      html += '<div class="p ' + (reportPeriod === p[0] ? "on" : "") + '" data-period="' + p[0] + '">' + p[1] + "</div>";
+    });
+    html += "</div>";
+
+    if (reportTeam && reportTeam.cards && reportTeam.cards.length) {
+      // Admin view: everyone, own card first. Deliberately the same card shape
+      // for each - one comparison, not a table nobody can read on a phone.
+      var mine = (activeBroker() || "").trim().toLowerCase();
+      var cards = reportTeam.cards.slice().sort(function (a, b) {
+        var am = a.broker.trim().toLowerCase() === mine ? 0 : 1;
+        var bm = b.broker.trim().toLowerCase() === mine ? 0 : 1;
+        if (am !== bm) return am - bm;
+        return (b.waiting + b.waitingOverdue) - (a.waiting + a.waitingOverdue);
+      });
+      for (var i = 0; i < cards.length; i++) {
+        html += '<div style="margin-bottom:22px">' + renderReportCard(cards[i], true) + "</div>";
+      }
+      return html;
+    }
+
+    if (!reportCard) {
+      html += '<div class="empty">' + (reportBusy ? "Loading\\u2026" : "No report yet.") + "</div>";
+      return html;
+    }
+    html += renderReportCard(reportCard, false);
+    return html;
+  }
+
+  // The banner that should have existed from the first day push was built.
+  // Silence is the failure mode here: a broker with notifications off looks
+  // exactly like a broker with nothing to do.
+  function pushBannerHtml() {
+    if (EMBEDDED) {
+      if (pushCovered !== false) return "";
+      return '<div class="push-banner">\\ud83d\\udd15 <b>Your phone is not set up for notifications.</b><br>' +
+        'You will not know a client replied until you open this panel, and the morning report will not reach you. ' +
+        'Notifications can only be switched on from the app itself, on the device that should ring.' +
+        '<br><a class="act" href="' + location.origin + '/m" target="_blank" rel="noopener">Open the app</a></div>';
+    }
+    if (!pushSupported()) return "";
+    if (Notification.permission === "granted" && pushCovered !== false) return "";
+    if (Notification.permission === "denied") {
+      return '<div class="push-banner">\\ud83d\\udd15 <b>Notifications are blocked for this app.</b><br>' +
+        'Remove the icon from your home screen, add it again via Share \\u2192 Add to Home Screen, then turn them on.</div>';
+    }
+    return '<div class="push-banner">\\ud83d\\udd15 <b>Notifications are off.</b><br>' +
+      'Client replies and your 8am report will not reach you until you turn them on.' +
+      '<br><button class="act" id="push-enable-btn">Turn on notifications</button></div>';
+  }
+
   function renderList() {
     var list = sortedList(activeTab);
-    var tabDef = [["live", "Live"], ["reach", "Reach"], ["push", "Push"]];
+    var tabDef = [["live", "Live"], ["reach", "Reach"], ["push", "Push"], ["report", "Report"]];
     var html = "";
     html += '<header>';
     html += '<div class="top-row">';
@@ -1165,12 +1392,20 @@ const PAGE_HTML = `<!doctype html>
     html += '<div class="tabs">';
     for (var i = 0; i < tabDef.length; i++) {
       var key = tabDef[i][0], label = tabDef[i][1];
-      var n = (items[key] || []).length;
-      html += '<div class="tab ' + (activeTab === key ? "active" : "") + '" data-tab="' + key + '">' + label + '<span class="count">' + n + "</span></div>";
+      // Report has no queue behind it — its badge is the number that matters
+      // there (people waiting), and nothing at all until it has loaded.
+      var badge = key === "report"
+        ? (reportCard ? '<span class="count">' + reportCard.waiting + "</span>" : "")
+        : '<span class="count">' + (items[key] || []).length + "</span>";
+      html += '<div class="tab ' + (activeTab === key ? "active" : "") + '" data-tab="' + key + '">' + label + badge + "</div>";
     }
     html += "</div></header><main>";
 
-    if (list.length === 0) {
+    html += pushBannerHtml();
+
+    if (activeTab === "report") {
+      html += renderReport();
+    } else if (list.length === 0) {
       var emptyText = activeTab === "live"
         ? "All live replies handled. New ones will appear here as leads respond."
         : activeTab === "reach"
@@ -1252,8 +1487,22 @@ const PAGE_HTML = `<!doctype html>
     };
     var togglePushBtn = $("#toggle-push-btn");
     if (togglePushBtn) togglePushBtn.onclick = togglePush;
+    var pushEnableBtn = $("#push-enable-btn");
+    if (pushEnableBtn) pushEnableBtn.onclick = enablePush;
+    document.querySelectorAll(".rep-periods .p").forEach(function (el) {
+      el.onclick = function () {
+        reportPeriod = el.getAttribute("data-period");
+        reportCard = null; reportTeam = null;
+        render();
+        fetchReport();
+      };
+    });
     document.querySelectorAll(".tab").forEach(function (el) {
-      el.onclick = function () { activeTab = el.getAttribute("data-tab"); render(); };
+      el.onclick = function () {
+        activeTab = el.getAttribute("data-tab");
+        render();
+        if (activeTab === "report") fetchReport();
+      };
     });
     document.querySelectorAll(".card").forEach(function (el) {
       el.onclick = function () {
@@ -1792,6 +2041,11 @@ const PAGE_HTML = `<!doctype html>
       if (brokerWasEmpty) {
         render();
         fetchStageOptions();
+        // Embedded: the browser cannot be asked for permission from inside a
+        // cross-origin iframe, but the SERVER knows whether this broker has a
+        // device subscribed anywhere — so the panel can still tell them.
+        fetchPushCoverage();
+        if (activeTab === "report") fetchReport();
         fetchInbox().then(function () { if (d.leadId) openLeadById(d.leadId); });
       }
     }
@@ -1811,10 +2065,21 @@ const PAGE_HTML = `<!doctype html>
     } catch (e) { /* non-fatal — bridge may retry, or this instance is standalone despite the frame check */ }
   }
 
+  // The 8am report push deep-links straight to the tab it is about.
+  if (_qs.get("view") === "report") activeTab = "report";
+
   render();
   fetchStageOptions();
   fetchPipelineOptions();
-  if (brokerName) fetchInbox().then(openDeepLinkedLead);
+  if (brokerName) {
+    // Enrolment and coverage are checked on EVERY load, not behind a button:
+    // that is the whole difference between a feature that reached 2 brokers
+    // and one that reaches everybody who opens the app.
+    syncPushSubscription();
+    fetchPushCoverage();
+    if (activeTab === "report") fetchReport();
+    fetchInbox().then(openDeepLinkedLead);
+  }
   setInterval(function () { if (!openItem) fetchInbox(); }, 20000);
 })();
 </script>

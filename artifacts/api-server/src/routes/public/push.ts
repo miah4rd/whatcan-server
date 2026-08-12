@@ -1,13 +1,37 @@
 import { Router } from "express";
 import { db, pushSubscriptionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { getVapidPublicKey } from "../../lib/push-notifications";
+import { getVapidPublicKey, brokersWithPush } from "../../lib/push-notifications";
+import { reportableBrokers } from "../../lib/daily-report";
 
 const router = Router();
 
 router.options("/push/vapid-public-key", (_req, res) => res.sendStatus(204));
 router.get("/push/vapid-public-key", (_req, res) => {
   res.json({ key: getVapidPublicKey() });
+});
+
+/**
+ * Who is actually reachable, and who is dark.
+ *
+ * Enrolment happens on each broker's own device (a browser will not hand out a
+ * push subscription any other way), so the one thing that must NOT be optional
+ * is knowing who never enrolled. Anyone with live leads and no subscription is
+ * working blind: no reply alert, no morning report, nothing.
+ */
+router.options("/push/coverage", (_req, res) => res.sendStatus(204));
+router.get("/push/coverage", async (req, res) => {
+  try {
+    const [brokers, covered] = await Promise.all([reportableBrokers(null), brokersWithPush()]);
+    const rows = brokers.map((b) => ({ broker: b, enabled: covered.has(b.trim().toLowerCase()) }));
+    res.json({
+      brokers: rows,
+      missing: rows.filter((r) => !r.enabled).map((r) => r.broker),
+    });
+  } catch (err) {
+    req.log.error({ err }, "push coverage failed");
+    res.status(500).json({ error: "DB error" });
+  }
 });
 
 router.options("/push/subscribe", (_req, res) => res.sendStatus(204));

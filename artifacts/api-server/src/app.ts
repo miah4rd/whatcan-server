@@ -11,6 +11,7 @@ import { startAmoSyncScheduler } from "./lib/amo-sync";
 import { startFunnelSnapshotScheduler } from "./lib/funnel-snapshot";
 import { startTimelineSyncScheduler } from "./lib/amo-timeline-sync";
 import { startCommitmentScheduler } from "./lib/commitment-scheduler";
+import { startReportScheduler } from "./lib/report-scheduler";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
 
@@ -62,6 +63,7 @@ startAmoSyncScheduler();
 startFunnelSnapshotScheduler();
 startTimelineSyncScheduler();
 startCommitmentScheduler();
+startReportScheduler();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
 pool.query(`ALTER TABLE leads_sync ADD COLUMN IF NOT EXISTS pipeline text`)

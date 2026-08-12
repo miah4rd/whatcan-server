@@ -76,6 +76,28 @@ export async function sendPushToBroker(
   }
 }
 
+/**
+ * Which brokers currently have at least one live device subscription.
+ *
+ * Web Push cannot be switched on for someone from the server: the subscription
+ * is minted by THEIR browser after THEY grant permission, and no API exists to
+ * do that on their behalf. So the only thing the product can do — and the thing
+ * it failed to do until now — is make enrolment loud and make the gaps visible.
+ * Notifications reached 2 of 12 brokers for a month because nothing anywhere
+ * showed that the other 10 were dark. This is what makes it showable.
+ */
+export async function brokersWithPush(): Promise<Set<string>> {
+  try {
+    const rows = await db
+      .selectDistinct({ brokerId: pushSubscriptionsTable.brokerId })
+      .from(pushSubscriptionsTable);
+    return new Set(rows.map((r) => (r.brokerId ?? "").trim().toLowerCase()).filter(Boolean));
+  } catch (err) {
+    logger.error({ err }, "brokersWithPush failed");
+    return new Set<string>();
+  }
+}
+
 /** Counts this broker's current pending suggestions, for the app-icon badge number. */
 async function countPendingForBroker(brokerId: string): Promise<number> {
   try {
