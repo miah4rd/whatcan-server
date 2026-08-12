@@ -42,70 +42,76 @@ function decodeEntities(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
-// The scout writes notes in TWO layouts and they must both parse. Assuming a
-// single format silently dropped 4 of 11 leads on the first run — they logged
-// "no ORIGINAL TEXT" and were skipped forever, which looks identical to "no
-// leads today":
-//   A) "SOURCE - ..." / "ORIGINAL TEXT:" / "IDENTIFIED VILLA (...)" / "GOOGLE MAPS"
-//   B) "=== SOURCE / FULL CHAIN ===" / "=== PROPERTY (from post) ===" /
-//      "=== ACTION BRIEF FOR LISTING AGENT ==="
-/** Exported for the note-parsing test — both layouts must keep parsing. */
+// The scout does NOT use a fixed note format. Four layouts have turned up so
+// far and the headings are free-form each time — "ORIGINAL TEXT:",
+// "=== PROPERTY (from post) ===", "ОРИГИНАЛЬНЫЙ ТЕКСТ ОБЪЯВЛЕНИЯ",
+// "LISTING (original post, verbatim summary)", "ORIGINAL POST TEXT". Every time
+// a new one appeared it silently dropped those leads: they logged "no ORIGINAL
+// TEXT", were skipped on every later pass too, and from the outside looked
+// exactly like "no new leads today". So this parses STRUCTURALLY — find the
+// sections, then recognise them by what the heading is about — instead of
+// matching a list of names that the next run will not use.
+
+/** The brief is the note telling OUR broker what to do — never the poster's words. */
 export function isActionBrief(text: string): boolean {
-  return /^\s*=*\s*ACTION BRIEF/i.test(text);
+  return /ACTION BRIEF|WHO TO CONTACT|FIRST MESSAGE|WHAT TO CLARIFY|POSITIONING/i.test(text);
 }
 
+/** Headings whose section holds what the poster themselves published. */
+const AD_HEADING = /ORIGINAL|ОРИГИНАЛ|LISTING|POST TEXT|PROPERTY|ОБЪЯВЛЕНИ/i;
+
 /**
- * The scout's own section headings — an explicit list, matched CASE-SENSITIVELY.
+ * Words that appear in the scout's SECTION headings — never in advert copy.
  *
- * A generic "this line looks like a heading" test (all-caps, ends in a colon)
- * cannot work here: rental ads shout. "DIRECT OWNER. NO CONSTRUCTION AROUND.
- * LONG TERM ONLY." and "PRICE (minimum three months upfront):" are ad copy, and
- * the heuristic version of this function treated the first one as a section
- * break — trimming a 900-character listing down to its title line, which the
- * bot would then have answered knowing nothing but "2BR in Pererenan".
- * Case-sensitivity is what keeps the ad's own "WhatsApp ..." and "Contact: ..."
- * lines from being mistaken for the scout's "=== WHATSAPP ===" section.
+ * "All caps and short" is not enough on its own. Rental ads shout: "PRICE
+ * (minimum three months upfront):" passes every structural test and cut one
+ * listing from 1009 characters to 144, and "DIRECT OWNER. NO CONSTRUCTION
+ * AROUND." cut another to its title. Requiring a section word means an
+ * unfamiliar heading simply gets absorbed into the previous section — the ad
+ * comes through with some extra context, which is the harmless failure.
  */
-const SCOUT_HEADING =
-  /^\s*(?:={2,}|!{2,})?\s*(SOURCE|ORIGINAL TEXT|IDENTIFIED VILLA|GOOGLE MAPS|WHATSAPP|PROPERTY|ACTION BRIEF|POSSIBLE DUPLICATE)\b/;
+const HEADING_WORDS =
+  /ORIGINAL|ОРИГИНАЛ|LISTING|POST TEXT|PROPERTY|ОБЪЯВЛЕНИ|SOURCE|CONTACT|GROUP|MAPS|IDENTIFIED|HOW THE NAME|ACTION BRIEF|WHO TO|FIRST MESSAGE|WHAT TO|POSITIONING|DUPLICATE|WHATSAPP|VERIFIED|HONEST NOTE|THE OBJECT|FACEBOOK|BRIEF/i;
 
 function isHeading(raw: string): boolean {
   const t = raw.trim();
   if (!t) return false;
-  if (/^={2,}/.test(t)) return true; // === SECTION === (layout B, unambiguous)
-  return SCOUT_HEADING.test(t);
+  if (/^={2,}/.test(t)) return true; // === SECTION ===
+  if (t.length > 60) return false;
+  if (/\.\s/.test(t)) return false; // sentence breaks -> prose, not a heading
+  // Judge the part before any parenthetical: "LISTING (original post, verbatim
+  // summary)" is a heading even though the bracket is lowercase.
+  const core = t.replace(/\([^)]*\)/g, "").replace(/[:=]+$/, "").trim();
+  if (core.length < 4) return false;
+  if (core !== core.toUpperCase() || !/[A-ZА-ЯЁ]{3,}/.test(core)) return false;
+  return HEADING_WORDS.test(core);
 }
 
-/** The body under `headingRe`, up to the next heading. */
-function sectionAfter(note: string, headingRe: RegExp): string | null {
-  const lines = note.split("\n");
-  const start = lines.findIndex((l) => headingRe.test(l));
-  if (start === -1) return null;
-  const kept: string[] = [];
-  const sameLine = lines[start].replace(headingRe, "").replace(/^[\s:=]+/, "").replace(/=+$/, "").trim();
-  if (sameLine) kept.push(sameLine);
-  for (let i = start + 1; i < lines.length; i++) {
-    if (isHeading(lines[i])) break;
-    kept.push(lines[i]);
+/** Split a note into [heading, body] sections. */
+function sections(note: string): Array<{ heading: string; body: string }> {
+  const out: Array<{ heading: string; body: string }> = [];
+  let cur: { heading: string; body: string[] } | null = null;
+  for (const line of note.split("\n")) {
+    if (isHeading(line)) {
+      if (cur) out.push({ heading: cur.heading, body: cur.body.join("\n").trim() });
+      const h = line.trim().replace(/^[=!\s]+/, "").replace(/[=\s]+$/, "");
+      const inline = h.includes(":") ? h.slice(h.indexOf(":") + 1).trim() : "";
+      cur = { heading: h, body: inline ? [inline] : [] };
+    } else if (cur) {
+      cur.body.push(line);
+    }
   }
-  const text = kept.join("\n").trim();
-  return text.length > 20 ? text : null;
+  if (cur) out.push({ heading: cur.heading, body: cur.body.join("\n").trim() });
+  return out;
 }
 
 /**
- * What the poster themselves put out about the villa.
- *
- * Layout A gives the ad verbatim under "ORIGINAL TEXT:". Layout B has no
- * verbatim copy — "PROPERTY (from post)" is the same content restated as
- * bullets. Both are the poster's own facts, which is what the draft needs;
- * everything else in the note (our research, the duplicate warning, the brief)
- * is ours and stays out of the conversation.
+ * What the poster themselves published about the villa — never our research or
+ * our negotiating notes, which sit in other sections of the same note.
  */
 export function extractOriginalAd(note: string): string | null {
-  return (
-    sectionAfter(note, /ORIGINAL TEXT\s*:/i) ??
-    sectionAfter(note, /^\s*=*\s*PROPERTY\b[^=]*=*\s*$/i)
-  );
+  const hit = sections(note).find((s) => AD_HEADING.test(s.heading) && s.body.length > 20);
+  return hit ? hit.body : null;
 }
 
 async function fetchLeadNotes(leadId: string): Promise<{ ad: string | null; brief: string; research: string }> {
@@ -133,6 +139,18 @@ async function fetchLeadNotes(leadId: string): Promise<{ ad: string | null; brie
   } catch (err) {
     logger.warn({ err, leadId }, "listing-acquisition: notes fetch failed");
     return { ad: null, brief: "", research: "" };
+  }
+}
+
+/** The lead's own title — the scout writes the listing summary into it, e.g.
+ *  "The Loft@Tabanan - 4BR Tanah Lot/Beraban | 110M/mo". Public listing facts,
+ *  which makes it a safe last resort when the note layout changes again. */
+async function fetchLeadTitle(leadId: string): Promise<string> {
+  try {
+    const lead = await amoFetch<{ name?: string }>(`/api/v4/leads/${leadId}`);
+    return (lead?.name ?? "").trim();
+  } catch {
+    return "";
   }
 }
 
@@ -217,17 +235,27 @@ export async function processListingAcquisitionOutreach(): Promise<number> {
       if (alreadySent) continue;
 
       const { ad, brief, research } = await fetchLeadNotes(lead.leadId);
-      // No ad text means no idea what this listing even is. Seeding a blank
-      // conversation would just reproduce the context-free opener this pass
-      // exists to fix, so leave it for the broker.
-      if (!ad) {
-        logger.info({ leadId: lead.leadId }, "listing-acquisition: no ORIGINAL TEXT in notes, skipping");
+      // A note layout we do not recognise must never make a lead disappear.
+      // Skipping used to be permanent — the lead logged "no ORIGINAL TEXT" on
+      // every pass forever, which from the broker's side is indistinguishable
+      // from having no new leads. Fall back to the lead's own title (public
+      // listing facts, never our research) and say so loudly.
+      let adText = ad;
+      if (!adText) {
+        adText = await fetchLeadTitle(lead.leadId);
+        logger.warn(
+          { leadId: lead.leadId, fallbackTitle: adText, noteChars: research.length },
+          "listing-acquisition: no recognisable advert section in the notes — seeding from the lead title instead. The scout's note format has changed again; check the headings.",
+        );
+      }
+      if (!adText || adText.length < 10) {
+        logger.warn({ leadId: lead.leadId }, "listing-acquisition: nothing usable to seed, leaving for the broker");
         continue;
       }
 
       const posterName = (await fetchContactName(lead.leadId)) || "Lister";
       const at = lead.amoCreatedAt ?? new Date();
-      const content = formatAsLeadMessage(at, posterName, ad.slice(0, 2000));
+      const content = formatAsLeadMessage(at, posterName, adText.slice(0, 2000));
 
       // The scout's research and brief reach the prompt as LEAD CARD INFO —
       // guidance for the bot, never quoted to the poster.
@@ -260,7 +288,7 @@ export async function processListingAcquisitionOutreach(): Promise<number> {
 
       seeded++;
       logger.info(
-        { leadId: lead.leadId, adChars: ad.length, briefChars: brief.length },
+        { leadId: lead.leadId, adChars: adText.length, briefChars: brief.length },
         "listing-acquisition: owner's listing ad seeded as the first message — LIVE will answer it",
       );
     } catch (err) {
