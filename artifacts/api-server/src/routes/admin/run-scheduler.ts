@@ -7,6 +7,7 @@ import { and, eq, lt, inArray, isNotNull, sql } from "drizzle-orm";
 import { refreshLeadProfile } from "../../lib/lead-profile";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { refreshLeadFromTimeline } from "../../lib/amo-timeline-sync";
+import { sendDailyReports } from "../../lib/report-scheduler";
 
 const router = Router();
 
@@ -123,6 +124,23 @@ router.post("/admin/run-scheduler", async (_req, res) => {
     res.json({ ok: true, message: "Scheduler run complete. Check PUSH tab in extension." });
   } catch (err) {
     logger.error({ err }, "admin: manual scheduler run error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/**
+ * POST /api/admin/send-daily-report[?broker=hos]
+ * Sends the morning report push now instead of waiting for 08:00 Bali.
+ * With ?broker it goes to that one person only and does NOT mark the day as
+ * done, so a test send never swallows the real one.
+ */
+router.post("/admin/send-daily-report", async (req, res) => {
+  const only = (req.query["broker"] as string | undefined)?.trim();
+  try {
+    const sent = await sendDailyReports(only ? { only } : { force: true });
+    res.json({ ok: true, sent, only: only ?? null });
+  } catch (err) {
+    logger.error({ err }, "admin: send-daily-report error");
     res.status(500).json({ error: String(err) });
   }
 });

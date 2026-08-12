@@ -58,14 +58,20 @@ function pushBody(card: Awaited<ReturnType<typeof buildReport>>): string {
   return bits.length > 0 ? card.headline + "\n" + bits.join(" · ") : card.headline;
 }
 
-export async function sendDailyReports(force = false): Promise<number> {
+export async function sendDailyReports(
+  opts: { force?: boolean; only?: string } = {},
+): Promise<number> {
   const today = await baliToday();
-  if (!force && (await lastSentOn()) === today) return 0;
+  const oneOff = Boolean(opts.only);
+  if (!opts.force && !oneOff && (await lastSentOn()) === today) return 0;
 
-  const covered = await brokersWithPush();
+  const all = await brokersWithPush();
+  const covered = opts.only
+    ? new Set([...all].filter((b) => b === opts.only!.trim().toLowerCase()))
+    : all;
   if (covered.size === 0) {
-    logger.warn("daily report: nobody has notifications enabled — nothing sent");
-    await markSent(today);
+    logger.warn({ only: opts.only ?? null }, "daily report: nobody to send to — notifications not enabled");
+    if (!oneOff) await markSent(today);
     return 0;
   }
 
@@ -84,8 +90,10 @@ export async function sendDailyReports(force = false): Promise<number> {
     }
   }
 
-  await markSent(today);
-  logger.info({ sent, day: today }, "daily reports sent");
+  // A one-off test send must not consume the day: the real 8am pass still has
+  // to go out to everybody afterwards.
+  if (!oneOff) await markSent(today);
+  logger.info({ sent, day: today, only: opts.only ?? null }, "daily reports sent");
   return sent;
 }
 
