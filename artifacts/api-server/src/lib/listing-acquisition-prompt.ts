@@ -28,9 +28,8 @@ import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
 import { sanitizeSuggestion } from "./sanitize-suggestion";
 import { logger } from "./logger";
 
-export function isListingAcquisitionPipeline(pipeline: string | null | undefined): boolean {
-  return (pipeline ?? "").trim().toLowerCase() === "rental listings";
-}
+/** One roster for every funnel — lib/pipelines.ts. */
+export { isListingAcquisition as isListingAcquisitionPipeline } from "./pipelines";
 
 export type ContactType = "owner" | "agent" | "unclear";
 

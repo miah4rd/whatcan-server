@@ -19,6 +19,8 @@ import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
 import { processListingAcquisitionOutreach } from "./listing-acquisition-outreach";
 import { isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { logStuckLeads } from "./stuck-leads";
+import { logUnknownPipelines } from "./pipelines";
+import { amoFetch } from "./amo-client";
 import { correctionsPromptBlock } from "./broker-corrections";
 import { maybeAutopilot } from "./autopilot";
 import { enforceBudgetFilter } from "./budget-filter";
@@ -1309,6 +1311,23 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
   // record of "since when" once someone finally notices.
   setInterval(() => {
     logStuckLeads().catch((err) => logger.error({ err }, "stuck-lead check error"));
+    // A funnel missing from the roster never reaches leads_sync at all, so the
+    // stuck-lead check above cannot see it. This is the only thing that can.
+    logUnknownPipelines(
+      async () => {
+        const d = await amoFetch<{ _embedded?: { pipelines?: Array<{ id: number; name: string }> } }>(
+          "/api/v4/leads/pipelines?limit=50",
+        );
+        return d?._embedded?.pipelines ?? [];
+      },
+      async (pipelineId) => {
+        const d = await amoFetch<{ _page?: number; _embedded?: { leads?: unknown[] } }>(
+          `/api/v4/leads?filter[pipeline_id]=${pipelineId}&limit=1`,
+        );
+        return (d?._embedded?.leads ?? []).length;
+      },
+      (o, m) => logger.warn(o, m),
+    ).catch(() => {});
   }, 15 * 60 * 1000);
 
   // Rental Listings: seed the owner's own ad as the first message, then answer

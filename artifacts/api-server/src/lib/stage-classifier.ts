@@ -32,12 +32,9 @@ export type StageDef = { name: string; id: number };
 /** amoCRM's universal closing statuses — the same ids in every pipeline. */
 const TERMINAL_STAGE_IDS = new Set([142, 143]);
 
-/** Pipelines whose stages the classifier may move. Others (hiring, Shanti) are
- * different businesses — leave their stages alone. */
-const CONVERSATIONAL_PIPELINES = new Set(["rental", "unicorn", "rental listings"]);
-
-/** The acquisition funnel talks to a SUPPLIER, not a client — see below. */
-const LISTING_ACQUISITION = "rental listings";
+/** Which funnels the classifier may move, and which is the acquisition one —
+ * both answered by the single roster in lib/pipelines.ts. */
+import { isConversationalPipeline, isListingAcquisition } from "./pipelines";
 
 /** Stages that describe internal workflow, not where the conversation is. */
 const WORKFLOW_STAGE_PATTERNS: RegExp[] = [
@@ -117,7 +114,7 @@ const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = 
 ];
 
 function meaningFor(stageName: string, pipelineKey?: string): string | null {
-  const table = pipelineKey === LISTING_ACQUISITION ? LISTING_ACQUISITION_MEANINGS : STAGE_MEANINGS;
+  const table = isListingAcquisition(pipelineKey) ? LISTING_ACQUISITION_MEANINGS : STAGE_MEANINGS;
   for (const { match, meaning } of table) {
     if (match.test(stageName)) return meaning;
   }
@@ -130,7 +127,7 @@ function isWorkflowStage(stageName: string, pipelineKey?: string): boolean {
   // it is on the never-auto-set list. On the acquisition funnel the owner has
   // given it a genuine conversational meaning: outreach sent, still finding out
   // whether this is the real owner. Honour that here only.
-  if (pipelineKey === LISTING_ACQUISITION && /taken to work/i.test(stageName)) return false;
+  if (isListingAcquisition(pipelineKey) && /taken to work/i.test(stageName)) return false;
   return WORKFLOW_STAGE_PATTERNS.some((re) => re.test(stageName));
 }
 
@@ -158,7 +155,7 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
 
   for (const p of data?._embedded?.pipelines ?? []) {
     const key = p.name.trim().toLowerCase();
-    if (!CONVERSATIONAL_PIPELINES.has(key)) continue;
+    if (!isConversationalPipeline(key)) continue;
 
     const ordered = [...(p._embedded?.statuses ?? [])].sort((a, b) => a.sort - b.sort);
     const all: StageDef[] = ordered.map((s) => ({ name: s.name, id: s.id }));
@@ -169,7 +166,7 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
       // unlabelled, it is one we deliberately do not auto-set ("live",
       // "RENTED" — see LISTING_ACQUISITION_MEANINGS). The generic
       // "Funnel step N of M" fallback below would hand them to the model.
-      .filter((s) => key !== LISTING_ACQUISITION || meaningFor(s.name, key) !== null)
+      .filter((s) => !isListingAcquisition(key) || meaningFor(s.name, key) !== null)
       .map((s) => {
         // The owner's Rental funnel uses "Need Assessed" as "the first outreach
         // was made" — not the generic "requirements are known". Wrong meaning
@@ -242,7 +239,7 @@ export async function classifyStage(opts: {
   attachmentsCount: number;
 }): Promise<StageClassification | null> {
   const pipelineKey = (opts.pipeline ?? "").trim().toLowerCase();
-  if (!CONVERSATIONAL_PIPELINES.has(pipelineKey)) return null;
+  if (!isConversationalPipeline(pipelineKey)) return null;
 
   const stages = (await loadPipelines()).get(pipelineKey);
   if (!stages || stages.selectable.length === 0) return null;
@@ -260,7 +257,7 @@ export async function classifyStage(opts: {
     // funnel "I'm not the owner, I just manage it" is the single most important
     // thing in the thread; on a client funnel it would be noise.
     const domain =
-      pipelineKey === LISTING_ACQUISITION
+      isListingAcquisition(pipelineKey)
         ? `This is a LISTING ACQUISITION conversation. We contacted the person who advertised a villa for rent, to win the right to market and manage it. The other party is a SUPPLIER (the owner, or an agent acting for them) — they are NOT a client renting from us. Establishing whether they are the actual owner is the first job of this funnel.`
         : `This is a sales conversation with a client.`;
     const result = await chatCompletionJSON<{ stage?: string; reason?: string }>({

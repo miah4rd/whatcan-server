@@ -41,21 +41,8 @@ export function isRentalScopedBroker(user: string | null | undefined): boolean {
   return !!user && RENTAL_SCOPED_BROKERS.has(user.trim().toLowerCase());
 }
 
-/**
- * Pipelines HoS is responsible for outside their normal Unicorn exclusion —
- * i.e. the pipelines the "isBroker(user, 'HoS') && pipeline !== ...' skips
- * scattered across amocrm-webhook.ts/followup-scheduler.ts/pending-visibility.ts
- * are meant to let through. Rental Listings (owner/agent acquisition) is a
- * second HoS-run funnel alongside Rental itself — comparing against the single
- * string "rental" at each call site would silently zero out generation AND
- * visibility for it the same way an unlisted pipeline already did for Rental
- * before this set existed. One roster, every call site reads it.
- */
-const HOS_TRACKED_PIPELINES = new Set<string>(["rental", "rental listings"]);
-
-export function isHosTrackedPipeline(pipeline: string | null | undefined): boolean {
-  return HOS_TRACKED_PIPELINES.has((pipeline ?? "").trim().toLowerCase());
-}
+/** Which funnels HoS may see — see lib/pipelines.ts for the single roster. */
+export { isHosTrackedPipeline } from "./pipelines";
 
 /**
  * Brokers for whom the adaptive follow-up system (lead profiles, adaptive
@@ -83,10 +70,20 @@ export function baseFollowupIntervalDays(streak: number): number {
  * count as fresh (they were sinking under the old 21-day cutoff). */
 export const FRESH_LEAD_MAX_AGE_DAYS = 30;
 
-/** Max PUSH suggestions surfaced per broker at once (daily focus cap). The rest
- * wait and rotate up as the top drains — keeps the list workable (WhatsApp-safe)
- * instead of dumping the whole overdue backlog. */
-export const PUSH_DAILY_CAP = 25;
+/**
+ * Daily PUSH cap — OFF (0 disables it entirely).
+ *
+ * It used to be 25 per broker. It came from the owner's own complaint that the
+ * list never drained ("I follow up 5 and it still shows 30"), but it hid more
+ * than it helped: the budget was per BROKER while the filtering happens per
+ * PIPELINE, so one funnel could eat the whole day's allowance and a second
+ * would show an empty tab with finished drafts sitting behind it — with no
+ * indication that anything was being withheld. Owner's call: no caps.
+ *
+ * Set a number here again only with a way for the broker to SEE what is being
+ * held back; silently withholding work is what made this a bug.
+ */
+export const PUSH_DAILY_CAP = 0;
 
 /**
  * Days to wait before the next follow-up. `streak` should be the number of

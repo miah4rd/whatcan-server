@@ -109,10 +109,8 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
     (await db.select({ leadId: leadsSyncTable.leadId }).from(leadsSyncTable)).map((r) => r.leadId),
   );
 
-  // Only sync leads from these pipelines (case-insensitive). "Rental Listings"
-  // acquires rental listings FROM owners/agents — a different business than
-  // Rental (renting a villa TO a client) or Unicorn, but still ours to run.
-  const ALLOWED_PIPELINES = new Set(["unicorn", "rental", "rental listings"]);
+  // Which funnels we sync at all — one roster, lib/pipelines.ts.
+  const ALLOWED_PIPELINES = new Set(TRACKED_PIPELINE_NAMES);
   // Unicorn pipeline: exclude these stages (case-insensitive)
   const UNICORN_EXCLUDED_STAGES = new Set(["неразобранное", "incorrect information"]);
 
