@@ -80,8 +80,11 @@ async function sendAttachmentLinks(
     }
     await new Promise((r) => setTimeout(r, i === 0 ? 3000 : 1200));
     try {
-      const linkFieldOk = await updateLeadCustomField(leadId, COMPANION_FIELD_ID, url);
-      if (linkFieldOk) {
+      const linkField = await updateLeadCustomField(leadId, COMPANION_FIELD_ID, url);
+      // The lead vanished between the text and this link (deleted or merged in
+      // amoCRM mid-send) — the remaining links can only fail the same way.
+      if (linkField.leadMissing) break;
+      if (linkField.ok) {
         await triggerSalesbot(leadId, COMPANION_ROBERT_BOT_ID);
         delivered = i + 1;
         if (sentMessageId) {
@@ -673,9 +676,30 @@ router.post("/approve", async (req, res) => {
     // Strip emoji first: the Salesbot/WAhelp delivery truncates the message at the
     // first emoji (astral-plane char), so the client was getting only the greeting.
     const deliveryText = stripEmojiForDelivery(body.message);
+    const fieldWrite = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, deliveryText);
+
+    // ── The lead no longer exists in amoCRM ───────────────────────────────────
+    // Deleted, or merged into another lead (a merge deletes the source). There
+    // is nothing to send to and nothing for the broker to open by hand either,
+    // so retrying can only fail again — Amelia hit exactly this on lead
+    // 23195549 (2026-08-12) and got "amoCRM refused the send" plus advice to
+    // send it manually from a card that does not exist. Drop the ghost the same
+    // way amo-sync's own cleanup drops an untracked lead, and say what happened.
+    if (fieldWrite.leadMissing) {
+      req.log.warn({ leadId: sug.leadId }, "approve aborted — lead no longer exists in amoCRM, removing it and its drafts");
+      await db.delete(pendingSuggestionsTable).where(eq(pendingSuggestionsTable.leadId, sug.leadId)).catch(() => {});
+      await db.delete(leadsSyncTable).where(eq(leadsSyncTable.leadId, sug.leadId)).catch(() => {});
+      res.status(409).json({
+        ok: false,
+        error: "lead_deleted",
+        message:
+          "This lead no longer exists in amoCRM — it was deleted or merged into another lead. Nothing was sent, and the card has been removed from your inbox. If the client is real, find the lead they were merged into and reply there.",
+      });
+      return;
+    }
+
     try {
-      const fieldOk = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, deliveryText);
-      if (fieldOk) {
+      if (fieldWrite.ok) {
         const botTriggered = await triggerSalesbot(sug.leadId, botId);
         chatSent = botTriggered;
         hookStatus = botTriggered ? 200 : 500;
