@@ -105,21 +105,36 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
     // different casing across write paths (extension vs. mobile), so an exact
     // match here can under- or over-count the badge relative to what the
     // inbox itself shows.
+    //
+    // Owner resolved the SAME way the inbox resolves it: pending_suggestions
+    // stamps responsible_user at creation and never touches it again, so after a
+    // reassignment in amoCRM the stamp names the OLD owner. The inbox already
+    // prefers leads_sync (kept current by every sync pass); the badge did not, so
+    // a handed-over lead showed up in the new owner's list while the number on
+    // their app icon ignored it — and still counted it for someone who no longer
+    // has the lead. Two Rental leads assigned to Admin and moved to Amelia by
+    // hand (2026-08-12) hit exactly this.
     const rows = await db
       .select({
         id: pendingSuggestionsTable.id,
         leadId: pendingSuggestionsTable.leadId,
         kind: pendingSuggestionsTable.kind,
-        responsibleUser: pendingSuggestionsTable.responsibleUser,
+        // The CURRENT owner, not the creation-time stamp — isPendingVisible's
+        // Rental-scoped check reads this and would otherwise judge the lead by
+        // whoever used to hold it.
+        responsibleUser: sql<
+          string | null
+        >`coalesce(${leadsSyncTable.responsibleUser}, ${pendingSuggestionsTable.responsibleUser})`,
         // Must be selected here too: the badge count and the inbox share
         // isPendingVisible, and omitting a field it reads makes the number on the
         // app icon disagree with what the broker sees.
         requestedAt: pendingSuggestionsTable.requestedAt,
       })
       .from(pendingSuggestionsTable)
+      .leftJoin(leadsSyncTable, eq(leadsSyncTable.leadId, pendingSuggestionsTable.leadId))
       .where(
         and(
-          sql`lower(trim(${pendingSuggestionsTable.responsibleUser})) = lower(trim(${brokerId}))`,
+          sql`lower(trim(coalesce(${leadsSyncTable.responsibleUser}, ${pendingSuggestionsTable.responsibleUser}, ''))) = lower(trim(${brokerId}))`,
           eq(pendingSuggestionsTable.status, "pending"),
         ),
       );
