@@ -387,6 +387,54 @@ message** (not our draft), the lead name/id/stage, and deep-link to
 iOS caveat: push only works for a home-screen-installed PWA, and if Safari has
 recorded a denial it will not re-prompt — the site's data must be cleared.
 
+**A per-device feature still needs a product-level enrolment path — this is not
+a technical excuse.** Push reached 2 brokers out of 12 for a month. The
+constraint is real (a subscription is minted by the broker's own browser after
+they grant permission; no server call can do it for them), but the failure was
+ours: it was opt-in behind a small bell, and the bell was rendered only when
+`!EMBEDDED` — invisible inside the extension, which is exactly where the rental
+brokers work. Nothing anywhere showed the other ten were dark, so "notifications
+are on" and "this broker has been unreachable since July" looked identical, and
+the owner was expected to remember per person. Now: `/m` re-subscribes silently
+on every load when permission is already granted (`syncPushSubscription`, which
+also repairs a rotated endpoint — invisible before, and permanently silent), a
+banner states plainly when it is off instead of leaving an unreachable broker
+looking like an idle one, and `GET /api/public/push/coverage` answers "who is
+dark" for the 🤖 panel and the team report. Anything else that must be switched
+on per person gets the same three parts: enrol automatically where possible, say
+so loudly where not, and expose coverage — never a switch someone has to
+remember to flip for each broker.
+
+## Reports (discipline, not dashboards)
+
+`lib/daily-report.ts` → `GET /api/public/report` (one broker) and
+`/report/team` (everyone, admin view), rendered in the **Report tab of `/m`**
+with Day / Week / Month, and pushed at **08:00 Bali** by
+`lib/report-scheduler.ts`. `POST /api/admin/send-daily-report?broker=x` fires it
+on demand; with `?broker` it does not mark the day done, so a test send never
+swallows the real one.
+
+- **The report is a to-do list, not statistics.** What the broker is SITTING ON
+  comes first and is the only thing the push says — waiting / waiting over a day
+  / overdue follow-ups / warm going cold. A morning message of percentages gets
+  swiped away; "12 clients are waiting" gets worked. Activity and outcomes sit
+  underneath, and the previous-period comparison exists only on week and month,
+  where a trend is real rather than noise.
+- **Days are Bali days** (`(ts AT TIME ZONE 'Asia/Makassar')::date`) — a
+  broker's "yesterday" is the day they worked.
+- **Closed and bot-excluded leads are never counted as work owed.** A report
+  that bills dead leads is believed exactly once.
+- **Median reply time reads LIVE drafts only.** A scheduled follow-up's draft is
+  queued ahead of its send time, so including it measures the schedule, not the
+  broker (it dragged Amelia's median to 3.9 days when the live figure was 3h).
+- Stage vocabularies differ per funnel (`STAGE_ORDER`), and Rental Listings runs
+  the opposite way round; a stage in neither list is ignored rather than guessed
+  at, so an administrative move never reads as progress.
+- **Known gap the report cannot paper over:** the Rental funnel has no viewing
+  stage, so `viewings` is structurally 0 there. The main step of a rental deal
+  is unmeasurable until "Viewing Scheduled"/"Viewing Done" exist in amoCRM
+  (Alexander's side). Do not fake it from message text.
+
 ## Working conventions
 
 - **Other people push to `master` concurrently** (Alexander, other sessions).
