@@ -29,7 +29,11 @@ router.post("/public/send-chat-message", async (req, res) => {
     const botId = salesbotId ?? COMPANION_ROBERT_BOT_ID;
 
     const fieldUpdated = await updateLeadCustomField(leadId, COMPANION_FIELD_ID, message);
-    if (!fieldUpdated) {
+    if (fieldUpdated.leadMissing) {
+      res.status(409).json({ error: "lead_deleted", message: "This lead no longer exists in amoCRM." });
+      return;
+    }
+    if (!fieldUpdated.ok) {
       res.status(500).json({ error: "Failed to update custom field" });
       return;
     }

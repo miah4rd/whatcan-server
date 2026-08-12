@@ -310,6 +310,11 @@ const PAGE_HTML = `<!doctype html>
   var reportCard = null;
   var reportTeam = null;
   var reportBusy = false;
+  // A screen of its own, reached from the header — NOT a fourth tab. Live /
+  // Reach / Push are three queues of the same job (answer this lead); the
+  // report is about the broker, not about a lead, and sitting in that row it
+  // read as a fourth pile of work to get through.
+  var reportView = false;
 
   var PIPELINE_STAGES = [
     "NEW LEAD","IN PROGRESS","1ST FOLLOW UP (NEXT DAY)","2ND FOLLOW UP (3 DAYS AFTER)",
@@ -1188,7 +1193,7 @@ const PAGE_HTML = `<!doctype html>
       : Promise.resolve();
     return Promise.all([mine, team]).then(function () {
       reportBusy = false;
-      if (activeTab === "report") render();
+      if (reportView) render();
     });
   }
 
@@ -1326,7 +1331,7 @@ const PAGE_HTML = `<!doctype html>
 
   function renderList() {
     var list = sortedList(activeTab);
-    var tabDef = [["live", "Live"], ["reach", "Reach"], ["push", "Push"], ["report", "Report"]];
+    var tabDef = [["live", "Live"], ["reach", "Reach"], ["push", "Push"]];
     var html = "";
     html += '<header>';
     html += '<div class="top-row">';
@@ -1364,6 +1369,7 @@ const PAGE_HTML = `<!doctype html>
       var pushOn = pushEnabled();
       html += '<button class="refresh-btn" id="toggle-push-btn" title="' + (pushOn ? "Disable notifications" : "Enable notifications") + '" style="' + (pushOn ? "" : "opacity:.45") + '">' + (pushOn ? "\\ud83d\\udd14" : "\\ud83d\\udd15") + '</button>';
     }
+    html += '<button class="refresh-btn" id="report-btn" title="' + (reportView ? "Back to leads" : "My report") + '" style="' + (reportView ? "color:#2dd4bf" : "opacity:.65") + '">\\ud83d\\udcca</button>';
     html += '<button class="refresh-btn" id="refresh-btn" title="Refresh">\\u27f3</button>';
     html += '<button class="refresh-btn" id="autopilot-btn" title="Autopilot">\\ud83e\\udd16</button>';
     html += "</div></div>";
@@ -1389,21 +1395,20 @@ const PAGE_HTML = `<!doctype html>
       html += '<button class="refresh-btn" id="ap-save" style="margin-top:6px">Save</button>';
       html += "</div>";
     }
-    html += '<div class="tabs">';
-    for (var i = 0; i < tabDef.length; i++) {
-      var key = tabDef[i][0], label = tabDef[i][1];
-      // Report has no queue behind it — its badge is the number that matters
-      // there (people waiting), and nothing at all until it has loaded.
-      var badge = key === "report"
-        ? (reportCard ? '<span class="count">' + reportCard.waiting + "</span>" : "")
-        : '<span class="count">' + (items[key] || []).length + "</span>";
-      html += '<div class="tab ' + (activeTab === key ? "active" : "") + '" data-tab="' + key + '">' + label + badge + "</div>";
+    if (!reportView) {
+      html += '<div class="tabs">';
+      for (var i = 0; i < tabDef.length; i++) {
+        var key = tabDef[i][0], label = tabDef[i][1];
+        html += '<div class="tab ' + (activeTab === key ? "active" : "") + '" data-tab="' + key + '">' +
+          label + '<span class="count">' + (items[key] || []).length + "</span></div>";
+      }
+      html += "</div>";
     }
-    html += "</div></header><main>";
+    html += "</header><main>";
 
     html += pushBannerHtml();
 
-    if (activeTab === "report") {
+    if (reportView) {
       html += renderReport();
     } else if (list.length === 0) {
       var emptyText = activeTab === "live"
@@ -1497,12 +1502,14 @@ const PAGE_HTML = `<!doctype html>
         fetchReport();
       };
     });
+    var reportBtn = $("#report-btn");
+    if (reportBtn) reportBtn.onclick = function () {
+      reportView = !reportView;
+      render();
+      if (reportView) fetchReport();
+    };
     document.querySelectorAll(".tab").forEach(function (el) {
-      el.onclick = function () {
-        activeTab = el.getAttribute("data-tab");
-        render();
-        if (activeTab === "report") fetchReport();
-      };
+      el.onclick = function () { activeTab = el.getAttribute("data-tab"); render(); };
     });
     document.querySelectorAll(".card").forEach(function (el) {
       el.onclick = function () {
@@ -2045,7 +2052,7 @@ const PAGE_HTML = `<!doctype html>
         // cross-origin iframe, but the SERVER knows whether this broker has a
         // device subscribed anywhere — so the panel can still tell them.
         fetchPushCoverage();
-        if (activeTab === "report") fetchReport();
+        if (reportView) fetchReport();
         fetchInbox().then(function () { if (d.leadId) openLeadById(d.leadId); });
       }
     }
@@ -2066,7 +2073,7 @@ const PAGE_HTML = `<!doctype html>
   }
 
   // The 8am report push deep-links straight to the tab it is about.
-  if (_qs.get("view") === "report") activeTab = "report";
+  if (_qs.get("view") === "report") reportView = true;
 
   render();
   fetchStageOptions();
@@ -2077,7 +2084,7 @@ const PAGE_HTML = `<!doctype html>
     // and one that reaches everybody who opens the app.
     syncPushSubscription();
     fetchPushCoverage();
-    if (activeTab === "report") fetchReport();
+    if (reportView) fetchReport();
     fetchInbox().then(openDeepLinkedLead);
   }
   setInterval(function () { if (!openItem) fetchInbox(); }, 20000);

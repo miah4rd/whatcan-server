@@ -182,11 +182,26 @@ export async function triggerSalesbot(leadId: string, botId: number): Promise<bo
 
 // ── Update lead custom field ──────────────────────────────────────────────────
 
+/**
+ * Result of writing the outbound message into the lead's custom field.
+ *
+ * `leadMissing` is kept separate from a plain failure because the two need
+ * opposite handling: an ordinary failure is worth retrying, but a lead amoCRM
+ * no longer has (deleted, or merged into another lead — a merge deletes the
+ * source) can never be sent to, by the bot or by hand. Treated as a generic
+ * failure it left the card in the broker's inbox failing forever, telling them
+ * to "send it by hand from amoCRM" — where there is nothing to open.
+ */
+export interface CustomFieldWriteResult {
+  ok: boolean;
+  leadMissing: boolean;
+}
+
 export async function updateLeadCustomField(
   leadId: string,
   fieldId: number,
   value: string,
-): Promise<boolean> {
+): Promise<CustomFieldWriteResult> {
   const AMO_BASE = `https://${process.env.AMO_SUBDOMAIN ?? "unicornproperty"}.amocrm.ru`;
   const token = process.env.AMOCRM_LONG_LIVED_TOKEN ?? "";
 
@@ -208,14 +223,17 @@ export async function updateLeadCustomField(
     });
     if (res.ok) {
       logger.info({ leadId, fieldId }, "amoChat: custom field updated");
-      return true;
+      return { ok: true, leadMissing: false };
     }
     const err = await res.text();
-    logger.error({ status: res.status, err }, "amoChat: custom field update failed");
-    return false;
+    // amoCRM reports a gone lead as 400 + {"errors":{"<id>":"Lead not found"}}
+    // on this endpoint (a bare GET on the same lead answers 204 No Content).
+    const leadMissing = res.status === 404 || (res.status === 400 && /lead not found/i.test(err));
+    logger.error({ status: res.status, err, leadId, leadMissing }, "amoChat: custom field update failed");
+    return { ok: false, leadMissing };
   } catch (err) {
     logger.error({ err }, "amoChat: custom field update error");
-    return false;
+    return { ok: false, leadMissing: false };
   }
 }
 
