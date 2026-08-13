@@ -915,9 +915,24 @@ router.post("/approve", async (req, res) => {
       (typeof body.stageId === "string" && body.stageId.trim() ? body.stageId.trim() : null) ??
       (autoStage ? String(autoStage.id) : null);
 
+    // On a SEND this block runs seconds after the send path set nextFollowupAt —
+    // and it used to null it unconditionally, erasing the clock the same request
+    // had just started. While auto-stage was off that was rare; once the
+    // classifier began applying "Options sent" on nearly every send (re-enabled
+    // 2026-08-06), nearly every answered lead lost its follow-up and went silent
+    // forever (13 found on 2026-08-13, some hanging since the 7th). Keep the
+    // clock on sends; clear it only when the message path never set one — a
+    // stage-only move (skipMessage) — or when the new stage is a dead one where
+    // chasing must stop.
+    const clearClock = skipMessage || shouldSuppressPush(effectiveNewStage);
     await db
       .update(leadsSyncTable)
-      .set({ leadStage: effectiveNewStage, leadStageId: stageId ?? undefined, nextFollowupAt: null, updatedAt: new Date() })
+      .set({
+        leadStage: effectiveNewStage,
+        leadStageId: stageId ?? undefined,
+        ...(clearClock ? { nextFollowupAt: null } : {}),
+        updatedAt: new Date(),
+      })
       .where(eq(leadsSyncTable.leadId, sug.leadId));
 
     if (effectiveNewStage !== prevStage) {

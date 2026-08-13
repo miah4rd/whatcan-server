@@ -343,6 +343,18 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   SIGINT/SIGTERM (and on an uncaught exception) with PM2's `kill_timeout` at
   25s to allow it; a stray unhandled rejection is logged, not fatal. Never move
   the delivery record back behind the attachment loop.
+- **The stage-change block must not erase the follow-up clock a send just set.**
+  Approving a reply sets `nextFollowupAt`; the stage block in the SAME request
+  used to write `nextFollowupAt: null` unconditionally. While auto-stage was off
+  this was rare, but once the classifier began applying "Options sent" on nearly
+  every send (2026-08-06), nearly every answered lead lost its chase and went
+  silent forever — the "answered → nothing scheduled" bug kept "returning"
+  because each fix set the clock and this block kept wiping it a second later.
+  It now clears the clock only on a stage-only move (skipMessage) or a move to
+  a dead stage (`shouldSuppressPush`). Many places null this clock on purpose
+  (whitelist misses, bot-excluded, relevance-rejected, task-driven warmup,
+  Rental Listings) — do NOT add a blanket "repair" pass that re-sets it; that
+  exact loop is warned about in followup-scheduler.ts.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
 
