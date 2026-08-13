@@ -141,6 +141,7 @@ function buildSystemPrompt(surface: IntakeSurface = {}): string {
     "- Be brief. One or two sentences, then the specific question that unblocks publishing.",
     "- Ask about at most two missing things at a time, most important first.",
     "- The broker's latest message always wins over anything inferred earlier, including from photos.",
+    "- The field names below are for the JSON only. NEVER put one in the reply — ask for 'площадь застройки', not 'buildSize'. The broker is a person, not an API.",
     "- When the broker corrects a field, change that field and leave the rest exactly as it was.",
     "",
     "NEVER INVENT",
