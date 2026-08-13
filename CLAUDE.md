@@ -42,6 +42,13 @@ tap. Two surfaces, one server:
   remembered to also upload there — treat a Store update as a manual step every
   release, not an assumption that self-host + Store stay in sync on their own.
 
+- **Website assistant** — the "Add a listing" bubble logged-in brokers see on
+  unicorn-property.com (a Lovable project, `bali-villa-rentals`, same Supabase
+  project `yrtteclvrtqobjnpxqck` our catalog reads). Its edge function
+  `broker-assistant` checks the broker's role and forwards the chat to
+  `POST /api/public/broker-agent` here; see "The listing assistant has three
+  surfaces" below.
+
 ## Deploy
 
 Production is a single VPS behind Traefik, PM2 process `whatcan`, SSH host alias
@@ -357,6 +364,52 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   exact loop is warned about in followup-scheduler.ts.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
+
+## The listing assistant has three surfaces, one implementation
+
+Adding a listing is a conversation, not a form (`lib/listing-intake.ts`). It is
+reached from the review queue at `/listings`, from the intake chat in `/m`, and
+from the "Add a listing" bubble on the website. They share
+`runListingIntakeTurn` and, since the website was connected,
+`lib/listing-publish.ts` — one submission row, one completeness check, one
+Supabase insert, one cache invalidation. Do not add a fourth copy.
+
+- **The website surface has no listing card.** `/m` shows the fields filling in
+  beside the chat and a Publish button; the site has only the reply text. So the
+  `noCard` surface flag tells the model to recap the listing in words, in the
+  broker's own language, and ask for confirmation itself — and never to claim
+  the listing is published, because only the server knows that.
+- **"Publish" is decided by a model, not by keywords.** `да, только цену
+  поменяй на 90` starts with "да" and is not an approval. `classifyPublishIntent`
+  (Haiku) is asked only once the draft is complete and the recap has been shown,
+  and it fails CLOSED — a failed check costs one more confirmation round, a
+  failed-open check publishes a villa to a live website on a maybe.
+- **The property code is resolved again at publish time.** The code in the recap
+  is a proposal; minutes may pass before the broker answers, and another broker
+  may take it. `publishListingDraft(propertyId: "auto")` picks the next free code
+  and steps past a collision, reusing the same submission row.
+- **Photos arrive as signed URLs into a private bucket and expire in a week.**
+  The bytes are copied into our own `uploads/` and it is our permanent URL that
+  reaches the `properties` row — a signed URL there would 404 for a client a
+  month later. Only the site's own Supabase host may be fetched
+  (`BROKER_AGENT_ATTACHMENT_HOSTS` widens it); the URL comes from a browser.
+- **Session state is in `broker_agent_sessions`, not memory.** The browser
+  re-sends the transcript on every turn but NOT the draft, and never re-sends a
+  photo it already uploaded — a `pm2 restart` mid-conversation would publish the
+  villa with no pictures.
+- **Two secrets, both required.** `BROKER_AGENT_WEBHOOK_SECRET` in the VPS `.env`
+  and the same value in the site's Supabase secrets, alongside
+  `BROKER_AGENT_WEBHOOK_URL`. With no secret configured the endpoint answers 503
+  rather than serving whoever finds the URL: a request that reaches it can
+  publish to the live catalog.
+- **Publishing needs `SUPABASE_SERVICE_ROLE_KEY` on the VPS.** The anon key is
+  read-only by RLS design. Without it every publish — from any of the three
+  surfaces — fails with "not set on the server", which is what it did from the
+  day the /m intake chat shipped until someone checked.
+- **Seeing the bubble requires an `admin`/`agent` row in the site's
+  `user_roles`.** The brokers work in amoCRM and mostly have no account on the
+  site at all, so this feature reaches only the people who have been granted a
+  role — the same shape of gap as push notifications reaching 2 brokers of 12.
 
 ## Funnel stages move themselves
 
