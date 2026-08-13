@@ -101,6 +101,50 @@ const PAGE_HTML = `<!doctype html>
   .rep-periods .p { flex: 1; text-align: center; padding: 7px 4px; border-radius: 8px; font-size: 12px; font-weight: 700; background: #181d2e; color: #8a93a8; border: 1px solid #2a3146; cursor: pointer; }
   .rep-periods .p.on { background: #2a3146; color: #e6e8ee; }
   .rep-name { font-size: 14px; font-weight: 800; margin-bottom: 2px; }
+  /* Add-a-listing screen. A chat plus the card it is building, in that order:
+     the broker talks, and the card underneath is what will actually be
+     published — never a hidden state they have to trust. */
+  .li-note { font-size: 12.5px; color: #8a93a8; line-height: 1.55; margin-bottom: 12px; }
+  .li-chat { background: #141827; border: 1px solid #2a3146; border-radius: 12px; padding: 10px; max-height: 44vh; overflow-y: auto; margin-bottom: 10px; }
+  .li-msg { margin-bottom: 10px; }
+  .li-msg:last-child { margin-bottom: 0; }
+  .li-msg .who { font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 3px; }
+  .li-msg.me .who { color: #64b5f6; }
+  .li-msg.ai .who { color: #2dd4bf; }
+  .li-bub { padding: 9px 12px; border-radius: 8px; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+  .li-msg.me .li-bub { background: rgba(33,150,243,.15); border: 1px solid rgba(33,150,243,.3); color: #d4eaff; }
+  .li-msg.ai .li-bub { background: rgba(45,212,191,.1); border: 1px solid rgba(45,212,191,.28); color: #c8f5e0; }
+  .li-thumbs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+  .li-thumb { position: relative; }
+  .li-thumb img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 1px solid #2a3146; display: block; }
+  .li-thumb .x {
+    position: absolute; top: -6px; right: -6px; width: 19px; height: 19px; border-radius: 50%;
+    background: #4a1f24; color: #fca5a5; border: 1px solid #6b2b32; font-size: 11px; line-height: 17px;
+    text-align: center; cursor: pointer; font-weight: 700;
+  }
+  .li-compose { background: #181d2e; border: 1px solid #2a3146; border-radius: 12px; padding: 10px; margin-bottom: 12px; }
+  .li-compose textarea {
+    width: 100%; min-height: 74px; background: #0f1320; color: #e6e8ee; border: 1px solid #2a3146;
+    border-radius: 8px; padding: 10px; font-size: 14px; font-family: inherit; resize: vertical;
+  }
+  .li-actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  .li-btn { background: #2dd4bf; color: #06121a; border: none; border-radius: 8px; padding: 9px 16px; font-weight: 700; font-size: 13px; cursor: pointer; }
+  .li-btn[disabled] { opacity: .38; cursor: default; }
+  .li-btn.ghost { background: #181d2e; color: #e6e8ee; border: 1px solid #2a3146; }
+  .li-card { background: #181d2e; border: 1px solid #2a3146; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .li-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .li-f { flex: 1 1 140px; min-width: 0; }
+  .li-f.wide { flex-basis: 100%; }
+  .li-f label { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #8a93a8; margin-bottom: 4px; }
+  .li-f input, .li-f select, .li-f textarea {
+    width: 100%; background: #0f1320; color: #e6e8ee; border: 1px solid #2a3146;
+    border-radius: 8px; padding: 8px 10px; font-size: 13.5px; font-family: inherit;
+  }
+  .li-f textarea { min-height: 78px; resize: vertical; }
+  .li-f.miss input, .li-f.miss select, .li-f.miss textarea { border-color: #b45252; }
+  .li-ok { background: rgba(74,222,128,.1); border: 1px solid rgba(74,222,128,.35); color: #86efac; border-radius: 12px; padding: 14px; margin-bottom: 12px; font-size: 13.5px; line-height: 1.6; }
+  .li-ok a { color: #7dd3fc; word-break: break-all; }
+  .li-err { background: rgba(248,113,113,.1); border: 1px solid rgba(248,113,113,.35); color: #fca5a5; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; font-size: 13px; line-height: 1.5; }
   /* Notification enrolment. A browser only ever hands out a push subscription
      to the device that granted permission, so the server cannot switch anyone
      on — the one thing the page CAN do is refuse to be quiet about it. */
@@ -315,6 +359,358 @@ const PAGE_HTML = `<!doctype html>
   // report is about the broker, not about a lead, and sitting in that row it
   // read as a fourth pile of work to get through.
   var reportView = false;
+
+  // ── Add a listing ────────────────────────────────────────────────────────
+  // The team used to publish listings by sharing ONE Claude account across
+  // three browsers, and the sessions collided constantly. So nothing here is
+  // shared: the transcript, the draft and the photos live in THIS tab (and
+  // this tab's localStorage), and every request carries them in full. The
+  // server holds no intake session at all, which is exactly why two brokers
+  // adding two villas at the same moment cannot step on each other.
+  var LI_TYPES = ["villa", "apartment", "land", "townhouse", "hotel"];
+  var listingView = false;
+  var liTurns = [];      // {role, text, images:[]} — the conversation so far
+  var liDraft = null;    // the card being built; null until the first answer
+  var liImages = [];     // every photo that will be published
+  var liPending = [];    // uploaded, not yet attached to a sent message
+  var liInput = "";
+  var liBusy = false;
+  var liErr = "";
+  var liCode = "";
+  var liCodeHint = "";
+  var liDone = null;     // {propertyId, url} once it is live
+
+  function liSave() {
+    try {
+      localStorage.setItem("copilot_listing_state", JSON.stringify({
+        turns: liTurns, draft: liDraft, images: liImages, pending: liPending, input: liInput, code: liCode
+      }));
+    } catch (e) { /* quota or private mode: the saved copy is a convenience, not the record */ }
+  }
+  function liRestore() {
+    try {
+      var raw = localStorage.getItem("copilot_listing_state");
+      if (!raw) return;
+      var s = JSON.parse(raw) || {};
+      liTurns = s.turns || []; liDraft = s.draft || null; liImages = s.images || [];
+      liPending = s.pending || []; liInput = s.input || ""; liCode = s.code || "";
+    } catch (e) { /* a corrupt blob must not trap the broker on a broken screen */ }
+  }
+  function liReset() {
+    liTurns = []; liDraft = null; liImages = []; liPending = [];
+    liInput = ""; liErr = ""; liCode = ""; liCodeHint = ""; liDone = null;
+    try { localStorage.removeItem("copilot_listing_state"); } catch (e) { /* nothing to clear */ }
+  }
+
+  // The same completeness rule the server enforces on publish. Kept here too so
+  // the button is honest about WHY it is disabled instead of failing on press.
+  function liHasPrice(d) {
+    if (!d) return false;
+    if (d.listingType === "rent") return !!(d.monthlyPriceIdr || d.yearlyPriceIdr || d.monthlyPriceUsd || d.yearlyPriceUsd);
+    if (d.listingType === "sale") return !!(d.priceUsd || d.leaseholdPriceUsd);
+    return false;
+  }
+  function liMissing(d) {
+    if (!d) return ["title", "area", "listingType", "type", "bedrooms", "description", "price"];
+    var out = [];
+    if (!d.title) out.push("title");
+    if (!d.area) out.push("area");
+    if (!d.listingType) out.push("listingType");
+    if (!d.type) out.push("type");
+    if ((d.bedrooms === null || d.bedrooms === undefined) && d.type !== "land") out.push("bedrooms");
+    if (!d.description) out.push("description");
+    if (!liHasPrice(d)) out.push("price");
+    return out;
+  }
+
+  function liThumbs(urls, removable) {
+    if (!urls || !urls.length) return "";
+    var h = '<div class="li-thumbs">';
+    for (var i = 0; i < urls.length; i++) {
+      h += '<div class="li-thumb"><img src="' + esc(urls[i]) + '" alt="">';
+      if (removable) h += '<div class="x" data-rmimg="' + esc(urls[i]) + '">\\u00d7</div>';
+      h += "</div>";
+    }
+    return h + "</div>";
+  }
+
+  function liFieldHtml(key, label, kind, options, miss, wide) {
+    var raw = liDraft ? liDraft[key] : null;
+    var v = (raw === null || raw === undefined) ? "" : raw;
+    if (key === "features") v = (liDraft && liDraft.features ? liDraft.features : []).join(", ");
+    var h = '<div class="li-f' + (wide ? " wide" : "") + (miss.indexOf(key) !== -1 ? " miss" : "") + '">';
+    h += "<label>" + esc(label) + "</label>";
+    if (kind === "select") {
+      h += '<select data-k="' + key + '"><option value="">\\u2014</option>';
+      for (var i = 0; i < options.length; i++) {
+        h += '<option value="' + esc(options[i]) + '"' + (String(v) === options[i] ? " selected" : "") + ">" + esc(options[i]) + "</option>";
+      }
+      h += "</select>";
+    } else if (kind === "textarea") {
+      h += '<textarea data-k="' + key + '">' + esc(v) + "</textarea>";
+    } else {
+      h += '<input data-k="' + key + '" type="' + (kind === "number" ? "number" : "text") + '" value="' + esc(v) + '">';
+    }
+    return h + "</div>";
+  }
+
+  // Updates the publish button in place rather than re-rendering: a full render
+  // on every keystroke would take the focus out of the field being typed in.
+  function liSyncPublish() {
+    var btn = $("#li-publish");
+    if (!btn) return;
+    var m = liMissing(liDraft);
+    var codeEl = $("#li-code");
+    var code = codeEl ? codeEl.value.trim() : liCode;
+    btn.disabled = liBusy || m.length > 0 || !code;
+    var note = $("#li-missing");
+    if (note) note.textContent = m.length ? "Still needed: " + m.join(", ") : "";
+  }
+
+  async function liUpload(files) {
+    if (!files || !files.length) return;
+    liBusy = true; liErr = ""; render();
+    try {
+      var fd = new FormData();
+      for (var i = 0; i < files.length; i++) fd.append("images", files[i]);
+      var r = await fetch(API + "/listing-intake/upload", { method: "POST", body: fd });
+      var j = await r.json();
+      if (r.ok && j && j.images) liPending = liPending.concat(j.images);
+      else liErr = (j && j.error) || "Could not upload the photos.";
+    } catch (e) { liErr = "Could not upload the photos: " + (e && e.message); }
+    liBusy = false; liSave(); render();
+  }
+
+  async function liFetchCode() {
+    try {
+      var lt = (liDraft && liDraft.listingType) || "";
+      var r = await fetch(API + "/listing-intake/code?listingType=" + encodeURIComponent(lt));
+      var j = await r.json();
+      if (j && j.suggestion) {
+        if (!liCode) liCode = j.suggestion;
+        liCodeHint = "Next free code in the series already used in the catalog. Change it if this villa belongs to another one.";
+      } else {
+        liCodeHint = "Could not read the existing codes \\u2014 type the code yourself.";
+      }
+      liSave(); render();
+    } catch (e) { /* no suggestion is not a failure: the broker types the code */ }
+  }
+
+  async function liSend() {
+    if (liBusy) return;
+    var el = $("#li-input");
+    var text = (el ? el.value : liInput).trim();
+    if (!text && !liPending.length) return;
+
+    liTurns.push({ role: "user", text: text, images: liPending.slice() });
+    for (var i = 0; i < liPending.length; i++) {
+      if (liImages.indexOf(liPending[i]) === -1) liImages.push(liPending[i]);
+    }
+    liPending = []; liInput = ""; liErr = ""; liBusy = true;
+    liSave(); render();
+
+    try {
+      var r = await fetch(API + "/listing-intake/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ turns: liTurns, draft: liDraft, broker: activeBroker() })
+      });
+      var j = await r.json();
+      if (!r.ok || (j && j.error)) {
+        liErr = (j && j.error) || "The assistant could not answer. Try again.";
+      } else {
+        liTurns.push({ role: "assistant", text: j.reply || "" });
+        if (j.draft) liDraft = j.draft;
+        liBusy = false;
+        liSave();
+        if (!liCode) { liFetchCode(); }
+      }
+    } catch (e) { liErr = "Network error: " + (e && e.message); }
+    liBusy = false; liSave(); render();
+  }
+
+  async function liPublish() {
+    var codeEl = $("#li-code");
+    var code = codeEl ? codeEl.value.trim() : liCode;
+    if (!code || liBusy) return;
+    liCode = code; liErr = ""; liBusy = true; render();
+    try {
+      var r = await fetch(API + "/listing-intake/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draft: liDraft, images: liImages, propertyId: code, broker: activeBroker() })
+      });
+      var j = await r.json();
+      if (r.ok && j && j.ok) {
+        liDone = j;
+        showToast("Published \\u2014 " + j.propertyId);
+      } else {
+        liErr = (j && j.error) || "Could not publish.";
+      }
+    } catch (e) { liErr = "Could not publish: " + (e && e.message); }
+    liBusy = false; render();
+  }
+
+  function renderListing() {
+    var miss = liMissing(liDraft);
+    var html = "";
+    html += '<header><div class="top-row">';
+    html += '<div class="brand"><span class="dot"></span> Add a listing</div>';
+    html += '<div class="top-actions">';
+    html += '<span class="broker-chip">\\ud83d\\udc64 <b>' + esc(activeBroker()) + "</b></span>";
+    html += '<button class="refresh-btn" id="li-close" title="Back to leads">\\u2715</button>';
+    html += "</div></div></header><main>";
+
+    if (liDone) {
+      html += '<div class="li-ok"><b>\\u2705 ' + esc(liDone.propertyId) + " is live.</b><br>";
+      html += "It is on the site and the bot can already offer it to clients.<br>";
+      html += '<a href="' + esc(liDone.url) + '" target="_blank" rel="noopener">' + esc(liDone.url) + "</a></div>";
+      html += '<button class="li-btn" id="li-again">Add another listing</button> ';
+      html += '<button class="li-btn ghost" id="li-close2">Back to leads</button>';
+      html += "</main>";
+      app.innerHTML = html;
+      $("#li-close").onclick = function () { listingView = false; render(); };
+      $("#li-close2").onclick = function () { listingView = false; liReset(); render(); };
+      $("#li-again").onclick = function () { liReset(); render(); };
+      return;
+    }
+
+    if (liErr) html += '<div class="li-err">' + esc(liErr) + "</div>";
+
+    if (!liTurns.length) {
+      html += '<div class="li-note">\\ud83c\\udfe1 Paste whatever the owner sent you \\u2014 the text, the price, the area, the size \\u2014 and attach the photos. ' +
+        "The assistant builds the listing and asks about anything missing. Nothing reaches the site until you press Publish.</div>";
+    } else {
+      html += '<div class="li-chat" id="li-chat">';
+      for (var i = 0; i < liTurns.length; i++) {
+        var t = liTurns[i];
+        html += '<div class="li-msg ' + (t.role === "assistant" ? "ai" : "me") + '">';
+        html += '<div class="who">' + (t.role === "assistant" ? "Assistant" : "You") + "</div>";
+        if (t.text) html += '<div class="li-bub">' + linkify(esc(t.text)) + "</div>";
+        html += liThumbs(t.images, false);
+        html += "</div>";
+      }
+      if (liBusy) {
+        html += '<div class="li-msg ai"><div class="who">Assistant</div>' +
+          '<div class="skel"><div></div><div></div><div></div><div></div></div></div>';
+      }
+      html += "</div>";
+    }
+
+    html += '<div class="li-compose">';
+    html += '<textarea id="li-input" placeholder="For example: villa in Pererenan, 3 bedrooms, 88 juta a month, pool, available from September">' + esc(liInput) + "</textarea>";
+    html += liThumbs(liPending, true);
+    html += '<div class="li-actions">';
+    html += '<input type="file" id="li-files" accept="image/*" multiple style="display:none">';
+    html += '<button class="li-btn ghost" id="li-attach"' + (liBusy ? " disabled" : "") + ">\\ud83d\\udcce Photos</button>";
+    html += '<button class="li-btn" id="li-send"' + (liBusy ? " disabled" : "") + ">" + (liBusy ? "Working\\u2026" : "Send") + "</button>";
+    if (liTurns.length) html += '<button class="li-btn ghost" id="li-reset" style="margin-left:auto">Start over</button>';
+    html += "</div></div>";
+
+    if (liDraft) {
+      var isSale = liDraft.listingType === "sale";
+      html += '<div class="li-card">';
+      html += '<label class="section">The listing as it will be published</label>';
+      html += '<div class="li-grid">';
+      html += liFieldHtml("title", "Title", "text", null, miss, true);
+      html += liFieldHtml("area", "Area", "text", null, miss, false);
+      html += liFieldHtml("type", "Type", "select", LI_TYPES, miss, false);
+      html += liFieldHtml("listingType", "Rent or sale", "select", ["rent", "sale"], miss, false);
+      html += liFieldHtml("bedrooms", "Bedrooms", "number", null, miss, false);
+      html += liFieldHtml("bathrooms", "Bathrooms", "number", null, miss, false);
+      html += liFieldHtml("landSize", "Land, m2", "number", null, miss, false);
+      html += liFieldHtml("buildSize", "Build, m2", "number", null, miss, false);
+      if (isSale) {
+        html += liFieldHtml("priceUsd", "Freehold price, USD", "number", null, miss, false);
+        html += liFieldHtml("leaseholdPriceUsd", "Leasehold price, USD", "number", null, miss, false);
+        html += liFieldHtml("ownership", "Ownership", "select", ["freehold", "leasehold"], miss, false);
+        html += liFieldHtml("leaseYears", "Lease, years", "number", null, miss, false);
+      } else {
+        // Rupiah first and dollars second, because that is the order the owner
+        // quotes a Bali rental in — and the dollar columns are what once made
+        // the bot quote dollars to a client budgeting in juta.
+        html += liFieldHtml("monthlyPriceIdr", "Per month, IDR", "number", null, miss, false);
+        html += liFieldHtml("yearlyPriceIdr", "Per year, IDR", "number", null, miss, false);
+        html += liFieldHtml("monthlyPriceUsd", "Per month, USD", "number", null, miss, false);
+        html += liFieldHtml("yearlyPriceUsd", "Per year, USD", "number", null, miss, false);
+      }
+      html += liFieldHtml("features", "Features, comma separated", "text", null, miss, true);
+      html += liFieldHtml("videoUrl", "Video link", "text", null, miss, true);
+      html += liFieldHtml("description", "Description shown on the site", "textarea", null, miss, true);
+      html += "</div>";
+
+      if (liImages.length) {
+        html += '<div style="margin-top:12px"><label class="section">Photos (' + liImages.length + ")</label>";
+        html += liThumbs(liImages, true) + "</div>";
+      }
+
+      html += '<div class="li-grid" style="margin-top:14px">';
+      html += '<div class="li-f"><label>Property code</label><input id="li-code" value="' + esc(liCode) + '" placeholder="R-YUD-040"></div>';
+      html += '<div class="li-f" style="display:flex;align-items:flex-end">';
+      html += '<button class="li-btn" id="li-publish" style="width:100%"' + ((liBusy || miss.length || !liCode) ? " disabled" : "") + ">Publish to the site</button>";
+      html += "</div></div>";
+      html += '<div class="li-note" id="li-missing" style="margin:8px 0 0">' + (miss.length ? "Still needed: " + esc(miss.join(", ")) : "") + "</div>";
+      if (liCodeHint) html += '<div class="li-note" style="margin:4px 0 0">' + esc(liCodeHint) + "</div>";
+      html += "</div>";
+    }
+
+    html += "</main>";
+    app.innerHTML = html;
+
+    var chat = $("#li-chat");
+    if (chat) chat.scrollTop = chat.scrollHeight;
+
+    $("#li-close").onclick = function () { listingView = false; render(); };
+    var inputEl = $("#li-input");
+    // Stored on every keystroke but never re-rendered from: re-rendering here
+    // would drop the caret mid-word.
+    if (inputEl) inputEl.oninput = function () { liInput = inputEl.value; };
+    var attachBtn = $("#li-attach");
+    if (attachBtn) attachBtn.onclick = function () { $("#li-files").click(); };
+    var filesEl = $("#li-files");
+    if (filesEl) filesEl.onchange = function () { liUpload(filesEl.files); filesEl.value = ""; };
+    var sendBtn = $("#li-send");
+    if (sendBtn) sendBtn.onclick = liSend;
+    var resetBtn = $("#li-reset");
+    if (resetBtn) resetBtn.onclick = function () {
+      if (confirm("Start a new listing? The current draft will be cleared.")) { liReset(); render(); }
+    };
+    var pubBtn = $("#li-publish");
+    if (pubBtn) pubBtn.onclick = liPublish;
+    var codeEl = $("#li-code");
+    if (codeEl) codeEl.oninput = function () { liCode = codeEl.value; liSave(); liSyncPublish(); };
+
+    document.querySelectorAll("[data-rmimg]").forEach(function (el) {
+      el.onclick = function () {
+        var u = el.getAttribute("data-rmimg");
+        liPending = liPending.filter(function (x) { return x !== u; });
+        liImages = liImages.filter(function (x) { return x !== u; });
+        liSave(); render();
+      };
+    });
+
+    document.querySelectorAll("[data-k]").forEach(function (el) {
+      el.oninput = function () {
+        if (!liDraft) return;
+        var k = el.getAttribute("data-k");
+        var val = el.value;
+        if (k === "features") {
+          liDraft.features = val.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+        } else if (el.type === "number") {
+          liDraft[k] = val === "" ? null : Math.round(Number(val));
+        } else {
+          liDraft[k] = val === "" ? null : val;
+        }
+        liSave(); liSyncPublish();
+      };
+      el.onchange = function () {
+        // Only these two change WHICH fields the card shows (rent prices vs sale
+        // prices, bedrooms vs land), so only these two earn a redraw.
+        var k = el.getAttribute("data-k");
+        if (k === "listingType" || k === "type") render();
+      };
+    });
+  }
 
   var PIPELINE_STAGES = [
     "NEW LEAD","IN PROGRESS","1ST FOLLOW UP (NEXT DAY)","2ND FOLLOW UP (3 DAYS AFTER)",
@@ -1431,6 +1827,7 @@ const PAGE_HTML = `<!doctype html>
       var pushOn = pushEnabled();
       html += '<button class="refresh-btn" id="toggle-push-btn" title="' + (pushOn ? "Disable notifications" : "Enable notifications") + '" style="' + (pushOn ? "" : "opacity:.45") + '">' + (pushOn ? "\\ud83d\\udd14" : "\\ud83d\\udd15") + '</button>';
     }
+    html += '<button class="refresh-btn" id="listing-btn" title="Add a listing" style="opacity:.65">\\ud83c\\udfe1</button>';
     html += '<button class="refresh-btn" id="report-btn" title="' + (reportView ? "Back to leads" : "My report") + '" style="' + (reportView ? "color:#2dd4bf" : "opacity:.65") + '">\\ud83d\\udcca</button>';
     html += '<button class="refresh-btn" id="refresh-btn" title="Refresh">\\u27f3</button>';
     html += '<button class="refresh-btn" id="autopilot-btn" title="Autopilot">\\ud83e\\udd16</button>';
@@ -1570,6 +1967,8 @@ const PAGE_HTML = `<!doctype html>
         fetchReport();
       };
     });
+    var listingBtn = $("#listing-btn");
+    if (listingBtn) listingBtn.onclick = function () { listingView = true; render(); };
     var reportBtn = $("#report-btn");
     if (reportBtn) reportBtn.onclick = function () {
       reportView = !reportView;
@@ -2057,7 +2456,8 @@ const PAGE_HTML = `<!doctype html>
       renderSetup();
       return;
     }
-    if (openItem) renderDetail();
+    if (listingView) renderListing();
+    else if (openItem) renderDetail();
     else renderList();
 
     var oldToasts = document.querySelectorAll(".toast");
@@ -2142,6 +2542,11 @@ const PAGE_HTML = `<!doctype html>
 
   // The 8am report push deep-links straight to the tab it is about.
   if (_qs.get("view") === "report") reportView = true;
+  // A half-written listing survives a reload, a phone lock, or amoCRM
+  // navigating the panel away — the broker retyping the owner's message is
+  // exactly the friction this screen exists to remove.
+  liRestore();
+  if (_qs.get("view") === "listing") listingView = true;
 
   render();
   fetchStageOptions();

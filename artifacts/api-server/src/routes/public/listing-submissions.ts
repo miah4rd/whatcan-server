@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { db, listingSubmissionsTable, type ListingSubmission } from "@workspace/db";
 import { logger } from "../../lib/logger";
 import { invalidatePropertyCache } from "../../lib/property-catalog";
+import { absoluteUrls } from "../../lib/public-url";
 
 const router = Router();
 
@@ -167,7 +168,7 @@ router.post("/listing-submissions/:id/reject", async (req, res) => {
  * so approvals cannot go through with the anon key no matter how the request
  * is shaped.
  */
-async function pushToSupabase(
+export async function pushToSupabase(
   finalPropertyId: string,
   s: ListingSubmission,
   overrides: Partial<Record<string, unknown>>,
@@ -200,7 +201,11 @@ async function pushToSupabase(
     zone: s.zone,
     description: s.description,
     features: s.features ?? [],
-    images: s.images ?? [],
+    // Absolute, always. The site renders these from its own domain, so the
+    // relative "/api/uploads/x.jpg" this row may hold (every submission before
+    // the intake chat stored exactly that) would resolve against the site and
+    // 404 — a listing published with invisible photos.
+    images: absoluteUrls(s.images),
     video_url: s.videoUrl,
     lat: s.lat,
     lng: s.lng,
