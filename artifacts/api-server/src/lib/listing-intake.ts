@@ -159,6 +159,7 @@ function buildSystemPrompt(surface: IntakeSurface = {}): string {
     "  If the owner names a place not on that list, pick the closest area on the list and say in your reply which one you chose and why.",
     "- type is one of: villa, apartment, land, townhouse, hotel.",
     "- ownership is 'freehold' or 'leasehold'. leaseYears is the remaining lease in years.",
+    "  Both describe how a property is OWNED, so they belong to a SALE. Never ask a rental about freehold, leasehold or lease years — the tenant is not buying anything, and the question makes the assistant look like it did not read the material.",
     "- landSize and buildSize are in square metres, as plain integers.",
     "- features is a short list of concrete selling points in English (e.g. 'Private pool', 'Ocean view', 'Fully furnished'). Maximum eight. No invented amenities.",
     "- title is a short English name a client will see, e.g. '3BR Modern Villa in Pererenan'. No property codes, no agency name, no ALL CAPS.",
