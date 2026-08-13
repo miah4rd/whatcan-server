@@ -27,6 +27,7 @@ import budgetFilterRouter from "./budget-filter";
 import aiSpendRouter from "./ai-spend";
 import listingSubmissionsRouter from "./listing-submissions";
 import listingIntakeRouter from "./listing-intake";
+import brokerAgentRouter from "./broker-agent";
 import reportRouter from "./report";
 
 const router = Router();
@@ -59,6 +60,7 @@ router.use(rescheduleTaskRouter);
 router.use(noReplyNeededRouter);
 router.use(listingSubmissionsRouter);
 router.use(listingIntakeRouter);
+router.use(brokerAgentRouter);
 router.use(reportRouter);
 
 export default router;

@@ -314,6 +314,13 @@ export async function queueSuggestion(opts: {
         status: "pending",
         attachments: opts.attachments,
       });
+      // A queued follow-up is work the broker owes just like a reply is. Only
+      // the LIVE branch above ever notified, so the PUSH tab filled in silence.
+      // A draft the broker asked for by hand is excluded — they are looking at
+      // the screen, and buzzing their own phone about their own click is noise.
+      if (!opts.requestedByBroker) {
+        notifyBrokerForLead(opts.responsibleUser, opts.leadId, "reminder", opts.text).catch(() => {});
+      }
     } else if (opts.requestedByBroker) {
       // The lead already had a pending row, so the insert above was skipped and
       // the broker's request quietly did nothing: the row stayed kind="live" and

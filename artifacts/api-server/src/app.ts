@@ -267,6 +267,23 @@ pool.query(`
 `).then(() => logger.info("startup migration: push_subscriptions table ensured"))
   .catch((err) => logger.error({ err }, "push_subscriptions migration failed"));
 
+// ── broker_agent_sessions (see lib/broker-agent.ts) ─────────────────────────
+// One row per open "Add a listing" chat on the website. The browser re-sends
+// the transcript but not the draft, and never re-sends a photo it has already
+// uploaded, so keeping this in memory would lose a broker's pictures on every
+// deploy.
+pool.query(`
+  CREATE TABLE IF NOT EXISTS broker_agent_sessions (
+    session_id TEXT PRIMARY KEY,
+    broker TEXT,
+    draft JSONB NOT NULL DEFAULT '{}'::jsonb,
+    images JSONB NOT NULL DEFAULT '[]'::jsonb,
+    pending_code TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )
+`).then(() => logger.info("startup migration: broker_agent_sessions table ensured"))
+  .catch((err) => logger.error({ err }, "broker_agent_sessions migration failed"));
+
 // ── lead_commitments table (see lib/commitment-scheduler.ts) ────────────────
 pool.query(`
   CREATE TABLE IF NOT EXISTS lead_commitments (

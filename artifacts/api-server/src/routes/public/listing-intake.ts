@@ -2,20 +2,15 @@ import { Router } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
-import { eq } from "drizzle-orm";
-import { db, listingSubmissionsTable } from "@workspace/db";
 import { logger } from "../../lib/logger";
-import { invalidatePropertyCache, propertyUrlById } from "../../lib/property-catalog";
-import { absoluteUrls } from "../../lib/public-url";
 import {
   runListingIntakeTurn,
   suggestPropertyCode,
-  missingFields,
   EMPTY_DRAFT,
   type ListingDraft,
   type IntakeTurn,
 } from "../../lib/listing-intake";
-import { pushToSupabase } from "./listing-submissions";
+import { publishListingDraft } from "../../lib/listing-publish";
 
 /**
  * "Add a listing" for the brokers, as a chat.
@@ -125,82 +120,22 @@ router.post("/listing-intake/publish", async (req, res) => {
       return;
     }
 
-    // The same completeness rule the chat enforces, checked again here: the
-    // publish call is a plain HTTP endpoint and must not depend on the UI
-    // having been honest about `ready`.
-    const gaps = missingFields(draft);
-    if (gaps.length) {
-      res.status(400).json({ error: "Still missing: " + gaps.join(", "), missing: gaps });
-      return;
-    }
-
     const images = Array.isArray(body.images) ? (body.images as unknown[]).map(String).slice(0, 20) : [];
 
-    // The submission row is written FIRST and always, even if Supabase then
-    // refuses the insert. It is the record that this broker submitted this
-    // villa at this time; losing it on a failed push would leave the work
-    // nowhere, and the broker retyping everything.
-    const [row] = await db
-      .insert(listingSubmissionsTable)
-      .values({
-        title: draft.title!,
-        area: draft.area!,
-        type: draft.type,
-        listingType: draft.listingType!,
-        bedrooms: draft.bedrooms,
-        bathrooms: draft.bathrooms,
-        landSize: draft.landSize,
-        buildSize: draft.buildSize,
-        priceUsd: draft.priceUsd,
-        leaseholdPriceUsd: draft.leaseholdPriceUsd,
-        monthlyPriceUsd: draft.monthlyPriceUsd,
-        yearlyPriceUsd: draft.yearlyPriceUsd,
-        monthlyPriceIdr: draft.monthlyPriceIdr,
-        yearlyPriceIdr: draft.yearlyPriceIdr,
-        ownership: draft.ownership,
-        leaseYears: draft.leaseYears,
-        purpose: draft.purpose,
-        zone: draft.zone,
-        description: draft.description,
-        features: draft.features ?? [],
-        images: absoluteUrls(images),
-        videoUrl: draft.videoUrl,
-        submitterName: broker,
-      })
-      .returning();
-
-    const pushed = await pushToSupabase(propertyId, row!, {});
-    if (!pushed.ok) {
-      // Left as "pending" on purpose: it is now sitting in the review queue at
-      // /listings, so a failed publish is a listing waiting for a human, not a
-      // listing lost.
-      logger.error({ id: row!.id, propertyId, error: pushed.error }, "listing intake publish failed");
-      const duplicate = /duplicate key|already exists|23505/i.test(pushed.error);
+    const result = await publishListingDraft({ draft, images, propertyId, broker });
+    if (!result.ok) {
+      if (result.missing) {
+        res.status(400).json({ error: result.error, missing: result.missing });
+        return;
+      }
       res.status(502).json({
-        error: duplicate
-          ? "Code " + propertyId + " is already taken — pick another one."
-          : pushed.error,
-        submissionId: row!.id,
+        error: result.duplicate ? "Code " + propertyId + " is already taken — pick another one." : result.error,
+        submissionId: result.submissionId,
       });
       return;
     }
 
-    await db
-      .update(listingSubmissionsTable)
-      .set({
-        status: "approved",
-        finalPropertyId: propertyId,
-        reviewedBy: broker,
-        reviewedAt: new Date(),
-      })
-      .where(eq(listingSubmissionsTable.id, row!.id));
-
-    // Without this the bot would not offer the new villa for up to ten minutes
-    // — the exact complaint that made this cache invalidation exist.
-    invalidatePropertyCache();
-    logger.info({ id: row!.id, propertyId, broker }, "listing published from intake chat");
-
-    res.json({ ok: true, propertyId, url: propertyUrlById(propertyId), submissionId: row!.id });
+    res.json({ ok: true, propertyId: result.propertyId, url: result.url, submissionId: result.submissionId });
   } catch (err) {
     logger.error({ err }, "listing intake publish crashed");
     res.status(500).json({ error: "Internal error" });

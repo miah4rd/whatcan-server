@@ -109,7 +109,29 @@ function imageBlock(url: string): ChatImageBlock | null {
   }
 }
 
-function buildSystemPrompt(): string {
+/**
+ * Where the conversation is happening.
+ *
+ * `/m` and the extension show a listing CARD beside the chat: the broker watches
+ * the fields fill in and presses Publish themselves. The assistant embedded in
+ * the website has only its own reply — no card, no button — so on that surface
+ * the recap and the ask-to-publish have to be part of what the model writes.
+ * Same rules, same JSON, one implementation.
+ */
+export type IntakeSurface = { noCard?: boolean };
+
+function buildSystemPrompt(surface: IntakeSurface = {}): string {
+  const noCardBlock = surface.noCard
+    ? [
+        "",
+        "THIS SURFACE HAS NO LISTING CARD",
+        "- The broker sees ONLY your reply. There is no form beside it showing what you filled in, so anything you do not name in words is invisible to them.",
+        "- After each of their messages, name in one compact list what you now hold and what is still missing. Keep it short — a list, not a paragraph.",
+        "- When everything needed is present, recap the whole listing (title, area, type, bedrooms, price, photos) and ask the broker to confirm publishing it to the site.",
+        "- The system assigns the next free property code by itself and appends it in square brackets at the very end of your reply. Tell the broker they can name a different code when they confirm.",
+        "- NEVER say the listing is published, live, or added. Publishing happens only after the broker confirms, and the system says so, not you.",
+      ]
+    : [];
   return [
     "You are the listing intake assistant for Unicorn Property, a Bali real-estate agency.",
     "A broker gives you raw material about ONE property — a message from the owner, a price list, photos, notes — and your job is to turn it into a catalog listing and to ask about whatever is genuinely missing.",
@@ -152,6 +174,7 @@ function buildSystemPrompt(): string {
     "The draft object must ALWAYS contain every one of these keys, using null for unknown and [] for empty features:",
     "title, area, type, listingType, bedrooms, bathrooms, landSize, buildSize, priceUsd, leaseholdPriceUsd, monthlyPriceUsd, yearlyPriceUsd, monthlyPriceIdr, yearlyPriceIdr, ownership, leaseYears, purpose, zone, description, features, videoUrl.",
     "Never drop a field that already has a value just because this turn did not mention it — carry it through unchanged.",
+    ...noCardBlock,
   ].join("\n");
 }
 
@@ -243,6 +266,7 @@ export function missingFields(d: ListingDraft): string[] {
 export async function runListingIntakeTurn(
   turns: IntakeTurn[],
   draft: ListingDraft,
+  surface: IntakeSurface = {},
 ): Promise<IntakeResult> {
   const messages: ChatMessage[] = [];
   const lastIdx = turns.length - 1;
@@ -291,7 +315,7 @@ export async function runListingIntakeTurn(
     missing?: unknown;
   }>({
     model: WRITER_MODEL,
-    system: buildSystemPrompt(),
+    system: buildSystemPrompt(surface),
     messages,
     max_tokens: 1600,
     label: "listing-intake",
