@@ -56,6 +56,31 @@ async function hasNewerLeadMessage(leadId: string, contentLastMs: number): Promi
   }
 }
 
+/**
+ * The mirror of hasNewerLeadMessage: does the timeline know about an OUTGOING
+ * message newer than what the webhook-fed content shows? content freezes for
+ * WhatsApp replies (manual and Salesbot alike), so "content says the lead spoke
+ * last" is routinely a lie about an already-answered lead. Trusting it wiped
+ * the follow-up clock the send had set — the scheduler's own defensive check
+ * was the second eraser behind "answered → nothing scheduled" (Yudi's Rental
+ * leads sat from 07.08 because of this exact branch).
+ */
+async function ourMessageIsNewest(leadId: string, contentLastMs: number): Promise<boolean> {
+  try {
+    const [row] = await db
+      .select({ senderType: leadMessagesTable.senderType, sentAt: leadMessagesTable.sentAt })
+      .from(leadMessagesTable)
+      .where(eq(leadMessagesTable.leadId, leadId))
+      .orderBy(desc(leadMessagesTable.sentAt))
+      .limit(1);
+    if (!row || row.senderType === "lead") return false;
+    return row.sentAt.getTime() > contentLastMs - 60_000;
+  } catch (err) {
+    logger.error({ err, leadId }, "ourMessageIsNewest failed — falling back to content-only");
+    return false;
+  }
+}
+
 async function classifyObjection(
   conversationSnippet: string,
   brokerName: string,
@@ -632,7 +657,15 @@ export async function processFollowups(): Promise<void> {
         // were sitting there waiting on US, which is the worst possible message.
         const repliedPerTimeline = await hasNewerLeadMessage(lead.leadId, contentLastMs);
 
-        if (repliedPerTimeline || parsed?.lastMessage?.from === "lead") {
+        // Content saying "lead spoke last" is only believable when the timeline
+        // does NOT know of a newer outgoing reply — content freezes for
+        // WhatsApp sends, and trusting it here erased the follow-up clock of
+        // every already-answered lead this pass touched.
+        const contentSaysLead =
+          parsed?.lastMessage?.from === "lead" &&
+          !(await ourMessageIsNewest(lead.leadId, contentLastMs));
+
+        if (repliedPerTimeline || contentSaysLead) {
           await db
             .update(leadsSyncTable)
             .set({ lastMessageFrom: "lead", nextFollowupAt: null })
