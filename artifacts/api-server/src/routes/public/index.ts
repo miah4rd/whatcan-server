@@ -26,6 +26,7 @@ import autopilotRouter from "./autopilot";
 import budgetFilterRouter from "./budget-filter";
 import aiSpendRouter from "./ai-spend";
 import listingSubmissionsRouter from "./listing-submissions";
+import listingIntakeRouter from "./listing-intake";
 import reportRouter from "./report";
 
 const router = Router();
@@ -57,6 +58,7 @@ router.use(setTemperatureRouter);
 router.use(rescheduleTaskRouter);
 router.use(noReplyNeededRouter);
 router.use(listingSubmissionsRouter);
+router.use(listingIntakeRouter);
 router.use(reportRouter);
 
 export default router;

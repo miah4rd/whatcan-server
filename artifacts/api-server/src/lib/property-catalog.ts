@@ -203,7 +203,16 @@ const PROPERTY_ID_REGEX = /\b([A-Z]{1,4}-[A-Z0-9-]+)\b/g;
  * from OUR OWN label, built from the *_usd columns, not from the site.
  */
 function propertyUrl(p: SupabaseProperty): string {
-  return `${SITE_BASE}/${p.id}`;
+  return propertyUrlById(p.id);
+}
+
+/**
+ * The same link by bare id, for a listing we have only just created and which
+ * is therefore not in any cached catalog yet. Exported so nothing has to
+ * hardcode SITE_BASE a second time — the base has already moved once.
+ */
+export function propertyUrlById(id: string): string {
+  return `${SITE_BASE}/${id}`;
 }
 
 function toPick(p: SupabaseProperty): PropertyPick {
