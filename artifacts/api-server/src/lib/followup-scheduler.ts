@@ -804,6 +804,12 @@ export async function processFollowups(): Promise<void> {
             objectionCategory: warmupEntry.id,
             attachments: [],
           });
+          // Same rule as the main follow-up path below: queued work the broker
+          // has to act on always announces itself.
+          notifyBrokerForLead(lead.responsibleUser, lead.leadId, "reminder", warmupText, {
+            content: lead.content,
+            leadStage: lead.leadStage,
+          }).catch(() => {});
           void maybeAutopilot(lead.leadId);
         }
 
@@ -1021,6 +1027,16 @@ export async function processFollowups(): Promise<void> {
           objectionCategory: entry.id,
           attachments: [],
         });
+        // A follow-up waiting to be sent is work the broker owes, exactly like a
+        // lead's reply — the owner's rule: "any action the broker has to take in
+        // the copilot deserves a notification, live or follow-up, no difference".
+        // Only LIVE ever notified, so the PUSH tab filled in silence: three of
+        // Amelia's follow-ups sat ready from 4-6 August with nothing to signal
+        // them. Same notification shape as a reply, so the badge stays in step.
+        notifyBrokerForLead(lead.responsibleUser, lead.leadId, "reminder", text, {
+          content: lead.content,
+          leadStage: lead.leadStage,
+        }).catch(() => {});
         void maybeAutopilot(lead.leadId);
       }
 

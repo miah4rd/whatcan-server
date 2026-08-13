@@ -6,7 +6,9 @@ import { eq } from "drizzle-orm";
 import { db, listingSubmissionsTable, type ListingSubmission } from "@workspace/db";
 import { logger } from "../../lib/logger";
 import { invalidatePropertyCache } from "../../lib/property-catalog";
-import { absoluteUrls } from "../../lib/public-url";
+// The Supabase insert lives in lib/listing-publish.ts so that this queue, the
+// intake chat in /m and the website assistant all publish through one function.
+import { pushToSupabase } from "../../lib/listing-publish";
 
 const router = Router();
 
@@ -159,79 +161,6 @@ router.post("/listing-submissions/:id/reject", async (req, res) => {
     res.status(500).json({ error: "Internal error" });
   }
 });
-
-/**
- * Pushes an approved submission into the SAME Supabase `properties` table the
- * site and the bot's catalog read from. Needs SUPABASE_SERVICE_ROLE_KEY — the
- * anon key the rest of this app uses is read-only by RLS design (verified: a
- * probe insert came back "42501 new row violates row-level security policy"),
- * so approvals cannot go through with the anon key no matter how the request
- * is shaped.
- */
-export async function pushToSupabase(
-  finalPropertyId: string,
-  s: ListingSubmission,
-  overrides: Partial<Record<string, unknown>>,
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const SUPABASE_URL = process.env["SUPABASE_URL"] ?? "";
-  const SERVICE_KEY = process.env["SUPABASE_SERVICE_ROLE_KEY"] ?? "";
-  if (!SUPABASE_URL || !SERVICE_KEY) {
-    return { ok: false, error: "SUPABASE_SERVICE_ROLE_KEY not set on the server — ask the owner to add it to .env" };
-  }
-
-  const payload = {
-    id: finalPropertyId,
-    title: s.title,
-    area: s.area,
-    type: s.type,
-    listing_type: s.listingType,
-    bedrooms: s.bedrooms,
-    bathrooms: s.bathrooms,
-    land_size: s.landSize,
-    build_size: s.buildSize,
-    price_usd: s.priceUsd,
-    leasehold_price_usd: s.leaseholdPriceUsd,
-    monthly_price_usd: s.monthlyPriceUsd,
-    yearly_price_usd: s.yearlyPriceUsd,
-    monthly_price_idr: s.monthlyPriceIdr,
-    yearly_price_idr: s.yearlyPriceIdr,
-    ownership: s.ownership,
-    lease_years: s.leaseYears,
-    purpose: s.purpose,
-    zone: s.zone,
-    description: s.description,
-    features: s.features ?? [],
-    // Absolute, always. The site renders these from its own domain, so the
-    // relative "/api/uploads/x.jpg" this row may hold (every submission before
-    // the intake chat stored exactly that) would resolve against the site and
-    // 404 — a listing published with invisible photos.
-    images: absoluteUrls(s.images),
-    video_url: s.videoUrl,
-    lat: s.lat,
-    lng: s.lng,
-    tags: [],
-    status: "ready",
-    is_draft: false,
-    ...overrides,
-  };
-
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/properties`, {
-    method: "POST",
-    headers: {
-      apikey: SERVICE_KEY,
-      Authorization: `Bearer ${SERVICE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "return=minimal",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    return { ok: false, error: `Supabase insert failed (${res.status}): ${text.slice(0, 300)}` };
-  }
-  return { ok: true };
-}
 
 router.post("/listing-submissions/:id/approve", async (req, res) => {
   try {
