@@ -209,6 +209,28 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   `POST /api/admin/corrections/dedupe` (supports `?broker=` and `?dry=1`);
   newest always wins. Anything that widens this window again has to keep the
   invariant: what survives must be followable all at once.
+- **A lesson belongs to the MOMENT it was taught in, and the owner's end state
+  is per-situation autopilot.** His words: the broker should eventually stop
+  editing entirely — the bot must know "к какому лиду, в каком случае, при
+  какой ситуации, что реально нужно отправлять". A flat lesson list cannot get
+  there: "skip qualification, go straight to action items" was taught on an
+  owner conversation and is wrong on a first client contact. So: lessons carry
+  a `situation` tag (SITUATIONS in broker-corrections.ts + `style` for
+  universal tone rules), assigned in the SAME Haiku call that distils the
+  lesson (zero extra spend); `deriveSituation()` reconstructs the current
+  moment deterministically (zero AI calls) and `correctionsPromptBlock(broker,
+  situation)` injects only this moment's lessons plus style. ALL reads go
+  through that one selector — two raw queries (suggest.ts,
+  followup-scheduler.ts) had kept leaking retired lessons and double-injecting.
+  The backlog was tagged once via `POST /api/admin/corrections/classify`.
+  Progress toward autopilot is measured, not felt:
+  `GET /api/public/autopilot-readiness?broker=X&pipeline=Y` scores each
+  situation (share of drafts sent untouched, 14d vs prev) — pure SQL over
+  pending_suggestions, its situation CASE must stay in step with
+  `deriveSituation`. First real reading: Amelia followup 92% clean (ready),
+  options 50% (learning); Yudi owner_intake 79% (close). Turning any
+  situation to auto-send stays the OWNER's decision — the endpoint reports,
+  it never flips anything.
 - **The broker signs with their display name, never the login.** A prompt rule
   said "sign off as 'HoS'" with absolute priority — fighting the owner's repeated
   correction to sign as Nick. `brokerDisplayName` (broker-identity.ts) maps
