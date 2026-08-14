@@ -1660,6 +1660,25 @@ const PAGE_HTML = `<!doctype html>
     }
     html += "</div>";
 
+    // Promises the broker made and has not come back on. These used to exist
+    // only inside a push notification fired once, so for a broker with no
+    // subscription they were invisible everywhere.
+    if (c.openPromises > 0) {
+      html += '<div class="rep-head">Promised, not delivered</div>';
+      var pr = c.openPromiseItems || [];
+      for (var q = 0; q < pr.length; q++) {
+        var it = pr[q];
+        var who = it.leadName ? it.leadName : "#" + it.leadId;
+        var age = it.hoursOverdue >= 48
+          ? Math.round(it.hoursOverdue / 24) + "d late"
+          : Math.max(0, it.hoursOverdue) + "h late";
+        html += line(esc(who) + ": " + esc(it.promise), '<span class="rep-alert">' + esc(age) + "</span>");
+      }
+      if (c.openPromises > pr.length) {
+        html += line("and more", c.openPromises - pr.length);
+      }
+    }
+
     if (c.waitingByPipeline && c.waitingByPipeline.length > 1) {
       html += '<div class="rep-head">Waiting, by funnel</div>';
       for (var p = 0; p < c.waitingByPipeline.length; p++) {

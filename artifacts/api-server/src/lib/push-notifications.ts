@@ -28,24 +28,31 @@ export function getVapidPublicKey(): string {
 
 /**
  * Sends a push notification to every device this broker has subscribed on.
- * Fire-and-forget — never throws, never blocks the caller. Prunes
- * subscriptions the browser/OS has permanently invalidated (410/404).
+ * Never throws, never blocks the caller. Prunes subscriptions the browser/OS
+ * has permanently invalidated (410/404).
+ *
+ * Returns HOW MANY devices actually took it. A caller that owes the broker a
+ * reminder must be able to tell "delivered" from "there was nobody to deliver
+ * to" — a broker with no subscription used to look identical to a notified
+ * one, and that is exactly how a promised callback to a client with a
+ * 50-million budget was marked as handled while nobody had been told anything.
  */
 export async function sendPushToBroker(
   brokerId: string,
   payload: { title: string; body: string; url?: string; badge?: number },
-): Promise<void> {
-  if (!ensureConfigured()) return;
+): Promise<number> {
+  if (!ensureConfigured()) return 0;
   const normalizedId = brokerId.trim().toLowerCase();
-  if (!normalizedId) return;
+  if (!normalizedId) return 0;
 
+  let delivered = 0;
   try {
     const subs = await db
       .select()
       .from(pushSubscriptionsTable)
       .where(eq(pushSubscriptionsTable.brokerId, normalizedId));
 
-    if (subs.length === 0) return;
+    if (subs.length === 0) return 0;
 
     const body = JSON.stringify({
       title: payload.title,
@@ -61,6 +68,7 @@ export async function sendPushToBroker(
             { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
             body,
           );
+          delivered++;
         } catch (err) {
           const statusCode = (err as { statusCode?: number }).statusCode;
           if (statusCode === 404 || statusCode === 410) {
@@ -74,6 +82,7 @@ export async function sendPushToBroker(
   } catch (err) {
     logger.error({ err, brokerId }, "sendPushToBroker failed (non-fatal)");
   }
+  return delivered;
 }
 
 /**
@@ -189,10 +198,11 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
 }
 
 /** Notify a broker that a lead just replied (LIVE) or a new lead was assigned. */
-export async function notifyBroker(brokerId: string | null, title: string, body: string, url = "/m"): Promise<void> {
-  if (!brokerId) return;
+/** Returns the number of devices that took the notification (0 = nobody). */
+export async function notifyBroker(brokerId: string | null, title: string, body: string, url = "/m"): Promise<number> {
+  if (!brokerId) return 0;
   const badge = await countPendingForBroker(brokerId);
-  await sendPushToBroker(brokerId, { title, body: body.slice(0, 150), url, badge });
+  return await sendPushToBroker(brokerId, { title, body: body.slice(0, 150), url, badge });
 }
 
 // Same "Name (client - source)" → "Name" cleanup used for the inbox list's card title.
@@ -219,8 +229,8 @@ export async function notifyBrokerForLead(
   action: "replied" | "assigned" | "reminder",
   body: string,
   hint?: { content?: string | null; leadStage?: string | null; leadName?: string | null },
-): Promise<void> {
-  if (!brokerId) return;
+): Promise<number> {
+  if (!brokerId) return 0;
 
   let content = hint?.content;
   let stage = hint?.leadStage ?? null;
@@ -240,5 +250,5 @@ export async function notifyBrokerForLead(
   const title = stage ? `${icon} ${label} · ${stage}` : `${icon} ${label}`;
 
   // Deep-link straight to this lead instead of the general inbox list.
-  await notifyBroker(brokerId, title, body, `/m?lead=${encodeURIComponent(leadId)}`);
+  return await notifyBroker(brokerId, title, body, `/m?lead=${encodeURIComponent(leadId)}`);
 }

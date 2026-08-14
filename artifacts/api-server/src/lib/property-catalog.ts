@@ -3,10 +3,31 @@ import { conversationWindow } from "./dialog-parser";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { getTopPicksForBroker } from "./broker-picks-tracker";
 import { allAreaNames, areaMatches, areaNamesInText, parentAreaOf } from "./bali-areas";
+import { publicBaseUrl } from "./public-url";
 
 const SUPABASE_URL = process.env["SUPABASE_URL"] ?? "";
 const SUPABASE_ANON_KEY = process.env["SUPABASE_ANON_KEY"] ?? "";
-const SITE_BASE = "https://unicorn-property.broad-union-b9f4.workers.dev/property";
+
+/**
+ * Where a HUMAN ends up: the real public site. The old workers.dev host was
+ * only ever a 301 to this, and the redirect is exactly what broke WhatsApp
+ * previews — the crawler followed it to a client-rendered SPA and read the
+ * site's one generic Open Graph block for every villa.
+ */
+const SITE_HUMAN_BASE = "https://unicorn-properties.com/property";
+
+/**
+ * Where the LINK points: our own share page (routes/property-share.ts), which
+ * renders this villa's real title, price and photo for the crawler and then
+ * hops the human to SITE_HUMAN_BASE.
+ *
+ * The "/property/<ID>" path is deliberate and load-bearing — it is the shape
+ * every "which listings has this lead already seen" regex reads out of
+ * conversation text. Only the host changed.
+ */
+function shareBase(): string {
+  return `${publicBaseUrl()}/property`;
+}
 
 export type ListingType = "sale" | "rent";
 
@@ -128,7 +149,12 @@ function styleHint(p: SupabaseProperty): string {
   return parts.length ? `style: ${parts.join(" — ")}` : "";
 }
 
-function summaryLine(p: SupabaseProperty): string {
+/**
+ * The price exactly as a client should read it. Shared by the catalog line the
+ * matcher sees and by the share page a client sees on WhatsApp — the two must
+ * never disagree about what a villa costs.
+ */
+export function priceLabel(p: SupabaseProperty): string | null {
   const freePrice = p.price_usd && p.price_usd > 1000 ? `freehold $${Math.round(p.price_usd / 1000)}K` : null;
   const leasePrice = p.leasehold_price_usd && p.leasehold_price_usd > 1000 ? `leasehold $${Math.round(p.leasehold_price_usd / 1000)}K` : null;
   // Rentals are quoted in rupiah — the same number the site and the owner use.
@@ -157,13 +183,18 @@ function summaryLine(p: SupabaseProperty): string {
         : null;
   // A rental listing may also carry its SALE price. Quoting "$250K" to someone
   // renting for a year is both irrelevant and in the wrong currency.
-  const priceStr =
+  return (
     (p.listing_type === "rent"
       ? [monthlyPrice, yearlyPrice]
       : [freePrice, leasePrice, monthlyPrice, yearlyPrice]
     )
       .filter(Boolean)
-      .join(" / ") || null;
+      .join(" / ") || null
+  );
+}
+
+function summaryLine(p: SupabaseProperty): string {
+  const priceStr = priceLabel(p);
   const parts: string[] = [
     `[${p.id}]`,
     p.area ?? "",
@@ -172,7 +203,7 @@ function summaryLine(p: SupabaseProperty): string {
     priceStr ?? "",
     p.purpose ? `(${p.purpose})` : "",
     p.views ? `${p.views} views` : "",
-    `${SITE_BASE}/${p.id}`,
+    propertyUrlById(p.id),
   ].filter(Boolean);
   return parts.join(" | ");
 }
@@ -212,7 +243,78 @@ function propertyUrl(p: SupabaseProperty): string {
  * hardcode SITE_BASE a second time — the base has already moved once.
  */
 export function propertyUrlById(id: string): string {
-  return `${SITE_BASE}/${id}`;
+  return `${shareBase()}/${id}`;
+}
+
+/** Where the share page sends a human. */
+export function humanPropertyUrl(id: string): string {
+  return `${SITE_HUMAN_BASE}/${encodeURIComponent(id)}`;
+}
+
+// ── Share card ──────────────────────────────────────────────────────────────
+
+export type PropertyShareCard = {
+  id: string;
+  title: string;
+  area: string | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  priceLabel: string | null;
+  description: string | null;
+  image: string | null;
+};
+
+const shareCache = new Map<string, { at: number; card: PropertyShareCard | null }>();
+const SHARE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * One listing, WITH its photo, for the WhatsApp preview card.
+ *
+ * Deliberately not served from the main catalog cache: that one omits `images`
+ * (twenty URLs per row would bloat every prompt it feeds) and it excludes
+ * drafts and sold stock. A link already sent to a client must keep rendering
+ * a real card even after the villa goes off-market — a blank preview on an old
+ * message reads as a dead link.
+ */
+export async function fetchPropertyForShare(id: string): Promise<PropertyShareCard | null> {
+  const key = id.trim().toUpperCase();
+  if (!key) return null;
+
+  const hit = shareCache.get(key);
+  if (hit && Date.now() - hit.at < SHARE_TTL_MS) return hit.card;
+
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+
+  const url =
+    `${SUPABASE_URL}/rest/v1/properties` +
+    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,images` +
+    `&id=eq.${encodeURIComponent(key)}&limit=1`;
+
+  const res = await fetch(url, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  if (!res.ok) {
+    logger.error({ status: res.status, id: key }, "share card fetch failed");
+    return null;
+  }
+
+  const rows = (await res.json()) as (SupabaseProperty & { images: string[] | null })[];
+  const row = rows[0];
+  const card: PropertyShareCard | null = row
+    ? {
+        id: row.id,
+        title: row.title,
+        area: row.area,
+        bedrooms: row.bedrooms,
+        bathrooms: row.bathrooms,
+        priceLabel: priceLabel(row),
+        description: row.description,
+        image: (row.images ?? []).find((u) => typeof u === "string" && u.trim()) ?? null,
+      }
+    : null;
+
+  shareCache.set(key, { at: Date.now(), card });
+  return card;
 }
 
 function toPick(p: SupabaseProperty): PropertyPick {

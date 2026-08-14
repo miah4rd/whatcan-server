@@ -5,6 +5,7 @@ import pinoHttp from "pino-http";
 import router from "./routes";
 import mobileRouter from "./routes/mobile";
 import swRouter from "./routes/public-sw";
+import propertyShareRouter from "./routes/property-share";
 import { logger } from "./lib/logger";
 import { startFollowupScheduler } from "./lib/followup-scheduler";
 import { startAmoSyncScheduler } from "./lib/amo-sync";
@@ -43,6 +44,10 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/api", router);
 app.use(mobileRouter);
 app.use(swRouter);
+// Before the static/SPA fallback: /property/<ID> is the link clients receive,
+// and the SPA shell would otherwise swallow it and serve generic OG tags —
+// the exact bug this route fixes.
+app.use(propertyShareRouter);
 
 // ── Copilot Dashboard (landing app: login/dashboard/tasks/settings) ─────────
 // Built React SPA served statically; relative /api/* fetches inside it hit
@@ -69,6 +74,25 @@ ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version ch
 pool.query(`ALTER TABLE leads_sync ADD COLUMN IF NOT EXISTS pipeline text`)
   .then(() => logger.info("startup migration: pipeline column ensured"))
   .catch((err) => logger.error({ err }, "startup migration failed"));
+
+// A lesson the broker has since reversed stops being injected into prompts.
+pool.query(`ALTER TABLE broker_corrections ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMPTZ`)
+  .then(() => logger.info("startup migration: broker_corrections.superseded_at ensured"))
+  .catch((err) => logger.error({ err }, "startup migration: superseded_at failed"));
+
+// stage_events.pipeline was never populated — the caller does not always send
+// one — and daily-report's stageIndex() needs it to know a funnel's order. So
+// "advanced" and "listingsTaken" read 0 for every broker in every period while
+// the table held 54 New LEAD -> Options sent moves. Backfill from the lead the
+// event belongs to; the write path now falls back to the same source.
+pool.query(`UPDATE stage_events e
+               SET pipeline = l.pipeline
+              FROM leads_sync l
+             WHERE l.lead_id = e.lead_id
+               AND e.pipeline IS NULL
+               AND l.pipeline IS NOT NULL`)
+  .then((r) => logger.info({ rows: r.rowCount }, "startup migration: stage_events.pipeline backfilled"))
+  .catch((err) => logger.error({ err }, "startup migration: stage_events backfill failed"));
 
 pool.query(`CREATE TABLE IF NOT EXISTS autopilot_settings (
   pipeline TEXT PRIMARY KEY,
