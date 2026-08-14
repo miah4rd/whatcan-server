@@ -18,6 +18,7 @@ import { Router } from "express";
 import { db, brokerCorrectionsTable } from "@workspace/db";
 import { and, desc, eq, isNull, inArray } from "drizzle-orm";
 import { chatCompletionJSON, HELPER_MODEL } from "../../lib/ai-client";
+import { SITUATIONS } from "../../lib/broker-corrections";
 
 const router = Router();
 
@@ -77,6 +78,89 @@ Respond with JSON only: {"retire": [numbers]}`,
     retiredText: picked.map((l) => l.instruction),
   };
 }
+
+/**
+ * POST /api/admin/corrections/classify[?broker=amelia][&dry=1]
+ *
+ * One-off situation tagging for lessons taught before the `situation` column
+ * existed. New lessons are tagged at write time (learnFromRevision); this
+ * visits the untagged backlog so situational injection covers everything the
+ * brokers have already taught. Untagged rows behave as universal until then —
+ * so running this is what actually narrows the prompt.
+ */
+router.post("/admin/corrections/classify", async (req, res) => {
+  const only = String(req.query["broker"] ?? "").trim().toLowerCase();
+  const dry = String(req.query["dry"] ?? "") === "1";
+
+  try {
+    const brokers = only
+      ? [only]
+      : (
+          await db
+            .selectDistinct({ brokerId: brokerCorrectionsTable.brokerId })
+            .from(brokerCorrectionsTable)
+        ).map((r) => r.brokerId);
+
+    const results = [];
+    for (const b of brokers) {
+      const rows = await db
+        .select({ id: brokerCorrectionsTable.id, instruction: brokerCorrectionsTable.instruction })
+        .from(brokerCorrectionsTable)
+        .where(
+          and(
+            eq(brokerCorrectionsTable.brokerId, b),
+            isNull(brokerCorrectionsTable.supersededAt),
+            isNull(brokerCorrectionsTable.situation),
+          ),
+        )
+        .orderBy(desc(brokerCorrectionsTable.createdAt))
+        .limit(60);
+      const lessons = rows.filter((r) => (r.instruction ?? "").trim());
+      if (lessons.length === 0) {
+        results.push({ broker: b, tagged: 0, breakdown: {} });
+        continue;
+      }
+
+      const numbered = lessons.map((l, i) => `${i + 1}. ${l.instruction}`).join("\n");
+      const parsed = await chatCompletionJSON<{ tags?: Record<string, string> }>({
+        model: HELPER_MODEL,
+        label: "corrections-classify",
+        system: `These are writing preferences a real-estate broker taught their AI assistant, numbered.
+
+For EACH number, classify WHEN the preference applies. "style" = tone/greeting/signature/language/length — applies to every message. Otherwise pick the ONE conversation moment it belongs to:
+${SITUATIONS.map((s) => `- ${s}`).join("\n")}
+When unsure, prefer "style".
+
+Respond with JSON only: {"tags": {"1": "style", "2": "objection", ...}} — every number present.`,
+        messages: [{ role: "user", content: numbered }],
+        max_tokens: 800,
+        temperature: 0,
+      });
+
+      const valid = new Set<string>(["style", ...SITUATIONS]);
+      const breakdown: Record<string, number> = {};
+      let tagged = 0;
+      for (const [num, tagRaw] of Object.entries(parsed.tags ?? {})) {
+        const lesson = lessons[Number(num) - 1];
+        const tag = valid.has(String(tagRaw)) ? String(tagRaw) : "style";
+        if (!lesson) continue;
+        breakdown[tag] = (breakdown[tag] ?? 0) + 1;
+        tagged++;
+        if (!dry) {
+          await db
+            .update(brokerCorrectionsTable)
+            .set({ situation: tag })
+            .where(eq(brokerCorrectionsTable.id, lesson.id));
+        }
+      }
+      results.push({ broker: b, tagged, breakdown });
+    }
+    res.json({ dry, results });
+  } catch (err) {
+    req.log.error({ err }, "corrections classify failed");
+    res.status(500).json({ error: "classify failed" });
+  }
+});
 
 router.post("/admin/corrections/dedupe", async (req, res) => {
   const only = String(req.query["broker"] ?? "").trim().toLowerCase();

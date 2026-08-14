@@ -163,6 +163,8 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     leadNotes: opts.leadNotes ?? null,
     responsibleUser: opts.responsibleUser ?? null,
     leadId: opts.leadId,
+    leadStage: opts.leadStage ?? null,
+    kind: opts.kind,
   });
 
   const completion = await chatCompletion({

@@ -168,12 +168,47 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   rather than pretending the budget was met.
 - **Each property link is sent as its own WhatsApp message** — glued together,
   WhatsApp only unfurls a preview banner for the first one.
+- **We serve the property link's preview ourselves** (`routes/property-share.ts`).
+  Links used to point straight at the public site, and the site is a
+  client-rendered SPA: a crawler asking for any `/property/<ID>` gets the same
+  `index.html`, so WhatsApp read ONE generic Open Graph block for every villa —
+  verified against three listings, identical `og:title` ("Unicorn Property Bali
+  — Trusted Real Estate Agency") and identical `og:image`. Sending each link as
+  its own message therefore produced three identical grey banners with no villa
+  name, no price and no photo, which is a large part of why 24 of Amelia's 44
+  rental leads never replied at all. Our route renders the real title, price
+  (via the shared `priceLabel`, so the card and the catalog can never quote
+  different money) and first photo, then hops the human to
+  `unicorn-properties.com`. Two things must not be "cleaned up": the path stays
+  **`/property/<ID>`** — that exact shape is what ~20 regexes read back out of
+  conversation text to know which listings a lead has already seen, and only the
+  HOST moved; and the page answers **200 with a client-side hop, never a 3xx** —
+  a crawler follows a redirect straight back to the SPA's generic tags.
+  `og:image` points at our own `/property/<ID>/preview` because every photo in
+  the storage bucket is served as `application/octet-stream` and a crawler may
+  refuse an og:image that does not declare itself an image.
+  The link host is `PUBLIC_BASE_URL` (falls back to copilot.globalapplab.ru).
+  Pointing a branded subdomain at this route is a DNS change, not a code one.
 - **Every edit teaches, server-side.** The correction store existed but only the
   Chrome extension wrote to it — edits from the mobile page taught nothing, which
   read as "the bot never learns". `learnFromRevision` now distils and stores the
   lesson on the `/suggest` endpoint itself, and `correctionsPromptBlock` injects
   the lessons into BOTH generation paths via `buildPromptAdditions` (they used to
   reach only the revision prompt, so fresh drafts ignored everything taught).
+- **A lesson the broker reversed must stop applying, or the window can't widen.**
+  `correctionsPromptBlock` used the newest **8** lessons. Amelia had taught 242,
+  so anything older than roughly two days silently stopped being honoured and she
+  had to teach it again — which is what "бот не учится" actually meant. Simply
+  widening the window makes it worse, because the store had accumulated direct
+  reversals: she taught "Avoid using the word 'proactive'" and "Use proactive
+  language" on the SAME day and both were live. So the window is 30 AND a new
+  lesson retires the earlier ones it contradicts (`retireContradicted`, one
+  cheap Haiku call on write, deliberately conservative — a false positive erases
+  a preference the broker still holds). Rows are marked `superseded_at`, never
+  deleted. The backlog taught before any of this existed was cleaned once via
+  `POST /api/admin/corrections/dedupe` (supports `?broker=` and `?dry=1`);
+  newest always wins. Anything that widens this window again has to keep the
+  invariant: what survives must be followable all at once.
 - **The broker signs with their display name, never the login.** A prompt rule
   said "sign off as 'HoS'" with absolute priority — fighting the owner's repeated
   correction to sign as Nick. `brokerDisplayName` (broker-identity.ts) maps
@@ -364,6 +399,21 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   exact loop is warned about in followup-scheduler.ts.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
+- **A notification that reached nobody is not a notification.** The broker's own
+  promise to a client ("I'll check with the owner and get back to you") is
+  detected and scheduled correctly — but the reminder was a push and ONLY a
+  push, and `notifiedAt` was stamped whether or not anything was delivered. Most
+  brokers have no subscription, so their promises were marked handled the moment
+  they came due, once, forever. That is how a rental client who had stated a 50
+  million budget and asked to move in immediately sat seven days behind "I'll
+  get back to you shortly with a few options" — detected, scheduled, fired,
+  received by no one. Now `sendPushToBroker` returns how many devices took it,
+  `processCommitmentReminders` stamps only on real delivery and retries for 3
+  days, and the report carries `openPromises` (`stateNow`) so the surface does
+  not depend on push at all — it leads the headline, above waiting clients,
+  because a promised client is not merely unanswered. Any new "we owe this
+  broker a nudge" feature gets the same two halves: a delivery that knows
+  whether it landed, and a surface that works when it didn't.
 
 ## The listing assistant has three surfaces, one implementation
 
@@ -495,6 +545,15 @@ swallows the real one.
 - Stage vocabularies differ per funnel (`STAGE_ORDER`), and Rental Listings runs
   the opposite way round; a stage in neither list is ignored rather than guessed
   at, so an administrative move never reads as progress.
+- **A stage event without its pipeline is unreadable.** `stageIndex` resolves a
+  funnel's stage ORDER by pipeline name, so a null pipeline scored every move as
+  "not progress": `advanced` and `listingsTaken` read **0 for every broker in
+  every period** while `stage_events` held 54 "New LEAD → Options sent" moves and
+  Yudi had 10 listings in TAKEN TO WORK. Every row in the table was null, because
+  the caller of `/api/amocrm/sync-stage` does not always send one. The write path
+  now falls back to the lead's own `leads_sync.pipeline`, and existing rows are
+  backfilled on boot. `lost` and `viewings` hid the bug — they match on the stage
+  NAME and never needed the pipeline, so the report looked alive.
 - **Known gap the report cannot paper over:** the Rental funnel has no viewing
   stage, so `viewings` is structurally 0 there. The main step of a rental deal
   is unmeasurable until "Viewing Scheduled"/"Viewing Done" exist in amoCRM

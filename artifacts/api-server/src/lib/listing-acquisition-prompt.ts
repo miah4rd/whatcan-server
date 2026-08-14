@@ -102,7 +102,8 @@ export async function generateListingAcquisitionReply(
   const identityRule = displayName
     ? `\n\nYOU ARE WRITING AS ${displayName} if you sign or introduce yourself by name — never an account label.`
     : "";
-  const learned = await correctionsPromptBlock(opts.responsibleUser);
+  // This whole prompt IS one situation: talking an owner into listing with us.
+  const learned = await correctionsPromptBlock(opts.responsibleUser, "owner_intake");
   const system = SYSTEM_PROMPT + identityRule + learned;
 
   const dialog = parseDialogContent(opts.contentSnippet);
