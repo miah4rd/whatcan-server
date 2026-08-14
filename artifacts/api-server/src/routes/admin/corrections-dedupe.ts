@@ -138,9 +138,17 @@ Respond with JSON only: {"tags": {"1": "style", "2": "objection", ...}} — ever
       });
 
       const valid = new Set<string>(["style", ...SITUATIONS]);
+      // The model sometimes answers {"1":"style",...} without the "tags"
+      // wrapper on short lists — accept the numeric keys either way.
+      const tagMap: Record<string, unknown> =
+        parsed.tags && typeof parsed.tags === "object"
+          ? parsed.tags
+          : Object.fromEntries(
+              Object.entries(parsed as Record<string, unknown>).filter(([k]) => /^\d+$/.test(k)),
+            );
       const breakdown: Record<string, number> = {};
       let tagged = 0;
-      for (const [num, tagRaw] of Object.entries(parsed.tags ?? {})) {
+      for (const [num, tagRaw] of Object.entries(tagMap)) {
         const lesson = lessons[Number(num) - 1];
         const tag = valid.has(String(tagRaw)) ? String(tagRaw) : "style";
         if (!lesson) continue;
