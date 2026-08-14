@@ -24,6 +24,7 @@
  */
 import { Router } from "express";
 import { fetchPropertyForShare, humanPropertyUrl } from "../lib/property-catalog";
+import { publicBaseUrl } from "../lib/public-url";
 
 const router = Router();
 
@@ -34,6 +35,52 @@ function esc(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+
+const IMAGE_TYPES: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+
+/**
+ * The preview image, re-served with a real image Content-Type.
+ *
+ * Every photo in the catalog's storage bucket comes back as
+ * application/octet-stream — they were uploaded without one. Crawlers are
+ * entitled to refuse an og:image that does not declare itself an image, and a
+ * refused image is the same grey card this whole route exists to get rid of.
+ * So og:image points here, and here we say what the bytes actually are.
+ */
+router.get("/property/:id/preview", async (req, res) => {
+  const id = String(req.params["id"] ?? "").trim();
+  try {
+    const card = await fetchPropertyForShare(id);
+    if (!card?.image) {
+      res.sendStatus(404);
+      return;
+    }
+
+    const upstream = await fetch(card.image);
+    if (!upstream.ok || !upstream.body) {
+      res.sendStatus(502);
+      return;
+    }
+
+    const ext = (card.image.split("?")[0] ?? "").split(".").pop()?.toLowerCase() ?? "";
+    const upstreamType = upstream.headers.get("content-type") ?? "";
+    const type =
+      IMAGE_TYPES[ext] ?? (upstreamType.startsWith("image/") ? upstreamType : "image/jpeg");
+
+    res.setHeader("Content-Type", type);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch (err) {
+    req.log.error({ err, id }, "property share: preview image failed");
+    res.sendStatus(502);
+  }
+});
 
 router.get("/property/:id", async (req, res) => {
   const id = String(req.params["id"] ?? "").trim();
@@ -69,7 +116,10 @@ router.get("/property/:id", async (req, res) => {
   const description =
     descParts.join(" · ") || (p.description ?? "").slice(0, 180) || "Unicorn Property Bali";
 
-  const image = p.image ?? "";
+  // Our own proxy, not the storage URL — see the /preview route above.
+  // No og:image:width/height: we do not know this photo's real dimensions and
+  // a wrong pair renders worse than none.
+  const image = p.image ? `${publicBaseUrl()}/property/${encodeURIComponent(p.id)}/preview` : "";
 
   // 200 + client-side hop, never a 3xx: WhatsApp follows redirects, and
   // following one lands the crawler back on the SPA's generic tags — the bug
@@ -86,7 +136,7 @@ router.get("/property/:id", async (req, res) => {
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(description)}">
 <meta property="og:url" content="${esc(destination)}">
-${image ? `<meta property="og:image" content="${esc(image)}">\n<meta property="og:image:width" content="1200">\n<meta property="og:image:height" content="630">` : ""}
+${image ? `<meta property="og:image" content="${esc(image)}">` : ""}
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="${esc(title)}">
 <meta name="twitter:description" content="${esc(description)}">
