@@ -1,4 +1,4 @@
-import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, brokerCorrectionsTable, leadMessagesTable } from "@workspace/db";
+import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, leadMessagesTable } from "@workspace/db";
 import { lt, isNotNull, eq, and, or, isNull, inArray, desc, sql } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL } from "./ai-client";
 import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming, conversationWindow } from "./dialog-parser";
@@ -160,7 +160,7 @@ RULES:
 - Return ONLY the message body — no preamble, no quotes, no subject line
 
 AVAILABLE TACTICS (use only if genuinely relevant to the conversation, not forced):
-${tacticsHint}${opts.correctionsBlock ?? ""}${await correctionsPromptBlock(opts.responsibleUser)}${AVOID_PHRASES_REMINDER}`,
+${tacticsHint}${opts.correctionsBlock ?? (await correctionsPromptBlock(opts.responsibleUser, "followup"))}${AVOID_PHRASES_REMINDER}`,
     messages: [
       {
         role: "user",
@@ -406,28 +406,20 @@ function qualScriptIndexForStage(stage: string | null): number {
  * ready to inject into a system prompt. Returns empty string if none found.
  * Results are cached per brokerId per call (pass the cache map in).
  */
+/**
+ * Delegates to the shared selector — this used to be its own raw query, which
+ * kept injecting lessons the broker had since reversed (superseded_at) and
+ * applied every lesson to every follow-up alike. Everything queued from this
+ * scheduler is, by definition, the "followup" situation.
+ */
 async function buildBrokerCorrectionsBlock(
   brokerId: string,
   cache: Map<string, string>,
 ): Promise<string> {
   if (cache.has(brokerId)) return cache.get(brokerId)!;
-  try {
-    const corrections = await db
-      .select({ instruction: brokerCorrectionsTable.instruction, ctx: brokerCorrectionsTable.situationContext })
-      .from(brokerCorrectionsTable)
-      .where(eq(brokerCorrectionsTable.brokerId, brokerId))
-      .orderBy(desc(brokerCorrectionsTable.createdAt))
-      .limit(20);
-    const block = corrections.length > 0
-      ? `\n\nLEARNED BROKER PREFERENCES (always apply — learned from ${corrections.length} past edit${corrections.length > 1 ? "s" : ""}):\n` +
-        corrections.map((c, i) => `${i + 1}. ${c.instruction}${c.ctx ? ` [when: ${c.ctx}]` : ""}`).join("\n")
-      : "";
-    cache.set(brokerId, block);
-    return block;
-  } catch {
-    cache.set(brokerId, "");
-    return "";
-  }
+  const block = await correctionsPromptBlock(brokerId, "followup", 20);
+  cache.set(brokerId, block);
+  return block;
 }
 
 export async function processFollowups(): Promise<void> {

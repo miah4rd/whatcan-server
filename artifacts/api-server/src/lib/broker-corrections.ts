@@ -6,10 +6,72 @@
  * endpoint itself now saves the lesson.
  */
 import { db, brokerCorrectionsTable } from "@workspace/db";
-import { eq, desc, and, isNull, inArray } from "drizzle-orm";
+import { eq, desc, and, isNull, inArray, or } from "drizzle-orm";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { brokerKey } from "./broker-identity";
 import { logger } from "./logger";
+
+/**
+ * The moments a rental conversation actually passes through. A lesson is
+ * taught IN one of these moments, and it mostly only makes sense there:
+ * "skip qualification questions, go straight to action items" was dictated on
+ * an owner conversation and is actively wrong on a first client contact.
+ *
+ * Before this, every lesson applied to every message — the model was handed
+ * one flat list, and the only cure for a lesson misfiring in the wrong moment
+ * was the broker teaching its negation, which then ALSO applied everywhere.
+ * Situational lessons are the load-bearing half of "the broker eventually
+ * stops editing": the end state is per-situation autopilot, and a situation
+ * can only graduate when its lessons are its own.
+ *
+ * `style` is the exception — tone, greeting, signature, language — and applies
+ * to every message. Untagged legacy rows are treated as style until the
+ * backfill classifier has visited them.
+ */
+export const SITUATIONS = [
+  "first_contact", // first reply to a new lead / ad-lead answer
+  "qualifying",    // gathering criteria: dates, budget, area, bedrooms
+  "options",       // presenting listings, availability answers, shortlists
+  "objection",     // price pushback, doubts, "too expensive", comparisons
+  "viewing",       // arranging a viewing / call, time slots
+  "followup",      // scheduled chases, re-engaging a silent lead
+  "owner_intake",  // Rental Listings: talking to an owner about their villa
+  "closing",       // reservation, negotiation, contract, handover
+] as const;
+export type Situation = (typeof SITUATIONS)[number];
+export type LessonTag = Situation | "style";
+
+const OBJECTION_RX =
+  /too (expensive|much|high)|over (my|our) budget|cheaper|expensive|can'?t afford|price is|дорого|слишком дор|дешевле|mahal|kemahalan|budget nya|di luar budget/i;
+
+/**
+ * Which moment the CURRENT draft is being written in. Deterministic and free —
+ * computed from state the generation path already holds, so telling the
+ * lessons apart costs zero extra AI calls and zero latency.
+ */
+export function deriveSituation(opts: {
+  pipeline?: string | null;
+  kind?: string | null;
+  leadStage?: string | null;
+  lastLeadText?: string | null;
+  /** True when the lead has not written anything yet / this is our opener. */
+  isFirstContact?: boolean;
+}): Situation {
+  const pipe = (opts.pipeline ?? "").toLowerCase();
+  if (pipe.includes("listing")) return "owner_intake";
+
+  if ((opts.kind ?? "") === "push") return "followup";
+
+  const stage = (opts.leadStage ?? "").toLowerCase();
+  if (/(negotiat|reservation|contract|won)/.test(stage)) return "closing";
+  if (/(viewing|zoom)/.test(stage)) return "viewing";
+  if (OBJECTION_RX.test(opts.lastLeadText ?? "")) return "objection";
+  if (/(feedback|objection)/.test(stage)) return "objection";
+  if (opts.isFirstContact || /(new lead|initial|неразобран)/.test(stage)) return "first_contact";
+  if (/(need|assess|qualif|contact establi)/.test(stage)) return "qualifying";
+  if (/option/.test(stage)) return "options";
+  return "options";
+}
 
 function wordSet(s: string): Set<string> {
   return new Set(
@@ -36,29 +98,47 @@ function similar(a: string, b: string): boolean {
  * preference and store it — unless an equivalent lesson is already stored.
  * Fire-and-forget: learning must never slow the reply down.
  */
-export async function learnFromRevision(brokerName: string | null | undefined, rawFeedback: string): Promise<void> {
+export async function learnFromRevision(
+  brokerName: string | null | undefined,
+  rawFeedback: string,
+  /** The moment the edit happened in — lets the lesson apply only where it was taught. */
+  ctx?: { pipeline?: string | null; leadStage?: string | null; lastLeadText?: string | null },
+): Promise<void> {
   const feedback = (rawFeedback ?? "").trim();
   if (feedback.length < 8) return;
   const brokerId = brokerKey(brokerName);
 
   try {
-    const parsed = await chatCompletionJSON<{ instruction?: string }>({
+    const situationHint = ctx
+      ? `\n\nCONTEXT of the edit: pipeline "${ctx.pipeline ?? "?"}", lead stage "${ctx.leadStage ?? "?"}"${ctx.lastLeadText ? `, client's last message: "${String(ctx.lastLeadText).slice(0, 200)}"` : ""}.`
+      : "";
+    const parsed = await chatCompletionJSON<{ instruction?: string; situation?: string }>({
       model: HELPER_MODEL,
       label: "learn-edit",
       system: `A real-estate broker just corrected an AI-drafted message. Extract the REUSABLE preference behind the correction — something that should apply to future messages too (max 120 chars). Keep names the broker wants used (e.g. "sign as Nick") and copy every name EXACTLY as written — never transliterate or guess a spelling ("Хос" stays "Хос", it is not "Jose"). Drop one-off details about this specific lead or property. If the correction is purely one-off (nothing reusable), return an empty instruction.
 
-Respond with JSON only: {"instruction": "..."}`,
+Also classify WHEN this preference applies. "style" = tone/greeting/signature/language/length — applies to every message. Otherwise pick the ONE conversation moment it belongs to: ${SITUATIONS.join(", ")}. When unsure, prefer "style".${situationHint}
+
+Respond with JSON only: {"instruction": "...", "situation": "style|${SITUATIONS.join("|")}"}`,
       messages: [{ role: "user", content: feedback.slice(0, 1500) }],
-      max_tokens: 80,
+      max_tokens: 120,
     });
     const instruction = parsed.instruction?.trim();
     if (!instruction || instruction.length < 5) return;
 
+    const situation: LessonTag =
+      parsed.situation && (SITUATIONS as readonly string[]).includes(parsed.situation)
+        ? (parsed.situation as Situation)
+        : "style";
+
     const existing = await activeLessons(brokerId, 60);
     if (existing.some((r) => similar(r.instruction, instruction))) return;
 
-    await db.insert(brokerCorrectionsTable).values({ brokerId, instruction });
-    logger.info({ brokerId, instruction }, "learned from the broker's edit");
+    const situationContext = ctx
+      ? [ctx.pipeline, ctx.leadStage].filter(Boolean).join(" / ") || null
+      : null;
+    await db.insert(brokerCorrectionsTable).values({ brokerId, instruction, situation, situationContext });
+    logger.info({ brokerId, instruction, situation }, "learned from the broker's edit");
 
     // The broker has just told us something newer. Anything they taught
     // earlier that this contradicts is no longer what they want, and leaving
@@ -70,19 +150,41 @@ Respond with JSON only: {"instruction": "..."}`,
   }
 }
 
-type Lesson = { id: string; instruction: string };
+type Lesson = { id: string; instruction: string; situation?: string | null };
 
-async function activeLessons(brokerId: string, limit: number): Promise<Lesson[]> {
+/**
+ * The lessons still in force. With a `situation`, narrows to the ones that
+ * belong to this moment plus the universal `style` set; untagged legacy rows
+ * ride along as universal until the backfill classifier has visited them, so
+ * nothing the broker taught before tagging existed silently stops applying.
+ */
+async function activeLessons(brokerId: string, limit: number, situation?: Situation | null): Promise<Lesson[]> {
+  const base = and(
+    eq(brokerCorrectionsTable.brokerId, brokerId),
+    isNull(brokerCorrectionsTable.supersededAt),
+  );
+  const where = situation
+    ? and(
+        base,
+        or(
+          isNull(brokerCorrectionsTable.situation),
+          eq(brokerCorrectionsTable.situation, "style"),
+          eq(brokerCorrectionsTable.situation, situation),
+        ),
+      )
+    : base;
   const rows = await db
-    .select({ id: brokerCorrectionsTable.id, instruction: brokerCorrectionsTable.instruction })
+    .select({
+      id: brokerCorrectionsTable.id,
+      instruction: brokerCorrectionsTable.instruction,
+      situation: brokerCorrectionsTable.situation,
+    })
     .from(brokerCorrectionsTable)
-    .where(
-      and(eq(brokerCorrectionsTable.brokerId, brokerId), isNull(brokerCorrectionsTable.supersededAt)),
-    )
+    .where(where)
     .orderBy(desc(brokerCorrectionsTable.createdAt))
     .limit(limit);
   return rows
-    .map((r) => ({ id: r.id, instruction: (r.instruction ?? "").trim() }))
+    .map((r) => ({ id: r.id, instruction: (r.instruction ?? "").trim(), situation: r.situation }))
     .filter((r) => r.instruction);
 }
 
@@ -138,13 +240,23 @@ Respond with JSON only: {"supersedes": [numbers]}`,
  * being honoured and the broker had to teach it again. Retiring contradicted
  * lessons on write (see retireContradicted) is what makes a wider window safe:
  * what survives is a set the model can follow all at once.
+ *
+ * Pass `situation` (deriveSituation at the call site, or a fixed one where the
+ * caller IS the situation — the follow-up scheduler, the listing-intake
+ * prompt) and the block narrows to this moment's lessons plus `style`.
+ * Without it, everything active is included — the pre-situational behaviour.
  */
-export async function correctionsPromptBlock(brokerName: string | null | undefined, limit = 30): Promise<string> {
+export async function correctionsPromptBlock(
+  brokerName: string | null | undefined,
+  situation?: Situation | null,
+  limit = 30,
+): Promise<string> {
   try {
-    const items = (await activeLessons(brokerKey(brokerName), limit)).map((l) => l.instruction);
-    if (items.length === 0) return "";
-    return `\n\nTHE BROKER HAS TAUGHT YOU THESE PREFERENCES on earlier edits — they apply to every message:\n${items
-      .map((i) => `- ${i}`)
+    const lessons = await activeLessons(brokerKey(brokerName), limit, situation);
+    if (lessons.length === 0) return "";
+    const scope = situation ? `in this situation (${situation})` : "on every message";
+    return `\n\nTHE BROKER HAS TAUGHT YOU THESE PREFERENCES on earlier edits — they apply ${scope}:\n${lessons
+      .map((l) => `- ${l.instruction}`)
       .join("\n")}`;
   } catch {
     return "";

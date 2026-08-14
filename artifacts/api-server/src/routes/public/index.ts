@@ -29,11 +29,13 @@ import listingSubmissionsRouter from "./listing-submissions";
 import listingIntakeRouter from "./listing-intake";
 import brokerAgentRouter from "./broker-agent";
 import reportRouter from "./report";
+import autopilotReadinessRouter from "./autopilot-readiness";
 
 const router = Router();
 
 router.use(suggestRouter);
 router.use(autopilotRouter);
+router.use(autopilotReadinessRouter);
 router.use(budgetFilterRouter);
 router.use(aiSpendRouter);
 router.use(suggestionsRouter);

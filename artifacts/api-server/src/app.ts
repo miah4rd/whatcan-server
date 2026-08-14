@@ -80,6 +80,11 @@ pool.query(`ALTER TABLE broker_corrections ADD COLUMN IF NOT EXISTS superseded_a
   .then(() => logger.info("startup migration: broker_corrections.superseded_at ensured"))
   .catch((err) => logger.error({ err }, "startup migration: superseded_at failed"));
 
+// Which conversation moment a lesson belongs to — situational injection.
+pool.query(`ALTER TABLE broker_corrections ADD COLUMN IF NOT EXISTS situation TEXT`)
+  .then(() => logger.info("startup migration: broker_corrections.situation ensured"))
+  .catch((err) => logger.error({ err }, "startup migration: situation failed"));
+
 // stage_events.pipeline was never populated — the caller does not always send
 // one — and daily-report's stageIndex() needs it to know a funnel's order. So
 // "advanced" and "listingsTaken" read 0 for every broker in every period while

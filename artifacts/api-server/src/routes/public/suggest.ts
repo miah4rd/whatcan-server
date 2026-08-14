@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL, type ChatMessage } from "../../lib/ai-client";
-import { db, leadsSyncTable, brokerCorrectionsTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
+import { db, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
 import { parseDialogContent, formatDialogForAI, conversationWindow } from "../../lib/dialog-parser";
 import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing";
 import { getQualificationSteps } from "../../lib/settings";
@@ -11,7 +11,7 @@ import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
 import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment } from "../../lib/generate-suggestion";
 import { brokerDisplayName } from "../../lib/broker-identity";
 import { getLeadCardCriteria } from "../../lib/lead-card-fields";
-import { learnFromRevision } from "../../lib/broker-corrections";
+import { learnFromRevision, correctionsPromptBlock, deriveSituation } from "../../lib/broker-corrections";
 import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, toPickPublic, invalidatePropertyCache, priceOf, type SupabaseProperty } from "../../lib/property-catalog";
 
 const router = Router();
@@ -276,27 +276,18 @@ router.post("/suggest", async (req, res) => {
   const leadStage = dbLeadStage || body.lead.stage || "unknown";
 
   // ── 2. Accumulated broker corrections ────────────────────────────────────
-  // Fetch the last 20 corrections this broker has saved through past edits.
-  // These are injected into the system prompt so the AI learns from feedback
-  // across all conversations — not just the current one.
-  let correctionsBlock = "";
-  try {
-    const corrections = await db
-      .select({ instruction: brokerCorrectionsTable.instruction, ctx: brokerCorrectionsTable.situationContext })
-      .from(brokerCorrectionsTable)
-      .where(eq(brokerCorrectionsTable.brokerId, brokerId))
-      .orderBy(desc(brokerCorrectionsTable.createdAt))
-      .limit(20);
-
-    if (corrections.length > 0) {
-      correctionsBlock = `\n\nLEARNED BROKER PREFERENCES (always apply — learned from ${corrections.length} past edit${corrections.length > 1 ? "s" : ""}):\n` +
-        corrections
-          .map((c, i) => `${i + 1}. ${c.instruction}${c.ctx ? ` [when: ${c.ctx}]` : ""}`)
-          .join("\n");
-    }
-  } catch {
-    // Non-fatal — proceed without corrections
-  }
+  // Injected via the SAME shared selector every generation path uses — this
+  // used to be its own raw query, which never learned that retired
+  // (superseded_at) lessons must stay out, and applied every lesson to every
+  // moment of the conversation alike.
+  const lastLeadTextForSituation =
+    [...body.messages].reverse().find((m) => m.from === "lead")?.text ?? null;
+  const situation = deriveSituation({
+    pipeline: dbPipeline,
+    leadStage,
+    lastLeadText: lastLeadTextForSituation,
+  });
+  const correctionsBlock = await correctionsPromptBlock(brokerId, situation, 20);
 
   // ── 2b. Load broker's qualification script for this stage (if any) ─────────
   let qualScriptBlock = "";
@@ -692,7 +683,12 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     // Every edit is a lesson. Saved server-side and off the critical path, so
     // learning no longer depends on which surface the broker edits from — the
     // mobile page never saved a correction at all.
-    if (revision) void learnFromRevision(brokerId, revision);
+    if (revision)
+      void learnFromRevision(brokerId, revision, {
+        pipeline: dbPipeline,
+        leadStage,
+        lastLeadText: lastLeadTextForSituation,
+      });
 
     if (process.env["ONE_PASS_COMPOSE"] !== "0" && revision && body.leadId) {
       try {

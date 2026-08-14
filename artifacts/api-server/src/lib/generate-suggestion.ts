@@ -1,7 +1,7 @@
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL } from "./ai-client";
 import { brokerDisplayName } from "./broker-identity";
 import { getLeadCardCriteria } from "./lead-card-fields";
-import { correctionsPromptBlock } from "./broker-corrections";
+import { correctionsPromptBlock, deriveSituation } from "./broker-corrections";
 import { logger } from "./logger";
 import { parseDialogContent, formatDialogForAI, describeConversationTiming, conversationWindow } from "./dialog-parser";
 import { getKnowledgeBase, filterKnowledgeBaseForRental } from "./knowledge-base";
@@ -582,6 +582,9 @@ export async function buildPromptAdditions(opts: {
   responsibleUser?: string | null;
   /** Needed to read the lead card's own fields (the ad form's answers). */
   leadId?: string | null;
+  /** For situational lesson injection — which moment this draft is written in. */
+  leadStage?: string | null;
+  kind?: string | null;
 }): Promise<string> {
   const recentLeadMessages = [
     opts.lastLeadText ?? "",
@@ -644,8 +647,19 @@ export async function buildPromptAdditions(opts: {
 
   // What the broker has taught on earlier edits. This is the other half of
   // "the bot never learns": lessons were saved but only the revision endpoint
-  // read them, so every fresh draft ignored them.
-  const learned = await correctionsPromptBlock(opts.responsibleUser);
+  // read them, so every fresh draft ignored them. Narrowed to THIS moment's
+  // lessons (plus universal style) — a rule dictated on an owner conversation
+  // must not steer a first client contact.
+  const learned = await correctionsPromptBlock(
+    opts.responsibleUser,
+    deriveSituation({
+      pipeline: opts.isRental ? "rental" : null,
+      kind: opts.kind,
+      leadStage: opts.leadStage,
+      lastLeadText: opts.lastLeadText,
+      isFirstContact: opts.dialogMessages.filter((m) => m.from === "lead").length === 0,
+    }),
+  );
 
   return buildLeadNameRule(opts.dialogMessages) + attachedRule + stockLine + currencyRule + adRule + identityRule + learned;
 }
@@ -802,6 +816,8 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     leadNotes: opts.leadNotes ?? null,
     responsibleUser: opts.responsibleUser ?? null,
     leadId: opts.leadId,
+    leadStage: opts.leadStage ?? null,
+    kind: opts.kind,
   });
 
   // Property matching only needs the conversation, not our reply — so it runs

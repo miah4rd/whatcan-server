@@ -169,6 +169,16 @@ export const brokerCorrectionsTable = pgTable("broker_corrections", {
   brokerId: text("broker_id").notNull(),
   instruction: text("instruction").notNull(),
   situationContext: text("situation_context"),
+  /**
+   * WHICH conversation moment this lesson belongs to ("first_contact",
+   * "objection", "owner_intake", … or "style" for universal tone rules) —
+   * see SITUATIONS in api-server/lib/broker-corrections.ts. Null = legacy
+   * row taught before tagging existed; treated as universal until the
+   * backfill classifier visits it. Situational injection is what lets a
+   * lesson taught on an owner conversation stop misfiring on a first client
+   * contact — and what per-situation autopilot readiness is measured against.
+   */
+  situation: text("situation"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   /**
    * Set when a LATER lesson from the same broker contradicts or replaces this
