@@ -170,6 +170,15 @@ export const brokerCorrectionsTable = pgTable("broker_corrections", {
   instruction: text("instruction").notNull(),
   situationContext: text("situation_context"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  /**
+   * Set when a LATER lesson from the same broker contradicts or replaces this
+   * one. Without it the store only ever grew and both halves of a reversal
+   * sat in the prompt at once — the same broker taught "avoid the word
+   * proactive" and "use proactive language" on the same day, and the model was
+   * handed both. A retired lesson is kept, not deleted: it is a record of what
+   * the broker used to want.
+   */
+  supersededAt: timestamp("superseded_at", { withTimezone: true }),
 });
 
 export const stageEventsTable = pgTable("stage_events", {

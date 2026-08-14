@@ -53,7 +53,29 @@ export async function recordCommitment(
   }
 }
 
-/** Fires the reminder push for every commitment whose due time has passed. */
+/**
+ * How long we keep retrying a reminder nobody was there to receive. Past this
+ * the promise is stale enough that a fresh ping is noise; it still shows in
+ * the broker's report until it is closed by an actual reply.
+ */
+const RETRY_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * Fires the reminder for every commitment whose due time has passed.
+ *
+ * `notifiedAt` is stamped ONLY when a device actually took the notification.
+ * It used to be stamped unconditionally, which made "reminded" and "there was
+ * no one to remind" the same state: a broker with no push subscription — most
+ * of them — had every promise silently marked as handled the moment it came
+ * due, once, forever. That is how a client who had stated a 50 million budget
+ * and asked to move in immediately sat unanswered for seven days behind a
+ * message that said "I'll get back to you shortly".
+ *
+ * Leaving it unstamped costs nothing while the broker is dark (there is
+ * nothing to send) and delivers the backlog the moment they enable
+ * notifications. The report is the surface that does not depend on push at
+ * all — see openCommitmentsFor in lib/daily-report.ts.
+ */
 export async function processCommitmentReminders(): Promise<void> {
   let due: LeadCommitment[] = [];
   try {
@@ -74,16 +96,38 @@ export async function processCommitmentReminders(): Promise<void> {
 
   for (const row of due) {
     try {
-      await notifyBrokerForLead(
+      const delivered = await notifyBrokerForLead(
         row.responsibleUser,
         row.leadId,
         "reminder",
         `Ты обещал: ${row.promiseText} — вернись с ответом`,
       );
-      await db
-        .update(leadCommitmentsTable)
-        .set({ notifiedAt: new Date() })
-        .where(eq(leadCommitmentsTable.id, row.id));
+
+      if (delivered > 0) {
+        await db
+          .update(leadCommitmentsTable)
+          .set({ notifiedAt: new Date() })
+          .where(eq(leadCommitmentsTable.id, row.id));
+        continue;
+      }
+
+      // Nobody took it. Keep retrying for a while, then stop pinging — but
+      // never pretend it was delivered.
+      if (Date.now() - row.dueAt.getTime() > RETRY_WINDOW_MS) {
+        await db
+          .update(leadCommitmentsTable)
+          .set({ notifiedAt: new Date() })
+          .where(eq(leadCommitmentsTable.id, row.id));
+        logger.warn(
+          { leadId: row.leadId, broker: row.responsibleUser, promiseText: row.promiseText },
+          "commitment reminder undeliverable for 3 days — broker has no push subscription",
+        );
+      } else {
+        logger.warn(
+          { leadId: row.leadId, broker: row.responsibleUser },
+          "commitment reminder had no device to reach — will retry",
+        );
+      }
     } catch (err) {
       logger.error({ err, leadId: row.leadId }, "processCommitmentReminders: notify failed for one row");
     }

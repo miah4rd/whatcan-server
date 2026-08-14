@@ -42,6 +42,15 @@ export interface ReportCard {
   hotStalledNames: string[];
   /** Waiting, split per pipeline, so Rental and Rental Listings never blur. */
   waitingByPipeline: { pipeline: string; waiting: number; overdue: number }[];
+  /**
+   * Promises this broker made to a client and has not come back on — "I'll
+   * check with the owner and get back to you". These used to live ONLY in a
+   * push notification fired once, so for a broker with no push subscription
+   * they existed nowhere at all. A promise the client is waiting on outranks
+   * almost everything else in the report.
+   */
+  openPromises: number;
+  openPromiseItems: { leadId: string; leadName: string | null; promise: string; hoursOverdue: number }[];
   activity: ReportActivity;
   /** Only on period=day: the day before, because at 8am "today" is empty. */
   yesterday?: ReportActivity;
@@ -267,13 +276,14 @@ async function outcomesFor(
 async function stateNow(broker: string, pipeline: string | null) {
   const params: unknown[] = [broker];
   if (pipeline) params.push(pipeline);
-  const where = `responsible_user = $1
-      AND NOT coalesce(bot_excluded, false)
-      AND lower(coalesce(lead_stage,'')) NOT LIKE '%lost%'
-      AND lower(coalesce(lead_stage,'')) NOT LIKE '%won%'
-      ${pipelineClause(pipeline, 2)}`;
+  const whereFor = (p: string) => `${p}responsible_user = $1
+      AND NOT coalesce(${p}bot_excluded, false)
+      AND lower(coalesce(${p}lead_stage,'')) NOT LIKE '%lost%'
+      AND lower(coalesce(${p}lead_stage,'')) NOT LIKE '%won%'
+      ${pipeline ? ` AND lower(coalesce(${p}pipeline,'')) = lower($2)` : ""}`;
+  const where = whereFor("");
 
-  const [totals, byPipe, stalled] = await Promise.all([
+  const [totals, byPipe, stalled, promises] = await Promise.all([
     pool.query(
       `SELECT
          count(*) FILTER (WHERE last_message_from = 'lead'
@@ -307,14 +317,38 @@ async function stateNow(broker: string, pipeline: string | null) {
         LIMIT 20`,
       params,
     ),
+    // A promise stays owed until the broker writes to that lead again — which
+    // is exactly when recordCommitment closes it. Joined to leads_sync so a
+    // promise on a lead that has since been closed or excluded drops out with
+    // everything else the report refuses to bill as work.
+    pool.query(
+      `SELECT c.lead_id, c.promise_text, l.content,
+              round(EXTRACT(EPOCH FROM (now() - c.due_at)) / 3600)::int AS hours_overdue
+         FROM lead_commitments c
+         JOIN leads_sync l ON l.lead_id = c.lead_id
+        WHERE c.status = 'open'
+          AND c.due_at < now()
+          AND ${whereFor("l.")}
+        ORDER BY c.due_at ASC
+        LIMIT 20`,
+      params,
+    ),
   ]);
 
   const t = (totals.rows[0] ?? {}) as Record<string, number>;
   const names = (stalled.rows as Record<string, string | null>[])
     .map((r) => leadNameFrom(r["content"] ?? null) || ("#" + String(r["lead_id"])))
     .slice(0, 3);
+  const openPromiseItems = (promises.rows as Record<string, unknown>[]).map((r) => ({
+    leadId: String(r["lead_id"]),
+    leadName: leadNameFrom((r["content"] as string | null) ?? null),
+    promise: String(r["promise_text"] ?? ""),
+    hoursOverdue: Number(r["hours_overdue"] ?? 0),
+  }));
 
   return {
+    openPromises: openPromiseItems.length,
+    openPromiseItems: openPromiseItems.slice(0, 5),
     waiting: Number(t["waiting"] ?? 0),
     waitingOverdue: Number(t["waiting_overdue"] ?? 0),
     overdueFollowups: Number(t["overdue_followups"] ?? 0),
@@ -335,6 +369,16 @@ async function stateNow(broker: string, pipeline: string | null) {
  * client waiting a day beats an unopened draft, which beats an idle stat.
  */
 function buildHeadline(c: Omit<ReportCard, "headline">): string {
+  // A promise outranks a waiting client: the client is not merely unanswered,
+  // they were told an answer was coming. It is also the only item here that no
+  // amount of scrolling the inbox reveals.
+  if (c.openPromises > 0) {
+    const first = c.openPromiseItems[0];
+    const who = first?.leadName ? ` (${first.leadName})` : "";
+    return c.openPromises === 1
+      ? `You promised to come back on 1 lead${who} and haven't. Do that first.`
+      : `You promised to come back on ${c.openPromises} leads${who ? ", starting with" + who : ""}. Do those first.`;
+  }
   if (c.waitingOverdue > 0) {
     return c.waitingOverdue + " client" + (c.waitingOverdue === 1 ? " has" : "s have") +
       " been waiting over a day. Start there.";

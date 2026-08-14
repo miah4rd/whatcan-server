@@ -24,12 +24,21 @@ router.post("/amocrm/sync-stage", async (req, res) => {
 
   try {
     const existing = await db
-      .select({ leadStage: leadsSyncTable.leadStage, responsibleUser: leadsSyncTable.responsibleUser })
+      .select({
+        leadStage: leadsSyncTable.leadStage,
+        responsibleUser: leadsSyncTable.responsibleUser,
+        pipeline: leadsSyncTable.pipeline,
+      })
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, leadId))
       .limit(1);
 
     const prevStage = existing[0]?.leadStage ?? null;
+    // The caller does not always send a pipeline, and a stage event without one
+    // is unreadable: daily-report resolves a funnel's stage ORDER by pipeline
+    // name, so a null made every move score as "not progress". Every row in the
+    // table was null, and "advanced" read 0 for every broker for every period.
+    const eventPipeline = pipeline ?? existing[0]?.pipeline ?? null;
 
     await db
       .insert(leadsSyncTable)
@@ -57,7 +66,7 @@ router.post("/amocrm/sync-stage", async (req, res) => {
         leadId,
         fromStage: prevStage,
         toStage: stage,
-        pipeline: pipeline ?? undefined,
+        pipeline: eventPipeline ?? undefined,
         responsibleUser: responsibleUser ?? existing[0]?.responsibleUser ?? undefined,
       });
     }
