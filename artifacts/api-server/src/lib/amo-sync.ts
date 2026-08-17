@@ -12,6 +12,7 @@ import { followupClockAfterReply } from "./rental-followup";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
 import { notifyBrokerForLead } from "./push-notifications";
 import { TRACKED_PIPELINE_NAMES } from "./pipelines";
+import { fillMessengerFromResponsibleIfNoMessages } from "./amo-messenger-field";
 
 type AmoLead = {
   id: number;
@@ -103,11 +104,13 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
   let updated = 0;
   let skipped = 0;
 
-  // Snapshot of already-known lead IDs, so we can tell a genuinely new lead
-  // apart from an update further down (upsert alone can't distinguish them)
-  // and notify the broker only for the former.
-  const existingLeadIds = new Set(
-    (await db.select({ leadId: leadsSyncTable.leadId }).from(leadsSyncTable)).map((r) => r.leadId),
+  // Snapshot of already-known lead IDs and their responsible user, so we can
+  // tell a genuinely new lead apart from an update further down (upsert alone
+  // can't distinguish them) and detect responsible-user reassignment.
+  const knownLeads = new Map<string, string | null>(
+    (await db
+      .select({ leadId: leadsSyncTable.leadId, responsibleUser: leadsSyncTable.responsibleUser })
+      .from(leadsSyncTable)).map((r) => [r.leadId, r.responsibleUser]),
   );
 
   // Which funnels we sync at all — one roster, lib/pipelines.ts.
@@ -171,7 +174,13 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
     }
 
     const responsibleUser = userMap.get(lead.responsible_user_id) ?? null;
-    const isNewLead = !existingLeadIds.has(String(lead.id));
+    const leadIdStr = String(lead.id);
+    const isNewLead = !knownLeads.has(leadIdStr);
+    const previousResponsible = knownLeads.get(leadIdStr) ?? null;
+    const responsibleChanged =
+      !isNewLead &&
+      (previousResponsible ?? null) !== responsibleUser &&
+      !!responsibleUser;
 
     try {
       const now = new Date();
@@ -217,6 +226,30 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
           leadStage: info.stageName,
           leadName: lead.name || null,
         }).catch(() => {});
+      }
+
+      // Fresh deal or the responsible user was just reassigned (native amoCRM
+      // webhooks never arrive — everything goes through the extension, which
+      // doesn't fire lead_assigned/leads.update — so the 5-minute background
+      // sync is the only reliable place to catch reassignment). Point field
+      // 967477 at the responsible user's OWN line until the deal has messages.
+      if ((isNewLead || responsibleChanged) && responsibleUser) {
+        await fillMessengerFromResponsibleIfNoMessages(leadIdStr, responsibleUser).catch(() => null);
+      }
+
+      // Reassignment also moves the lead's open suggestions in the bot queues
+      // (LIVE/PUSH) to the NEW responsible user. pending_suggestions.
+      // responsible_user is stamped at creation time and never re-derived —
+      // the inbox filters against leads_sync so it's only a display issue
+      // there, but the push badge and push-notification delivery query the
+      // suggestion row directly and would keep counting the lead under the
+      // OLD owner, so the lead would stay stuck in the old broker's queue.
+      if (responsibleChanged && responsibleUser) {
+        await db
+          .update(pendingSuggestionsTable)
+          .set({ responsibleUser })
+          .where(and(eq(pendingSuggestionsTable.leadId, leadIdStr)));
+        logger.info({ leadId: leadIdStr, from: previousResponsible, to: responsibleUser }, "amoCRM sync: moved pending suggestions to new responsible user");
       }
 
       updated++;

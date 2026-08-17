@@ -8,7 +8,7 @@
  * 3. Fills the field
  */
 import { logger } from "./logger";
-import { db, leadMessagesTable, leadsSyncTable } from "@workspace/db";
+import { db, leadMessagesTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 
 const AMO_BASE = `https://${process.env.AMO_SUBDOMAIN ?? "unicornproperty"}.amocrm.ru`;
@@ -347,8 +347,9 @@ export async function ensureMessengerField(leadId: string): Promise<string | nul
  * the field when the deal already has messages: the real channel (from the
  * timeline / lead page) is authoritative and must not be clobbered.
  *
- * "No messages" = the lead_messages table has no rows for this lead AND the
- * synced content is empty/absent.
+ * "No messages" = the lead_messages table has no rows for this lead. Content
+ * alone is NOT treated as a dialog: sourced-lead outreach seeds a request note
+ * into leads_sync.content for form leads that have no messenger thread at all.
  */
 export async function fillMessengerFromResponsibleIfNoMessages(
   leadId: string,
@@ -364,16 +365,6 @@ export async function fillMessengerFromResponsibleIfNoMessages(
     .where(eq(leadMessagesTable.leadId, leadId));
   if ((msgRow?.n ?? 0) > 0) {
     logger.info({ leadId, responsibleUser, messages: msgRow?.n }, "fillMessengerFromResponsible: deal has messages, skipping");
-    return;
-  }
-
-  const [syncRow] = await db
-    .select({ content: leadsSyncTable.content })
-    .from(leadsSyncTable)
-    .where(eq(leadsSyncTable.leadId, leadId))
-    .limit(1);
-  if (syncRow?.content && syncRow.content.trim().length > 0) {
-    logger.info({ leadId, responsibleUser }, "fillMessengerFromResponsible: deal has content, skipping");
     return;
   }
 
