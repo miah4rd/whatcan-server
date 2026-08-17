@@ -38,12 +38,24 @@ export type PipelineDef = {
   conversational: boolean;
   /** Rental-scoped brokers (HoS) may see this funnel's leads. */
   hosTracked: boolean;
+  /**
+   * Move the card the moment the conversation changes, instead of waiting for
+   * the broker to send something.
+   *
+   * Off for the client funnels on purpose: there, the stage is applied on send,
+   * with guards added after the classifier once swept nearly every answered
+   * lead into "Options sent". On the acquisition funnel the stage IS the
+   * qualification state — an owner writing "yes, it's mine" is qualified
+   * whether or not anyone has replied yet — so a board that waits for a broker
+   * reply is simply showing the wrong thing.
+   */
+  autoStageOnReply: boolean;
 };
 
 export const PIPELINES: PipelineDef[] = [
-  { name: "Unicorn", kind: "sales", ownStageVocabulary: false, conversational: true, hosTracked: false },
-  { name: "Rental", kind: "rental", ownStageVocabulary: true, conversational: true, hosTracked: true },
-  { name: "Rental Listings", kind: "listing-acquisition", ownStageVocabulary: true, conversational: true, hosTracked: true },
+  { name: "Unicorn", kind: "sales", ownStageVocabulary: false, conversational: true, hosTracked: false, autoStageOnReply: false },
+  { name: "Rental", kind: "rental", ownStageVocabulary: true, conversational: true, hosTracked: true, autoStageOnReply: false },
+  { name: "Rental Listings", kind: "listing-acquisition", ownStageVocabulary: true, conversational: true, hosTracked: true, autoStageOnReply: true },
 ];
 
 const byName = new Map(PIPELINES.map((p) => [p.name.trim().toLowerCase(), p]));
@@ -75,6 +87,10 @@ export function isConversationalPipeline(pipeline: string | null | undefined): b
 
 export function isHosTrackedPipeline(pipeline: string | null | undefined): boolean {
   return pipelineDef(pipeline)?.hosTracked === true;
+}
+
+export function movesStageOnReply(pipeline: string | null | undefined): boolean {
+  return pipelineDef(pipeline)?.autoStageOnReply === true;
 }
 
 /** Lowercased names, for the SQL/e-tag style checks that want a plain list. */
