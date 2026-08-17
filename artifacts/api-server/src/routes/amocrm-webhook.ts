@@ -415,14 +415,29 @@ export async function classifyStageInBackground(
     // sitting in TAKEN TO WORK. Terminal stages are still never automatic:
     // Closed-won/lost carry money and reporting weight and stay a one-tap
     // confirmation. Client funnels keep applying on send (see the flag).
-    if (!classification.terminal && movesStageOnReply(lead.pipeline)) {
-      const ok = await updateLeadStatus(leadId, classification.stage.id).catch(() => false);
+    if (movesStageOnReply(lead.pipeline)) {
+      // The classification above answers "where will this be AFTER the pending
+      // reply is sent" — correct for the send path, wrong for moving the card
+      // now. Applied as-is it credited us with outreach nobody had made: ten
+      // brand-new cards jumped to TAKEN TO WORK ("we have contacted them")
+      // minutes after the scout created them, while the draft still sat
+      // unsent in the inbox. So the automatic move asks a different question:
+      // where is this conversation RIGHT NOW, with nothing pending.
+      const nowState = await classifyStage({
+        pipeline: lead.pipeline,
+        currentStage: lead.leadStage,
+        conversationText: formatDialogForAI(dialog.messages),
+        replyText: "",
+        attachmentsCount: 0,
+      });
+      if (!nowState || nowState.terminal) return;
+      const ok = await updateLeadStatus(leadId, nowState.stage.id).catch(() => false);
       if (ok) {
         await db
           .update(leadsSyncTable)
           .set({
-            leadStage: classification.stage.name,
-            leadStageId: String(classification.stage.id),
+            leadStage: nowState.stage.name,
+            leadStageId: String(nowState.stage.id),
             updatedAt: new Date(),
           })
           .where(eq(leadsSyncTable.leadId, leadId));
@@ -431,16 +446,16 @@ export async function classifyStageInBackground(
           .values({
             leadId,
             fromStage: lead.leadStage,
-            toStage: classification.stage.name,
+            toStage: nowState.stage.name,
             responsibleUser: lead.responsibleUser ?? null,
           })
           .catch(() => {});
         logger.info(
-          { leadId, from: lead.leadStage, to: classification.stage.name, reason: classification.reason },
+          { leadId, from: lead.leadStage, to: nowState.stage.name, reason: nowState.reason },
           "stage moved automatically from the conversation",
         );
       } else {
-        logger.warn({ leadId, to: classification.stage.name }, "automatic stage move rejected by amoCRM");
+        logger.warn({ leadId, to: nowState.stage.name }, "automatic stage move rejected by amoCRM");
       }
     }
   } catch (err) {
