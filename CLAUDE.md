@@ -521,6 +521,14 @@ VAPID keys in the VPS `.env`. Notifications carry the lead's **own incoming
 message** (not our draft), the lead name/id/stage, and deep-link to
 `/m?lead=<id>`; the SW navigates an already-open tab so it lands on that lead.
 
+**A notification never quotes our own draft.** LIVE carries the lead's incoming
+message; a follow-up has no incoming message, so it states the JOB
+(`followupNoticeBody` — "Follow-up ready to send — quiet for 3 days"). Shipping
+the draft text as the body made the broker's phone look like the client had
+written it: Amelia flagged it the same morning ("it's not a message from the
+client, it's a suggestion for me"). Anything new that notifies gets the same
+test — would the broker read this body as coming FROM the lead?
+
 iOS caveat: push only works for a home-screen-installed PWA, and if Safari has
 recorded a denial it will not re-prompt — the site's data must be cleared.
 

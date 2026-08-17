@@ -322,7 +322,9 @@ export async function queueSuggestion(opts: {
       // A draft the broker asked for by hand is excluded — they are looking at
       // the screen, and buzzing their own phone about their own click is noise.
       if (!opts.requestedByBroker) {
-        notifyBrokerForLead(opts.responsibleUser, opts.leadId, "reminder", opts.text).catch(() => {});
+        // Not opts.text — see followupNoticeBody in followup-scheduler.ts: a
+        // notification carrying our own draft reads as a message from the client.
+        notifyBrokerForLead(opts.responsibleUser, opts.leadId, "reminder", "Follow-up ready to send").catch(() => {});
       }
     } else if (opts.requestedByBroker) {
       // The lead already had a pending row, so the insert above was skipped and

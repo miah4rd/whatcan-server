@@ -81,6 +81,24 @@ async function ourMessageIsNewest(leadId: string, contentLastMs: number): Promis
   }
 }
 
+/**
+ * What a follow-up notification SAYS on the broker's phone.
+ *
+ * Never our own draft. A notification whose body is the copilot's suggested
+ * text reads exactly like a message FROM the client — Amelia reported it the
+ * morning after follow-up notifications shipped: "it's not a message from the
+ * client, it's a suggestion for me, looks weird". The long-standing rule for
+ * LIVE is that a notification carries the lead's own incoming message; a
+ * follow-up has no incoming message by definition, so it states the job.
+ */
+function followupNoticeBody(lastContactAt: Date | null | undefined): string {
+  const base = "Follow-up ready to send";
+  if (!lastContactAt) return base;
+  const days = Math.floor((Date.now() - lastContactAt.getTime()) / 86_400_000);
+  if (days < 1) return base;
+  return `${base} — quiet for ${days} day${days === 1 ? "" : "s"}`;
+}
+
 async function classifyObjection(
   conversationSnippet: string,
   brokerName: string,
@@ -798,7 +816,7 @@ export async function processFollowups(): Promise<void> {
           });
           // Same rule as the main follow-up path below: queued work the broker
           // has to act on always announces itself.
-          notifyBrokerForLead(lead.responsibleUser, lead.leadId, "reminder", warmupText, {
+          notifyBrokerForLead(lead.responsibleUser, lead.leadId, "reminder", followupNoticeBody(lead.lastMessageAt ?? lead.lastOurMessageAt), {
             content: lead.content,
             leadStage: lead.leadStage,
           }).catch(() => {});
@@ -1025,7 +1043,7 @@ export async function processFollowups(): Promise<void> {
         // Only LIVE ever notified, so the PUSH tab filled in silence: three of
         // Amelia's follow-ups sat ready from 4-6 August with nothing to signal
         // them. Same notification shape as a reply, so the badge stays in step.
-        notifyBrokerForLead(lead.responsibleUser, lead.leadId, "reminder", text, {
+        notifyBrokerForLead(lead.responsibleUser, lead.leadId, "reminder", followupNoticeBody(lead.lastMessageAt ?? lead.lastOurMessageAt), {
           content: lead.content,
           leadStage: lead.leadStage,
         }).catch(() => {});
