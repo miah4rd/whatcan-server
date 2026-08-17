@@ -82,8 +82,21 @@ export interface ReportCard {
  * progress.
  */
 const STAGE_ORDER: Record<string, string[]> = {
-  rental: ["new lead", "initial contact", "need assessed", "needs assessed", "options sent", "viewing scheduled", "viewing done", "reservation", "contract signed", "won"],
-  "rental listings": ["new lead", "initial contact", "qualified", "taken to work", "listing signed", "won"],
+  // Verified against GET /api/admin/pipelines — the names amoCRM actually
+  // uses, in its own order. These were previously invented approximations
+  // ("viewing scheduled", "reservation", "contract signed"), so the real
+  // stages scored -1 and the moves that matter MOST — Options sent → Viewing,
+  // Viewing → Negotiation — counted as no progress at all. Rental Listings was
+  // worse than useless: it had QUALIFIED before TAKEN TO WORK, the reverse of
+  // the real funnel, so a genuine step forward scored as a step back.
+  rental: [
+    "incoming leads", "new lead", "need assessed", "needs assessed", "options sent",
+    "viewing", "negotiation", "signing of the contract", "check in (inventory)", "check out", "closed - won",
+  ],
+  "rental listings": [
+    "incoming leads", "initial contact", "taken to work", "qualified",
+    "details", "agreement", "live", "rented", "closed - won",
+  ],
   unicorn: [
     "new lead", "in progress", "1st follow up (next day)", "2nd follow up (3 days after)",
     "final follow up (1 week after)", "lead assigned", "taken to work", "contact established",
@@ -111,7 +124,7 @@ function isViewing(stage: string | null): boolean {
 function isListingWon(pipeline: string | null, stage: string | null): boolean {
   if ((pipeline ?? "").trim().toLowerCase() !== "rental listings") return false;
   const s = (stage ?? "").toLowerCase();
-  return s.includes("taken to work") || s.includes("listing signed");
+  return s.includes("taken to work") || s.includes("agreement") || s.includes("live") || s.includes("rented");
 }
 
 /** Same shape the inbox card uses: the lead's own name out of the transcript. */
