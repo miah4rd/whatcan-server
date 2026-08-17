@@ -280,7 +280,9 @@ Available stages, in funnel order:
 ${catalog}
 
 Rules:
-- Judge the state the conversation will be in AFTER the broker's pending reply is sent.
+${opts.replyText.trim()
+  ? "- Judge the state the conversation will be in AFTER the broker's pending reply is sent."
+  : "- Judge the state the conversation is in RIGHT NOW. There is no pending reply: nothing further has been sent to this person, so do NOT credit us with any outreach that has not actually happened yet."}
 - Pick the single stage that best describes the conversation's real state right now.
 - Moving BACKWARD is allowed, but only when the conversation genuinely regressed — the client restarted their search, withdrew a decision, or went back to basic requirements. A passing clarifying question inside a later-stage conversation is NOT a regression.
 - Never pick a closing stage unless the client stated it unambiguously. Silence, vagueness or mild hesitation are never closing signals.
@@ -296,8 +298,7 @@ Property links attached to the pending reply: ${opts.attachmentsCount}
 Conversation (oldest → newest):
 ${conversationWindow(opts.conversationText, 1500, 4000)}
 
-Broker's pending reply (not sent yet):
-${opts.replyText.slice(0, 1200)}`,
+${opts.replyText.trim() ? `Broker's pending reply (not sent yet):\n${opts.replyText.slice(0, 1200)}` : "There is no pending reply. Judge only what has actually happened in the conversation above."}`,
         },
       ],
       max_tokens: 120,
