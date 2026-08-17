@@ -26,6 +26,7 @@ import { HELPER_MODEL, chatCompletionJSON } from "./ai-client";
 import { amoFetch } from "./amo-client";
 import { logger } from "./logger";
 import { conversationWindow } from "./dialog-parser";
+import { shouldSuppressPush } from "./stage-routing";
 
 export type StageDef = { name: string; id: number };
 
@@ -244,10 +245,18 @@ export async function classifyStage(opts: {
   const stages = (await loadPipelines()).get(pipelineKey);
   if (!stages || stages.selectable.length === 0) return null;
 
-  // A lead already closed should not be dragged back into the funnel by a
-  // stray message.
+  // A lead already closed must never be dragged back into the funnel.
+  //
+  // Matching the stored stage against amoCRM's stage list is not enough: the
+  // sync writes its OWN labels for the closing statuses ("Closed Lost", "Won",
+  // "Closed"), which match none of amoCRM's names ("Closed - lost"), so the
+  // lookup returned null and the guard below never fired. The classifier then
+  // happily proposed pulling closed leads back to an active stage — harmless
+  // while stages were only applied on send and a broker could see it, and not
+  // harmless at all now that this funnel moves cards on its own.
   const current = findStage(stages.all, opts.currentStage);
   if (current && TERMINAL_STAGE_IDS.has(current.def.id)) return null;
+  if (opts.currentStage && shouldSuppressPush(opts.currentStage)) return null;
 
   const optionsSent = stages.selectable.find((s) => /option|опци|вариант|подборк/i.test(s.name));
 
