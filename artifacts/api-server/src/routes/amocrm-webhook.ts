@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, contactEventsTable } from "@workspace/db";
+import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, contactEventsTable, stageEventsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { chatCompletion, WRITER_MODEL } from "../lib/ai-client";
 import { parseDialogContent, nextFollowupDate, formatDialogForAI } from "../lib/dialog-parser";
@@ -9,7 +9,7 @@ import { getPropertyCatalogSummary, fetchAllPropertiesForPriceLookup, matchPrope
 import { getBrokerPicks } from "../lib/settings";
 import { isStageWhitelisted, shouldSuppressPush } from "../lib/stage-routing";
 
-import { getAmoLead } from "../lib/amo-client";
+import { getAmoLead, updateLeadStatus } from "../lib/amo-client";
 import { fillMessengerFromResponsibleIfNoMessages } from "../lib/amo-messenger-field";
 import { advanceRentalFollowup, rentalStageToFollowupLevel } from "../lib/rental-followup";
 import { buildRentalPromptParts } from "../lib/rental-prompt";
@@ -17,6 +17,7 @@ import { buildSalesPromptParts } from "../lib/sales-prompt";
 import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
 import { isHosTrackedPipeline } from "../lib/adaptive-followup";
+import { movesStageOnReply } from "../lib/pipelines";
 import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments } from "../lib/generate-suggestion";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
@@ -372,6 +373,7 @@ export async function classifyStageInBackground(
         content: leadsSyncTable.content,
         leadStage: leadsSyncTable.leadStage,
         pipeline: leadsSyncTable.pipeline,
+        responsibleUser: leadsSyncTable.responsibleUser,
       })
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, leadId))
@@ -401,6 +403,44 @@ export async function classifyStageInBackground(
       { leadId, from: lead.leadStage, to: classification.stage.name, terminal: classification.terminal },
       "stage classified for pending suggestion",
     );
+
+    // Move the card now, not when the broker next sends something.
+    //
+    // On the acquisition funnel the stage IS the qualification state: an owner
+    // who writes "yes, the villa is mine" is QUALIFIED at that moment, and a
+    // board that waits for a broker reply shows the wrong thing — which is
+    // exactly what the owner was looking at, leads confirmed as owners still
+    // sitting in TAKEN TO WORK. Terminal stages are still never automatic:
+    // Closed-won/lost carry money and reporting weight and stay a one-tap
+    // confirmation. Client funnels keep applying on send (see the flag).
+    if (!classification.terminal && movesStageOnReply(lead.pipeline)) {
+      const ok = await updateLeadStatus(leadId, classification.stage.id).catch(() => false);
+      if (ok) {
+        await db
+          .update(leadsSyncTable)
+          .set({
+            leadStage: classification.stage.name,
+            leadStageId: String(classification.stage.id),
+            updatedAt: new Date(),
+          })
+          .where(eq(leadsSyncTable.leadId, leadId));
+        await db
+          .insert(stageEventsTable)
+          .values({
+            leadId,
+            fromStage: lead.leadStage,
+            toStage: classification.stage.name,
+            responsibleUser: lead.responsibleUser ?? null,
+          })
+          .catch(() => {});
+        logger.info(
+          { leadId, from: lead.leadStage, to: classification.stage.name, reason: classification.reason },
+          "stage moved automatically from the conversation",
+        );
+      } else {
+        logger.warn({ leadId, to: classification.stage.name }, "automatic stage move rejected by amoCRM");
+      }
+    }
   } catch (err) {
     logger.error({ err, leadId }, "background stage classification failed (non-fatal)");
   }
