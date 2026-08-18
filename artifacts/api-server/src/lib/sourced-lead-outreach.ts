@@ -22,6 +22,7 @@ import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, isNull, isNotNull, or, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch } from "./amo-client";
+import { decodeAmoEntities } from "./amo-text";
 import { describePropertiesByIds } from "./property-catalog";
 import { enforceBudgetFilter } from "./budget-filter";
 
@@ -163,8 +164,11 @@ export async function processSourcedLeadOutreach(): Promise<number> {
         .limit(1);
       if (everQueued) continue;
 
-      let note = lead.leadNotes?.trim() || "";
-      if (!note) note = (await fetchLeadNote(lead.leadId)) ?? "";
+      // Decoded before anything reads it: the note is both what the broker sees
+      // on the card and what the model reads as the client's own request, and
+      // amoCRM hands it over HTML-escaped (`FB group &quot;…&quot;`).
+      let note = decodeAmoEntities(lead.leadNotes?.trim() || "");
+      if (!note) note = decodeAmoEntities((await fetchLeadNote(lead.leadId)) ?? "");
 
       // Meta Ads leads (via Albato) arrive with the LISTING CODE in the lead's
       // NAME — "R-YUD-018 - 3BR Villa for Long-Term Rental in Umalas" — and
