@@ -59,6 +59,9 @@ export type SupabaseProperty = {
   // and price, so it judged the request far more shallowly than it needed to.
   features: string[] | null;
   description: string | null;
+  /** Set when the villa is occupied today: the first date it is free again.
+   *  Null means free now. Filled from property_availability, never from Supabase. */
+  free_from?: string | null;
 };
 
 export type PropertyMatch = {
@@ -117,10 +120,81 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
   }
 
   const data = (await res.json()) as SupabaseProperty[];
-  _cache = data;
+  const withAvailability = await applyAvailability(data);
+  _cache = withAvailability;
   _cacheAt = now;
-  logger.info({ count: data.length }, "property catalog refreshed from Supabase");
-  return data;
+  logger.info({ count: withAvailability.length }, "property catalog refreshed from Supabase");
+  return withAvailability;
+}
+
+/**
+ * How far ahead a villa that is busy today still counts as an option.
+ *
+ * The brokers' own model (Yudi, 2026-08-18): a villa is either free, or free
+ * from a date. Within three months that is a real option a client will wait
+ * for; beyond it, it is effectively rented and must not be offered — a lead
+ * looking to move in next week was shown villas taken until August 2027.
+ */
+const FREE_FROM_HORIZON_DAYS = 92;
+
+/**
+ * Attach "free from" dates from property_availability, and drop the villas
+ * whose date is beyond the horizon.
+ *
+ * The site hides those in its own UI, but that is a front-end filter: the
+ * database still hands every non-draft villa to anyone reading it, and the bot
+ * reads the database. So the same rule has to live here too, or the bot keeps
+ * offering what the website already refuses to show.
+ */
+async function applyAvailability(rows: SupabaseProperty[]): Promise<SupabaseProperty[]> {
+  let periods: Array<{ property_id: string; end_date: string | null }> = [];
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/property_availability?select=property_id,status,start_date,end_date`,
+      { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } },
+    );
+    if (res.ok) periods = (await res.json()) as typeof periods;
+    else logger.warn({ status: res.status }, "availability fetch failed — treating every villa as free");
+  } catch (err) {
+    // Never let this break the catalog: a villa wrongly offered is a bad day,
+    // an empty shortlist is a broker with nothing to send at all.
+    logger.warn({ err }, "availability fetch threw — treating every villa as free");
+    return rows;
+  }
+  if (periods.length === 0) return rows;
+
+  const today = new Date();
+  const todayMs = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+
+  // Latest end date per villa among periods still running today.
+  const freeFrom = new Map<string, number>();
+  for (const p of periods) {
+    if (!p.end_date) continue;
+    const end = Date.parse(`${p.end_date}T00:00:00Z`);
+    if (Number.isNaN(end) || end < todayMs) continue;
+    const cur = freeFrom.get(p.property_id);
+    if (cur === undefined || end > cur) freeFrom.set(p.property_id, end);
+  }
+  if (freeFrom.size === 0) return rows;
+
+  const horizonMs = todayMs + FREE_FROM_HORIZON_DAYS * 24 * 60 * 60 * 1000;
+  const kept: SupabaseProperty[] = [];
+  let dropped = 0;
+  for (const row of rows) {
+    const end = freeFrom.get(row.id);
+    if (end === undefined) {
+      kept.push(row);
+      continue;
+    }
+    if (end > horizonMs) {
+      dropped++;
+      continue;
+    }
+    // Free the day AFTER the occupancy ends.
+    kept.push({ ...row, free_from: new Date(end + 24 * 60 * 60 * 1000).toISOString().slice(0, 10) });
+  }
+  if (dropped > 0) logger.info({ dropped, horizonDays: FREE_FROM_HORIZON_DAYS }, "catalog: villas taken beyond the horizon excluded");
+  return kept;
 }
 
 function effectivePriceUsd(p: SupabaseProperty): number | null {
@@ -317,16 +391,30 @@ export async function fetchPropertyForShare(id: string): Promise<PropertyShareCa
   return card;
 }
 
+/** "free from 30 Aug" — what the client must be told about a villa still occupied. */
+export function freeFromLabel(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return "";
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `free from ${d.getUTCDate()} ${MON[d.getUTCMonth()]}`;
+}
+
 function toPick(p: SupabaseProperty): PropertyPick {
   const priceBit = summaryLine(p).split(" | ").slice(1, -1).join(", ");
   // Spelled out on the label, because everything downstream reads the label and
   // silence about the price is what let a figure be invented for it.
   const noPrice = priceOf(p) === 0 ? ", price on request" : "";
+  // Same reasoning for the move-in date: the label is what the writer sees, so
+  // a villa that is still occupied has to say so there, or the reply offers it
+  // as if the client could move in tomorrow.
+  const free = freeFromLabel(p.free_from);
+  const freeBit = free ? `, ${free}` : "";
   return {
     id: p.id,
     title: p.title,
     url: propertyUrl(p),
-    label: `${p.title} (${priceBit}${noPrice})`.slice(0, 160),
+    label: `${p.title} (${priceBit}${noPrice}${freeBit})`.slice(0, 180),
   };
 }
 

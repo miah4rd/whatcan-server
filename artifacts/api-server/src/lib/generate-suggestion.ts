@@ -607,7 +607,11 @@ export async function buildPromptAdditions(opts: {
     `\n\nNO SIGN-OFF. This is WhatsApp, not email: never end with your name, "Best", "Regards" or anything like it. The client sees who is writing.` +
     `\n\nNEVER write an internal listing code (R-YUD-018, UP-1001 and the like) in the message — it is our catalog reference, meaningless to the client and it reads like a database record. Use the villa's name.` +
     `\n\nNO URLS IN THE TEXT: every attached property link is delivered as its own separate WhatsApp message right after this one — never write property or catalog URLs inside the message body itself.` +
-    `\n\nTHE LINKS GO OUT WITH THIS MESSAGE. When a shortlist is being sent, two or three property links are attached to this exact message automatically — they are already below your text. So present them ("here are three that fit"), never ask permission to send them and never promise them for later. The one exception is when the client has already settled on a specific villa: then no options are sent and you move to the viewing instead.`;
+    `\n\nTHE LINKS GO OUT WITH THIS MESSAGE. When a shortlist is being sent, two or three property links are attached to this exact message automatically — they are already below your text. So present them ("here are three that fit"), never ask permission to send them and never promise them for later. The one exception is when the client has already settled on a specific villa: then no options are sent and you move to the viewing instead.` +
+    // A villa still occupied says "free from <date>" on its label. Offering it
+    // without that date reads as "move in whenever" and the client finds out
+    // only after they have set their heart on it.
+    `\n\nMOVE-IN DATES. A listing whose label says "free from <date>" is NOT available yet — it frees up on that date. Say so in plain words when you present it ("this one frees up on 30 August"). If the client has told you when they need to move in and the date is after that, either leave the villa out or name the gap honestly — never present it as ready now.`;
 
   const stockLine = stock
     ? stock.matching > 0
