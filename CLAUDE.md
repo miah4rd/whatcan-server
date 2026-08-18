@@ -452,6 +452,22 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   closer than 20h to our last reply was set by an earlier send, not by that
   reply. Add every new bot-written task text to `OUR_TASK_TEXT` or that task
   becomes unrecognisable and pins its lead the same way.
+- **One bad filter value 400s the WHOLE amoCRM events request.**
+  `syncOutgoingEvents` asked for `outgoing_lead_message` AND
+  `outgoing_chat_message`. The first is not a valid type on this account, so
+  amoCRM answered 400 to every call and the detector found nothing for weeks —
+  which is why a broker's manual WhatsApp reply depended entirely on the
+  30-minute timeline sweep. Verified live 2026-08-18: both types 400, lead-only
+  400, chat-only 200 with real events. It is now chat-only and reconciles the
+  TASK as well as the clock (mode "repair" — this feed cannot tell a Salesbot
+  send from a human's, so it never moves a stage). A silent zero from an amoCRM
+  filter means "check the status code", not "there is nothing there".
+- **A lone surrogate kills the whole AI request.** WhatsApp text arrives through
+  amoCRM with half an emoji in it; that cannot be encoded as JSON, so the
+  Anthropic call fails with 400 "invalid high surrogate in string" and the lead
+  gets NO draft at all while the log shows only an API error (23258097).
+  `stripLoneSurrogates` in ai-client.ts cleans every string in the body —
+  complete emoji PAIRS must survive, only orphan halves go.
 - **The scout creates duplicate leads, and the same phone must never be
   messaged twice.** Two leads with two DIFFERENT contact ids can carry the same
   phone: Larissalara (+4917662830225 → 23213079 / 23213261) and Anna Shahumyan
