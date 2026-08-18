@@ -9,6 +9,7 @@ import { logger } from "./logger";
 import { amoFetch, getAccessToken, getAllOpenLeadTasksPaginated, createAmoTask } from "./amo-client";
 import { shouldSuppressPush } from "./stage-routing";
 import { followupClockAfterReply } from "./rental-followup";
+import { reconcileTasksAfterManualReply } from "./manual-reply-followup";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
 import { notifyBrokerForLead } from "./push-notifications";
 import { TRACKED_PIPELINE_NAMES } from "./pipelines";
@@ -610,13 +611,18 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
   const token = await getAccessToken();
   if (!token) return 0;
 
-  // Poll both outgoing_lead_message AND outgoing_chat_message so that messages
-  // sent directly from WhatsApp on the phone (which AmoCRM records as chat events,
-  // not lead events) are also caught and clear the LIVE suggestion.
+  // ONLY outgoing_chat_message. `outgoing_lead_message` is not a valid event
+  // type on this account: amoCRM answers 400 to any request naming it, and a
+  // 400 kills the WHOLE request — so asking for both types meant this detector
+  // returned nothing, every five minutes, for weeks. That is why a broker's
+  // manual WhatsApp reply was only ever noticed by the 30-minute timeline sweep
+  // (and why "the bot doesn't see my replies" took so long to move). Verified
+  // 2026-08-18 against the live API: both-types 400, lead-only 400,
+  // chat-only 200 with real events. Do not "restore" the second filter.
   const fromTs = Math.floor((Date.now() - lookbackMs) / 1000);
 
   const data = await amoFetch<{ _embedded?: { events?: AmoEvent[] } }>(
-    `/api/v4/events?filter[type][]=outgoing_lead_message&filter[type][]=outgoing_chat_message&filter[created_at][from]=${fromTs}&limit=250`,
+    `/api/v4/events?filter[type][]=outgoing_chat_message&filter[created_at][from]=${fromTs}&limit=250`,
   );
 
   const events = data?._embedded?.events ?? [];
@@ -684,6 +690,36 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
           eq(pendingSuggestionsTable.kind, "live"),
         ),
       );
+
+    // Setting the clock alone is what this detector used to do, and it is not
+    // enough: syncTaskSchedule re-reads the still-open OLD amoCRM task minutes
+    // later and pins the clock straight back. Reconcile the task too.
+    //
+    // Mode "repair" deliberately: this feed cannot tell a Salesbot send from a
+    // broker's own message, so it never moves a stage or records a touch — a
+    // bot send is already handled by approve.ts, whose fresh task makes this a
+    // no-op ("already-handled"). The full manual-reply treatment, stage advance
+    // included, stays on the timeline sweep and the webhook.
+    if (!stageBlocksFollowup) {
+      try {
+        const r = await reconcileTasksAfterManualReply({
+          leadId,
+          sentAt: eventAt,
+          pipeline: existing.pipeline,
+          leadStage: existing.leadStage,
+          responsibleUser: null,
+          mode: "repair",
+        });
+        if (r.due) {
+          await db
+            .update(leadsSyncTable)
+            .set({ nextFollowupAt: r.due })
+            .where(eq(leadsSyncTable.leadId, leadId));
+        }
+      } catch (err) {
+        logger.warn({ err, leadId }, "amo-sync: outgoing event task reconcile failed (non-fatal)");
+      }
+    }
 
     cleared++;
     logger.info(
