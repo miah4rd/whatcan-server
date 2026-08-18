@@ -580,9 +580,13 @@ hesitation must NOT close a deal; an explicit "we booked elsewhere" must).
   ~3 months that is a real option, beyond it it is effectively rented.
   `applyAvailability` (property-catalog.ts) joins `property_availability` onto
   EVERY catalog read — one function, so matching, stock checks, price lookup and
-  area vocabulary all inherit it — drops anything past `FREE_FROM_HORIZON_DAYS`,
-  and stamps the rest with `free_from`, which `toPick` puts on the label the
-  writer sees. The rule itself lives in the RENTAL rulebook (cached prefix), not
+  area vocabulary all inherit it — and stamps each villa with `free_from`, which
+  `toPick` puts on the label the writer sees. It does NOT drop them: the site
+  shows every listing now and marks the far-out ones red instead of hiding them,
+  so a lead can be looking at one and ask about it, and a catalog that had
+  deleted the row could not even say when it frees up. `offerableNow` decides
+  offerability instead, applied where it matters — both shortlist pools
+  (`candidatesForLead`, `matchProperties`) and the stock check. The rule itself lives in the RENTAL rulebook (cached prefix), not
   in `buildPromptAdditions`: sale listings have no availability calendar, and the
   tail is re-sent uncached on every draft. A calendar that fails to load is
   treated as "everything free" — a villa wrongly offered is a bad day, an empty

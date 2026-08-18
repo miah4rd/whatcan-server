@@ -177,24 +177,33 @@ async function applyAvailability(rows: SupabaseProperty[]): Promise<SupabaseProp
   }
   if (freeFrom.size === 0) return rows;
 
-  const horizonMs = todayMs + FREE_FROM_HORIZON_DAYS * 24 * 60 * 60 * 1000;
-  const kept: SupabaseProperty[] = [];
-  let dropped = 0;
-  for (const row of rows) {
+  // Stamped, never dropped. The site shows every listing now and marks the
+  // far-out ones red rather than hiding them, so a lead CAN be looking at one
+  // and ask about it — and a catalog that had deleted it could not even say
+  // when it frees up. Offerability is decided per shortlist instead
+  // (offerableNow), which is the only place it actually matters.
+  return rows.map((row) => {
     const end = freeFrom.get(row.id);
-    if (end === undefined) {
-      kept.push(row);
-      continue;
-    }
-    if (end > horizonMs) {
-      dropped++;
-      continue;
-    }
+    if (end === undefined) return row;
     // Free the day AFTER the occupancy ends.
-    kept.push({ ...row, free_from: new Date(end + 24 * 60 * 60 * 1000).toISOString().slice(0, 10) });
-  }
-  if (dropped > 0) logger.info({ dropped, horizonDays: FREE_FROM_HORIZON_DAYS }, "catalog: villas taken beyond the horizon excluded");
-  return kept;
+    return { ...row, free_from: new Date(end + 24 * 60 * 60 * 1000).toISOString().slice(0, 10) };
+  });
+}
+
+/**
+ * May this villa be put in a shortlist TODAY?
+ *
+ * Free now, or free within the horizon. Beyond it the villa is effectively
+ * rented: the website marks it red precisely as a signal not to offer it, and a
+ * client looking to move in this month will not wait a year. It stays in the
+ * catalog so the bot can still answer a direct question about it.
+ */
+export function offerableNow(p: SupabaseProperty, now: Date = new Date()): boolean {
+  if (!p.free_from) return true;
+  const free = Date.parse(`${p.free_from}T00:00:00Z`);
+  if (Number.isNaN(free)) return true;
+  const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  return free <= todayMs + FREE_FROM_HORIZON_DAYS * 24 * 60 * 60 * 1000;
 }
 
 function effectivePriceUsd(p: SupabaseProperty): number | null {
@@ -576,7 +585,9 @@ export async function availabilityForCriteria(opts: {
   recentLeadMessages: string[];
 }): Promise<{ areas: string[]; bedrooms: number | null; matching: number; nearbyAreas: string[] } | null> {
   const all = await fetchAllProperties();
-  const pool = all.filter((p) => p.listing_type === opts.listingType);
+  // The stock line tells the client what we can offer them, so it must count
+  // only what is actually offerable — a villa free in a year is not stock.
+  const pool = all.filter((p) => p.listing_type === opts.listingType && offerableNow(p));
   if (pool.length === 0) return null;
 
   const { areas, bedrooms, bedroomsMax } = await extractLeadCriteria(opts.recentLeadMessages, pool);
@@ -1014,7 +1025,10 @@ export async function candidatesForLead(opts: {
 }> {
   const all = await fetchAllProperties();
   const exclude = new Set((opts.excludeIds ?? []).map((id) => id.toUpperCase()));
-  const pool = all.filter((p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()));
+  // offerableNow: a villa free only beyond the horizon never enters a shortlist.
+  const pool = all.filter(
+    (p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()) && offerableNow(p),
+  );
 
   const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
   const criteria = await extractLeadCriteria(criteriaSource, pool);
@@ -1177,7 +1191,10 @@ export async function matchProperties(opts: {
   const limit = opts.limit ?? 3;
   const all = await fetchAllProperties();
   const exclude = new Set((opts.excludeIds ?? []).map((id) => id.toUpperCase()));
-  const pool = all.filter((p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()));
+  // offerableNow: a villa free only beyond the horizon never enters a shortlist.
+  const pool = all.filter(
+    (p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()) && offerableNow(p),
+  );
   if (pool.length === 0) return [];
 
   // The broker's instruction is read first: whether it moves the search matters
