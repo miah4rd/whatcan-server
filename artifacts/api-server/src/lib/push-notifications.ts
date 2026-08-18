@@ -52,7 +52,14 @@ export async function sendPushToBroker(
       .from(pushSubscriptionsTable)
       .where(eq(pushSubscriptionsTable.brokerId, normalizedId));
 
-    if (subs.length === 0) return 0;
+    if (subs.length === 0) {
+      // The loudest thing this code can do about a broker nobody can reach.
+      // A notification with no device to take it used to return silently, so
+      // "Amelia has been dark for days" and "nothing happened worth notifying
+      // about" produced identical logs — which is exactly how the gap survives.
+      logger.warn({ brokerId: normalizedId, title: payload.title }, "push: nobody to notify — this broker has no subscribed device");
+      return 0;
+    }
 
     const body = JSON.stringify({
       title: payload.title,
@@ -72,6 +79,12 @@ export async function sendPushToBroker(
         } catch (err) {
           const statusCode = (err as { statusCode?: number }).statusCode;
           if (statusCode === 404 || statusCode === 410) {
+            // The MOMENT a broker goes dark: their browser rotated or dropped
+            // the subscription and this row is now dead. It was pruned in total
+            // silence before, so the broker simply stopped receiving anything
+            // and no one could tell when or why. /m re-subscribes itself on the
+            // next load, but only if they open it.
+            logger.warn({ brokerId: normalizedId, statusCode }, "push: subscription expired and was pruned — broker is now dark until they reopen /m");
             await db.delete(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.id, sub.id)).catch(() => {});
           } else {
             logger.error({ err, brokerId: normalizedId }, "push-notifications: send failed");
@@ -82,6 +95,9 @@ export async function sendPushToBroker(
   } catch (err) {
     logger.error({ err, brokerId }, "sendPushToBroker failed (non-fatal)");
   }
+  // Every send is recorded with how many devices actually took it. Without this
+  // "did the broker get it?" could only be answered by asking the broker.
+  logger.info({ brokerId: normalizedId, delivered, title: payload.title }, "push sent");
   return delivered;
 }
 
