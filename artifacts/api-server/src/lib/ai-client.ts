@@ -99,6 +99,32 @@ function callCostUsd(
   );
 }
 
+/**
+ * A LONE surrogate — half of an emoji, which is how some WhatsApp text reaches
+ * us through amoCRM — cannot be encoded as JSON. The SDK then sends an invalid
+ * body and the entire call fails with 400 "invalid high surrogate in string",
+ * so the lead gets NO draft at all while the log shows only an API error
+ * (lead 23258097, 2026-08-18). A complete surrogate PAIR is an ordinary emoji
+ * and must survive untouched — only the orphaned halves go.
+ */
+export function stripLoneSurrogates(s: string): string {
+  return s
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, "")
+    .replace(/(^|[^\uD800-\uDBFF])([\uDC00-\uDFFF])/g, "$1");
+}
+
+/** Same cleanup, applied through the shapes a request body can take. */
+function sanitize<T>(value: T): T {
+  if (typeof value === "string") return stripLoneSurrogates(value) as unknown as T;
+  if (Array.isArray(value)) return value.map(sanitize) as unknown as T;
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = sanitize(v);
+    return out as unknown as T;
+  }
+  return value;
+}
+
 export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatCompletionResult> {
   const client = getAnthropic();
 
@@ -121,8 +147,8 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatComp
 
   const params: Anthropic.MessageCreateParamsNonStreaming = {
     model: opts.model,
-    system: systemParam,
-    messages: opts.messages as Anthropic.MessageParam[],
+    system: sanitize(systemParam),
+    messages: sanitize(opts.messages as Anthropic.MessageParam[]),
     max_tokens: opts.max_tokens ?? 400,
     // Some models (e.g. claude-sonnet-5) use extended thinking by default. For
     // these short, latency-sensitive chat-suggestion calls we want the direct
