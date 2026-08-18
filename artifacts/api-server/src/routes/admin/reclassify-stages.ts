@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, leadsSyncTable, stageEventsTable } from "@workspace/db";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
-import { classifyStage } from "../../lib/stage-classifier";
+import { classifyStage, getPipelineStages } from "../../lib/stage-classifier";
 import { parseDialogContent, formatDialogForAI } from "../../lib/dialog-parser";
 import { updateLeadStatus } from "../../lib/amo-client";
 import { shouldSuppressPush } from "../../lib/stage-routing";
@@ -32,6 +32,12 @@ router.post("/admin/reclassify-stages", async (req, res) => {
   const broker = req.query.broker ? String(req.query.broker).trim() : null;
   const limit = Math.min(Number(req.query.limit ?? 200) || 200, 500);
   const apply = req.query.apply === "1" || req.query.apply === "true";
+  // A backfill only promotes. Deciding in bulk that 50 conversations have
+  // REGRESSED is a different and much riskier claim than noticing they moved
+  // on — and the first dry run made it on a lead whose only sin was saying
+  // the options were expensive ("Options sent" → "need assessed"). Day-to-day
+  // classification keeps its ability to move a card back; this does not.
+  const allowBackward = req.query.allowBackward === "1";
 
   try {
     const rows = await db
@@ -55,8 +61,16 @@ router.post("/admin/reclassify-stages", async (req, res) => {
       )
       .limit(limit);
 
+    // Funnel order, so "is this a step forward?" is answered by the funnel
+    // itself rather than by a hardcoded list that goes stale on a rename.
+    const stages = await getPipelineStages(pipeline);
+    const orderOf = (name: string | null): number =>
+      name && stages
+        ? stages.all.findIndex((st) => st.name.trim().toLowerCase() === name.trim().toLowerCase())
+        : -1;
+
     const moves: Array<{ leadId: string; broker: string | null; from: string | null; to: string; reason: string }> = [];
-    const skipped = { deadStage: 0, noChange: 0, terminal: 0, emptyDialog: 0, failed: 0 };
+    const skipped = { deadStage: 0, noChange: 0, terminal: 0, emptyDialog: 0, backward: 0, failed: 0 };
     let applied = 0;
 
     for (const lead of rows) {
@@ -89,6 +103,15 @@ router.post("/admin/reclassify-stages", async (req, res) => {
       if (state.terminal) {
         skipped.terminal++;
         continue;
+      }
+
+      if (!allowBackward) {
+        const fromIdx = orderOf(lead.leadStage);
+        const toIdx = orderOf(state.stage.name);
+        if (fromIdx >= 0 && toIdx >= 0 && toIdx <= fromIdx) {
+          skipped.backward++;
+          continue;
+        }
       }
 
       moves.push({
@@ -128,12 +151,13 @@ router.post("/admin/reclassify-stages", async (req, res) => {
     }
 
     logger.info(
-      { pipeline, broker, scanned: rows.length, proposed: moves.length, applied, apply },
+      { pipeline, broker, scanned: rows.length, proposed: moves.length, applied, apply, allowBackward },
       "reclassify-stages finished",
     );
 
     res.json({
       mode: apply ? "applied" : "dry run — pass ?apply=1 to move the cards",
+      direction: allowBackward ? "forward and backward" : "forward only (?allowBackward=1 to lift)",
       pipeline,
       broker,
       scanned: rows.length,
