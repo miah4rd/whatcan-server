@@ -89,9 +89,17 @@ const STAGE_ORDER: Record<string, string[]> = {
   // Viewing → Negotiation — counted as no progress at all. Rental Listings was
   // worse than useless: it had QUALIFIED before TAKEN TO WORK, the reverse of
   // the real funnel, so a genuine step forward scored as a step back.
+  // Rental was restructured on 2026-08-18: "Viewing" split into "Viewing
+  // scheduled" + "Viewing done", "Negotiation" → "Negotiation done", "Signing
+  // of the contract" → "Contract signed". The OLD names stay in the list,
+  // each next to its replacement — stage_events written before the rename
+  // still have to score, or every week/month comparison loses its history.
   rental: [
     "incoming leads", "new lead", "need assessed", "needs assessed", "options sent",
-    "viewing", "negotiation", "signing of the contract", "check in (inventory)", "check out", "closed - won",
+    "viewing", "viewing scheduled", "viewing done",
+    "negotiation", "negotiation done",
+    "signing of the contract", "contract signed",
+    "check in (inventory)", "check out", "closed - won",
   ],
   "rental listings": [
     "incoming leads", "initial contact", "taken to work", "qualified",

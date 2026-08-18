@@ -49,6 +49,11 @@ const WORKFLOW_STAGE_PATTERNS: RegExp[] = [
   /lead assigned|назначен/i,
   // "1 foolow up" / "2nd follow up" — a touch counter, not a funnel state.
   /f[oa]{1,2}l+ow\s*up|follow[-\s]?up/i,
+  // "CHECK IN (INVENTORY)" — handing over the keys and walking the inventory
+  // list with the tenant. It happens off WhatsApp, so the chat can never be
+  // evidence that it occurred; the broker sets it, same principle that keeps
+  // Mailing and Long-Term Cycle out of the classifier's hands.
+  /check[-\s]?in\b|check[-\s]?out\b|inventory|инвентар/i,
 ];
 
 /**
@@ -69,6 +74,14 @@ const STAGE_MEANINGS: Array<{ match: RegExp; meaning: string }> = [
     meaning: "The client has settled on a specific property and the conversation is about terms: price, deposit, contract length, move-in date, what's included." },
   { match: /feedback|objection|возражен|обратная связь/i,
     meaning: "The client has seen options or visited, and the conversation is now about their concerns or objections." },
+  // Rental splits the viewing in two, and the split IS the point of it: one
+  // stage is a commitment that has not happened yet, the other is a client who
+  // has already stood in the villa. A single /viewing/ rule gave both stages
+  // the identical description, so the model chose between them at random.
+  { match: /viewing\s*(done|held|completed|состоялся)|показ состоялся|просмотр состоялся/i,
+    meaning: "The client has ALREADY seen the property in person (or by video walkthrough if they are off the island) and the conversation is now about what they thought of it. Never for a viewing that is only booked." },
+  { match: /viewing\s*(scheduled|booked|arranged)|показ назначен|просмотр назначен/i,
+    meaning: "A viewing is AGREED but has not happened yet: a concrete date and time is settled (\"tomorrow at 2\", \"Friday morning\"), or the client accepted a slot we proposed. Merely offering to arrange one is NOT enough. If the viewing has already taken place and this funnel has no separate 'viewing done' stage, this stage still applies." },
   { match: /viewing|показ|просмотр/i,
     meaning: "A viewing is being arranged, is agreed, or has just happened — a date, time or meeting point is on the table, or they are discussing what they saw." },
   { match: /zoom|call|звонок|созвон/i,
