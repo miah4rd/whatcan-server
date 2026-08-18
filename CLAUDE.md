@@ -438,6 +438,29 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   Backlog was cleared once via `POST /api/admin/repair-manual-reply-overdue`
   (`?dry=1` to preview). Anything new that schedules or unschedules a chase
   must decide against the TASK, not the clock.
+- **An open FUTURE task is not proof the reply was handled.** The first version
+  of the rule above skipped any lead that had one — which broke the ordinary
+  GOOD case: a broker answering within the 24h the previous send scheduled
+  leaves that send's chase task sitting minutes ahead of the reply, so it came
+  due right after and pinned the lead "Overdue" with the client already
+  answered (Larissalara / 23213079: answered 12:59, task due 13:28, overdue
+  four days — Amelia photographed it). A task is judged by its amoCRM
+  `created_at`: made BEFORE the reply, it cannot reflect it (fallback: due
+  sooner than the reply's own cadence). Only tasks THIS system wrote qualify —
+  `OUR_TASK_TEXT` in manual-reply-followup.ts — because a task a human wrote is
+  their plan and outranks ours. The repair sweep uses the matching SQL: a clock
+  closer than 20h to our last reply was set by an earlier send, not by that
+  reply. Add every new bot-written task text to `OUR_TASK_TEXT` or that task
+  becomes unrecognisable and pins its lead the same way.
+- **The scout creates duplicate leads, and the same phone must never be
+  messaged twice.** Two leads with two DIFFERENT contact ids can carry the same
+  phone: Larissalara (+4917662830225 → 23213079 / 23213261) and Anna Shahumyan
+  (+48535010821 → 23213075 / 23213145) were each seeded twice on 2026-08-13 and
+  each received two different opening messages about a minute apart. Contact id
+  is NOT a dedupe key here; the normalised phone is. `sourced-lead-outreach.ts`
+  already resolves the contact — anything that sends a first-touch message must
+  check the phone before sending, and say so in the log rather than skipping
+  silently.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
 - **A notification that reached nobody is not a notification.** The broker's own
