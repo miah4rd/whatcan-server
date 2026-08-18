@@ -47,7 +47,9 @@ router.post("/admin/reclassify-stages", async (req, res) => {
         and(
           sql`lower(trim(${leadsSyncTable.pipeline})) = ${pipeline.toLowerCase()}`,
           isNotNull(leadsSyncTable.content),
-          eq(leadsSyncTable.botExcluded, false),
+          // IS NOT TRUE, not `= false`: older rows have a NULL here and a
+          // backfill that silently skips most of the funnel is worse than none.
+          sql`${leadsSyncTable.botExcluded} IS NOT TRUE`,
           ...(broker ? [sql`lower(${leadsSyncTable.responsibleUser}) = ${broker.toLowerCase()}`] : []),
         ),
       )
