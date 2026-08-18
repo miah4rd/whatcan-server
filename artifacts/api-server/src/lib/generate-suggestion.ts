@@ -517,9 +517,21 @@ export async function reconcileTextWithAttachments(
   const QUOTES_MONEY = /\d[\d.,\s]{2,}\s*(idr|rp\b|million|jt\b|juta)|rp\.?\s*\d/i;
   const invents = unpricedLabels.length > 0 && QUOTES_MONEY.test(text);
 
+  // A villa that is still occupied carries "free from <date>" on its label. The
+  // reply is written CONCURRENTLY with the matching, so the writer cannot know
+  // it was picked — which is exactly why this step exists. Presenting such a
+  // villa as ready now is the same class of error as promising links that are
+  // already attached: the client finds out only after choosing it.
+  const datedLabels = attachments
+    .map((a) => a.label ?? "")
+    .filter((l) => /free from /i.test(l));
+  const SAYS_A_DATE = /\bfree from\b|\bavailable from\b|\bfrees up\b|\bfrom the \d/i;
+  const hidesMoveInDate = datedLabels.length > 0 && !SAYS_A_DATE.test(text);
+
   const contradicts =
     force ||
     invents ||
+    hidesMoveInDate ||
     ASKS_OR_PROMISES_TO_SEND.test(text) ||
     (attachments.length > 1 && CLAIMS_ONLY_ONE.test(text)) ||
     !textMentionsAnyAttachment(text, attachments);
@@ -541,6 +553,10 @@ These ${attachments.length} property links are attached to that exact message an
 ${list}${budgetLine}${
     unpricedLabels.length > 0
       ? `\n\nTHESE HAVE NO PUBLISHED PRICE (their label says "price on request"): ${unpricedLabels.join("; ")}. You do NOT know what they cost. Remove any figure, range or estimate for them from the message and say plainly that you will confirm the exact rate with the owner. Inventing a number here would be quoted back at us.`
+      : ""
+  }${
+    datedLabels.length > 0
+      ? `\n\nTHESE ARE NOT FREE YET — their label says "free from <date>": ${datedLabels.join("; ")}. Say that date in plain words for each of them ("this one frees up on 29 August"). Presenting them as available now is the one thing this message must not do.`
       : ""
   }
 
