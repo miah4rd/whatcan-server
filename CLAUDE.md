@@ -571,6 +571,23 @@ hesitation must NOT close a deal; an explicit "we booked elsewhere" must).
   on the island. This is also enforced in code (`shouldSkipNewListings` in
   `generate-suggestion.ts`) because the model ignored the instruction.
 
+- **A rental is booked in time, not just in space.** The catalog query read
+  `properties` alone, so the bot had no idea a villa was taken and offered leads
+  villas rented until August 2027 (R-YUD-033/034/037, sent 14-18 Aug 2026). The
+  website hides those, but that is a front-end filter — the database still hands
+  every non-draft villa to anyone reading it, and the bot reads the database.
+  The brokers' model (Yudi): a villa is either free, or free from a date; within
+  ~3 months that is a real option, beyond it it is effectively rented.
+  `applyAvailability` (property-catalog.ts) joins `property_availability` onto
+  EVERY catalog read — one function, so matching, stock checks, price lookup and
+  area vocabulary all inherit it — drops anything past `FREE_FROM_HORIZON_DAYS`,
+  and stamps the rest with `free_from`, which `toPick` puts on the label the
+  writer sees. The rule itself lives in the RENTAL rulebook (cached prefix), not
+  in `buildPromptAdditions`: sale listings have no availability calendar, and the
+  tail is re-sent uncached on every draft. A calendar that fails to load is
+  treated as "everything free" — a villa wrongly offered is a bad day, an empty
+  shortlist is a broker with nothing to send at all.
+
 ## Notifications
 
 Web Push, built in this repo: `lib/push-notifications.ts`,
