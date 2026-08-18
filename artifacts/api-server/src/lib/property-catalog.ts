@@ -26,7 +26,13 @@ const SITE_HUMAN_BASE = "https://unicorn-properties.com/property";
  * conversation text. Only the host changed.
  */
 function shareBase(): string {
-  return `${publicBaseUrl()}/property`;
+  // PROPERTY_LINK_BASE_URL is deliberately its OWN setting, not PUBLIC_BASE_URL.
+  // PUBLIC_BASE_URL also makes uploaded listing PHOTOS absolute for Supabase
+  // (listing-publish.ts) — those files are served by THIS server, so pointing it
+  // at another host to move the share links would 404 every published photo.
+  // Set this one to move only where a client's property link goes.
+  const configured = (process.env["PROPERTY_LINK_BASE_URL"] ?? "").trim().replace(/\/+$/, "");
+  return `${configured || publicBaseUrl()}/property`;
 }
 
 export type ListingType = "sale" | "rent";
