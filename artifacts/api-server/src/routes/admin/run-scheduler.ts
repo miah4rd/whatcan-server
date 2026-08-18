@@ -4,6 +4,8 @@ import { syncTaskSchedule } from "../../lib/amo-sync";
 import { logger } from "../../lib/logger";
 import { db, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
 import { and, eq, lt, inArray, isNotNull, sql } from "drizzle-orm";
+import { reconcileTasksAfterManualReply } from "../../lib/manual-reply-followup";
+import { shouldSuppressPush } from "../../lib/stage-routing";
 import { refreshLeadProfile } from "../../lib/lead-profile";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { refreshLeadFromTimeline } from "../../lib/amo-timeline-sync";
@@ -204,6 +206,88 @@ router.post("/admin/clean-stale-pushes", async (_req, res) => {
   } catch (err) {
     logger.error({ err }, "admin: clean-stale-pushes error");
     return res.status(500).json({ error: String(err) });
+  }
+});
+
+/**
+ * POST /api/admin/repair-manual-reply-overdue[?dry=1]
+ * One-time sweep for leads pinned "Overdue Nd" by a stale open amoCRM task:
+ * the broker's own manual reply IS recorded (lastOurMessageAt), but the clock
+ * sits before it in the past because syncTaskSchedule re-pins it to the open
+ * overdue task every 5 minutes. The forward fix (manual-reply-followup.ts,
+ * called from the timeline sweep) only fires on NEW replies — this clears the
+ * backlog that accumulated before it shipped. Closes the stale task, creates
+ * a fresh chase task from the reply (clamped to now), and unpins the clock.
+ * Never moves a stage ("repair" mode). ?dry=1 lists candidates only.
+ */
+router.post("/admin/repair-manual-reply-overdue", async (req, res) => {
+  const dry = req.query["dry"] === "1";
+  try {
+    const now = new Date();
+    const rows = await db
+      .select({
+        leadId: leadsSyncTable.leadId,
+        pipeline: leadsSyncTable.pipeline,
+        leadStage: leadsSyncTable.leadStage,
+        responsibleUser: leadsSyncTable.responsibleUser,
+        lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
+        nextFollowupAt: leadsSyncTable.nextFollowupAt,
+      })
+      .from(leadsSyncTable)
+      .where(
+        and(
+          eq(leadsSyncTable.lastMessageFrom, "us"),
+          sql`${leadsSyncTable.botExcluded} IS NOT TRUE`,
+          isNotNull(leadsSyncTable.nextFollowupAt),
+          lt(leadsSyncTable.nextFollowupAt, now),
+          sql`${leadsSyncTable.lastOurMessageAt} > ${leadsSyncTable.nextFollowupAt}`,
+        ),
+      );
+
+    const candidates = rows.filter((r) => !shouldSuppressPush(r.leadStage ?? ""));
+    if (dry) {
+      return void res.json({
+        ok: true,
+        dry: true,
+        candidates: candidates.map((c) => ({
+          leadId: c.leadId,
+          pipeline: c.pipeline,
+          leadStage: c.leadStage,
+          responsibleUser: c.responsibleUser,
+          lastOurMessageAt: c.lastOurMessageAt,
+          nextFollowupAt: c.nextFollowupAt,
+        })),
+      });
+    }
+
+    const results: Array<{ leadId: string; action: string; due?: Date }> = [];
+    for (const c of candidates) {
+      try {
+        const r = await reconcileTasksAfterManualReply({
+          leadId: c.leadId,
+          sentAt: c.lastOurMessageAt ?? now,
+          pipeline: c.pipeline,
+          leadStage: c.leadStage,
+          responsibleUser: c.responsibleUser,
+          mode: "repair",
+        });
+        if (r.due) {
+          await db
+            .update(leadsSyncTable)
+            .set({ nextFollowupAt: r.due, updatedAt: new Date() })
+            .where(eq(leadsSyncTable.leadId, c.leadId));
+        }
+        results.push({ leadId: c.leadId, action: r.action, due: r.due });
+      } catch (err) {
+        logger.error({ err, leadId: c.leadId }, "repair-manual-reply-overdue: lead failed");
+        results.push({ leadId: c.leadId, action: "error" });
+      }
+    }
+    logger.info({ repaired: results.length }, "admin: repair-manual-reply-overdue complete");
+    res.json({ ok: true, dry: false, results });
+  } catch (err) {
+    logger.error({ err }, "admin: repair-manual-reply-overdue error");
+    res.status(500).json({ error: String(err) });
   }
 });
 
