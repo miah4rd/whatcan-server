@@ -37,7 +37,24 @@ const PUSH_SUPPRESSED_RAW: string[] = [
   "closed",
   "not active",   // dead/inactive leads — no WhatsApp, not interested, etc.
   "не активен",   // Russian equivalent
+  // Rental's CHECK IN (INVENTORY): the contract is signed and we are handing
+  // over the keys. Chasing that person with "any thoughts on the options?" is
+  // the wrong conversation entirely. They are NOT hidden though — see
+  // isPostSigningStage, which keeps their own incoming messages in LIVE.
+  "inventory",
 ];
+
+/**
+ * The deal is done and we are in handover — signed, checking in, walking the
+ * inventory list. No proactive follow-up belongs here, but the client is very
+ * much alive and writes ("what time tomorrow?", "the wifi password?"), so
+ * their messages must still reach the broker. Same shape as isClosedWonStage:
+ * suppressed for PUSH, visible in LIVE.
+ */
+export function isPostSigningStage(rawStage: string | null | undefined): boolean {
+  if (!rawStage) return false;
+  return /check[-\s]?in\b|inventory|инвентар/i.test(rawStage);
+}
 
 /**
  * PUSH_STAGE_WHITELIST — legacy testing filter, kept for backward compat.

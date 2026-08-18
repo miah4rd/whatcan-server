@@ -1,5 +1,5 @@
 import { parseDialogContent } from "./dialog-parser";
-import { shouldSuppressPush, isClosedWonStage } from "./stage-routing";
+import { shouldSuppressPush, isClosedWonStage, isPostSigningStage } from "./stage-routing";
 import { isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whitelist";
 import { isRentalScopedBroker, isHosTrackedPipeline } from "./adaptive-followup";
 
@@ -70,7 +70,11 @@ export function isPendingVisible(
   // incoming) stays hidden in every tab.
   const stage = sync?.leadStage ?? "";
   if (stage && shouldSuppressPush(stage)) {
-    if (!(r.kind === "live" && isClosedWonStage(stage))) return false;
+    // Same exception for a client mid-handover (CHECK IN / inventory): no
+    // proactive chasing, but they are actively moving in and their questions
+    // must not vanish from the inbox.
+    const liveExempt = isClosedWonStage(stage) || isPostSigningStage(stage);
+    if (!(r.kind === "live" && liveExempt)) return false;
   }
 
   // Push tab: only show stages in the dynamic whitelist (configurable via /api/admin/push-stages).

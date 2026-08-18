@@ -556,6 +556,36 @@ owner made explicitly — do not change without asking:
   when names match — they're verified against `GET /api/admin/pipelines`.
 - Administrative stages (Mailing, Long-Term Cycle, TAKEN TO WORK, Неразобранное)
   are never auto-set: they describe work outside the chat.
+- **Rental's funnel was restructured on 2026-08-18** (owner's decision):
+  Options sent → **Viewing scheduled** → **Viewing done** → Negotiation done →
+  Contract signed → CHECK IN (INVENTORY). The split is the whole point of it —
+  "scheduled" is a commitment that has not happened yet, "done" is a client who
+  has already stood in the villa, and the two conversion rates they produce
+  (does the shortlist work? / does the broker execute?) need opposite fixes.
+  Before it, 50 of 53 rental leads sat in Options sent with nowhere else to go.
+  Three places had to learn the new names and any future rename must visit the
+  same three: `STAGE_MEANINGS` in stage-classifier.ts (a single `/viewing/` rule
+  gave BOTH stages the identical description, so the model chose between them at
+  random), `STAGE_ORDER` in daily-report.ts (exact name match — the OLD names
+  stay in the list beside the new ones, or every week/month comparison loses its
+  history), and `WORKFLOW_STAGE_PATTERNS`. Note Rental's `need assessed` means
+  "the first outreach was sent", NOT "requirements are known" — it has its own
+  meaning override in the classifier and is deliberately NOT mapped to the
+  `needs_assessed` routing group.
+- **CHECK IN (INVENTORY) is never auto-set, and never chased — but never hidden
+  either.** Keys and an inventory walk happen off WhatsApp, so the chat can't be
+  evidence they occurred; the broker sets it. It suppresses proactive follow-up
+  (a signed tenant does not want "any thoughts on the options?") while still
+  surfacing the client's OWN incoming messages in LIVE via `isPostSigningStage`
+  — a tenant moving in writes a lot. Same shape as the Closed-won exception in
+  `pending-visibility.ts`; anything else added to `PUSH_SUPPRESSED_RAW` that is
+  a live human rather than a dead lead needs that exception too.
+- A backlog that predates a funnel change is moved once with
+  `POST /api/admin/reclassify-stages?pipeline=rental` — it re-reads each open
+  conversation and puts the card where it actually is. **Dry by default**
+  (`?apply=1` to write), unlike the other repair endpoints, because this one
+  moves cards in the owner's live CRM and can trigger amoCRM's own automations.
+  Terminal stages are skipped in bulk too.
 - The manual picker in `/m` is collapsed behind "Change stage", kept for
   closes, administrative stages, and overrides.
 
@@ -680,5 +710,6 @@ swallows the real one.
 - **Do not run synthetic tests against live leads.** Injecting fake messages
   into lead 22962823 put invented client requirements into a real WhatsApp
   conversation. Test the prompts/classifiers standalone instead.
-- Owner communicates in Russian and wants plain-language explanations of what
+- **Answer the owner in English** (he asked for it explicitly on 2026-08-18; this
+  line used to say Russian). He still wants plain-language explanations of what
   broke and why, not jargon.
