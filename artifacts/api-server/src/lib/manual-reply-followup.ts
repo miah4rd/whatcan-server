@@ -40,6 +40,20 @@ export interface ManualReplyReconcileResult {
   due?: Date;
 }
 
+/**
+ * Task texts THIS system writes. Everything else is a human's own plan and is
+ * never touched — if we cannot recognise a task as ours, we leave it alone.
+ */
+const OUR_TASK_TEXT = [
+  /^follow-up #\d+ due\./i,
+  /^отправлено \((push|live)/i,
+  /^follow up — lead's last message needed no reply/i,
+  /^follow-up due —/i,
+  /^ручной ответ клиенту в whatsapp/i,
+];
+const isOurTask = (text: string | undefined): boolean =>
+  OUR_TASK_TEXT.some((re) => re.test((text ?? "").trim()));
+
 export async function reconcileTasksAfterManualReply(opts: {
   leadId: string;
   /** When the broker's own message left (timeline event time). */
@@ -63,7 +77,31 @@ export async function reconcileTasksAfterManualReply(opts: {
   const stale = open.filter((t) => (t.complete_till ?? 0) <= nowSec);
   const future = open.filter((t) => (t.complete_till ?? 0) > nowSec);
 
-  if (future.length > 0) {
+  /**
+   * A future task does NOT automatically mean the reply was handled. The
+   * ordinary good case is a broker answering WITHIN the 24h the previous send
+   * scheduled: the chase task from that send is still in the future at the
+   * moment of the reply, then comes due minutes later and pins the lead
+   * "Overdue" — with the client already answered (Larissalara / 23213079:
+   * replied 12:59, task due 13:28, overdue for four days). Treating any future
+   * task as "handled" left exactly that case broken.
+   *
+   * created_at is the exact test: a task made BEFORE the reply cannot reflect
+   * it. When amoCRM omits it, fall back to "due sooner than this reply's own
+   * cadence would put it". Either way only OUR tasks qualify — a task a human
+   * wrote is their plan and outranks ours.
+   */
+  const cadenceDue = followupClockAfterReply(sentAt, pipeline);
+  const CADENCE_TOLERANCE_MS = 60 * 60 * 1000;
+  const predatesReply = (t: { text: string; complete_till?: number; created_at?: number }): boolean => {
+    if (!isOurTask(t.text)) return false;
+    if (t.created_at) return t.created_at * 1000 < sentAt.getTime();
+    if (!cadenceDue) return false;
+    return (t.complete_till ?? 0) * 1000 < cadenceDue.getTime() - CADENCE_TOLERANCE_MS;
+  };
+
+  const futureReflectingReply = future.filter((t) => !predatesReply(t));
+  if (futureReflectingReply.length > 0) {
     // Already handled — but a stale task alongside the future one would still
     // pin the clock (syncTaskSchedule prioritises the overdue one), so it goes.
     if (stale.length > 0) await closeAmoTasksForLead(leadId, { onlyDueBefore: now });

@@ -28,19 +28,12 @@ import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, or, isNull, isNotNull, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch } from "./amo-client";
+import { decodeAmoEntities } from "./amo-text";
 
 type AmoNote = { note_type?: string; params?: { text?: string } };
 
 /** amoCRM returns note text HTML-escaped — &quot; all over a Facebook ad. */
-function decodeEntities(s: string): string {
-  return s
-    .replace(/&quot;/g, '"')
-    .replace(/&#0?39;|&apos;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&");
-}
+const decodeEntities = decodeAmoEntities;
 
 // The scout does NOT use a fixed note format. Four layouts have turned up so
 // far and the headings are free-form each time — "ORIGINAL TEXT:",

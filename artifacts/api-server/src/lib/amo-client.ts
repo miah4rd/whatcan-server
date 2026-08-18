@@ -331,10 +331,18 @@ export type AmoTask = {
   text: string;
 };
 
-/** Get all open (incomplete) tasks for a single lead. */
-export async function getOpenAmoTasks(leadId: string): Promise<Array<{ id: number; text: string; complete_till?: number }>> {
+/**
+ * Get all open (incomplete) tasks for a single lead.
+ *
+ * created_at matters: it is the only exact way to tell whether a task was made
+ * BEFORE or AFTER the broker's reply, i.e. whether it already reflects that
+ * reply or is a leftover plan from the previous send (see manual-reply-followup).
+ */
+export async function getOpenAmoTasks(
+  leadId: string,
+): Promise<Array<{ id: number; text: string; complete_till?: number; created_at?: number }>> {
   const data = await amoFetch<{
-    _embedded?: { tasks?: Array<{ id: number; text: string; complete_till?: number }> };
+    _embedded?: { tasks?: Array<{ id: number; text: string; complete_till?: number; created_at?: number }> };
   }>(`/api/v4/tasks?filter[entity_id]=${leadId}&filter[entity_type]=leads&filter[is_completed]=0&limit=50`);
   return data?._embedded?.tasks ?? [];
 }

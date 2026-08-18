@@ -238,12 +238,20 @@ router.post("/admin/repair-manual-reply-overdue", async (req, res) => {
         and(
           // Deliberately NOT filtered on lastMessageFrom: the pinned state has
           // been seen with that flag stuck on 'lead' while our own message was
-          // provably newer (Anna / 23195927) — the signature that matters is
-          // "our last reply postdates a clock still sitting in the past".
+          // provably newer (Anna / 23195927).
           sql`${leadsSyncTable.botExcluded} IS NOT TRUE`,
           isNotNull(leadsSyncTable.nextFollowupAt),
           lt(leadsSyncTable.nextFollowupAt, now),
-          sql`${leadsSyncTable.lastOurMessageAt} > ${leadsSyncTable.nextFollowupAt}`,
+          isNotNull(leadsSyncTable.lastOurMessageAt),
+          // "The clock does not reflect our last reply." A healthy lead is
+          // chased ~24h AFTER we wrote, so next_followup_at sits at least a day
+          // past last_our_message_at. Anything closer means the clock was set by
+          // an EARLIER send and the reply never moved it — both the reply-after-
+          // due case (Anna) and the reply-before-due case this misses otherwise
+          // (Larissalara / 23213079: answered 12:59, task due 13:28, overdue for
+          // four days). A genuine pending follow-up — bot wrote, client silent,
+          // broker has not approved the draft yet — is ~24h out and not touched.
+          sql`${leadsSyncTable.nextFollowupAt} < ${leadsSyncTable.lastOurMessageAt} + interval '20 hours'`,
         ),
       );
 
