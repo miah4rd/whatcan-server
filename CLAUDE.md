@@ -419,6 +419,25 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   (whitelist misses, bot-excluded, relevance-rejected, task-driven warmup,
   Rental Listings) — do NOT add a blanket "repair" pass that re-sets it; that
   exact loop is warned about in followup-scheduler.ts.
+- **A manual WhatsApp reply must move the amoCRM TASK, not just the clock.**
+  The open task is the scheduling source of truth — `syncTaskSchedule` reads it
+  back into `nextFollowupAt` every 5 minutes, so resetting only the clock is
+  undone within one cycle. A broker answering a client by hand was detected by
+  the timeline sweep, which reset only the clock; the still-open overdue task
+  re-pinned the lead "Overdue Nd" forever, and Amelia read it as "the bot
+  doesn't see my WhatsApp replies" (2026-08-18). The webhook's
+  brokerRepliedFresh block does the full job when it fires, but it does not
+  always fire, and `syncOutgoingEvents` (v4 events) has returned ZERO outgoing
+  events since at least 2026-07-24 — the 30-minute timeline sweep is the only
+  guaranteed detector of a manual reply. It now calls
+  `reconcileTasksAfterManualReply` (manual-reply-followup.ts): an open FUTURE
+  task means the reply was already handled (webhook/approve/broker's own plan)
+  — close only stale tasks and stop; otherwise close the stale tasks and chase
+  from the reply. Bot-sent messages never enter this path — approve.ts manages
+  their tasks, sometimes on an adaptive cadence a flat reschedule would break.
+  Backlog was cleared once via `POST /api/admin/repair-manual-reply-overdue`
+  (`?dry=1` to preview). Anything new that schedules or unschedules a chase
+  must decide against the TASK, not the clock.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
 - **A notification that reached nobody is not a notification.** The broker's own

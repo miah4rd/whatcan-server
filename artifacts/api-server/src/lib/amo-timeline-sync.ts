@@ -22,6 +22,7 @@ import { getLastMessengerFieldId, updateLastMessengerField } from "./amo-messeng
 import { scheduleLiveReply } from "./live-reply-debounce.js";
 import { shouldSuppressPush } from "./stage-routing";
 import { followupClockAfterReply } from "./rental-followup";
+import { reconcileTasksAfterManualReply } from "./manual-reply-followup";
 import { enforceBudgetFilter } from "./budget-filter";
 import { recordCommitment } from "./commitment-scheduler";
 import { getAccessToken } from "./amo-client";
@@ -332,6 +333,29 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
       // never gets a reminder.
       if (newest.text) {
         recordCommitment(leadId, row.responsibleUser, newest.text).catch(() => {});
+      }
+
+      // A MANUAL reply (the broker's own hand — phone WhatsApp or amoCRM chat,
+      // never our Salesbot) must also move the amoCRM TASK, because
+      // syncTaskSchedule reads open tasks back into nextFollowupAt every 5
+      // minutes: resetting only the clock above while an overdue task stayed
+      // open re-pinned the lead "Overdue Nd" within minutes, forever (Amelia,
+      // 2026-08-18). Bot sends stay out: approve.ts already closed and
+      // re-created the task, sometimes on an adaptive cadence this would break.
+      if (newest.senderType === "broker") {
+        try {
+          const r = await reconcileTasksAfterManualReply({
+            leadId,
+            sentAt: newest.sentAt,
+            pipeline: row.pipeline,
+            leadStage: row.leadStage,
+            responsibleUser: row.responsibleUser,
+            mode: "live",
+          });
+          logger.info({ leadId, action: r.action }, "timeline: manual broker reply — amoCRM task reconciled");
+        } catch (err) {
+          logger.warn({ err, leadId }, "timeline: manual-reply task reconcile failed");
+        }
       }
 
       logger.info(

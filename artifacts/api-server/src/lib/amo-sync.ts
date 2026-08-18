@@ -597,6 +597,14 @@ type AmoEvent = {
  *   1. Mark the lead's lastMessageFrom as "us"
  *   2. Clear any pending LIVE suggestions
  *   3. Schedule the next follow-up if none is queued
+ *
+ * KNOWN DEAD IN PRACTICE (2026-08-18): this account's v4 events API has
+ * returned ZERO events for these filters since at least 2026-07-24 (the whole
+ * PM2 log: 1,744 incoming_chat_message detections, 0 outgoing — while the bot
+ * itself sent messages daily). Manual broker replies are actually detected by
+ * the timeline sweep (amo-timeline-sync.ts → startFollowupClockForOutgoing →
+ * reconcileTasksAfterManualReply). Kept because it is harmless and would work
+ * again if amoCRM starts emitting the events; do not rely on it as a detector.
  */
 export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<number> {
   const token = await getAccessToken();

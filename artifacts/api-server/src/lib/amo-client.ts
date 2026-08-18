@@ -332,9 +332,9 @@ export type AmoTask = {
 };
 
 /** Get all open (incomplete) tasks for a single lead. */
-export async function getOpenAmoTasks(leadId: string): Promise<Array<{ id: number; text: string }>> {
+export async function getOpenAmoTasks(leadId: string): Promise<Array<{ id: number; text: string; complete_till?: number }>> {
   const data = await amoFetch<{
-    _embedded?: { tasks?: Array<{ id: number; text: string }> };
+    _embedded?: { tasks?: Array<{ id: number; text: string; complete_till?: number }> };
   }>(`/api/v4/tasks?filter[entity_id]=${leadId}&filter[entity_type]=leads&filter[is_completed]=0&limit=50`);
   return data?._embedded?.tasks ?? [];
 }
@@ -360,9 +360,17 @@ export async function getAllOpenLeadTasksPaginated(): Promise<AmoTask[]> {
   return all;
 }
 
-/** Close all open tasks for a lead in amoCRM. Returns count of closed tasks. */
-export async function closeAmoTasksForLead(leadId: string): Promise<number> {
-  const tasks = await getOpenAmoTasks(leadId);
+/**
+ * Close open tasks for a lead in amoCRM. Returns count of closed tasks.
+ * With onlyDueBefore, closes just the tasks already due by that moment —
+ * a future task the broker set deliberately survives.
+ */
+export async function closeAmoTasksForLead(leadId: string, opts?: { onlyDueBefore?: Date }): Promise<number> {
+  let tasks = await getOpenAmoTasks(leadId);
+  if (opts?.onlyDueBefore) {
+    const cutoff = Math.floor(opts.onlyDueBefore.getTime() / 1000);
+    tasks = tasks.filter((t) => (t.complete_till ?? 0) <= cutoff);
+  }
   if (tasks.length === 0) return 0;
   const payload = tasks.map((t) => ({ id: t.id, is_completed: true, result: { text: "Закрыто автоматически" } }));
   await amoPatch<unknown>(`/api/v4/tasks`, payload);
