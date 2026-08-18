@@ -236,7 +236,10 @@ router.post("/admin/repair-manual-reply-overdue", async (req, res) => {
       .from(leadsSyncTable)
       .where(
         and(
-          eq(leadsSyncTable.lastMessageFrom, "us"),
+          // Deliberately NOT filtered on lastMessageFrom: the pinned state has
+          // been seen with that flag stuck on 'lead' while our own message was
+          // provably newer (Anna / 23195927) — the signature that matters is
+          // "our last reply postdates a clock still sitting in the past".
           sql`${leadsSyncTable.botExcluded} IS NOT TRUE`,
           isNotNull(leadsSyncTable.nextFollowupAt),
           lt(leadsSyncTable.nextFollowupAt, now),
@@ -277,6 +280,19 @@ router.post("/admin/repair-manual-reply-overdue", async (req, res) => {
             .set({ nextFollowupAt: r.due, updatedAt: new Date() })
             .where(eq(leadsSyncTable.leadId, c.leadId));
         }
+        // lastMessageFrom stuck on 'lead' while OUR message is provably newer
+        // makes the report bill the broker for a client they already answered.
+        // Fix it only from hard evidence — both timestamps in the same row.
+        await db
+          .update(leadsSyncTable)
+          .set({ lastMessageFrom: "us" })
+          .where(
+            and(
+              eq(leadsSyncTable.leadId, c.leadId),
+              eq(leadsSyncTable.lastMessageFrom, "lead"),
+              sql`${leadsSyncTable.lastOurMessageAt} > ${leadsSyncTable.lastMessageAt}`,
+            ),
+          );
         results.push({ leadId: c.leadId, action: r.action, due: r.due });
       } catch (err) {
         logger.error({ err, leadId: c.leadId }, "repair-manual-reply-overdue: lead failed");
