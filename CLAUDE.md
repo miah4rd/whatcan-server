@@ -154,9 +154,21 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   desynced, but the real fault was the exclusion state itself, wrong before
   either ran. Now a lead-mentioned ID is subtracted only when it does NOT also
   appear in what WE sent (`alreadySentPropertyIds`'s new `ourSentText` param).
-- **A lead who arrives on a specific listing anchors the shortlist**: that listing
-  plus comparable alternatives. The anchor is read ONLY from what the LEAD wrote —
-  reading the whole conversation fed our own sent links back as "the answer".
+- **A lead who arrives on a specific listing gets an answer about THAT listing.**
+  The anchor is read ONLY from what the LEAD wrote — reading the whole
+  conversation fed our own sent links back as "the answer". It used to return
+  the anchor PLUS "comparable alternatives", and on an ad lead that reads as not
+  listening: "Hi! I saw your ad for R-YUD-038 — 3BR near Seseh Beach, Rp 79.2
+  million/month" came back with three options — the villa asked about, a 2BR at
+  Rp 28.6M and a 3BR in Balangan. ±1 bedroom is allowed, the ad template arrived
+  with the budget line still blank, so with nothing to filter on the rest of the
+  order fell to whatever ranks well (804 views won) — a different size at the
+  opposite end of the island. Now the anchor is returned ALONE unless we must
+  move them off it: over a stated budget (the DOUBLE CHECK) or not offerable.
+  This is the deliberate exception to "always 2-3 listings, never one".
+  The text is written concurrently with the matching, so the writer is told
+  separately that the client came in on one villa — otherwise it still opens
+  "Here are a few options for you:" over a single link.
 - **Rentals are priced in rupiah, and the catalog says so** — `monthly_price_idr` /
   `yearly_price_idr`. The code originally selected only the `*_usd` columns, so the
   bot quoted dollars at clients budgeting in juta and counted rupiah-priced villas
