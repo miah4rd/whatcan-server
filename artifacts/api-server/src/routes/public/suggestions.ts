@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { db, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable, brokerSettingsTable } from "@workspace/db";
 import { desc, inArray, eq, and, sql } from "drizzle-orm";
+import { cleanLeadName } from "../../lib/lead-display-name";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
 import { computePushPriority, computeNextFollowupDays, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
@@ -176,9 +177,7 @@ router.get("/suggestions", async (req, res) => {
             (m) => m.from === "lead" && m.senderName && m.senderName.trim().length > 1,
           );
           // Strip AmoCRM sender suffix: "Name (клиент - source)" → "Name"
-          leadName = leadMsg?.senderName
-            ? (leadMsg.senderName.replace(/\s*\([^)]*\)\s*$/, "").trim() || leadMsg.senderName)
-            : null;
+          leadName = cleanLeadName(leadMsg?.senderName);
           recentMessages = dialog.messages.slice(-8).map((m) => ({
             from: m.from,
             senderName: m.senderName,
