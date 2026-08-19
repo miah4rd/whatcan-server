@@ -851,12 +851,25 @@ const PAGE_HTML = `<!doctype html>
     for (var i = 0; i < kws.length; i++) { if (t.indexOf(kws[i]) !== -1) return true; }
     return false;
   }
-  async function fetchStageOptions() {
+  // Stage ids are unique PER FUNNEL even where the names match, so the picker
+  // has to be told which funnel the open lead belongs to. Asking without one
+  // returned Unicorn ids for every pipeline: on a Rental lead the broker picked
+  // a stage, our DB recorded the advance, and amoCRM never moved the card.
+  var STAGE_CACHE = {};
+  var STAGE_PIPELINE = "";
+  async function fetchStageOptions(pipeline) {
+    var key = String(pipeline || "").trim();
+    if (STAGE_CACHE[key]) { PIPELINE_STAGES = STAGE_CACHE[key]; STAGE_PIPELINE = key; return; }
     try {
-      var res = await fetch(API + "/stage-options", { cache: "no-cache" });
+      var url = API + "/stage-options" + (key ? "?pipeline=" + encodeURIComponent(key) : "");
+      var res = await fetch(url, { cache: "no-cache" });
       if (!res.ok) return;
       var json = await res.json();
-      if (Array.isArray(json.stages) && json.stages.length > 0) PIPELINE_STAGES = json.stages;
+      if (Array.isArray(json.stages) && json.stages.length > 0) {
+        STAGE_CACHE[key] = json.stages;
+        PIPELINE_STAGES = json.stages;
+        STAGE_PIPELINE = key;
+      }
     } catch (e) { /* keep built-in defaults */ }
   }
   async function fetchPipelineOptions() {

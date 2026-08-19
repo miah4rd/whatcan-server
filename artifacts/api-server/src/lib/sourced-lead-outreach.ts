@@ -25,6 +25,7 @@ import { amoFetch } from "./amo-client";
 import { decodeAmoEntities } from "./amo-text";
 import { describePropertiesByIds } from "./property-catalog";
 import { enforceBudgetFilter } from "./budget-filter";
+import { sendAdLeadWelcome } from "./ad-lead-autoreply";
 
 type AmoNote = { note_type?: string; params?: { text?: string } };
 
@@ -194,10 +195,25 @@ export async function processSourcedLeadOutreach(): Promise<number> {
       // The person, not the lead title — for ad leads those are different things.
       const leadName = (await fetchContactName(lead.leadId)) || (await fetchLeadName(lead.leadId));
       const at = lead.amoCreatedAt ?? new Date();
-      // Only ever state what is actually known: which listing the ad was for.
+      // Only ever state what is actually known: which listing the ad was for,
+      // plus whatever the person themselves answered in the Meta lead form.
       // Never invent requirements the person has not given.
+      //
+      // The form answers used to be dropped on the floor here: this was a
+      // ternary, so the moment a listing code was found in the lead name the
+      // enquiry became the bare link and nothing else. The answers were still
+      // written to the card, but nothing in the generation path reads
+      // leadNotes — so the bot answered a qualified lead as if they had said
+      // only "I like this villa". That is the whole point of the qualification
+      // campaign, and it reached nothing. Both halves go in: the villa they
+      // clicked is a signal, their own words are the request, and the existing
+      // rule that the client's own words override an inherited anchor then
+      // does the rest.
+      const formAnswers = note && looksLikeClientRequest(note) ? note : "";
       const enquiry = adListing
-        ? `Hi! I saw this villa and I'm interested: ${adListing.url}`
+        ? (formAnswers
+            ? `Hi! I saw this villa and I'm interested: ${adListing.url}. ${formAnswers}`
+            : `Hi! I saw this villa and I'm interested: ${adListing.url}`)
         : note;
       const content = formatAsLeadMessage(at, leadName, enquiry);
 
@@ -215,6 +231,20 @@ export async function processSourcedLeadOutreach(): Promise<number> {
         .where(eq(leadsSyncTable.leadId, lead.leadId));
 
       seeded++;
+
+      // The paid lead is on their phone right now. Answer immediately, with no
+      // broker in the loop — see lib/ad-lead-autoreply.ts for why this one
+      // message is allowed to send itself and what refuses it.
+      if (adListing) {
+        await sendAdLeadWelcome({
+          leadId: lead.leadId,
+          responsibleUser: lead.responsibleUser,
+          listingId: adListing.id,
+          clientName: leadName,
+          content,
+        }).catch((err) => logger.error({ err, leadId: lead.leadId }, "ad welcome threw"));
+      }
+
       logger.info(
         { leadId: lead.leadId, leadName, stage: lead.leadStage, adListing: adListing?.id ?? null },
         adListing
