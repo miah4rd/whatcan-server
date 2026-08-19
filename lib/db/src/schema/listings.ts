@@ -38,6 +38,8 @@ export const listingSubmissionsTable = pgTable("listing_submissions", {
   features: jsonb("features").$type<string[]>().default([]),
   images: jsonb("images").$type<string[]>().default([]),
   videoUrl: text("video_url"),
+  /** ISO date the rental is free from; null = free now. Written to property_availability on publish. */
+  availableFrom: text("available_from"),
   lat: doublePrecision("lat"),
   lng: doublePrecision("lng"),
 
