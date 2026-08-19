@@ -104,7 +104,8 @@ export async function pushToSupabase(
  * smaller problem than an error thrown at a broker who has done nothing wrong.
  */
 async function writeAvailability(propertyId: string, availableFrom: string | null): Promise<void> {
-  if (!propertyId || !availableFrom) return;
+  // "now" is a real answer meaning free immediately — no period row needed.
+  if (!propertyId || !availableFrom || availableFrom === "now") return;
   const SUPABASE_URL = process.env["SUPABASE_URL"] ?? "";
   const SERVICE_KEY = process.env["SUPABASE_SERVICE_ROLE_KEY"] ?? "";
   if (!SUPABASE_URL || !SERVICE_KEY) return;

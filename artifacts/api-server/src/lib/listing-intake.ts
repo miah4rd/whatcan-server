@@ -43,7 +43,11 @@ export type ListingDraft = {
   features: string[];
   videoUrl: string | null;
   /**
-   * ISO date (YYYY-MM-DD) the villa is free from, null when it is free now.
+   * ISO date (YYYY-MM-DD) the villa is free from, or "now" when the broker has
+   * said it is free immediately. NULL means the question has not been answered
+   * yet — the two must stay distinguishable or "free now" and "nobody asked"
+   * look identical, which is how the site ended up saying "Available now" for
+   * everything.
    * Rentals only. Without it every listing added here showed "Available now"
    * on the site forever — we read property_availability but never wrote it,
    * so a villa let until next year looked free (owner flagged it 2026-08-19).
@@ -144,7 +148,7 @@ function buildSystemPrompt(surface: IntakeSurface = {}): string {
     "A broker gives you raw material about ONE property — a message from the owner, a price list, photos, notes — and your job is to turn it into a catalog listing and to ask about whatever is genuinely missing.",
     "",
     "HOW TO BEHAVE",
-    "- Answer in the SAME language the broker writes to you in (they mostly write Russian).",
+    "- Answer in the SAME language the broker just wrote to you in — English message, English answer; Russian message, Russian answer. Look at THEIR latest message, never at these instructions, and never default to one language.",
     "- Be brief. One or two sentences, then the specific question that unblocks publishing.",
     "- Ask about at most two missing things at a time, most important first.",
     "- The broker's latest message always wins over anything inferred earlier, including from photos.",
@@ -173,7 +177,7 @@ function buildSystemPrompt(surface: IntakeSurface = {}): string {
     "- title is a short English name a client will see, e.g. '3BR Modern Villa in Pererenan'. No property codes, no agency name, no ALL CAPS.",
     "- description is the copy shown on the website: English, 2-4 sentences, factual, warm, no emoji, no phone numbers, no URLs, no invented rental yields or demand claims.",
     "- videoUrl only if the broker actually gave a video link.",
-    "- availableFrom (RENTALS ONLY): the date the villa is free from, as YYYY-MM-DD. If the broker says it is free now / immediately, use null. If they name a month without a day (\"free from September\"), use the 1st. ALWAYS ASK for it when listingType is rent and it has not been given — a rental with no date shows on the website as \"Available now\", which is wrong the moment the villa is let.",
+    "- availableFrom (RENTALS ONLY): the date the villa is free from, as YYYY-MM-DD. If the broker says it is free now / immediately, use the exact string \"now\" — never null. Null means you have not asked yet. If they name a month without a day (\"free from September\"), use the 1st. ALWAYS ASK for it when listingType is rent and it has not been given — a rental with no date shows on the website as \"Available now\", which is wrong the moment the villa is let.",
     "",
     "WHEN IS IT READY",
     "Set ready = true only when ALL of these are filled: title, area, listingType, type, bedrooms, description, and at least one price field appropriate to the listing type. For a RENTAL you must also have asked about availability — availableFrom is either a date or a deliberate null because the broker said it is free now.",
@@ -197,6 +201,7 @@ function toIntOrNull(v: unknown): number | null {
 /** Accepts only a real YYYY-MM-DD — anything else is "unknown", never a bad row. */
 function toIsoDateOrNull(v: unknown): string | null {
   const s = String(v ?? "").trim();
+  if (s.toLowerCase() === "now") return "now";
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
   return Number.isNaN(Date.parse(s + "T00:00:00Z")) ? null : s;
 }
@@ -270,6 +275,11 @@ export function missingFields(d: ListingDraft): string[] {
   if (d.bedrooms === null && d.type !== "land") out.push("bedrooms");
   if (!d.description) out.push("description");
   if (!hasUsablePrice(d)) out.push("price");
+  // Rentals only, and "now" counts as answered. Without this the assistant asks
+  // once, the broker skips it, the listing publishes, and the website says
+  // "Available now" for a villa that is let — the exact complaint this field
+  // exists to fix.
+  if (d.listingType === "rent" && !d.availableFrom) out.push("availableFrom");
   return out;
 }
 
