@@ -1266,6 +1266,32 @@ export async function matchProperties(opts: {
         return byArea !== 0 ? byArea : rankForShortlist(a, b);
       });
 
+    // A client who names ONE villa gets an answer about THAT villa.
+    //
+    // This branch used to always append "comparable alternatives", on the logic
+    // that everyone deserves a real choice. On an ad lead that reads as not
+    // listening: "Hi! I saw your ad for R-YUD-038 — 3BR near Seseh Beach, Rp
+    // 79.2M/month" came back with the villa they asked about plus a 2BR at
+    // Rp 28.6M and a 3BR in Balangan — a different size and the opposite end of
+    // the island — because ±1 bedroom is allowed and, with no stated budget, the
+    // rest of the order falls to whatever ranks well (804 views won). The owner's
+    // words: "client applied for one specific option, why suggest three?"
+    // (2026-08-19, lead 23279935).
+    //
+    // Alternatives are for when we must move them OFF that villa — it costs more
+    // than the budget they stated (the DOUBLE CHECK above), or it is not
+    // offerable. Otherwise: the villa they asked about, and the reply qualifies
+    // them instead of guessing. This is the deliberate exception to
+    // "always 2-3 listings, never one".
+    const anchorAlone = !anchorTooExpensive && offerableNow(anchor);
+    if (anchorAlone) {
+      logger.info(
+        { anchor: anchor.id },
+        "matchProperties: the lead named one villa — answering about that villa alone",
+      );
+      return [toPick(anchor)];
+    }
+
     const ordered = anchorTooExpensive ? [...similar, ...anchors] : [...anchors, ...similar];
     const shortlist = dedupeByTitle(ordered).slice(0, limit);
     logger.info(

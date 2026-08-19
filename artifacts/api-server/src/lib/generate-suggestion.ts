@@ -625,6 +625,35 @@ export async function buildPromptAdditions(opts: {
     `\n\nNO URLS IN THE TEXT: every attached property link is delivered as its own separate WhatsApp message right after this one — never write property or catalog URLs inside the message body itself.` +
     `\n\nTHE LINKS GO OUT WITH THIS MESSAGE. When a shortlist is being sent, two or three property links are attached to this exact message automatically — they are already below your text. So present them ("here are three that fit"), never ask permission to send them and never promise them for later. The one exception is when the client has already settled on a specific villa: then no options are sent and you move to the viewing instead.`;
 
+  // A client who arrives naming ONE villa ("I saw your ad for R-YUD-038") is not
+  // asking for a shortlist. The matcher now attaches only that villa, but the
+  // text is written CONCURRENTLY with the matching, so without this the model
+  // still opens with "Here are a few options for you:" and lists three — which
+  // is exactly what the client got (lead 23279935, 2026-08-19). Tell the writer
+  // what the client actually came in on.
+  const anchorIds = Array.from(
+    new Set(
+      recentLeadMessages
+        .flatMap((m) => Array.from(String(m).matchAll(/\/property\/([A-Za-z0-9-]+)|\b(R-[A-Z]+-\d+)\b/gi)))
+        .map((x) => (x[1] ?? x[2] ?? "").toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+  let anchorLine = "";
+  if (anchorIds.length > 0) {
+    try {
+      const known = await describePropertiesByIds(anchorIds);
+      const hit = anchorIds.map((id) => known.get(id)).find(Boolean);
+      if (hit) {
+        anchorLine =
+          `\n\nTHIS CLIENT CAME IN ABOUT ONE SPECIFIC VILLA: "${hit.title}". That is the villa attached to this message — the only one.` +
+          ` Answer about IT: confirm it is available and say what it costs. Do NOT present a list, do NOT open with "here are a few options",` +
+          ` and do NOT offer alternatives they did not ask for — they already chose what they want to see.` +
+          ` Then ask only for what is genuinely missing to move forward (budget if they left it blank, move-in date, how long they need it).`;
+      }
+    } catch { /* no anchor line is better than a failed draft */ }
+  }
+
   const stockLine = stock
     ? stock.matching > 0
       ? `\n\nINVENTORY CHECK (true right now): ${stock.matching} listing(s) match what they asked for${stock.areas.length ? ` in ${stock.areas.join("/")}` : ""}.`
@@ -677,7 +706,7 @@ export async function buildPromptAdditions(opts: {
     }),
   );
 
-  return buildLeadNameRule(opts.dialogMessages) + attachedRule + stockLine + currencyRule + adRule + identityRule + learned;
+  return buildLeadNameRule(opts.dialogMessages) + attachedRule + anchorLine + stockLine + currencyRule + adRule + identityRule + learned;
 }
 
 export async function generateSuggestion(opts: {
