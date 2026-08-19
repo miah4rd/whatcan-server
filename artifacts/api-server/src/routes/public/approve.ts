@@ -5,11 +5,14 @@ import { eq, and } from "drizzle-orm";
 import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-followup";
 import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
-import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost, countActiveWhatsappChats } from "../../lib/amo-client.js";
-import { stripEmojiForDelivery } from "../../lib/message-delivery.js";
+import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
 import { classifyStage } from "../../lib/stage-classifier";
-import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
-import { resolveOutboundSource, fillMessengerFromResponsibleIfNoMessages } from "../../lib/amo-messenger-field";
+import {
+  resolveSendChannel,
+  deliverText,
+  sendAttachmentLinks,
+  LINK_PROGRESS,
+} from "../../lib/outbound-send.js";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL, followupClockAfterReply } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
 import { recordCommitment } from "../../lib/commitment-scheduler.js";
@@ -30,77 +33,6 @@ const LOSS_REASON_NOT_RESPONDING = 23931458;
 const FINAL_FOLLOWUP_LEVEL = 3;
 
 const router = Router();
-
-const COMPANION_FIELD_ID = 965907;
-const COMPANION_ROBERT_BOT_ID = 22127;
-
-/**
- * How far a send got, stamped into the delivery record's webhookResponse.
- * "…| links 2/3" means the text and two of three links reached the client.
- */
-const LINK_PROGRESS = /\|\s*links (\d+)\/(\d+)/;
-
-/**
- * Deliver the property links, each as its OWN WhatsApp message — glued into one
- * message, WhatsApp only unfurls a rich preview banner for the first link.
- *
- * The text and every link share ONE amoCRM custom field: write, trigger, then
- * overwrite with the next value and trigger again. The gap before the FIRST
- * link is the riskiest one — Salesbot has to actually read and dispatch the text
- * message before this loop overwrites the field with a URL, and a lead amoCRM
- * hasn't processed before (a fresh contact especially) appears to take longer
- * than a routine reply. A flat 1200ms was cutting that close enough that the
- * text sometimes never went out — only the link did, because by the time
- * Salesbot got around to reading the field, it already held the URL.
- *
- * Every link that lands is stamped into the delivery record as "links k/n".
- * That marker is the ONLY thing that lets an interrupted send resume from where
- * it stopped instead of replaying the whole message at the client.
- *
- * @param startIndex first link to send — > 0 when resuming an interrupted send.
- * @returns how many links have now been delivered in total.
- */
-async function sendAttachmentLinks(
-  leadId: string,
-  attachments: Array<{ url?: string | null }>,
-  startIndex: number,
-  sentMessageId: string | null,
-  hookBody: string,
-  log: { warn: (obj: object, msg: string) => void },
-): Promise<number> {
-  const total = attachments.length;
-  let delivered = startIndex;
-  for (let i = startIndex; i < total; i++) {
-    const url = attachments[i]?.url;
-    // Still counts as "done" — the progress marker is an index into this list,
-    // so a skipped entry must advance it or a resume would replay the wrong link.
-    if (!url) {
-      delivered = i + 1;
-      continue;
-    }
-    await new Promise((r) => setTimeout(r, i === 0 ? 3000 : 1200));
-    try {
-      const linkField = await updateLeadCustomField(leadId, COMPANION_FIELD_ID, url);
-      // The lead vanished between the text and this link (deleted or merged in
-      // amoCRM mid-send) — the remaining links can only fail the same way.
-      if (linkField.leadMissing) break;
-      if (linkField.ok) {
-        await triggerSalesbot(leadId, COMPANION_ROBERT_BOT_ID);
-        delivered = i + 1;
-        if (sentMessageId) {
-          await db
-            .update(sentMessagesTable)
-            .set({ webhookResponse: `${hookBody} | links ${delivered}/${total}` })
-            .where(eq(sentMessagesTable.id, sentMessageId as any))
-            .catch(() => {});
-        }
-      }
-    } catch (e) {
-      log.warn({ leadId, url, err: e }, "attachment send failed (non-fatal)");
-    }
-  }
-  return delivered;
-}
 
 /**
  * Close any open CRM tasks for this lead (in DB + amoCRM directly via API),
@@ -545,73 +477,21 @@ router.post("/approve", async (req, res) => {
       .limit(1);
     currentResponsibleUser = currentOwnerRow?.responsibleUser ?? sug.responsibleUser;
 
-    // ── No-dialog guard: fill field 967477 from the responsible user ─────────
-    // If the lead has NO messages yet (fresh deal / sourced-lead with only a
-    // seeded request note), the timeline sync has nothing to derive the channel
-    // from, so point field 967477 at the responsible user's OWN line BEFORE
-    // resolveOutboundSource resolves it. If the lead DOES have a dialog, this is
-    // a no-op and the existing logic keeps determining the channel from it.
-    await fillMessengerFromResponsibleIfNoMessages(sug.leadId, currentResponsibleUser).catch((e) => {
-      req.log.warn({ leadId: sug.leadId, err: e }, "fillMessengerFromResponsible threw during approve");
-    });
-
-    const messengerSource = await resolveOutboundSource(sug.leadId, currentResponsibleUser).catch((e) => {
-      req.log.warn({ leadId: sug.leadId, err: e }, "resolveOutboundSource threw");
-      return null;
-    });
-
-    const botId = COMPANION_ROBERT_BOT_ID;
-
-    if (!messengerSource) {
-      // Hand the suggestion back to the broker — it was claimed above, so
-      // release it or it would sit "approved" while nothing was delivered.
+    // ── May we send at all, and on whose line? ───────────────────────────────
+    // Both refusals hand the suggestion back to the broker: it was claimed
+    // above, so it must be released or it would sit "approved" while nothing
+    // was delivered. See lib/outbound-send.ts for why each guard exists.
+    const channel = await resolveSendChannel(sug.leadId, currentResponsibleUser, req.log);
+    if (!channel.ok) {
       await db
         .update(pendingSuggestionsTable)
         .set({ status: "pending", finalText: null })
         .where(eq(pendingSuggestionsTable.id, sug.id));
-
-      req.log.error(
-        { leadId: sug.leadId },
-        "approve aborted — outbound channel unresolved, refusing to send blind",
-      );
-      res.status(409).json({
-        ok: false,
-        error: "channel_unresolved",
-        message:
-          "Could not resolve the sending channel for this lead — the message was NOT sent. Send it manually from amoCRM (the draft stays in your inbox).",
-      });
+      req.log.error({ leadId: sug.leadId, error: channel.error }, "approve aborted — refusing to send blind");
+      res.status(409).json({ ok: false, error: channel.error, message: channel.message });
       return;
     }
-
-    // ── Duplicate-thread guard ────────────────────────────────────────────────
-    // If a lead has two active WhatsApp chat threads (WAhelp registered the same
-    // number twice — e.g. "+61…" and "61…"), a single Salesbot send fans out to
-    // BOTH and the client gets the message twice. We can't pick one thread from
-    // here (addressing is line-level, not chat-level), so the safe move is to
-    // NOT send blind: release the suggestion and tell the broker to send this
-    // one manually into the main thread. Normal single-thread leads (the vast
-    // majority) are unaffected. Skip the check when the broker is only moving the
-    // stage (skipMessage) — nothing is being sent.
-    if (!skipMessage) {
-      const activeChats = await countActiveWhatsappChats(sug.leadId);
-      if (activeChats >= 2) {
-        await db
-          .update(pendingSuggestionsTable)
-          .set({ status: "pending", finalText: null })
-          .where(eq(pendingSuggestionsTable.id, sug.id));
-        req.log.warn(
-          { leadId: sug.leadId, activeChats },
-          "approve aborted — lead has multiple active WhatsApp threads, refusing to avoid duplicate delivery",
-        );
-        res.status(409).json({
-          ok: false,
-          error: "multiple_chat_threads",
-          message:
-            "This lead has 2 active WhatsApp threads on the same number — auto-sending would deliver the message twice. It was NOT sent. Send it manually from amoCRM into the main thread (the draft stays in your inbox). Cause: a duplicate thread in WAhelp, fixed on the integration side.",
-        });
-        return;
-      }
-    }
+    const messengerSource = channel.source;
 
     // ── Update leads_sync BEFORE sending message ────────────────────────────
     const [prevSyncRow] = await db
@@ -670,13 +550,12 @@ router.post("/approve", async (req, res) => {
         .where(eq(leadsSyncTable.leadId, sug.leadId));
     }
 
-    // ── Send via Salesbot (replaces F5 hook) ──────────────────────────────────
-    // 1. Write message to custom field "companion massage"
-    // 2. Trigger Salesbot "Companion Robert" which reads the field and sends via WhatsApp
-    // Strip emoji first: the Salesbot/WAhelp delivery truncates the message at the
-    // first emoji (astral-plane char), so the client was getting only the greeting.
-    const deliveryText = stripEmojiForDelivery(body.message);
-    const fieldWrite = await updateLeadCustomField(sug.leadId, COMPANION_FIELD_ID, deliveryText);
+    // ── Send via Salesbot ─────────────────────────────────────────────────────
+    const delivery = await deliverText(sug.leadId, body.message, req.log);
+    const deliveryText = delivery.deliveryText;
+    hookStatus = delivery.hookStatus;
+    hookBody = delivery.hookBody;
+    chatSent = delivery.chatSent;
 
     // ── The lead no longer exists in amoCRM ───────────────────────────────────
     // Deleted, or merged into another lead (a merge deletes the source). There
@@ -685,7 +564,7 @@ router.post("/approve", async (req, res) => {
     // 23195549 (2026-08-12) and got "amoCRM refused the send" plus advice to
     // send it manually from a card that does not exist. Drop the ghost the same
     // way amo-sync's own cleanup drops an untracked lead, and say what happened.
-    if (fieldWrite.leadMissing) {
+    if (delivery.leadMissing) {
       req.log.warn({ leadId: sug.leadId }, "approve aborted — lead no longer exists in amoCRM, removing it and its drafts");
       await db.delete(pendingSuggestionsTable).where(eq(pendingSuggestionsTable.leadId, sug.leadId)).catch(() => {});
       await db.delete(leadsSyncTable).where(eq(leadsSyncTable.leadId, sug.leadId)).catch(() => {});
@@ -698,40 +577,25 @@ router.post("/approve", async (req, res) => {
       return;
     }
 
-    try {
-      if (fieldWrite.ok) {
-        const botTriggered = await triggerSalesbot(sug.leadId, botId);
-        chatSent = botTriggered;
-        hookStatus = botTriggered ? 200 : 500;
-        hookBody = botTriggered ? `Salesbot ${botId} triggered` : "Salesbot trigger failed";
-
-        // The broker promised the CLIENT something ("I'll check with the owner
-        // and get back to you"). The lead may stay silent — correctly — while
-        // the ball is with US, so the follow-up-on-silence clock never covers
-        // this case and the promise lived only in the broker's head. A CRM task
-        // in a few hours makes the promise impossible to forget.
-        if (botTriggered) {
-          const OWNER_PROMISE =
-            /(check|confirm|double.?check|ask|уточн|провер|спрошу|узнаю|запрошу)[^.!?\n]{0,50}(owner|собственник|владел)|(owner|собственник|владел)[^.!?\n]{0,40}(get back|come back|confirm|вернусь|отвечу)|вернусь (к вам|к тебе|с ответом)|get back to you (with|once|after)/i;
-          if (OWNER_PROMISE.test(body.message)) {
-            const due = new Date(Date.now() + 4 * 60 * 60 * 1000);
-            void createAmoTask(
-              sug.leadId,
-              "Promised the client an answer from the owner — find out and write back (the client may stay quiet, the ball is with us)",
-              due,
-            ).catch((err) => req.log.warn({ err }, "owner-promise task failed (non-fatal)"));
-            req.log.info({ leadId: sug.leadId }, "owner promise detected — broker task set for +4h");
-          }
-        }
-      } else {
-        hookStatus = 500;
-        hookBody = "Custom field update failed";
+    // The broker promised the CLIENT something ("I'll check with the owner and
+    // get back to you"). The lead may stay silent — correctly — while the ball
+    // is with US, so the follow-up-on-silence clock never covers this case and
+    // the promise lived only in the broker's head. A CRM task in a few hours
+    // makes the promise impossible to forget.
+    if (chatSent) {
+      const OWNER_PROMISE =
+        /(check|confirm|double.?check|ask|уточн|провер|спрошу|узнаю|запрошу)[^.!?\n]{0,50}(owner|собственник|владел)|(owner|собственник|владел)[^.!?\n]{0,40}(get back|come back|confirm|вернусь|отвечу)|вернусь (к вам|к тебе|с ответом)|get back to you (with|once|after)/i;
+      if (OWNER_PROMISE.test(body.message)) {
+        const due = new Date(Date.now() + 4 * 60 * 60 * 1000);
+        void createAmoTask(
+          sug.leadId,
+          "Promised the client an answer from the owner — find out and write back (the client may stay quiet, the ball is with us)",
+          due,
+        ).catch((err) => req.log.warn({ err }, "owner-promise task failed (non-fatal)"));
+        req.log.info({ leadId: sug.leadId }, "owner promise detected — broker task set for +4h");
       }
-    } catch (e) {
-      req.log.error({ err: e }, "Salesbot send error");
-      hookStatus = 500;
-      hookBody = String(e).slice(0, 1000);
     }
+
     req.log.info({ leadId: sug.leadId, messengerSource, hookStatus, chatSent, hookBody }, "Salesbot response");
 
     // ── Record the delivery BEFORE the links go out ───────────────────────────
