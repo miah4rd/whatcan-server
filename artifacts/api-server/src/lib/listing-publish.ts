@@ -118,9 +118,13 @@ async function writeAvailability(propertyId: string, availableFrom: string | nul
         "Content-Type": "application/json",
         Prefer: "return=minimal",
       },
-      // The villa is occupied UNTIL that date: end_date is what
-      // applyAvailability reads back as "free from".
-      body: JSON.stringify([{ property_id: propertyId, status: "booked", start_date: todayIso(), end_date: availableFrom }]),
+      // The WEBSITE's convention, matched exactly on purpose: a busy row whose
+      // end_date is the LAST OCCUPIED day, which its badge renders as
+      // end_date + 1 ("Available from ..."). Writing our own shape instead
+      // ("booked", end_date = first free day) rendered as "Available now" —
+      // the site ignores any status it does not know — and would have been a
+      // day late once it did. Two writers, one convention.
+      body: JSON.stringify([{ property_id: propertyId, status: "occupied", start_date: todayIso(), end_date: dayBefore(availableFrom) }]),
     });
     if (!res.ok) {
       logger.warn({ propertyId, status: res.status, body: (await res.text().catch(() => "")).slice(0, 200) },
@@ -135,6 +139,13 @@ async function writeAvailability(propertyId: string, availableFrom: string | nul
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/** "2026-10-15" (first free day) -> "2026-10-14" (last occupied day). */
+function dayBefore(iso: string): string {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 export function isDuplicateCodeError(error: string): boolean {
