@@ -477,6 +477,26 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   already resolves the contact — anything that sends a first-touch message must
   check the phone before sending, and say so in the log rather than skipping
   silently.
+- **Everything the broker reads is ENGLISH, and the recogniser must stay
+  bilingual.** The brokers work in English, but every task the bot wrote into
+  amoCRM was Russian ("Отправлено (push): …", "Ожидать ответа клиента",
+  "Закрыто автоматически"), and the morning report mixed Russian promise
+  reminders ("уточнить цену у хозяина") into an English page — the owner saw
+  both on one screen (2026-08-19). Task texts, the commitment `promiseText`
+  prompt, and the auto-close result are English now. The trap: `OUR_TASK_TEXT`
+  in manual-reply-followup.ts decides whether a task is OURS, and 212 tasks
+  with the old Russian wording were still open on the day of the change —
+  deleting those patterns would have turned each into "a human's plan" and
+  re-pinned every one of their leads. Keep both languages until no open task
+  uses the old wording. Stored rows were translated once by hand
+  (`lead_commitments.promise_text`).
+- **A lead's display name is cleaned in ONE place** (`cleanLeadName`,
+  lead-display-name.ts). amoCRM appends "(клиент - …)" and the old stripper
+  `/\s*\([^)]*\)\s*$/` could not survive a name that already contains
+  brackets — "刘豪 (Liu Hao) (клиент - 刘豪 (Liu Hao))" reached the morning
+  report verbatim, because `[^)]*` stops at the inner ")". Cut from the suffix
+  marker instead. The report and the inbox card each had their own copy of that
+  regex; that is how they drifted.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
 - **A notification that reached nobody is not a notification.** The broker's own
