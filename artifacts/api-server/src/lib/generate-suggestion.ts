@@ -1,5 +1,6 @@
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL } from "./ai-client";
 import { brokerDisplayName } from "./broker-identity";
+import { cleanLeadName } from "./lead-display-name";
 import { getLeadCardCriteria } from "./lead-card-fields";
 import { correctionsPromptBlock, deriveSituation } from "./broker-corrections";
 import { logger } from "./logger";
@@ -252,14 +253,15 @@ export function buildLeadNameRule(
     (m) => m.from === "lead" && m.senderName && m.senderName.trim().length > 1,
   )?.senderName;
 
-  // "Nathan Craig (клиент - Facebook)" → "Nathan"
-  const cleaned = (raw ?? "").replace(/\s*\([^)]*\)\s*$/, "").trim();
+  // "Nathan Craig (клиент - Facebook)" → "Nathan". Shared cleaner: the local
+  // copy of this regex could not survive a name that itself contains brackets.
+  const cleaned = cleanLeadName(raw) ?? "";
   const first = cleaned.split(/\s+/)[0] ?? "";
   const isPlaceholder = /^(lead|client|клиент|guest|user|wahelp|whatsapp|telegram|instagram)$/i.test(first);
   const name = !first || isPlaceholder ? "" : first;
 
   return name
-    ? `\n\nTHE CLIENT'S NAME IS ${name}. Address them by it naturally — greet them by name, or use it once early in the message. Never open with "Hi there" or any nameless greeting when you have their name.`
+    ? `\n\nTHE CLIENT'S NAME IS ${name}. OPEN THE MESSAGE WITH IT — "Hi ${name}, ..." — every time, whatever else the message has to do. Never open with "Hi there", never open straight into the answer with no greeting at all, and never drop the name because the message is short or urgent.`
     : `\n\nYou do NOT know this client's name. Do not invent one and do not use a placeholder — just open without a name.`;
 }
 
@@ -649,7 +651,8 @@ export async function buildPromptAdditions(opts: {
           `\n\nTHIS CLIENT CAME IN ABOUT ONE SPECIFIC VILLA: "${hit.title}". That is the villa attached to this message — the only one.` +
           ` Answer about IT: confirm it is available and say what it costs. Do NOT present a list, do NOT open with "here are a few options",` +
           ` and do NOT offer alternatives they did not ask for — they already chose what they want to see.` +
-          ` Then ask only for what is genuinely missing to move forward (budget if they left it blank, move-in date, how long they need it).`;
+          ` Then ask only for what is genuinely missing to move forward (budget if they left it blank, move-in date, how long they need it).` +
+          ` This does not change the greeting: still open with their name.`;
       }
     } catch { /* no anchor line is better than a failed draft */ }
   }
