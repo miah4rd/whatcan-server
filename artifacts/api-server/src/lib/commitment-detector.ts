@@ -12,7 +12,7 @@ import { HELPER_MODEL, chatCompletionJSON } from "./ai-client";
 import { logger } from "./logger";
 
 export interface CommitmentCheck {
-  /** Short RU phrase describing what was promised — shown back to the broker
+  /** Short ENGLISH phrase describing what was promised — shown back to the broker
    * in the reminder, so it must be enough to jog memory on its own: "уточнить
    * у хозяина, можно ли с животными", not just "уточнить детали". */
   promiseText: string;
@@ -68,7 +68,7 @@ Do NOT count: sending more listing options, generic closings ("let me know if yo
 
 If the broker named a timeframe ("к вечеру", "завтра", "in an hour", "through 2 weeks"), convert it to hoursUntilDue (a number of hours from now). If no timeframe was named, hoursUntilDue is null.
 
-promiseText: a short RUSSIAN phrase specific enough to jog the broker's memory later — name what info and about what (e.g. "уточнить у хозяина, можно ли с животными" not "уточнить детали").
+promiseText: a short ENGLISH phrase specific enough to jog the broker's memory later — name what info and about what (e.g. "check with the owner whether pets are allowed" not "check the details"). English regardless of the language of the conversation: this is shown to the broker inside an English report, and a Russian line in it reads as a bug.
 
 Respond with JSON: {"isCommitment": boolean, "promiseText": string, "hoursUntilDue": number | null}`,
       messages: [{ role: "user", content: text }],

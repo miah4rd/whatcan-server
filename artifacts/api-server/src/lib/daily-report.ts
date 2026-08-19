@@ -14,6 +14,7 @@
  * boundary that cuts their evening in half.
  */
 import { pool } from "@workspace/db";
+import { cleanLeadName } from "./lead-display-name";
 import { parseDialogContent } from "./dialog-parser";
 
 const BALI = "Asia/Makassar";
@@ -144,7 +145,7 @@ function leadNameFrom(content: string | null): string | null {
       (m) => m.from === "lead" && m.senderName && m.senderName.trim().length > 1,
     );
     if (!msg?.senderName) return null;
-    return msg.senderName.replace(/\s*\([^)]*\)\s*$/, "").trim() || msg.senderName;
+    return cleanLeadName(msg.senderName);
   } catch {
     return null;
   }
