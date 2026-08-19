@@ -221,7 +221,7 @@ export async function sendAdLeadWelcome(opts: {
   const text = welcomeText({
     clientName: opts.clientName,
     brokerName: brokerDisplayName(responsibleUser),
-    listingLabel: listing.label || listing.title,
+    listingLabel: listing.clientLabel || listing.title,
   });
 
   const delivery = await deliverText(leadId, text, log);
