@@ -140,9 +140,9 @@ router.post("/skip", async (req, res) => {
           let amoOk = false;
           try {
             const amoLead = await getAmoLead(leadId);
-            amoOk = await createAmoTask(leadId, "Follow-up отложен (skip) — следующий touch по графику", taskDate, amoLead?.responsible_user_id ?? undefined);
+            amoOk = await createAmoTask(leadId, "Follow-up postponed (skip) — next touch on schedule", taskDate, amoLead?.responsible_user_id ?? undefined);
           } catch { /* non-fatal */ }
-          await db.insert(leadCrmTasksTable).values({ leadId, taskDate, taskText: "Follow-up отложен (skip) — следующий touch", webhookStatus: amoOk ? 200 : 500, webhookResponse: amoOk ? "created via API (skip continue)" : "amo task create failed" });
+          await db.insert(leadCrmTasksTable).values({ leadId, taskDate, taskText: "Follow-up postponed (skip) — next touch", webhookStatus: amoOk ? 200 : 500, webhookResponse: amoOk ? "created via API (skip continue)" : "amo task create failed" });
           req.log.info({ leadId, taskDate }, "skip continue: advanced follow-up schedule");
         } catch (err) {
           req.log.warn({ err, leadId }, "skip continue: reschedule failed (non-fatal)");

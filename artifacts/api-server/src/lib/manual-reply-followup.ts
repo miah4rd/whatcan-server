@@ -46,10 +46,23 @@ export interface ManualReplyReconcileResult {
  */
 const OUR_TASK_TEXT = [
   /^follow-up #\d+ due\./i,
-  /^отправлено \((push|live)/i,
   /^follow up — lead's last message needed no reply/i,
   /^follow-up due —/i,
+  /^follow-up postponed \(skip\)/i,
+  /^sent \((push|live)/i,
+  /^replied to the client by hand in whatsapp/i,
+  /^promised the client an answer from the owner/i,
+  // The Russian originals MUST stay. These texts were English-ified on
+  // 2026-08-19 (the broker reads them in amoCRM every day), but thousands of
+  // tasks written before that are still OPEN in the CRM. Drop a pattern here
+  // and every one of those becomes "a human's plan", so the reply that should
+  // close it never does and the lead pins itself "Overdue" again — the exact
+  // failure this file exists to fix. Retire a pattern only once no open task
+  // uses it any more.
+  /^отправлено \((push|live)/i,
   /^ручной ответ клиенту в whatsapp/i,
+  /^follow-up отложен \(skip\)/i,
+  /^обещали клиенту вернуться с ответом собственника/i,
 ];
 const isOurTask = (text: string | undefined): boolean =>
   OUR_TASK_TEXT.some((re) => re.test((text ?? "").trim()));
@@ -156,7 +169,7 @@ export async function reconcileTasksAfterManualReply(opts: {
   if (due.getTime() < now.getTime()) due = now;
   const ok = await createAmoTask(
     leadId,
-    "Ручной ответ клиенту в WhatsApp — если тишина, follow-up.",
+    "Replied to the client by hand in WhatsApp — follow up if it goes quiet.",
     due,
     (await getAmoLead(leadId))?.responsible_user_id,
   );

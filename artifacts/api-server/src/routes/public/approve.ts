@@ -190,7 +190,7 @@ async function autoCreateCrmTask(
         ageDays,
       });
       taskDate = new Date(approveNow.getTime() + days * 86400000);
-      nextActionNote = `Adaptive follow-up (серия ${streak}, +${days}д) — если нет ответа, следующий touch.`;
+      nextActionNote = `Adaptive follow-up (streak ${streak}, +${days}d) — if there is no reply, send the next touch.`;
       log.info({ leadId, streak, days, stage: pipelineRow?.leadStage, temp: pipelineRow?.profileTemperature }, "adaptive cadence: next task scheduled");
     } else if (kind === "push") {
       const level = Math.max(0, followupLevel ?? 0);
@@ -205,17 +205,17 @@ async function autoCreateCrmTask(
 
       if (nextLevelDate) {
         taskDate = nextLevelDate;
-        nextActionNote = `Follow-up #${level + 1} — если нет ответа, отправить следующий touch.`;
+        nextActionNote = `Follow-up #${level + 1} — if there is no reply, send the next touch.`;
       } else {
         taskDate = new Date(approveNow.getTime() + 7 * 24 * 60 * 60 * 1000);
-        nextActionNote = `Последний follow-up #${level} отправлен. Если нет ответа — принять решение по лиду.`;
+        nextActionNote = `Final follow-up #${level} sent. If there is no reply, decide what to do with this lead.`;
       }
     } else {
       taskDate = new Date(approveNow.getTime() + 24 * 60 * 60 * 1000);
-      nextActionNote = "Ожидать ответа клиента. Если нет ответа в течение 24ч — follow-up.";
+      nextActionNote = "Waiting for the client to reply. If nothing comes within 24h, follow up.";
     }
 
-    const taskText = `Отправлено (${kind}): "${snippet}${ellipsis}". ${nextActionNote}`;
+    const taskText = `Sent (${kind}): "${snippet}${ellipsis}". ${nextActionNote}`;
 
     // 3. Get lead's responsible_user_id from amoCRM for task assignment
     //    Also read current status_id so we can auto-advance the stage.
@@ -717,7 +717,7 @@ router.post("/approve", async (req, res) => {
             const due = new Date(Date.now() + 4 * 60 * 60 * 1000);
             void createAmoTask(
               sug.leadId,
-              "Обещали клиенту вернуться с ответом собственника — узнать и написать (клиент может молчать, мяч у нас)",
+              "Promised the client an answer from the owner — find out and write back (the client may stay quiet, the ball is with us)",
               due,
             ).catch((err) => req.log.warn({ err }, "owner-promise task failed (non-fatal)"));
             req.log.info({ leadId: sug.leadId }, "owner promise detected — broker task set for +4h");
