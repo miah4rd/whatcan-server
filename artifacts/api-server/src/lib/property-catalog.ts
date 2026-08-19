@@ -1643,17 +1643,49 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
  * hand. Their label is just the ID, and handing that to the rewrite step made it
  * ask the broker for the real names instead of writing to the client.
  */
+export type DescribedProperty = {
+  title: string;
+  /** Internal label — carries "(rent)" and the view count. For the MODEL only. */
+  label: string;
+  /**
+   * The same villa described for a HUMAN to read: title, size, area, price.
+   * `label` looks close enough to be reached for by mistake, and it would put
+   * "(rent), 804 views" into a client's WhatsApp — it is written for the
+   * matcher's prompt, not for a person.
+   */
+  clientLabel: string;
+  url: string;
+  priceIdr: number;
+};
+
 export async function describePropertiesByIds(
   ids: string[],
-): Promise<Map<string, { title: string; label: string; url: string; priceIdr: number }>> {
-  const out = new Map<string, { title: string; label: string; url: string; priceIdr: number }>();
+): Promise<Map<string, DescribedProperty>> {
+  const out = new Map<string, DescribedProperty>();
   if (ids.length === 0) return out;
   const wanted = new Set(ids.map((i) => i.toUpperCase()));
   const all = await fetchAllProperties().catch(() => [] as SupabaseProperty[]);
   for (const p of all) {
     if (!wanted.has(p.id.toUpperCase())) continue;
     const pick = toPick(p);
-    out.set(p.id.toUpperCase(), { title: p.title, label: pick.label, url: pick.url, priceIdr: priceOf(p) });
+    // Titles in this catalog usually already say the size and the area
+    // ("3BR Villa for Long-Term Rental in Umalas"), so repeating them reads
+    // like a database row rather than a broker: "3BR Villa … in Umalas — 3BR,
+    // Umalas, Rp 79.2M/month". Only add what the title does not already say.
+    const titleLower = (p.title ?? "").toLowerCase();
+    const bits = [
+      p.bedrooms && !titleLower.includes(`${p.bedrooms}br`) ? `${p.bedrooms}BR` : "",
+      p.area && !titleLower.includes(p.area.toLowerCase()) ? p.area : "",
+      priceLabel(p) ?? "",
+    ].filter(Boolean);
+    const clientLabel = bits.length > 0 ? `${p.title} — ${bits.join(", ")}` : p.title;
+    out.set(p.id.toUpperCase(), {
+      title: p.title,
+      label: pick.label,
+      clientLabel,
+      url: pick.url,
+      priceIdr: priceOf(p),
+    });
   }
   return out;
 }
