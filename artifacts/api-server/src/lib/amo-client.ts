@@ -380,7 +380,7 @@ export async function closeAmoTasksForLead(leadId: string, opts?: { onlyDueBefor
     tasks = tasks.filter((t) => (t.complete_till ?? 0) <= cutoff);
   }
   if (tasks.length === 0) return 0;
-  const payload = tasks.map((t) => ({ id: t.id, is_completed: true, result: { text: "Закрыто автоматически" } }));
+  const payload = tasks.map((t) => ({ id: t.id, is_completed: true, result: { text: "Closed automatically" } }));
   await amoPatch<unknown>(`/api/v4/tasks`, payload);
   logger.info({ leadId, count: tasks.length }, "amoCRM: tasks closed");
   return tasks.length;
