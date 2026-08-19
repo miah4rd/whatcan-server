@@ -638,6 +638,7 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
     const [existing] = await db
       .select({
         lastMessageFrom: leadsSyncTable.lastMessageFrom,
+        lastMessageAt: leadsSyncTable.lastMessageAt,
         lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
         nextFollowupAt: leadsSyncTable.nextFollowupAt,
         followupLevel: leadsSyncTable.followupLevel,
@@ -655,6 +656,24 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
 
     // Skip if we already know about a more recent broker message
     if (knownOurAt && knownOurAt.getTime() >= eventAt.getTime()) continue;
+
+    // THE LEAD MAY HAVE ANSWERED SINCE. This feed looks 30 minutes back, so it
+    // routinely re-reports a message the client has ALREADY replied to. Acting
+    // on it then marks the lead "we wrote last" and deletes the pending LIVE
+    // draft — the reply vanishes from the broker's inbox seconds after the push
+    // announced it. Exactly that happened to Yudi's Nakula chat (23234955):
+    // 07:46 reply detected and drafted, 07:47 push sent, 07:50 this block wiped
+    // it. The bug was invisible for weeks only because the request 400'd and
+    // this code never ran; fixing that filter woke it up (2026-08-19).
+    //
+    // An outgoing event older than the lead's last message is history, not news.
+    if (existing.lastMessageAt && existing.lastMessageAt.getTime() > eventAt.getTime()) {
+      logger.info(
+        { leadId, eventAt, leadRepliedAt: existing.lastMessageAt },
+        "amo-sync: outgoing event predates the lead's reply — leaving the LIVE draft alone",
+      );
+      continue;
+    }
 
     // A broker replying straight from WhatsApp is the most common way a lead
     // goes quiet: quick answer, no task, forgotten. This used to set
