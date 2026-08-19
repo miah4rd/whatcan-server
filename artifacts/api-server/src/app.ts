@@ -71,6 +71,13 @@ startCommitmentScheduler();
 startReportScheduler();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
+// When a rental is free from — asked in the intake chat, written to Supabase's
+// property_availability on publish. Without it every listing added through the
+// assistant showed "Available now" on the site forever.
+pool.query(`ALTER TABLE listing_submissions ADD COLUMN IF NOT EXISTS available_from TEXT`)
+  .then(() => logger.info("startup migration: listing_submissions.available_from ensured"))
+  .catch((err) => logger.error({ err }, "startup migration: available_from failed"));
+
 pool.query(`ALTER TABLE leads_sync ADD COLUMN IF NOT EXISTS pipeline text`)
   .then(() => logger.info("startup migration: pipeline column ensured"))
   .catch((err) => logger.error({ err }, "startup migration failed"));

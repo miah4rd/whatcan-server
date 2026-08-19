@@ -42,6 +42,13 @@ export type ListingDraft = {
   description: string | null;
   features: string[];
   videoUrl: string | null;
+  /**
+   * ISO date (YYYY-MM-DD) the villa is free from, null when it is free now.
+   * Rentals only. Without it every listing added here showed "Available now"
+   * on the site forever — we read property_availability but never wrote it,
+   * so a villa let until next year looked free (owner flagged it 2026-08-19).
+   */
+  availableFrom: string | null;
 };
 
 export const EMPTY_DRAFT: ListingDraft = {
@@ -50,7 +57,7 @@ export const EMPTY_DRAFT: ListingDraft = {
   priceUsd: null, leaseholdPriceUsd: null, monthlyPriceUsd: null, yearlyPriceUsd: null,
   monthlyPriceIdr: null, yearlyPriceIdr: null,
   ownership: null, leaseYears: null, purpose: null, zone: null,
-  description: null, features: [], videoUrl: null,
+  description: null, features: [], videoUrl: null, availableFrom: null,
 };
 
 /** One turn of the intake conversation as the browser stores it. */
@@ -166,15 +173,16 @@ function buildSystemPrompt(surface: IntakeSurface = {}): string {
     "- title is a short English name a client will see, e.g. '3BR Modern Villa in Pererenan'. No property codes, no agency name, no ALL CAPS.",
     "- description is the copy shown on the website: English, 2-4 sentences, factual, warm, no emoji, no phone numbers, no URLs, no invented rental yields or demand claims.",
     "- videoUrl only if the broker actually gave a video link.",
+    "- availableFrom (RENTALS ONLY): the date the villa is free from, as YYYY-MM-DD. If the broker says it is free now / immediately, use null. If they name a month without a day (\"free from September\"), use the 1st. ALWAYS ASK for it when listingType is rent and it has not been given — a rental with no date shows on the website as \"Available now\", which is wrong the moment the villa is let.",
     "",
     "WHEN IS IT READY",
-    "Set ready = true only when ALL of these are filled: title, area, listingType, type, bedrooms, description, and at least one price field appropriate to the listing type.",
+    "Set ready = true only when ALL of these are filled: title, area, listingType, type, bedrooms, description, and at least one price field appropriate to the listing type. For a RENTAL you must also have asked about availability — availableFrom is either a date or a deliberate null because the broker said it is free now.",
     "List anything still missing or uncertain in 'missing', using the field names above.",
     "",
     "OUTPUT",
     "Return JSON with exactly these keys: reply (string), draft (object with every field below), ready (boolean), missing (array of strings).",
     "The draft object must ALWAYS contain every one of these keys, using null for unknown and [] for empty features:",
-    "title, area, type, listingType, bedrooms, bathrooms, landSize, buildSize, priceUsd, leaseholdPriceUsd, monthlyPriceUsd, yearlyPriceUsd, monthlyPriceIdr, yearlyPriceIdr, ownership, leaseYears, purpose, zone, description, features, videoUrl.",
+    "title, area, type, listingType, bedrooms, bathrooms, landSize, buildSize, priceUsd, leaseholdPriceUsd, monthlyPriceUsd, yearlyPriceUsd, monthlyPriceIdr, yearlyPriceIdr, ownership, leaseYears, purpose, zone, description, features, videoUrl, availableFrom.",
     "Never drop a field that already has a value just because this turn did not mention it — carry it through unchanged.",
     ...noCardBlock,
   ].join("\n");
@@ -184,6 +192,13 @@ function toIntOrNull(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;
   const n = typeof v === "number" ? v : parseInt(String(v).replace(/[^\d-]/g, ""), 10);
   return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+/** Accepts only a real YYYY-MM-DD — anything else is "unknown", never a bad row. */
+function toIsoDateOrNull(v: unknown): string | null {
+  const s = String(v ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  return Number.isNaN(Date.parse(s + "T00:00:00Z")) ? null : s;
 }
 
 function toStrOrNull(v: unknown): string | null {
@@ -225,6 +240,7 @@ function normaliseDraft(raw: unknown): ListingDraft {
     description: toStrOrNull(r["description"]),
     features: feats,
     videoUrl: toStrOrNull(r["videoUrl"]),
+    availableFrom: toIsoDateOrNull(r["availableFrom"]),
   };
 }
 

@@ -86,7 +86,54 @@ export async function pushToSupabase(
     const text = await res.text().catch(() => "");
     return { ok: false, error: `Supabase insert failed (${res.status}): ${text.slice(0, 300)}` };
   }
+
+  await writeAvailability(finalPropertyId, s.availableFrom ?? null);
   return { ok: true };
+}
+
+/**
+ * A rental that is not free yet gets a row in property_availability, which is
+ * what the website reads for its "Available from <date>" badge and what
+ * applyAvailability (property-catalog) reads to stop the bot offering a villa
+ * that is let. We only ever READ that table before this — so every listing added
+ * through the assistant said "Available now" on the site forever, whatever the
+ * broker had told us (owner flagged it 2026-08-19).
+ *
+ * A villa free NOW needs no row: "no period" already means free.
+ * Never fatal — the listing is already published, and a missing badge is a much
+ * smaller problem than an error thrown at a broker who has done nothing wrong.
+ */
+async function writeAvailability(propertyId: string, availableFrom: string | null): Promise<void> {
+  if (!propertyId || !availableFrom) return;
+  const SUPABASE_URL = process.env["SUPABASE_URL"] ?? "";
+  const SERVICE_KEY = process.env["SUPABASE_SERVICE_ROLE_KEY"] ?? "";
+  if (!SUPABASE_URL || !SERVICE_KEY) return;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/property_availability`, {
+      method: "POST",
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      // The villa is occupied UNTIL that date: end_date is what
+      // applyAvailability reads back as "free from".
+      body: JSON.stringify([{ property_id: propertyId, status: "booked", start_date: todayIso(), end_date: availableFrom }]),
+    });
+    if (!res.ok) {
+      logger.warn({ propertyId, status: res.status, body: (await res.text().catch(() => "")).slice(0, 200) },
+        "availability row not written — the listing is live but will show as free now");
+    } else {
+      logger.info({ propertyId, availableFrom }, "availability written");
+    }
+  } catch (err) {
+    logger.warn({ err, propertyId }, "availability write threw — listing stays live");
+  }
+}
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 export function isDuplicateCodeError(error: string): boolean {
@@ -166,6 +213,7 @@ export async function publishListingDraft(opts: {
       features: draft.features ?? [],
       images: absoluteUrls(images),
       videoUrl: draft.videoUrl,
+      availableFrom: draft.availableFrom,
       submitterName: broker,
     })
     .returning();
