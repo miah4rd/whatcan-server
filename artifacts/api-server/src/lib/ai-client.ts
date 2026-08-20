@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { logger } from "./logger";
 import { pool } from "@workspace/db";
+import { recordAiFailure, recordAiSuccess } from "./ai-health";
 
 let _client: Anthropic | null = null;
 
@@ -161,7 +162,19 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatComp
     params.temperature = opts.temperature;
   }
 
-  const response = await client.messages.create(params);
+  // Every model call in this server goes through this one line, which makes it
+  // the only place that can answer "is the model answering at all". An outage
+  // used to be invisible: calls threw, callers logged their own error, and
+  // nothing anywhere added them up (2026-08-20 — two hours dark, 38 leads with
+  // no draft, nobody told).
+  let response: Anthropic.Message;
+  try {
+    response = await client.messages.create(params);
+  } catch (err) {
+    recordAiFailure(err);
+    throw err;
+  }
+  recordAiSuccess();
 
   // Nothing recorded what any of this cost, so "the tokens are burning fast"
   // could only ever be answered by guesswork. Every call now says what it spent
