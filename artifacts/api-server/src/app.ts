@@ -12,6 +12,7 @@ import { startAmoSyncScheduler } from "./lib/amo-sync";
 import { startFunnelSnapshotScheduler } from "./lib/funnel-snapshot";
 import { startTimelineSyncScheduler } from "./lib/amo-timeline-sync";
 import { startCommitmentScheduler } from "./lib/commitment-scheduler";
+import { startAiWatchdog } from "./lib/ai-watchdog";
 import { startReportScheduler } from "./lib/report-scheduler";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
@@ -69,6 +70,7 @@ startFunnelSnapshotScheduler();
 startTimelineSyncScheduler();
 startCommitmentScheduler();
 startReportScheduler();
+startAiWatchdog();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
 // When a rental is free from — asked in the intake chat, written to Supabase's

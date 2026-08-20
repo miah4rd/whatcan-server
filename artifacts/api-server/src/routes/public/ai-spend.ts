@@ -10,6 +10,8 @@
  */
 import { Router } from "express";
 import { pool } from "@workspace/db";
+import { aiHealth } from "../../lib/ai-health";
+import { currentIncident } from "../../lib/ai-watchdog";
 
 const router = Router();
 
@@ -62,6 +64,38 @@ router.get("/ai-spend", async (req, res) => {
     req.log.error({ err }, "ai-spend failed");
     res.status(500).json({ error: "spend unavailable" });
   }
+});
+
+/**
+ * Is the model answering right now?
+ *
+ * The alert for an outage is a push, and push reaches whoever happens to have
+ * enabled it — so this is the surface that works when the push did not. It
+ * answers without touching the database, which matters: an outage is exactly
+ * when you do not want the status page to depend on more moving parts.
+ */
+router.options("/ai-health", (_req, res) => res.sendStatus(204));
+
+router.get("/ai-health", (_req, res) => {
+  const health = aiHealth();
+  const incident = currentIncident();
+  res.json({
+    ok: health.ok,
+    outage: health.outage,
+    lastFailureKind: health.lastFailureKind,
+    lastFailureMessage: health.lastFailureMessage,
+    minutesSinceLastSuccess: health.minutesSinceLastSuccess,
+    recentFailures: health.recentFailures,
+    totalSuccesses: health.totalSuccesses,
+    totalFailures: health.totalFailures,
+    incident: incident && {
+      downMinutes: incident.minutes,
+      // False means the alert was sent and no device took it — the outage is
+      // real and nobody has been told.
+      announced: incident.announced,
+      lastDelivered: incident.lastDelivered,
+    },
+  });
 });
 
 export default router;
