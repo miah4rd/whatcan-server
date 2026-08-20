@@ -199,6 +199,30 @@ export async function processSourcedLeadOutreach(): Promise<number> {
   let seeded = 0;
   for (const lead of candidates) {
     try {
+      // Albato creates the card under its OWN amoCRM user (Admin), and amoCRM's
+      // automation moves it to the real broker a few minutes later — 2 minutes
+      // on one lead today, 10 minutes and 15 seconds on the next. Our seeding
+      // runs within 60 seconds, so it regularly sees a lead that belongs to
+      // nobody yet. That is not cosmetic: the automatic welcome is sent on the
+      // RESPONSIBLE USER's own WhatsApp line and signed with their name, so on
+      // lead 23293265 it was refused outright (channel_unresolved) and the
+      // client got nothing — and seeding only ever runs once per lead, so there
+      // was no second chance.
+      //
+      // So: leave the lead alone and let the next minute's pass pick it up.
+      // After 20 minutes seed it anyway — a lead nobody was assigned is still
+      // better worked by a broker than dropped, it just does not get the
+      // automatic first touch.
+      const ownerUnassigned = !lead.responsibleUser || /^admin$/i.test(lead.responsibleUser.trim());
+      const ageMs = Date.now() - (lead.amoCreatedAt?.getTime() ?? Date.now());
+      if (ownerUnassigned && ageMs < 20 * 60 * 1000) {
+        logger.info(
+          { leadId: lead.leadId, ageSec: Math.round(ageMs / 1000) },
+          "sourced-lead: still on Admin, waiting for amoCRM to assign the broker before seeding",
+        );
+        continue;
+      }
+
       // Someone already worked this lead — don't rewrite history under them.
       // Only a live card (pending) or a real send (approved/edited) counts.
       // Matching ANY row also caught `skipped` ones, which is how leads that had
