@@ -102,6 +102,53 @@ function looksLikeClientRequest(note: string): boolean {
 }
 
 /**
+ * CRM housekeeping — true of the CARD, not said by the CLIENT.
+ *
+ * A lead note is written by whoever created the card, and on a manually entered
+ * ad lead that means integration bookkeeping: which Albato form fired, the
+ * form_id, the campaign name, the submission time, the contact's own phone.
+ * None of it is the client speaking, and all of it was landing in the seeded
+ * message — so the broker opened the card and read a paragraph of Russian
+ * plumbing where the client's request should be (Amelia, 2026-08-20: "Can we
+ * have it fully in English please?"), and the model read the same paragraph as
+ * the client's own words.
+ */
+const NOTE_HOUSEKEEPING =
+  /^(форма|form|lead id|подан|submitted|кампания|campaign|имя|name|телефон|phone|whatsapp|важно|important|примечание|note)\s*[:\/]|заведён вручную|заведен вручную|albato|form_id|instant form|ads manager/i;
+
+/** Where the client's actual answers start, in either language. */
+const FORM_ANSWERS_MARKER = /(ответы\s+формы|form\s+answers)\s*:?/i;
+
+/**
+ * Keep only the part of a lead note that the CLIENT is responsible for, in
+ * English, so it can stand as their first message.
+ */
+export function clientFacingNote(note: string): string {
+  const text = (note ?? "").trim();
+  if (!text) return "";
+
+  // The form answers are the request. Everything before that marker is ours.
+  const marker = FORM_ANSWERS_MARKER.exec(text);
+  if (marker) {
+    // The answers block can itself be followed by a note-to-self from whoever
+    // entered the card ("ВАЖНО: Meta отдаёт ответы кодами…"), so it gets the
+    // same line filter rather than being trusted wholesale.
+    const answers = stripHousekeeping(text.slice(marker.index + marker[0].length));
+    if (answers) return `Here is what I filled in on your form: ${answers}`;
+  }
+
+  return stripHousekeeping(text);
+}
+
+function stripHousekeeping(block: string): string {
+  return block
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && !NOTE_HOUSEKEEPING.test(line.trim()))
+    .join("\n")
+    .trim();
+}
+
+/**
  * Render one line in the exact shape amoCRM's `content` uses, so the existing
  * parser reads it as a normal inbound message.
  *
@@ -116,7 +163,9 @@ function formatAsLeadMessage(at: Date, leadName: string, text: string): string {
     `${p(shifted.getUTCDate())}.${p(shifted.getUTCMonth() + 1)}.${shifted.getUTCFullYear()} ` +
     `${p(shifted.getUTCHours())}:${p(shifted.getUTCMinutes())}:${p(shifted.getUTCSeconds())}`;
   const oneLine = text.replace(/\s*\n+\s*/g, " ").trim();
-  return `${stamp} ${leadName} (клиент - Facebook) → ${oneLine}`;
+  // "client", not "клиент": the parser accepts either, and everything a
+  // broker can end up reading has to be English.
+  return `${stamp} ${leadName} (client - Facebook) → ${oneLine}`;
 }
 
 export async function processSourcedLeadOutreach(): Promise<number> {
@@ -209,7 +258,7 @@ export async function processSourcedLeadOutreach(): Promise<number> {
       // clicked is a signal, their own words are the request, and the existing
       // rule that the client's own words override an inherited anchor then
       // does the rest.
-      const formAnswers = note && looksLikeClientRequest(note) ? note : "";
+      const formAnswers = note && looksLikeClientRequest(note) ? clientFacingNote(note) : "";
       const enquiry = adListing
         ? (formAnswers
             ? `Hi! I saw this villa and I'm interested: ${adListing.url}. ${formAnswers}`
