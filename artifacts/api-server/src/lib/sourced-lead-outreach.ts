@@ -120,24 +120,26 @@ const NOTE_HOUSEKEEPING =
 const FORM_ANSWERS_MARKER = /(ответы\s+формы|form\s+answers)\s*:?/i;
 
 /**
- * Keep only the part of a lead note that the CLIENT is responsible for, in
- * English, so it can stand as their first message.
+ * The client's OWN words from an ad lead's card — nothing else.
+ *
+ * On an ad lead the note belongs to us, not to the client: it is written by
+ * whoever created or synced the card and holds Albato bookkeeping, campaign
+ * names, and free-form Russian commentary between colleagues ("Повторный
+ * контакт — ранее от…"). The one part the CLIENT authored is the answers they
+ * typed into the Meta form. So this returns those answers or nothing at all —
+ * a filter that tries to subtract known noise instead will always be one
+ * unexpected sentence behind, and that sentence lands in the broker's card as
+ * if the client had said it.
  */
-export function clientFacingNote(note: string): string {
+export function formAnswersFromNote(note: string): string {
   const text = (note ?? "").trim();
   if (!text) return "";
-
-  // The form answers are the request. Everything before that marker is ours.
   const marker = FORM_ANSWERS_MARKER.exec(text);
-  if (marker) {
-    // The answers block can itself be followed by a note-to-self from whoever
-    // entered the card ("ВАЖНО: Meta отдаёт ответы кодами…"), so it gets the
-    // same line filter rather than being trusted wholesale.
-    const answers = stripHousekeeping(text.slice(marker.index + marker[0].length));
-    if (answers) return `Here is what I filled in on your form: ${answers}`;
-  }
-
-  return stripHousekeeping(text);
+  if (!marker) return "";
+  // The answers block can be followed by a note-to-self from whoever entered
+  // the card ("ВАЖНО: Meta отдаёт ответы кодами…").
+  const answers = stripHousekeeping(text.slice(marker.index + marker[0].length));
+  return answers ? `Here is what I filled in on your form: ${answers}` : "";
 }
 
 function stripHousekeeping(block: string): string {
@@ -258,7 +260,7 @@ export async function processSourcedLeadOutreach(): Promise<number> {
       // clicked is a signal, their own words are the request, and the existing
       // rule that the client's own words override an inherited anchor then
       // does the rest.
-      const formAnswers = note && looksLikeClientRequest(note) ? clientFacingNote(note) : "";
+      const formAnswers = formAnswersFromNote(note);
       const enquiry = adListing
         ? (formAnswers
             ? `Hi! I saw this villa and I'm interested: ${adListing.url}. ${formAnswers}`
