@@ -649,6 +649,22 @@ owner made explicitly — do not change without asking:
   — a tenant moving in writes a lot. Same shape as the Closed-won exception in
   `pending-visibility.ts`; anything else added to `PUSH_SUPPRESSED_RAW` that is
   a live human rather than a dead lead needs that exception too.
+- **A stage id MOVES a lead between funnels — there is no "set the stage but
+  stay put".** Status ids are unique per funnel, so writing one from the wrong
+  funnel relocates the card. Lead 23290763 came in on UNICORN, the owner moved
+  it to Rental by hand, and our row kept UNICORN's `Contact established`
+  (68024554) while the stage NAME and `pipeline` had both moved to Rental —
+  every sync path writes `leadStageId: id ?? undefined`, and in drizzle
+  `undefined` means "keep the old value". The mobile card falls back to the
+  stored id on approve (`stageIdForName(...) || item.lead_stage_id`), so each
+  message the broker sent dragged the card back into sales. `safeStageIdForLead`
+  (stage-classifier.ts) now validates the id against the funnel **amoCRM** says
+  the lead is in — never our own `pipeline` column, which is exactly what lags
+  when a human moves a card — resolves by stage name inside the right funnel,
+  and refuses to move the card when that stage does not exist there. Anything
+  new that calls `updateLeadStatus` goes through it. `routes/admin/bulk-import.ts`
+  still writes stored ids straight through and would relocate every lead whose
+  id is stale: it is a manual admin tool, do not run it before it is converted.
 - A backlog that predates a funnel change is moved once with
   `POST /api/admin/reclassify-stages?pipeline=rental` — it re-reads each open
   conversation and puts the card where it actually is. **Dry by default**
