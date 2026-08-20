@@ -154,6 +154,7 @@ function buildSystemPrompt(surface: IntakeSurface = {}): string {
     "- The broker's latest message always wins over anything inferred earlier, including from photos.",
     "- The field names below are for the JSON only. NEVER put one in the reply — ask for 'площадь застройки', not 'buildSize'. The broker is a person, not an API.",
     "- When the broker corrects a field, change that field and leave the rest exactly as it was.",
+    "- A listing needs at least one PHOTO before it can be published. If none have been attached, ask for them like any other missing field — a villa with no pictures is unusable to a client and the bot cannot send it.",
     "",
     "NEVER INVENT",
     "- Do not invent a price, a size, a lease term, or an ownership type. If it was not stated, leave it null and ask.",
@@ -266,7 +267,15 @@ export function hasUsablePrice(d: ListingDraft): boolean {
  * invisible to the matcher's hard filters — it would sit on the site and never
  * be offered to anybody, which looks exactly like the bot ignoring it.
  */
-export function missingFields(d: ListingDraft): string[] {
+/**
+ * `photoCount` is the number of pictures the listing actually has. A villa with
+ * no photos is unusable to a client and unsendable by the bot — the WhatsApp
+ * card renders the first image — yet this check let one publish straight to the
+ * live site, which is the same hole the broker hit from the admin side
+ * (2026-08-20). It is a separate argument because photos live on the
+ * conversation turns and on the submission row, never on the draft.
+ */
+export function missingFields(d: ListingDraft, photoCount = 0): string[] {
   const out: string[] = [];
   if (!d.title) out.push("title");
   if (!d.area) out.push("area");
@@ -280,6 +289,7 @@ export function missingFields(d: ListingDraft): string[] {
   // "Available now" for a villa that is let — the exact complaint this field
   // exists to fix.
   if (d.listingType === "rent" && !d.availableFrom) out.push("availableFrom");
+  if (photoCount <= 0) out.push("photos");
   return out;
 }
 
@@ -350,7 +360,10 @@ export async function runListingIntakeTurn(
   });
 
   const next = normaliseDraft(raw.draft);
-  const gaps = missingFields(next);
+  // The browser re-sends the whole transcript, so every photo attached so far is
+  // still listed here even though only the newest turn ships its bytes.
+  const photoCount = turns.reduce((n, t) => n + (t.images?.length ?? 0), 0);
+  const gaps = missingFields(next, photoCount);
 
   return {
     reply: toStrOrNull(raw.reply) ?? "Draft updated.",

@@ -183,7 +183,7 @@ export async function publishListingDraft(opts: {
   // The same completeness rule the chat enforces, checked again here: publishing
   // is a plain HTTP endpoint and must not depend on the UI having been honest
   // about `ready`.
-  const gaps = missingFields(draft);
+  const gaps = missingFields(draft, images.length);
   if (gaps.length) {
     return { ok: false, error: "Still missing: " + gaps.join(", "), missing: gaps };
   }
