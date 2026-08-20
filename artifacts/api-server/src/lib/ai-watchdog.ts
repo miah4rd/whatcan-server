@@ -34,8 +34,35 @@ export function currentIncident(): (Incident & { minutes: number }) | null {
   return { ...incident, minutes: Math.round((Date.now() - incident.since) / 60000) };
 }
 
+/**
+ * Who to wake. An empty API balance is the owner's job, not the brokers' — a
+ * rental agent told to "add funds in the Anthropic Console" gets an alarm she
+ * cannot act on, and an alarm you cannot act on is the fastest way to teach
+ * people to ignore alarms. Overridable so it survives a rename.
+ */
+const ALERT_BROKERS = (process.env["AI_ALERT_BROKERS"] ?? "HoS,Admin")
+  .split(",")
+  .map((b) => b.trim().toLowerCase())
+  .filter(Boolean);
+
+async function alertRecipients(): Promise<Set<string>> {
+  const subscribed = await brokersWithPush();
+  const targeted = new Set([...subscribed].filter((b) => ALERT_BROKERS.includes(b)));
+  // If none of the named people are reachable, tell everyone rather than
+  // nobody. A noisy alert beats an outage that stays invisible — which is the
+  // whole failure this module exists for.
+  if (targeted.size === 0 && subscribed.size > 0) {
+    logger.warn(
+      { alertBrokers: ALERT_BROKERS, subscribed: [...subscribed] },
+      "AI watchdog: no configured alert recipient has push — falling back to every subscribed broker",
+    );
+    return subscribed;
+  }
+  return targeted;
+}
+
 async function alertEveryone(title: string, body: string): Promise<number> {
-  const brokers = await brokersWithPush();
+  const brokers = await alertRecipients();
   if (brokers.size === 0) {
     logger.error({ title, body }, "AI watchdog: nobody has a push subscription — alert reached NO ONE");
     return 0;
@@ -88,6 +115,21 @@ export async function checkAiHealth(now = Date.now()): Promise<AiHealth> {
     }
   }
   return health;
+}
+
+/**
+ * Fire the real alert on demand, so the delivery path is proven before an
+ * outage needs it. Deliberately uses the same alertEveryone() the watchdog
+ * uses — a test that takes a different route proves nothing.
+ */
+export async function testAiOutageAlert(): Promise<{ recipients: string[]; delivered: number }> {
+  const recipients = [...(await alertRecipients())];
+  const delivered = await alertEveryone(
+    "Copilot alert test",
+    "This is a test of the outage alarm. If you can read this, you will be told when the bot stops answering.",
+  );
+  logger.info({ recipients, delivered }, "AI watchdog: test alert sent");
+  return { recipients, delivered };
 }
 
 export function startAiWatchdog(intervalMs = CHECK_MS): void {
