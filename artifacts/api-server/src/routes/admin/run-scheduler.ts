@@ -10,6 +10,7 @@ import { refreshLeadProfile } from "../../lib/lead-profile";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { refreshLeadFromTimeline } from "../../lib/amo-timeline-sync";
 import { sendDailyReports } from "../../lib/report-scheduler";
+import { testAiOutageAlert } from "../../lib/ai-watchdog";
 
 const router = Router();
 
@@ -311,6 +312,28 @@ router.post("/admin/repair-manual-reply-overdue", async (req, res) => {
     res.json({ ok: true, dry: false, results });
   } catch (err) {
     logger.error({ err }, "admin: repair-manual-reply-overdue error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/**
+ * POST /admin/test-ai-alert
+ * Sends the outage alert through its real delivery path and reports how many
+ * devices took it. Without this the first time the alarm ever runs is during an
+ * actual outage — and if the push path is broken we would learn nothing, which
+ * is precisely the failure it was built to end.
+ */
+router.post("/admin/test-ai-alert", async (_req, res) => {
+  try {
+    const result = await testAiOutageAlert();
+    res.json({
+      ...result,
+      note: result.delivered > 0
+        ? `Delivered to ${result.delivered} device(s). The alarm works.`
+        : "NOBODY received it. The alarm would be silent during a real outage — check push enrolment.",
+    });
+  } catch (err) {
+    logger.error({ err }, "test-ai-alert failed");
     res.status(500).json({ error: String(err) });
   }
 });
