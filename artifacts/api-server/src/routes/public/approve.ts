@@ -6,7 +6,7 @@ import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "
 import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-followup";
 import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
-import { classifyStage } from "../../lib/stage-classifier";
+import { classifyStage, safeStageIdForLead } from "../../lib/stage-classifier";
 import {
   resolveSendChannel,
   deliverText,
@@ -775,9 +775,31 @@ router.post("/approve", async (req, res) => {
 
     const prevStage = prevSync[0]?.leadStage ?? null;
 
-    const stageId =
+    const requestedStageId =
       (typeof body.stageId === "string" && body.stageId.trim() ? body.stageId.trim() : null) ??
       (autoStage ? String(autoStage.id) : null);
+
+    // A status id belongs to ONE funnel, and writing it moves the lead into that
+    // funnel. So an id that came from somewhere stale — our own stored
+    // lead_stage_id from before a human moved the card, or a classification made
+    // while our pipeline column still said the old funnel — does not mislabel
+    // the card, it relocates it. Lead 23290763 was dragged back from Rental into
+    // the sales funnel on every send exactly this way.
+    // The lead's own funnel is read from amoCRM here, because our pipeline
+    // column is precisely what lags when someone moves a card by hand.
+    const amoStateForStage = await getAmoLead(sug.leadId).catch(() => null);
+    const safeStage = await safeStageIdForLead({
+      pipelineId: amoStateForStage?.pipeline_id ?? null,
+      stageId: requestedStageId,
+      stageName: effectiveNewStage,
+    }).catch(() => ({ id: requestedStageId, corrected: false }));
+    const stageId = safeStage.id;
+    if (safeStage.corrected) {
+      req.log.warn(
+        { leadId: sug.leadId, requestedStageId, appliedStageId: stageId, stage: effectiveNewStage },
+        "stage id corrected to the lead's own funnel before applying",
+      );
+    }
 
     // On a SEND this block runs seconds after the send path set nextFollowupAt —
     // and it used to null it unconditionally, erasing the clock the same request

@@ -156,7 +156,14 @@ export type PipelineStages = {
   selectable: Array<StageDef & { meaning: string }>;
 };
 
-let cache: { at: number; byPipeline: Map<string, PipelineStages> } | null = null;
+let cache: {
+  at: number;
+  byPipeline: Map<string, PipelineStages>;
+  /** EVERY funnel by amoCRM pipeline id — including the ones we never classify.
+   *  Used to answer "does this stage id belong to the funnel this lead is in?",
+   *  which has to be answerable for a lead in any funnel. */
+  byId: Map<number, { key: string; all: StageDef[] }>;
+} | null = null;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 async function loadPipelines(): Promise<Map<string, PipelineStages>> {
@@ -166,13 +173,19 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
     "/api/v4/leads/pipelines?limit=50",
   );
   const byPipeline = new Map<string, PipelineStages>();
+  const byId = new Map<number, { key: string; all: StageDef[] }>();
 
   for (const p of data?._embedded?.pipelines ?? []) {
     const key = p.name.trim().toLowerCase();
-    if (!isConversationalPipeline(key)) continue;
 
     const ordered = [...(p._embedded?.statuses ?? [])].sort((a, b) => a.sort - b.sort);
     const all: StageDef[] = ordered.map((s) => ({ name: s.name, id: s.id }));
+    // Recorded for EVERY funnel, before the conversational filter below: a lead
+    // sitting in a funnel we never classify still must not have a foreign stage
+    // id written to it.
+    byId.set(p.id, { key, all });
+
+    if (!isConversationalPipeline(key)) continue;
 
     const selectable = ordered
       .filter((s) => !isWorkflowStage(s.name, key))
@@ -205,7 +218,7 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
   }
 
   if (byPipeline.size > 0) {
-    cache = { at: Date.now(), byPipeline };
+    cache = { at: Date.now(), byPipeline, byId };
     logger.info(
       { pipelines: [...byPipeline.keys()], stages: [...byPipeline.values()].map((v) => v.selectable.length) },
       "stage-classifier: pipeline map refreshed from amoCRM",
@@ -224,6 +237,66 @@ function findStage(stages: StageDef[], name: string | null | undefined): { def: 
   const wanted = name.trim().toLowerCase();
   const index = stages.findIndex((s) => s.name.trim().toLowerCase() === wanted);
   return index === -1 ? null : { def: stages[index]!, index };
+}
+
+/**
+ * Make a stage id safe to write to amoCRM for THIS lead.
+ *
+ * A status id belongs to exactly one funnel, and writing it MOVES the lead into
+ * that funnel — amoCRM has no notion of "set the stage but stay where you are".
+ * So a stale id is not a cosmetic wrong label, it is a card that silently jumps
+ * funnels on the next send.
+ *
+ * That is what happened to lead 23290763 (2026-08-19): it arrived in UNICORN,
+ * the owner moved it to Rental by hand, and our row kept UNICORN's
+ * "Contact established" (68024554) while the stage NAME and the pipeline had
+ * both moved on to Rental — because every sync path writes
+ * `leadStageId: id ?? undefined`, and in drizzle `undefined` means "leave the
+ * old value". The mobile card then fell back to that stored id on approve
+ * (`stageIdForName(...) || item.lead_stage_id`), so each time the broker sent a
+ * message the card was dragged back into the sales funnel.
+ *
+ * The lead's funnel is read from amoCRM, not from our own row: our `pipeline`
+ * column is exactly the thing that lags when a human moves a card, so trusting
+ * it here would validate the stale id against the stale funnel and let the move
+ * through.
+ *
+ * Returns the id to use, or null when this stage does not exist in the lead's
+ * funnel at all — in which case the caller must NOT move the card.
+ */
+export async function safeStageIdForLead(opts: {
+  pipelineId?: number | null;
+  stageId: string | null;
+  stageName: string | null;
+}): Promise<{ id: string | null; corrected: boolean }> {
+  const requested = opts.stageId?.trim() || null;
+  if (!opts.pipelineId) return { id: requested, corrected: false };
+
+  await loadPipelines();
+  const funnel = cache?.byId.get(opts.pipelineId);
+  // amoCRM unreachable or a funnel we have never seen: leave the caller's own
+  // decision alone rather than blocking a legitimate stage change.
+  if (!funnel) return { id: requested, corrected: false };
+
+  if (requested && funnel.all.some((s) => String(s.id) === requested)) {
+    return { id: requested, corrected: false };
+  }
+
+  const wanted = opts.stageName?.trim().toLowerCase();
+  const byName = wanted ? funnel.all.find((s) => s.name.trim().toLowerCase() === wanted) : undefined;
+  if (byName) {
+    logger.warn(
+      { pipelineId: opts.pipelineId, funnel: funnel.key, requested, resolved: byName.id, stageName: opts.stageName },
+      "stage id belonged to another funnel — resolved by name inside the lead's own funnel",
+    );
+    return { id: String(byName.id), corrected: true };
+  }
+
+  logger.warn(
+    { pipelineId: opts.pipelineId, funnel: funnel.key, requested, stageName: opts.stageName },
+    "stage id belongs to another funnel and the name does not exist here — refusing to move the card",
+  );
+  return { id: null, corrected: true };
 }
 
 /** The live stage map for one pipeline — autopilot needs the funnel's own order. */

@@ -239,8 +239,12 @@ export async function updateLeadStatus(leadId: string, statusId: number): Promis
 }
 
 /** Fetch lead data from amoCRM (includes responsible_user_id). */
-export async function getAmoLead(leadId: string): Promise<{ id: number; responsible_user_id?: number; status_id?: number } | null> {
-  return amoFetch<{ id: number; responsible_user_id?: number; status_id?: number }>(`/api/v4/leads/${leadId}`);
+export async function getAmoLead(
+  leadId: string,
+): Promise<{ id: number; responsible_user_id?: number; status_id?: number; pipeline_id?: number } | null> {
+  return amoFetch<{ id: number; responsible_user_id?: number; status_id?: number; pipeline_id?: number }>(
+    `/api/v4/leads/${leadId}`,
+  );
 }
 
 /**
