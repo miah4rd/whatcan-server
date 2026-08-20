@@ -744,6 +744,44 @@ on per person gets the same three parts: enrol automatically where possible, say
 so loudly where not, and expose coverage — never a switch someone has to
 remember to flip for each broker.
 
+## The bot going silent must be noticed by someone
+
+`lib/ai-health.ts` + `lib/ai-watchdog.ts`, alarm surface `GET /api/public/ai-health`.
+
+On 2026-08-20 the Anthropic credit balance ran out and generation stopped for
+about two hours: 38 leads got no draft. Every call threw, every caller logged
+its own error, and **nothing anywhere added them up** — so a broken bot and a
+quiet morning looked identical, and it was found only because someone read the
+logs by hand. The brokers just saw a slow day.
+
+- **Silence is not a fault.** An outage is failures piling up while nothing
+  succeeds (3+ in 15 min with no success in that window). At 04:00 nobody is
+  writing to us and there is genuinely nothing wrong, so a no-traffic period
+  must never alarm. Equally, failures AFTER a recent success do not alarm — the
+  bot is partly working, and crying wolf is how alarms get ignored.
+- **The alert names the FIX, not the symptom.** An empty balance and a rejected
+  key are different mornings; "AI is down" makes the owner go and work out which
+  one it is. `classifyAiFailure` splits credit / auth / rate_limit / overloaded.
+- **It goes to the owner, not to every broker.** A rental agent told to "add
+  funds in the Anthropic Console" has an alarm she cannot act on. `HoS,Admin`,
+  overridable with `AI_ALERT_BROKERS`; if none of them is reachable it falls
+  back to everyone with push, because noisy beats invisible.
+- **Both halves, same as the commitment reminders:** a delivery that knows
+  whether it landed (`sendPushToBroker` returns a device count; zero is logged
+  as an error) and a surface that works when it didn't. The endpoint reads
+  memory, not the database — an outage is exactly when the status page must not
+  need more moving parts.
+- **`POST /api/admin/test-ai-alert` fires the real alert through the real path**
+  and reports the device count. Without it the alarm's first ever run would be
+  during an outage. Verified 2026-08-20: delivered to 3 devices across hos and
+  admin. Re-run it after any change to push or to the recipient list.
+- State is in memory on purpose: it answers "is it working RIGHT NOW", which a
+  restart cannot make stale. A restart mid-outage re-alerts once — deliberate.
+- Logic is covered by a standalone test (17 checks, including the exact error
+  text Anthropic returned that day). Bundle it with
+  `npx esbuild <file> --bundle --platform=node --format=cjs --packages=external`
+  — the default ESM bundle dies on pino's `require("node:os")`.
+
 ## Reports (discipline, not dashboards)
 
 `lib/daily-report.ts` → `GET /api/public/report` (one broker) and
