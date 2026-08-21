@@ -23,7 +23,7 @@
  */
 import { Router } from "express";
 import { db, leadsSyncTable } from "@workspace/db";
-import { and, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import { parseDialogContent } from "../../lib/dialog-parser";
 import { cleanLeadName } from "../../lib/lead-display-name";
 
@@ -88,7 +88,10 @@ router.get("/clients", async (req, res) => {
       })
       .from(leadsSyncTable)
       .where(where.length > 0 ? and(...where) : undefined)
-      .orderBy(desc(leadsSyncTable.lastMessageAt))
+      // NULLS LAST, not plain DESC: Postgres sorts nulls first on a descending
+      // order, which floated every lead that has never written a word to the top
+      // of the table — the emptiest rows in the most valuable position.
+      .orderBy(sql`${leadsSyncTable.lastMessageAt} DESC NULLS LAST`)
       .limit(limit);
 
     const items: ClientRow[] = rows.map((r) => {
