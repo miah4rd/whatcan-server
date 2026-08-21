@@ -257,8 +257,13 @@ export function buildLeadNameRule(
   // copy of this regex could not survive a name that itself contains brackets.
   const cleaned = cleanLeadName(raw) ?? "";
   const first = cleaned.split(/\s+/)[0] ?? "";
-  const isPlaceholder = /^(lead|client|клиент|guest|user|wahelp|whatsapp|telegram|instagram)$/i.test(first);
-  const name = !first || isPlaceholder ? "" : first;
+  const isPlaceholder = /^(lead|client|клиент|guest|user|wahelp|whatsapp|telegram|instagram|fb|ig|new)$/i.test(first);
+  // A listing code is not a person. When a lead has no contact yet, the deal
+  // name is all there is — and on an ad lead that name IS the listing, so the
+  // bot opened with "Hi R-MER-004" (leads 23300773 and 23302889, 2026-08-21).
+  // Better to greet nobody than to greet a property.
+  const isListingCode = /^[A-Z]{1,4}-[A-Z0-9]+(?:-[A-Z0-9]+)*$/.test(first);
+  const name = !first || isPlaceholder || isListingCode ? "" : first;
 
   return name
     ? `\n\nTHE CLIENT'S NAME IS ${name}. OPEN THE MESSAGE WITH IT — "Hi ${name}, ..." — every time, whatever else the message has to do. Never open with "Hi there", never open straight into the answer with no greeting at all, and never drop the name because the message is short or urgent.`
@@ -603,6 +608,15 @@ export async function buildPromptAdditions(opts: {
   /** For situational lesson injection — which moment this draft is written in. */
   leadStage?: string | null;
   kind?: string | null;
+  /**
+   * True when this draft is the broker's opening on an ad lead that ALREADY
+   * received the automatic welcome. Two rules below were written when this
+   * draft was the first thing the client heard — they say to name the villa
+   * they clicked, hand over its link, and ask when they are moving in. The
+   * welcome now does exactly that, so leaving them on makes the broker's first
+   * message a verbatim repeat of a message sent fifteen minutes earlier.
+   */
+  openingAfterWelcome?: boolean;
 }): Promise<string> {
   const recentLeadMessages = [
     opts.lastLeadText ?? "",
@@ -642,7 +656,7 @@ export async function buildPromptAdditions(opts: {
     ),
   );
   let anchorLine = "";
-  if (anchorIds.length > 0) {
+  if (anchorIds.length > 0 && !opts.openingAfterWelcome) {
     try {
       const known = await describePropertiesByIds(anchorIds);
       const hit = anchorIds.map((id) => known.get(id)).find(Boolean);
@@ -681,7 +695,7 @@ export async function buildPromptAdditions(opts: {
       ? `\n\nTHEY TOLD THE FORM THEIR BUDGET: ${Math.round(cardForAd.budgetIdrMonthly / 1_000_000)} million rupiah a month. If the villa they clicked costs more than that, say so kindly and early — do not pretend it fits — and point them at what does. Their money is the more reliable signal of the two.`
       : "";
   const adRule =
-    adMatch && opts.dialogMessages.filter((m) => m.from === "lead").length <= 1
+    adMatch && !opts.openingAfterWelcome && opts.dialogMessages.filter((m) => m.from === "lead").length <= 1
       ? `\n\nTHIS PERSON CAME FROM AN AD FOR ONE SPECIFIC VILLA: "${adMatch[2]!.trim()}". That is their entire enquiry — they have not told you dates, budget or anything else. Write the first message like a person who just got their enquiry:\n- greet them by name and thank them for reaching out;\n- say you can see which villa caught their eye and NAME IT exactly as written above;\n- tell them the link below has the full details — photos, the location on the map, what's included;\n- then ONE question, the one that decides everything: when they are looking to move in and for how long.\nDo NOT offer alternative villas in this first message. They came for this one; suggesting others straight away reads as not having listened.
 - Never claim the villa is popular, in demand, "getting a lot of interest" or going fast. You have no such information, and this one had a single view. An invented pressure line is the fastest way to lose a serious client.`
       : "";
@@ -887,6 +901,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     leadId: opts.leadId,
     leadStage: opts.leadStage ?? null,
     kind: opts.kind,
+    openingAfterWelcome: Boolean(opts.taskBrief),
   });
 
   // Property matching only needs the conversation, not our reply — so it runs
