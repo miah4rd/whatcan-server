@@ -68,7 +68,10 @@ router.get("/clients", async (req, res) => {
     const rows = await db
       .select({
         leadId: leadsSyncTable.leadId,
-        content: leadsSyncTable.content,
+        // Only the head of the transcript: the name is taken from the FIRST
+        // message the lead sent, and pulling 400 full conversations out of the
+        // database to read their opening line would move megabytes per refresh.
+        content: sql<string>`left(${leadsSyncTable.content}, 6000)`,
         responsibleUser: leadsSyncTable.responsibleUser,
         leadStage: leadsSyncTable.leadStage,
         pipeline: leadsSyncTable.pipeline,
