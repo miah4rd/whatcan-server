@@ -327,7 +327,29 @@ export async function sendAdLeadWelcome(opts: {
  * The draft is an ordinary LIVE suggestion: bot writes, broker approves. No
  * message goes out of here.
  */
+/**
+ * One pass at a time. Each lead now costs up to two AI round-trips, so the pass
+ * stopped fitting inside its own minute tick and a second run began while the
+ * first was still working — both saw "no pending draft" for the same lead and
+ * both inserted one. Leads 23302661 and 23302889 each got two identical drafts
+ * a second apart (2026-08-21).
+ */
+let openingPassRunning = false;
+
 export async function processAdLeadBrokerOpening(): Promise<number> {
+  if (openingPassRunning) {
+    logger.info("ad-lead broker-opening pass still running — skipping this tick");
+    return 0;
+  }
+  openingPassRunning = true;
+  try {
+    return await runBrokerOpeningPass();
+  } finally {
+    openingPassRunning = false;
+  }
+}
+
+async function runBrokerOpeningPass(): Promise<number> {
   const cutoff = new Date(Date.now() - BROKER_OPENING_DELAY_MS);
 
   // Leads whose automatic welcome is older than the window, where WE still
