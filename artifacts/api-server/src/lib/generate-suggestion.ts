@@ -725,6 +725,17 @@ export async function generateSuggestion(opts: {
   correctionsBlock?: string;
   /** "rental" swaps in the villa-rental prompt/qualifying logic instead of the Sales one */
   pipeline?: string | null;
+  /**
+   * Replaces the qualifying-ladder task for a caller whose message is not a
+   * reply in an ongoing conversation. The ladder counts lead messages and asks
+   * the next question in a fixed order, which is right when a client is
+   * actually talking and wrong when we are opening on their behalf: a seeded
+   * ad enquiry is exactly one lead message, so the ladder always produced
+   * "when are you moving in" no matter what the client had already told the
+   * Meta form. Conversation, timing and lead-card context are still supplied —
+   * only the task is the caller's.
+   */
+  taskBrief?: string;
 }): Promise<GeneratedSuggestion> {
   // Rental Listings (acquiring rental listings from owners/agents) is a
   // different conversation entirely — no property matching, no client
@@ -790,7 +801,17 @@ export async function generateSuggestion(opts: {
     : "";
 
   const prompt =
-    opts.isFirstContact
+    opts.taskBrief
+      ? `FULL CONVERSATION (each line timestamped, oldest → newest):
+${formattedDialog}
+
+TIMING:
+${timingSummary}
+${leadContext}
+Broker: ${opts.responsibleUser ?? "Broker"}
+
+${opts.taskBrief}${AVOID_PHRASES_REMINDER}`
+      : opts.isFirstContact
       ? `${leadContext}
 SITUATION: This lead was just assigned to you. You have not spoken with them before. No prior conversation.
 
