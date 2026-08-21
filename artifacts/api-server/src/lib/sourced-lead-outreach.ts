@@ -151,6 +151,25 @@ function stripHousekeeping(block: string): string {
 }
 
 /**
+ * A person's name from a deal name, or "" when the deal name is not one.
+ *
+ * Accepts "FB Lead: Wyatt Bao" → "Wyatt Bao" (the label is a prefix, the name
+ * follows). Rejects anything carrying a listing code, a field separator, or a
+ * digit, and anything too long to be a name — those are titles, not people.
+ */
+function personNameFromLeadName(raw: string | null | undefined): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  // Strip a leading source label ("FB Lead:", "Lead:") — the name is after it.
+  const afterLabel = s.replace(/^[^:|]{0,20}:\s*/, "").trim();
+  if (!afterLabel) return "";
+  if (/\||\d/.test(afterLabel)) return "";
+  if (/\b[A-Z]{1,4}-[A-Z0-9]+(?:-[A-Z0-9]+)*\b/.test(afterLabel)) return "";
+  if (afterLabel.split(/\s+/).length > 4) return "";
+  return afterLabel;
+}
+
+/**
  * Render one line in the exact shape amoCRM's `content` uses, so the existing
  * parser reads it as a normal inbound message.
  *
@@ -268,7 +287,14 @@ export async function processSourcedLeadOutreach(): Promise<number> {
       if (await enforceBudgetFilter(lead.leadId, [note])) continue;
 
       // The person, not the lead title — for ad leads those are different things.
-      const leadName = (await fetchContactName(lead.leadId)) || (await fetchLeadName(lead.leadId));
+      // The deal name is only a person's name when nothing else named them.
+      // On an ad lead it is the LISTING — "R-MER-004 - 2BR Villa ... | Budget:
+      // b1 | ..." — and on a scout lead it is a label, "FB Lead: Wyatt Bao".
+      // Falling back to it blindly is why clients were greeted as
+      // "Hi R-MER-004" and "Hi FB" (2026-08-21). Greeting nobody is fine:
+      // buildLeadNameRule and welcomeText both open without a name.
+      const leadName =
+        (await fetchContactName(lead.leadId)) || personNameFromLeadName(await fetchLeadName(lead.leadId));
       const at = lead.amoCreatedAt ?? new Date();
       // Only ever state what is actually known: which listing the ad was for,
       // plus whatever the person themselves answered in the Meta lead form.
