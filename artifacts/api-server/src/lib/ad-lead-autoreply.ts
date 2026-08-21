@@ -79,13 +79,14 @@ ALREADY SENT TO THEM, VERBATIM — everything here has been said once:
 ${welcomeSent.trim()}
 """
 
-Task: Write the broker's FIRST real message. It always has the same four parts, in this order:
+Task: Write the broker's FIRST real message. It always has the same four parts, in this order. Parts 1 and 2 are NOT optional — a message that opens straight into a list reads as a mailshot, and being heard is the whole reason this message exists:
 
-1. Greet them by name.
+1. Greet them by name. (If no name is known, open with a greeting and no name — never invent one.)
 2. SAY THEIR REQUEST BACK TO THEM in one short line, so they can see they were heard. The request is what the Meta form asked them — budget, area, bedrooms, timing — and it is in the enquiry and the lead card above.
    If the form answers are missing, THE VILLA THEY CLICKED IS THE REQUEST: take its bedrooms, its area and its monthly price and state those as what you understand they are looking for. ("Looks like you're after a 2-bedroom in Pererenan around Rp 50 million a month.")
 3. ${hasOptions
-    ? `OFFER OPTIONS THAT FIT THAT REQUEST. Other places — the one they clicked is already theirs. The links are attached to this very message, so present them ("here are two more that fit"); never ask permission to send them and never promise them for later.`
+    ? `OFFER OPTIONS THAT FIT THAT REQUEST. Other places — the one they clicked is already theirs. The links are attached to this very message, so present them ("here are two more that fit"); never ask permission to send them and never promise them for later.
+   NAME THE AREA OF EACH OPTION, and if an option is NOT in the area they asked for, say so in the same breath — "this one's in Kerobokan rather than Pererenan". Bali areas are half an hour apart and a client who opens a link expecting their neighbourhood and finds another one stops trusting the next message. Never imply an option is in their area when it is not, and never quietly drop the area to avoid the point.`
     : `NOTHING IS ATTACHED TO THIS MESSAGE. Do not say "here are", do not describe other villas, do not promise to send anything. Instead ask the ONE thing that would let you put a shortlist together — which area, what budget, or what matters most to them — and say why you are asking.`}
 4. End with ONE open question.
 
