@@ -54,7 +54,7 @@ export const AD_AUTO_KIND = "ad_auto";
  *
  * A LIVE draft is shown only when the client spoke last. The ad-lead second
  * touch is raised on the exact opposite condition — 15 minutes of SILENCE — so
- * if the welcome counted as our reply, every second-touch draft would be
+ * if the welcome counted as our reply, every broker-opening draft would be
  * created and then hidden by this very file. It would never reach the inbox.
  *
  * Rather than exempt the draft (which would carve a hole in the rule that keeps
@@ -62,7 +62,7 @@ export const AD_AUTO_KIND = "ad_auto";
  * conversation turn. The welcome is always the FIRST outbound on an ad lead —
  * `sendAdLeadWelcome` refuses to open a conversation twice — so everything up
  * to it is the welcome and nothing else. The moment a broker actually sends the
- * second touch, that outbound lands after the window, counts normally, and the
+ * opening, that outbound lands after the window, counts normally, and the
  * lead leaves LIVE the way any answered lead does.
  *
  * The window, not the instant: the welcome is deliberately TWO messages — text

@@ -529,10 +529,12 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
 
 ## The paid ad lead is answered in seconds, and its silence is read in 15 minutes
 
-The opening on a Meta ad lead is two touches, and the owner decided the shape
-(2026-08-19). `lib/ad-lead-autoreply.ts`:
+The opening on a Meta ad lead is an auto-welcome that sits OUTSIDE the count,
+then the broker's first message. The owner decided the shape (2026-08-19) and
+the naming (2026-08-21) — see "the numbering is not cosmetic" below.
+`lib/ad-lead-autoreply.ts`:
 
-- **Touch 1 — automatic.** Greeting + the villa they clicked + one open
+- **The auto-welcome — outside the count, automatic.** Greeting + the villa they clicked + one open
   question, sent the moment the lead is seeded, with no broker tap. This is the
   ONLY message in the system that reaches a client unattended, which is why it
   is a template and not a model call: nothing that sends itself may be capable
@@ -540,11 +542,25 @@ The opening on a Meta ad lead is two touches, and the owner decided the shape
   = `off`. The text goes first and the link follows as its own message — a bare
   link as the first thing from an unknown number is what spam looks like to
   WhatsApp, and only a lone link unfurls a preview.
-- **Touch 2 — 15 minutes of silence, ordinary Copilot path.** Bot drafts, broker
-  approves. Kind `live`, never `push`: it is still the opening conversation, so
-  it must not count as a chase in the report or burn a follow-up level. The 24h
-  clock then counts from whatever the broker actually sends.
-- **A client who answers inside the 15 minutes cancels touch 2 entirely** — they
+- **The broker's FIRST message — 15 minutes of silence, ordinary Copilot path.**
+  Bot drafts, broker approves. Kind `live`, never `push`: it is still the
+  opening conversation, so it must not count as a chase in the report or burn a
+  follow-up level. The 24h clock then counts from whatever the broker actually
+  sends. It carries its own `taskBrief` instead of the qualifying ladder — see
+  below.
+- **The numbering is not cosmetic.** While this was called "touch 2" it behaved
+  like a second message: it fell through to the ladder in `generate-suggestion.ts`,
+  which picks its question by counting lead messages. A seeded enquiry is
+  exactly one, so every draft opened with "when would you be looking to move
+  in?" — the thing the Meta form had already asked. The auto-welcome is a
+  brochure, not a turn in the conversation; the 15-minute draft is the FIRST
+  thing a broker says. `generateSuggestion` takes `taskBrief` for exactly this:
+  a caller whose message opens a conversation rather than continuing one.
+- **The form answers are the request; work from them, not from the click.** The
+  brief leads with fitting options when the request is known, and when it is
+  not, asks only for what a shortlist needs — stating why — rather than a bare
+  move-in question that hands the client work and gives nothing back.
+- **A client who answers inside the 15 minutes cancels the broker opening entirely** — they
   become a normal LIVE lead answering on their own words. Reacting to silence is
   the whole point; talking over a client who just replied would undo it.
 - **The Meta form answers are the request; the clicked villa is only a signal.**

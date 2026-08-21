@@ -6,21 +6,27 @@
  * waiting in a broker's inbox — good text, often hours late, and the reason a
  * large share of ad leads never replied at all.
  *
- * Two touches, and only the FIRST one is automatic:
+ * The AUTO-WELCOME sits outside the count. Immediately, with no broker
+ * involved: a short greeting, the listing they actually clicked, and one open
+ * question. It is the brochure — the only message in this system that reaches
+ * a client without a human tap, which is why every guard below refuses rather
+ * than guesses. It is not the broker's first message and must never be counted
+ * as one.
  *
- *   1. Immediately, with no broker involved: a short greeting, the listing they
- *      actually clicked, and one open question. This is the brochure. It is the
- *      only message in this system that reaches a client without a human tap,
- *      which is why every guard below refuses rather than guesses.
- *   2. After 15 minutes of silence: an ordinary Copilot draft — the bot writes,
- *      the broker approves and sends. NOT a follow-up: it is kind "live", so it
- *      is not counted as a chase in the report and does not consume a
- *      follow-up level. The 24h chase then counts from whenever THAT is sent,
- *      which approve.ts already does on every send.
+ * THE BROKER'S FIRST MESSAGE comes 15 minutes later, if the client stayed
+ * silent: an ordinary Copilot draft — the bot writes, the broker approves and
+ * sends. NOT a follow-up: it is kind "live", so it is not counted as a chase in
+ * the report and does not consume a follow-up level. The 24h chase then counts
+ * from whenever THAT is sent, which approve.ts already does on every send.
+ *
+ * The numbering is deliberate and worth keeping straight. Calling the 15-minute
+ * draft "the second message" is what made it behave like one: it inherited the
+ * qualifying ladder meant for a client mid-conversation and opened by asking
+ * what the Meta form had already answered. It is the FIRST thing a broker says.
  *
  * If the client answers before the 15 minutes are up, nothing extra happens —
  * they simply become a normal LIVE lead answering on their own words, and the
- * second touch never fires. Reacting to silence is the entire point; talking
+ * broker opening never fires. Reacting to silence is the entire point; talking
  * over a client who just replied would undo it.
  */
 import { db, leadsSyncTable, sentMessagesTable, pendingSuggestionsTable, brokerSettingsTable } from "@workspace/db";
@@ -49,10 +55,10 @@ export { AD_AUTO_KIND } from "./pending-visibility";
 import { AD_AUTO_KIND } from "./pending-visibility";
 
 /** Silence after the welcome before the broker gets a draft to send. */
-const SECOND_TOUCH_MS = 15 * 60 * 1000;
+const BROKER_OPENING_DELAY_MS = 15 * 60 * 1000;
 
 /**
- * The second touch is not a chase, so it must not read like one.
+ * The broker's opening is not a chase, so it must not read like one.
  *
  * Left to the ordinary qualifying ladder this message was worthless: the
  * ladder counts lead messages and a seeded enquiry is exactly one, so every
@@ -65,7 +71,7 @@ const SECOND_TOUCH_MS = 15 * 60 * 1000;
  * caught them. Work from the request when we have it, and when we do not, ask
  * for the pieces a shortlist actually needs — and say why we are asking.
  */
-const SECOND_TOUCH_BRIEF = `SITUATION: This is a paid-ad lead. Fifteen minutes ago they clicked an ad for one villa and received an automatic welcome with that listing. They have not replied. Their only words are the enquiry above — which also carries whatever the Meta lead form asked them (budget, area, bedrooms, move-in timing, free-text notes).
+const BROKER_OPENING_BRIEF = `SITUATION: This is a paid-ad lead. Fifteen minutes ago they clicked an ad for one villa and received an automatic welcome with that listing. They have not replied. Their only words are the enquiry above — which also carries whatever the Meta lead form asked them (budget, area, bedrooms, move-in timing, free-text notes).
 
 Task: Write the broker's FIRST real message. It has to earn the reply the automatic welcome did not get, so it must add something that message did not contain.
 
@@ -299,7 +305,7 @@ export async function sendAdLeadWelcome(opts: {
 }
 
 /**
- * Second touch: 15 minutes of silence after the automatic welcome means the
+ * Broker opening: 15 minutes of silence after the automatic welcome means the
  * client did not answer. Write the broker a draft NOW rather than at the usual
  * 24-hour chase — a paid lead who ignored the villa we sent has usually not
  * gone cold, they have simply been sent the wrong villa, and reading that
@@ -308,8 +314,8 @@ export async function sendAdLeadWelcome(opts: {
  * The draft is an ordinary LIVE suggestion: bot writes, broker approves. No
  * message goes out of here.
  */
-export async function processAdLeadSecondTouch(): Promise<number> {
-  const cutoff = new Date(Date.now() - SECOND_TOUCH_MS);
+export async function processAdLeadBrokerOpening(): Promise<number> {
+  const cutoff = new Date(Date.now() - BROKER_OPENING_DELAY_MS);
 
   // Leads whose automatic welcome is older than the window, where WE still
   // spoke last (the client has said nothing) and no draft is waiting.
@@ -355,7 +361,7 @@ export async function processAdLeadSecondTouch(): Promise<number> {
       if (pending) continue;
 
       // Anything sent AFTER the welcome means this lead has moved on — the
-      // broker already sent the second touch, or answered by hand. Without
+      // broker already sent the opening, or answered by hand. Without
       // this the pass would draft again on every tick for the rest of the
       // lead's life: approve.ts sets last_message_from back to "us" and clears
       // the pending row, which is exactly the shape this query looks for.
@@ -402,7 +408,7 @@ export async function processAdLeadSecondTouch(): Promise<number> {
         leadStage: lead.leadStage,
         correctionsBlock: corrections,
         pipeline: lead.pipeline,
-        taskBrief: SECOND_TOUCH_BRIEF,
+        taskBrief: BROKER_OPENING_BRIEF,
       });
       if (!text) continue;
 
@@ -428,12 +434,12 @@ export async function processAdLeadSecondTouch(): Promise<number> {
       ).catch(() => {});
 
       drafted++;
-      logger.info({ leadId: lead.leadId }, "ad lead second touch drafted after 15 minutes of silence");
+      logger.info({ leadId: lead.leadId }, "ad lead broker opening drafted after 15 minutes of silence");
     } catch (err) {
-      logger.error({ err, leadId: lead.leadId }, "ad lead second touch failed");
+      logger.error({ err, leadId: lead.leadId }, "ad lead broker opening failed");
     }
   }
 
-  if (drafted > 0) logger.info({ drafted }, "ad-lead second-touch pass complete");
+  if (drafted > 0) logger.info({ drafted }, "ad-lead broker-opening pass complete");
   return drafted;
 }
