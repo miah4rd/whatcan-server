@@ -151,6 +151,14 @@ export async function pickPropertyAttachments(opts: {
   brokerInstruction?: string | null;
   currentAttachmentIds?: string[];
   brokerIntent?: BrokerIntent | null;
+  /**
+   * The broker's opening on an ad lead that already got the welcome. The
+   * welcome WAS the one-villa answer, so this message exists to widen: it
+   * needs a shortlist, not the same listing again. Without this the
+   * first-contact rule below capped the matcher at one property and the
+   * message had nothing to offer.
+   */
+  openingAfterWelcome?: boolean;
 }): Promise<GeneratedSuggestion["attachments"]> {
   try {
     const excludeIds = await alreadySentPropertyIds(
@@ -194,6 +202,7 @@ export async function pickPropertyAttachments(opts: {
       })());
 
     const isFirstContactAdLead =
+      !opts.openingAfterWelcome &&
       /Ad enquiry:/i.test(opts.leadNotes ?? "") &&
       opts.dialogMessages.filter((m) => m.from === "lead").length <= 1 &&
       adAffordable;
@@ -929,6 +938,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
       lastLeadText,
       leadStage: opts.leadStage,
       leadNotes: opts.leadNotes ?? null,
+      openingAfterWelcome: Boolean(opts.taskBrief),
     }),
   ]);
 

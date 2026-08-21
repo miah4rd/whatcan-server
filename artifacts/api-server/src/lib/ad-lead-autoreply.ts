@@ -72,25 +72,26 @@ const BROKER_OPENING_DELAY_MS = 15 * 60 * 1000;
  * for the pieces a shortlist actually needs — and say why we are asking.
  */
 function brokerOpeningBrief(welcomeSent: string): string {
-  return `SITUATION: This is a paid-ad lead. Fifteen minutes ago they clicked an ad for one villa. They have not replied. Their only words are the enquiry above — which also carries whatever the Meta lead form asked them (budget, area, bedrooms, move-in timing, free-text notes).
+  return `SITUATION: This is a paid-ad lead. Fifteen minutes ago they clicked an ad for one villa and received the message below. They have not replied.
 
-THEY HAVE ALREADY RECEIVED THIS MESSAGE FROM US, VERBATIM:
+ALREADY SENT TO THEM, VERBATIM — everything here has been said once:
 """
 ${welcomeSent.trim()}
 """
 
-Task: Write the broker's FIRST real message. Everything in the block above has already been said, so saying any of it again is the one way this message fails.
+Task: Write the broker's FIRST real message. It always has the same four parts, in this order:
 
-ABSOLUTE, both of them:
-- Do NOT describe that villa again — not its bedrooms, pool, rooftop, view, area, price, or "brand new". Not its link. They have it. Naming it in passing is fine; selling it again is not.
-- Do NOT ask when they are moving in, for how long, or their dates — ANYWHERE in the message, opening or closing. The message above already asked an open question and got silence; asking a bigger one is not an answer to that.
+1. Greet them by name.
+2. SAY THEIR REQUEST BACK TO THEM in one short line, so they can see they were heard. The request is what the Meta form asked them — budget, area, bedrooms, timing — and it is in the enquiry and the lead card above.
+   If the form answers are missing, THE VILLA THEY CLICKED IS THE REQUEST: take its bedrooms, its area and its monthly price and state those as what you understand they are looking for. ("Looks like you're after a 2-bedroom in Pererenan around Rp 50 million a month.")
+3. OFFER OPTIONS THAT FIT THAT REQUEST. Other places — the one they clicked is already theirs. The links are attached to this very message, so present them ("here are two more that fit"); never ask permission to send them and never promise them for later.
+4. End with ONE open question.
 
-What to write instead:
-- The form answers are the REQUEST. The villa they clicked is only the ad that caught their eye — they may well want something else. Work from the request whenever you have it.
-- If you know what they want (any of: budget, area, bedrooms): say you have other places that fit THAT and offer to send them. This is the whole point — it gives them something the first message did not.
-- If you know nothing beyond the click: ask ONE thing that would let you shortlist — what matters most to them, or which area or budget they are working to — and say why you are asking, so it reads as work you are doing for them rather than a form to fill in.
+Absolutes:
+- Do not re-sell the villa they clicked: not its features, not its price, not its link. Naming it as the reference point for their request is exactly right; describing it again is not.
+- Do not ask when they are moving in or for how long, anywhere in this message. The message above already asked an open question and got silence.
 
-Under 70 words. One question, not two.`;
+Under 80 words.`;
 }
 
 /**
