@@ -52,6 +52,32 @@ import { AD_AUTO_KIND } from "./pending-visibility";
 const SECOND_TOUCH_MS = 15 * 60 * 1000;
 
 /**
+ * The second touch is not a chase, so it must not read like one.
+ *
+ * Left to the ordinary qualifying ladder this message was worthless: the
+ * ladder counts lead messages and a seeded enquiry is exactly one, so every
+ * draft opened with "when would you be looking to move in?" — a question the
+ * client had often already answered in the Meta form before we ever wrote to
+ * them. Fifteen minutes of the owner's chosen silence spent asking something
+ * we knew.
+ *
+ * The form answers are the request; the villa they clicked is only the ad that
+ * caught them. Work from the request when we have it, and when we do not, ask
+ * for the pieces a shortlist actually needs — and say why we are asking.
+ */
+const SECOND_TOUCH_BRIEF = `SITUATION: This is a paid-ad lead. Fifteen minutes ago they clicked an ad for one villa and received an automatic welcome with that listing. They have not replied. Their only words are the enquiry above — which also carries whatever the Meta lead form asked them (budget, area, bedrooms, move-in timing, free-text notes).
+
+Task: Write the broker's FIRST real message. It has to earn the reply the automatic welcome did not get, so it must add something that message did not contain.
+
+- The form answers are the REQUEST. The villa they clicked is only the ad that caught their eye — they may well want something else. Work from the request whenever you have it.
+- If you know what they want (any of: budget, area, bedrooms, dates): say briefly that you have places that fit THAT, and close with ONE question that moves things forward — narrowing the shortlist or proposing a viewing.
+- If the request is missing or only partial: ask ONLY for what you still need in order to shortlist properly, and say why you are asking — so you can send the right places instead of a random list. At most two things, in one natural sentence.
+- NEVER open with a bare "when are you looking to move in?" or "how long do you need it?". On its own that is a chase: it asks the client to do work and gives them nothing.
+- Do not repeat the welcome, and do not re-send the same listing link.
+
+Under 90 words.`
+
+/**
  * Kill switch. The owner can stop every automatic welcome without a deploy by
  * setting broker_settings key `ad_auto_welcome` to "off" — this is the first
  * thing in the system that writes to a client unattended, so turning it off has
@@ -376,6 +402,7 @@ export async function processAdLeadSecondTouch(): Promise<number> {
         leadStage: lead.leadStage,
         correctionsBlock: corrections,
         pipeline: lead.pipeline,
+        taskBrief: SECOND_TOUCH_BRIEF,
       });
       if (!text) continue;
 
