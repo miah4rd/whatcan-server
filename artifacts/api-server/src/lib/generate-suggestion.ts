@@ -232,8 +232,14 @@ export async function pickPropertyAttachments(opts: {
         ...opts.dialogMessages.filter((m) => m.from === "lead").slice(-25).reverse().map((m) => m.text),
       ].filter(Boolean),
     });
-    return toAttachments(picks);
-  } catch {
+    const out = toAttachments(picks);
+    // Silence here cost a client-facing lie: the opening on 23300773 said "here
+    // are two more" with nothing attached, because an empty match and a thrown
+    // match looked identical from outside (2026-08-21).
+    if (out.length === 0) logger.info({ leadId: opts.leadId }, "property matcher returned nothing to attach");
+    return out;
+  } catch (err) {
+    logger.warn({ err, leadId: opts.leadId }, "property matcher threw — sending the draft with no attachments");
     return [];
   }
 }
