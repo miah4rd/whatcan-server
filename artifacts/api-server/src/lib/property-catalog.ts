@@ -1658,6 +1658,33 @@ export type DescribedProperty = {
   priceIdr: number;
 };
 
+/**
+ * What a listing tells us about the person who clicked its ad.
+ *
+ * A paid ad lead who never filled the Meta form has still said something by
+ * clicking: this many bedrooms, this area, roughly this money. Without it the
+ * matcher had nothing to search on — the only "client message" is the seeded
+ * link, which carries no criteria — so the broker's opening promised a
+ * shortlist and attached none (2026-08-21).
+ */
+export async function criteriaFromListing(
+  id: string,
+): Promise<{ bedrooms: number | null; areas: string[]; budgetIdrMonthly: number | null } | null> {
+  const want = id.trim().toUpperCase();
+  if (!want) return null;
+  const all = await fetchAllProperties().catch(() => [] as SupabaseProperty[]);
+  const p = all.find((x) => x.id.toUpperCase() === want);
+  if (!p) return null;
+  const price = priceOf(p);
+  return {
+    bedrooms: typeof p.bedrooms === "number" && p.bedrooms > 0 ? p.bedrooms : null,
+    areas: p.area ? [p.area] : [],
+    // Their ceiling is unknown; what they clicked is the one figure they have
+    // shown willingness to pay, so search around it rather than under it.
+    budgetIdrMonthly: price > 0 ? Math.round(price * 1.15) : null,
+  };
+}
+
 export async function describePropertiesByIds(
   ids: string[],
 ): Promise<Map<string, DescribedProperty>> {

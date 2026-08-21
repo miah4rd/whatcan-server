@@ -4,6 +4,7 @@ import { cleanLeadName } from "./lead-display-name";
 import { getLeadCardCriteria } from "./lead-card-fields";
 import { correctionsPromptBlock, deriveSituation } from "./broker-corrections";
 import { logger } from "./logger";
+import { criteriaFromListing } from "./property-catalog";
 import { parseDialogContent, formatDialogForAI, describeConversationTiming, conversationWindow } from "./dialog-parser";
 import { getKnowledgeBase, filterKnowledgeBaseForRental } from "./knowledge-base";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
@@ -220,6 +221,28 @@ export async function pickPropertyAttachments(opts: {
       opts.dialogMessages.filter((m) => m.from === "lead").length <= 1 &&
       adAffordable;
 
+    // The card's answers first. When the Meta form left them blank, the villa
+    // they clicked IS the request — its size, its area, its price are the only
+    // thing this person has told us. Without this the matcher searched on
+    // nothing and returned nothing, and the opening had no shortlist to offer.
+    let matchCriteria = card
+      ? { bedrooms: card.bedrooms, areas: card.areas, budgetIdrMonthly: card.budgetIdrMonthly }
+      : null;
+    if (opts.openingAfterWelcome && !matchCriteria?.bedrooms && !matchCriteria?.areas?.length) {
+      const adId = /Ad enquiry:\s*([A-Z0-9-]+)/i.exec(opts.leadNotes ?? "")?.[1];
+      if (adId) {
+        const fromListing = await criteriaFromListing(adId).catch(() => null);
+        if (fromListing) {
+          matchCriteria = {
+            bedrooms: matchCriteria?.bedrooms ?? fromListing.bedrooms,
+            areas: matchCriteria?.areas?.length ? matchCriteria.areas : fromListing.areas,
+            budgetIdrMonthly: matchCriteria?.budgetIdrMonthly ?? fromListing.budgetIdrMonthly,
+          };
+          logger.info({ leadId: opts.leadId, adId, ...fromListing }, "opening: criteria taken from the clicked listing");
+        }
+      }
+    }
+
     const picks = await matchProperties({
       listingType: opts.isRental ? "rent" : "sale",
       ...(isFirstContactAdLead ? { limit: 1 } : {}),
@@ -231,9 +254,7 @@ export async function pickPropertyAttachments(opts: {
       brokerInstruction: opts.brokerInstruction ?? null,
       currentAttachmentIds: opts.currentAttachmentIds ?? [],
       brokerIntent: opts.brokerIntent ?? null,
-      cardCriteria: card
-        ? { bedrooms: card.bedrooms, areas: card.areas, budgetIdrMonthly: card.budgetIdrMonthly }
-        : null,
+      cardCriteria: matchCriteria,
       // newest first — the criteria filter takes the most recent area/bedroom pin
       // The lead's OWN messages, newest first. The window used to be 5, which is
       // where a long conversation lost its own requirements: Josua agreed on
