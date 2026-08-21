@@ -177,7 +177,7 @@ export async function refreshLeadProfile(opts: {
   /** last stored profileSourceMsgAt (the lead-message time the current profile reflects) */
   profileSourceMsgAt?: Date | null;
   /** already-stored profile columns, to return unchanged when cache is fresh */
-  stored?: Parameters<typeof readStoredProfile>[0];
+  stored?: Parameters<typeof readStoredProfile>[0] & { reqUpdatedAt?: Date | null };
 }): Promise<LeadProfile | null> {
   const content = opts.content ?? "";
   if (content.trim().length < 20) return opts.stored ? readStoredProfile(opts.stored) : null;
@@ -190,7 +190,13 @@ export async function refreshLeadProfile(opts: {
     lastLeadAt &&
     opts.profileSourceMsgAt &&
     opts.profileSourceMsgAt.getTime() >= lastLeadAt.getTime() &&
-    opts.stored
+    opts.stored &&
+    // The request card is filled by this same pass. A lead distilled BEFORE the
+    // card existed has a fresh profile and an empty request, and would keep it
+    // forever on this cache hit — so treat a missing card as stale and re-distil
+    // once. That is the whole backfill: the backlog fills itself as the
+    // scheduler sweeps, with no migration script to run and forget.
+    opts.stored.reqUpdatedAt
   ) {
     const cached = readStoredProfile(opts.stored);
     if (cached) return cached;
@@ -204,6 +210,7 @@ export async function refreshLeadProfile(opts: {
   const calibrationBlock = await fetchTemperatureCalibration(opts.responsibleUser);
 
   let profile: LeadProfile;
+  let request: LeadRequest = EMPTY_REQUEST;
   try {
     const raw = await chatCompletionJSON<Partial<LeadProfile> & { request?: unknown }>({
       model: HELPER_MODEL,
@@ -240,6 +247,7 @@ Respond with ONLY the JSON object.${calibrationBlock}`,
       max_tokens: 450, // +150 for the request object
     });
     profile = coerceProfile(raw);
+    request = coerceRequest(raw?.request);
   } catch (err) {
     logger.error({ err, leadId: opts.leadId }, "lead-profile: distillation failed (non-fatal)");
     return opts.stored ? readStoredProfile(opts.stored) : null;
@@ -269,6 +277,25 @@ Respond with ONLY the JSON object.${calibrationBlock}`,
     // non-fatal — fall back to AI temperature
   }
 
+  // The Meta ad form already asked for budget, bedrooms and area, and its
+  // answers sit on the amoCRM card. Precedence is the same as everywhere else in
+  // this codebase: what the client SAYS beats what a form once recorded, so the
+  // card only fills what the conversation left blank. One extra API call, and
+  // only when there is actually a gap to fill.
+  if (request.bedrooms === null || request.areas.length === 0 || request.budgetIdrMonthly === null) {
+    try {
+      const card = await getLeadCardCriteria(opts.leadId);
+      request = {
+        ...request,
+        bedrooms: request.bedrooms ?? card.bedrooms,
+        areas: request.areas.length > 0 ? request.areas : card.areas,
+        budgetIdrMonthly: request.budgetIdrMonthly ?? card.budgetIdrMonthly,
+      };
+    } catch {
+      // non-fatal — no card data simply means we know less
+    }
+  }
+
   try {
     const setObj: Partial<typeof leadsSyncTable.$inferInsert> = {
       profilePotential: profile.potential,
@@ -280,6 +307,15 @@ Respond with ONLY the JSON object.${calibrationBlock}`,
       profileUpdatedAt: new Date(),
       profileSourceMsgAt: lastLeadAt,
       profileTemperatureAi: profile.temperature, // always store the AI's raw read
+      reqPax: request.pax,
+      reqBedrooms: request.bedrooms,
+      reqAreas: request.areas.length > 0 ? request.areas.join(", ") : null,
+      reqMoveIn: request.moveIn,
+      reqStay: request.stay,
+      reqBudgetIdrMonthly: request.budgetIdrMonthly,
+      // Stamped even when every field came back null: it records that we looked,
+      // which is what stops the cache gate above re-asking the AI forever.
+      reqUpdatedAt: new Date(),
     };
     if (!brokerOverridden) {
       setObj.profileTemperature = profile.temperature;
