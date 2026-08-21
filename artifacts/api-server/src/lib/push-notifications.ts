@@ -4,7 +4,7 @@ import { eq, and, sql, inArray } from "drizzle-orm";
 import { logger } from "./logger";
 import { parseDialogContent } from "./dialog-parser";
 import { getPushStageWhitelist } from "./push-stage-whitelist";
-import { isPendingVisible, dedupePushPerLead } from "./pending-visibility";
+import { isPendingVisible, dedupePushPerLead, loadReplySignals, type RepliedSignal } from "./pending-visibility";
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY ?? "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY ?? "";
@@ -188,20 +188,9 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
     // Same reply signal the inbox uses (max inbound vs max outbound per lead),
     // computed as a per-lead SQL aggregate so it can't miss an older lead's
     // messages the way a global row LIMIT would.
-    const signalByLead = new Map<string, { lastLeadAt: number; lastOursAt: number }>();
+    let signalByLead = new Map<string, RepliedSignal>();
     try {
-      const signalRows = await db
-        .select({
-          leadId: leadMessagesTable.leadId,
-          lastLeadMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} = 'lead')) * 1000, 0)`,
-          lastOursMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} <> 'lead')) * 1000, 0)`,
-        })
-        .from(leadMessagesTable)
-        .where(inArray(leadMessagesTable.leadId, leadIds))
-        .groupBy(leadMessagesTable.leadId);
-      for (const r of signalRows) {
-        signalByLead.set(r.leadId, { lastLeadAt: Number(r.lastLeadMs) || 0, lastOursAt: Number(r.lastOursMs) || 0 });
-      }
+      signalByLead = await loadReplySignals(leadIds);
     } catch { /* fall back to content-only rules */ }
 
     const visible = dedupePushPerLead(

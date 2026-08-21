@@ -1,3 +1,5 @@
+import { db, leadMessagesTable, sentMessagesTable } from "@workspace/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { parseDialogContent } from "./dialog-parser";
 import { shouldSuppressPush, isClosedWonStage, isPostSigningStage } from "./stage-routing";
 import { isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whitelist";
@@ -34,6 +36,80 @@ export interface SyncRowLike {
 export interface RepliedSignal {
   lastLeadAt: number; // ms; newest inbound (lead) message
   lastOursAt: number; // ms; newest outbound (broker/bot/us) message
+  /** When the automatic ad-lead welcome went out, if it did. Outbound at or
+   * before this instant is NOT us speaking — see AD_AUTO_KIND. */
+  adWelcomeAtMs?: number;
+}
+
+/**
+ * Marks the automatic ad-lead welcome in `sent_messages`. Defined here because
+ * the visibility rules are the thing that has to know about it; the sender
+ * (`ad-lead-autoreply.ts`) re-exports this constant rather than declaring a
+ * second one.
+ */
+export const AD_AUTO_KIND = "ad_auto";
+
+/**
+ * The automatic welcome is a machine courtesy, not a broker speaking.
+ *
+ * A LIVE draft is shown only when the client spoke last. The ad-lead second
+ * touch is raised on the exact opposite condition — 15 minutes of SILENCE — so
+ * if the welcome counted as our reply, every second-touch draft would be
+ * created and then hidden by this very file. It would never reach the inbox.
+ *
+ * Rather than exempt the draft (which would carve a hole in the rule that keeps
+ * answered leads out of LIVE), we discount the one message that is not a
+ * conversation turn. The welcome is always the FIRST outbound on an ad lead —
+ * `sendAdLeadWelcome` refuses to open a conversation twice — so "outbound at or
+ * before the welcome" is the welcome and nothing else. The moment a broker
+ * actually sends the second touch, that outbound lands after it, counts
+ * normally, and the lead leaves LIVE the way any answered lead does.
+ */
+export async function loadReplySignals(leadIds: string[]): Promise<Map<string, RepliedSignal>> {
+  const out = new Map<string, RepliedSignal>();
+  if (leadIds.length === 0) return out;
+
+  const welcomeRows = await db
+    .select({
+      leadId: sentMessagesTable.leadId,
+      atMs: sql<string>`coalesce(extract(epoch from max(${sentMessagesTable.createdAt})) * 1000, 0)`,
+    })
+    .from(sentMessagesTable)
+    .where(and(inArray(sentMessagesTable.leadId, leadIds), eq(sentMessagesTable.kind, AD_AUTO_KIND)))
+    .groupBy(sentMessagesTable.leadId);
+  const welcomeByLead = new Map(welcomeRows.map((r) => [r.leadId, Number(r.atMs) || 0]));
+
+  // Per-lead aggregate, not a capped row fetch: a global LIMIT can miss an
+  // older lead's messages entirely, which is what used to strand answered
+  // leads in LIVE.
+  const rows = await db
+    .select({
+      leadId: leadMessagesTable.leadId,
+      lastLeadMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} = 'lead')) * 1000, 0)`,
+      lastOursMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (
+        where ${leadMessagesTable.senderType} <> 'lead'
+          and ${leadMessagesTable.sentAt} > coalesce(
+            (select max(sm.created_at) from sent_messages sm
+              where sm.lead_id = ${leadMessagesTable.leadId} and sm.kind = ${AD_AUTO_KIND}),
+            '-infinity'::timestamptz)
+      )) * 1000, 0)`,
+    })
+    .from(leadMessagesTable)
+    .where(inArray(leadMessagesTable.leadId, leadIds))
+    .groupBy(leadMessagesTable.leadId);
+
+  for (const r of rows) {
+    out.set(r.leadId, {
+      lastLeadAt: Number(r.lastLeadMs) || 0,
+      lastOursAt: Number(r.lastOursMs) || 0,
+      adWelcomeAtMs: welcomeByLead.get(r.leadId) ?? 0,
+    });
+  }
+  // A lead with a welcome but no timeline rows yet still needs the discount.
+  for (const [leadId, atMs] of welcomeByLead) {
+    if (!out.has(leadId)) out.set(leadId, { lastLeadAt: 0, lastOursAt: 0, adWelcomeAtMs: atMs });
+  }
+  return out;
 }
 
 /** Fold a lead's timeline rows into the max inbound/outbound timestamps. */
@@ -124,13 +200,18 @@ export function isPendingVisible(
   // were stuck in LIVE forever because the bot never saw our reply.
   let cLeadMs = 0;
   let cOursMs = 0;
+  // Same discount as loadReplySignals: the automatic welcome is not a turn in
+  // the conversation, wherever we read it from.
+  const welcomeMs = timeline?.adWelcomeAtMs ?? 0;
   if (sync?.content) {
     try {
       const parsed = parseDialogContent(sync.content);
       for (const m of parsed.messages) {
         const t = m.at?.getTime?.() ?? 0;
-        if (m.from === "us") cOursMs = Math.max(cOursMs, t);
-        else cLeadMs = Math.max(cLeadMs, t);
+        if (m.from === "us") {
+          if (welcomeMs && t <= welcomeMs) continue;
+          cOursMs = Math.max(cOursMs, t);
+        } else cLeadMs = Math.max(cLeadMs, t);
       }
     } catch {
       // ignore parse errors

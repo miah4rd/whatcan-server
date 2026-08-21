@@ -40,8 +40,13 @@ import { parseDialogContent } from "./dialog-parser";
  * that the first touch happened, so the 15-minute pass reads it to know whose
  * clock is running — and the "have we ever sent to this lead" guard reads it to
  * know we already have.
+ *
+ * Declared in pending-visibility.ts and re-exported here: the visibility rules
+ * have to discount this message too, and one constant with two declarations is
+ * how the two halves drift apart.
  */
-export const AD_AUTO_KIND = "ad_auto";
+export { AD_AUTO_KIND } from "./pending-visibility";
+import { AD_AUTO_KIND } from "./pending-visibility";
 
 /** Silence after the welcome before the broker gets a draft to send. */
 const SECOND_TOUCH_MS = 15 * 60 * 1000;

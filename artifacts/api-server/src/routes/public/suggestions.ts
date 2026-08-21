@@ -5,7 +5,7 @@ import { cleanLeadName } from "../../lib/lead-display-name";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
 import { computePushPriority, computeNextFollowupDays, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
-import { isPendingVisible, dedupePushPerLead, repliedSignalFromTimeline } from "../../lib/pending-visibility";
+import { isPendingVisible, dedupePushPerLead, repliedSignalFromTimeline, loadReplySignals } from "../../lib/pending-visibility";
 import { findStuckLeads } from "../../lib/stuck-leads";
 
 const router = Router();
@@ -100,21 +100,7 @@ router.get("/suggestions", async (req, res) => {
     // a per-lead aggregate, not the capped row fetch above — that global LIMIT can
     // miss an older lead's messages entirely, which is exactly why answered leads
     // stayed stuck in LIVE (and why their conversation looked truncated).
-    const signalRows =
-      allLeadIds.length > 0
-        ? await db
-            .select({
-              leadId: leadMessagesTable.leadId,
-              lastLeadMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} = 'lead')) * 1000, 0)`,
-              lastOursMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} <> 'lead')) * 1000, 0)`,
-            })
-            .from(leadMessagesTable)
-            .where(inArray(leadMessagesTable.leadId, allLeadIds))
-            .groupBy(leadMessagesTable.leadId)
-        : [];
-    const signalByLead = new Map(
-      signalRows.map((r) => [r.leadId, { lastLeadAt: Number(r.lastLeadMs) || 0, lastOursAt: Number(r.lastOursMs) || 0 }]),
-    );
+    const signalByLead = await loadReplySignals(allLeadIds);
 
     let items = allPending.filter((r) =>
       isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, signalByLead.get(r.leadId)),
