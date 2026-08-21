@@ -391,6 +391,7 @@ const PAGE_HTML = `<!doctype html>
   var clientsBusy = false;
   var clientsAll = false;    // false = only the logged-in broker's own clients
   var clientsQuery = "";
+  var clientsError = false;
   var clientsSort = "recent";
   var clientsDesc = true;
 
@@ -1645,10 +1646,14 @@ const PAGE_HTML = `<!doctype html>
     var q = API + "/clients?limit=400";
     if (!clientsAll && b) q += "&responsibleUser=" + encodeURIComponent(b);
     if (pipelineView) q += "&pipeline=" + encodeURIComponent(pipelineView);
+    clientsError = false;
     return fetch(q, { cache: "no-store" })
       .then(function (r) { return r.json(); })
-      .then(function (d) { if (!d.error) clientsRows = d.items || []; })
-      .catch(function () {})
+      .then(function (d) {
+        if (d && d.error) { clientsError = true; return; }
+        clientsRows = (d && d.items) || [];
+      })
+      .catch(function () { clientsError = true; })
       .then(function () { clientsBusy = false; if (clientsView) render(); });
   }
 
@@ -1747,7 +1752,14 @@ const PAGE_HTML = `<!doctype html>
     html += '<button id="cl-copy" title="Copy as a spreadsheet">\\ud83d\\udccb Copy</button>';
     html += '</div>';
 
-    if (clientsRows === null && clientsBusy) return html + '<div class="empty">Loading clients\\u2026</div>';
+    // Three states, never conflated: still loading, could not load, genuinely
+    // empty. Reading a failed request as "no clients" would quietly tell a
+    // broker their pipeline is empty when in fact the server did not answer.
+    if (clientsError) {
+      return html + '<div class="empty">Could not load the clients list.<br>' +
+        'Tap \\u27f3 to try again.</div>';
+    }
+    if (clientsRows === null) return html + '<div class="empty">Loading clients\\u2026</div>';
     if (rows.length === 0) {
       return html + '<div class="empty">' +
         (clientsQuery ? "Nothing matches that filter." :

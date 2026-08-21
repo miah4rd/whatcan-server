@@ -228,7 +228,14 @@ export async function pickPropertyAttachments(opts: {
     let matchCriteria = card
       ? { bedrooms: card.bedrooms, areas: card.areas, budgetIdrMonthly: card.budgetIdrMonthly }
       : null;
-    if (opts.openingAfterWelcome && !matchCriteria?.bedrooms && !matchCriteria?.areas?.length) {
+    // Per FIELD, not all-or-nothing: the form is often answered in part (a
+    // budget but no area, an area but no size), and an all-or-nothing guard
+    // left those gaps open — the search then had one criterion where it could
+    // have had three. The card always wins where it has an answer.
+    if (
+      opts.openingAfterWelcome &&
+      (!matchCriteria?.bedrooms || !matchCriteria?.areas?.length || !matchCriteria?.budgetIdrMonthly)
+    ) {
       const adId = /Ad enquiry:\s*([A-Z0-9-]+)/i.exec(opts.leadNotes ?? "")?.[1];
       if (adId) {
         const fromListing = await criteriaFromListing(adId).catch(() => null);
