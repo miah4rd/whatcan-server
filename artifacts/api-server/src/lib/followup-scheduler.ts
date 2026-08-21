@@ -16,7 +16,7 @@ import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
 import { isBroker, brokerKey, brokerDisplayName } from "./broker-identity";
 import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
-import { processAdLeadSecondTouch } from "./ad-lead-autoreply";
+import { processAdLeadBrokerOpening } from "./ad-lead-autoreply";
 import { processListingAcquisitionOutreach } from "./listing-acquisition-outreach";
 import { isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { logStuckLeads } from "./stuck-leads";
@@ -1368,7 +1368,7 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
     // An ad lead that got the automatic welcome and stayed silent gets its
     // broker a draft at 15 minutes, not at 24 hours. Runs on the same minute
     // tick so the window is accurate to within a minute.
-    processAdLeadSecondTouch().catch((err) => logger.error({ err }, "ad lead second touch error"));
+    processAdLeadBrokerOpening().catch((err) => logger.error({ err }, "ad lead broker opening error"));
   }, 60_000);
 
   // Say it out loud when leads are stuck. Cheap query, and it is the only
