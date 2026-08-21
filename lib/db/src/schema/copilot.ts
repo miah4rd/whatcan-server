@@ -116,6 +116,20 @@ export const leadsSyncTable = pgTable("leads_sync", {
   // content-based discard candidate; surfaced for BROKER confirmation, never auto-acted.
   discardFlaggedAt: timestamp("discard_flagged_at", { withTimezone: true }),
   discardReason: text("discard_reason"),
+  // ── The client's request, in the five things a broker needs to recognise them
+  // at a glance: who, how many people, how many bedrooms, when, where. Asked for
+  // by the brokers ("I just want to scan the request and remember the clients").
+  // Filled by the SAME distillation pass as the profile above — no extra AI call
+  // — and pre-seeded from the amoCRM card whenever the ad form already answered
+  // it (lib/lead-card-fields.ts). Everything is nullable: a lead that has not
+  // said yet simply shows a dash, which is itself information. ────────────────
+  reqPax: integer("req_pax"),                          // how many people will live there
+  reqBedrooms: integer("req_bedrooms"),
+  reqAreas: text("req_areas"),                         // comma-separated, as the client named them
+  reqMoveIn: text("req_move_in"),                      // free text as stated: "1 Nov", "mid-October", "asap"
+  reqStay: text("req_stay"),                           // stay length as stated: "3 months", "a year"
+  reqBudgetIdrMonthly: integer("req_budget_idr_monthly"),
+  reqUpdatedAt: timestamp("req_updated_at", { withTimezone: true }),
 });
 
 export const brokerSettingsTable = pgTable("broker_settings", {

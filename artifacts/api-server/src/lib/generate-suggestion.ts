@@ -175,7 +175,20 @@ export async function pickPropertyAttachments(opts: {
     );
     // A broker asking for different links has overruled the "don't send more
     // options" gate — they are looking at the draft and telling us what to send.
-    if (!opts.brokerInstruction && shouldSkipNewListings(opts.dialogMessages, excludeIds, opts.leadStage)) {
+    //
+    // So has the broker's opening on an ad lead, for a subtler reason: the
+    // "client message" naming one of our listings is the SEEDED enquiry we
+    // wrote ourselves ("Hi! I saw this villa: .../property/R-YUD-046"), and the
+    // welcome then sent that very link. The gate reads its own two footprints
+    // as a client discussing a villa we sent and returns nothing — which is how
+    // the opening on 23302661 ended up with a shortlist promise and no links
+    // (2026-08-21). Widening is the entire job of this message.
+    if (
+      !opts.brokerInstruction &&
+      !opts.openingAfterWelcome &&
+      shouldSkipNewListings(opts.dialogMessages, excludeIds, opts.leadStage)
+    ) {
+      logger.info({ leadId: opts.leadId }, "property matcher skipped — lead is discussing listings already sent");
       return [];
     }
     // First reply to an ad lead: the advertised villa on its own. The usual
