@@ -1,4 +1,4 @@
-import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, leadMessagesTable } from "@workspace/db";
+import { db, pool, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, leadMessagesTable } from "@workspace/db";
 import { lt, isNotNull, eq, and, or, isNull, inArray, desc, sql } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL } from "./ai-client";
 import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming, conversationWindow } from "./dialog-parser";
@@ -441,6 +441,26 @@ async function buildBrokerCorrectionsBlock(
   return block;
 }
 
+/**
+ * True while an ad lead is between its automatic welcome and the broker's first
+ * real message: exactly one message sent, and it was the welcome. Inside that
+ * window a LIVE draft on a silent lead is the point, not a ghost to sweep up.
+ */
+async function isAdLeadOpeningWindow(leadId: string): Promise<boolean> {
+  try {
+    const r = await pool.query(
+      `SELECT count(*)::int AS total,
+              count(*) FILTER (WHERE kind = 'ad_auto')::int AS welcome
+         FROM sent_messages WHERE lead_id = $1`,
+      [leadId],
+    );
+    const row = r.rows?.[0];
+    return Number(row?.total ?? 0) === 1 && Number(row?.welcome ?? 0) === 1;
+  } catch {
+    return false;
+  }
+}
+
 export async function processFollowups(): Promise<void> {
   const now = new Date();
   const steps = await getFollowupSteps();
@@ -453,6 +473,17 @@ export async function processFollowups(): Promise<void> {
   // so these items are never caught by that pass. Delete them here so they don't
   // block push suggestions from appearing.
   // Single bulk DELETE — no per-lead loop.
+  //
+  // EXCEPT the ad-lead broker opening, which is a LIVE draft raised on SILENCE
+  // by design — "we sent last" is its defining condition, not a symptom of a
+  // ghost. Without the exemption the two passes fought each other once a
+  // minute: the opening pass wrote a draft (a Sonnet draft + a Sonnet listing
+  // match), this cleanup deleted it, and a minute later it was written again.
+  // From the hour the ad flow shipped (2026-08-20 15:00) that loop ran all
+  // evening at ~64 drafts an hour with nobody working — $15 of the balance,
+  // and it emptied the account overnight. Scoped to the opening window only:
+  // exactly one message sent (the welcome itself), so once the broker actually
+  // sends, this cleanup owns the lead again.
   try {
     const staleLiveLeads = await db
       .select({ leadId: leadsSyncTable.leadId })
@@ -472,6 +503,12 @@ export async function processFollowups(): Promise<void> {
             inArray(pendingSuggestionsTable.leadId, leadIds),
             eq(pendingSuggestionsTable.kind, "live"),
             eq(pendingSuggestionsTable.status, "pending"),
+            sql`${pendingSuggestionsTable.leadId} NOT IN (
+              SELECT sm.lead_id FROM sent_messages sm
+              WHERE sm.kind = 'ad_auto'
+              GROUP BY sm.lead_id
+              HAVING (SELECT count(*) FROM sent_messages s2 WHERE s2.lead_id = sm.lead_id) = 1
+            )`,
           ),
         );
     }
@@ -1198,6 +1235,12 @@ export async function processUnansweredLive(): Promise<void> {
           .update(leadsSyncTable)
           .set({ lastMessageFrom: "us" })
           .where(eq(leadsSyncTable.leadId, lead.leadId));
+        // Same exemption as the bulk cleanup above: an ad lead still inside its
+        // opening window has a LIVE draft precisely BECAUSE we spoke last.
+        if (await isAdLeadOpeningWindow(lead.leadId)) {
+          logger.info({ leadId: lead.leadId }, "unanswered-live: ad-lead opening draft left alone");
+          continue;
+        }
         await db
           .delete(pendingSuggestionsTable)
           .where(
