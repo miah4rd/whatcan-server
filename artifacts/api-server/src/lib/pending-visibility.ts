@@ -58,13 +58,22 @@ export const AD_AUTO_KIND = "ad_auto";
  * created and then hidden by this very file. It would never reach the inbox.
  *
  * Rather than exempt the draft (which would carve a hole in the rule that keeps
- * answered leads out of LIVE), we discount the one message that is not a
+ * answered leads out of LIVE), we discount the messages that are not a
  * conversation turn. The welcome is always the FIRST outbound on an ad lead —
- * `sendAdLeadWelcome` refuses to open a conversation twice — so "outbound at or
- * before the welcome" is the welcome and nothing else. The moment a broker
- * actually sends the second touch, that outbound lands after it, counts
- * normally, and the lead leaves LIVE the way any answered lead does.
+ * `sendAdLeadWelcome` refuses to open a conversation twice — so everything up
+ * to it is the welcome and nothing else. The moment a broker actually sends the
+ * second touch, that outbound lands after the window, counts normally, and the
+ * lead leaves LIVE the way any answered lead does.
+ *
+ * The window, not the instant: the welcome is deliberately TWO messages — text
+ * first, then the link on its own, because a bare link from an unknown number
+ * is what spam looks like to WhatsApp. `sent_messages` records the delivery
+ * once, at the text, so a cutoff at that instant leaves the link counting as a
+ * reply and hides the draft anyway. Links are paced 3s then 1.2s apart
+ * (`outbound-send.ts`), so the burst is over in seconds; WELCOME_BURST_MS is
+ * set far above that and far below any human reply time.
  */
+const WELCOME_BURST_MS = 60_000;
 export async function loadReplySignals(leadIds: string[]): Promise<Map<string, RepliedSignal>> {
   const out = new Map<string, RepliedSignal>();
   if (leadIds.length === 0) return out;
@@ -89,7 +98,8 @@ export async function loadReplySignals(leadIds: string[]): Promise<Map<string, R
       lastOursMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (
         where ${leadMessagesTable.senderType} <> 'lead'
           and ${leadMessagesTable.sentAt} > coalesce(
-            (select max(sm.created_at) from sent_messages sm
+            (select max(sm.created_at) + ${sql.raw(`interval '${WELCOME_BURST_MS} milliseconds'`)}
+               from sent_messages sm
               where sm.lead_id = ${leadMessagesTable.leadId} and sm.kind = ${AD_AUTO_KIND}),
             '-infinity'::timestamptz)
       )) * 1000, 0)`,
@@ -202,7 +212,7 @@ export function isPendingVisible(
   let cOursMs = 0;
   // Same discount as loadReplySignals: the automatic welcome is not a turn in
   // the conversation, wherever we read it from.
-  const welcomeMs = timeline?.adWelcomeAtMs ?? 0;
+  const welcomeMs = timeline?.adWelcomeAtMs ? timeline.adWelcomeAtMs + WELCOME_BURST_MS : 0;
   if (sync?.content) {
     try {
       const parsed = parseDialogContent(sync.content);
