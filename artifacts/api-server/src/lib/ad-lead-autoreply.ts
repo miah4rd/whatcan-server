@@ -71,7 +71,7 @@ const BROKER_OPENING_DELAY_MS = 15 * 60 * 1000;
  * caught them. Work from the request when we have it, and when we do not, ask
  * for the pieces a shortlist actually needs — and say why we are asking.
  */
-function brokerOpeningBrief(welcomeSent: string): string {
+function brokerOpeningBrief(welcomeSent: string, hasOptions = true): string {
   return `SITUATION: This is a paid-ad lead. Fifteen minutes ago they clicked an ad for one villa and received the message below. They have not replied.
 
 ALREADY SENT TO THEM, VERBATIM — everything here has been said once:
@@ -84,7 +84,9 @@ Task: Write the broker's FIRST real message. It always has the same four parts, 
 1. Greet them by name.
 2. SAY THEIR REQUEST BACK TO THEM in one short line, so they can see they were heard. The request is what the Meta form asked them — budget, area, bedrooms, timing — and it is in the enquiry and the lead card above.
    If the form answers are missing, THE VILLA THEY CLICKED IS THE REQUEST: take its bedrooms, its area and its monthly price and state those as what you understand they are looking for. ("Looks like you're after a 2-bedroom in Pererenan around Rp 50 million a month.")
-3. OFFER OPTIONS THAT FIT THAT REQUEST. Other places — the one they clicked is already theirs. The links are attached to this very message, so present them ("here are two more that fit"); never ask permission to send them and never promise them for later.
+3. ${hasOptions
+    ? `OFFER OPTIONS THAT FIT THAT REQUEST. Other places — the one they clicked is already theirs. The links are attached to this very message, so present them ("here are two more that fit"); never ask permission to send them and never promise them for later.`
+    : `NOTHING IS ATTACHED TO THIS MESSAGE. Do not say "here are", do not describe other villas, do not promise to send anything. Instead ask the ONE thing that would let you put a shortlist together — which area, what budget, or what matters most to them — and say why you are asking.`}
 4. End with ONE open question.
 
 Absolutes:
@@ -410,7 +412,7 @@ export async function processAdLeadBrokerOpening(): Promise<number> {
       });
       const corrections = await correctionsPromptBlock(lead.responsibleUser, situation, 20);
 
-      const { text, attachments } = await generateSuggestion({
+      let { text, attachments } = await generateSuggestion({
         leadId: lead.leadId,
         responsibleUser: lead.responsibleUser,
         kind: "live",
@@ -423,6 +425,31 @@ export async function processAdLeadBrokerOpening(): Promise<number> {
         taskBrief: brokerOpeningBrief(lead.welcomeText ?? ""),
       });
       if (!text) continue;
+
+      // The text is written CONCURRENTLY with the property match, so it can
+      // promise a shortlist the matcher then fails to produce — which is
+      // exactly what reached lead 23300773: "here are two more in that same
+      // range" with no links under it. A message that offers nothing is worse
+      // than one that asks a question, so write it again knowing the truth.
+      if (attachments.length === 0 && /here are|attached|below|send (them|these|you)/i.test(text)) {
+        logger.info({ leadId: lead.leadId }, "broker opening promised options with none attached — rewriting without them");
+        const retry = await generateSuggestion({
+          leadId: lead.leadId,
+          responsibleUser: lead.responsibleUser,
+          kind: "live",
+          lastLeadMessage,
+          contentSnippet: content,
+          leadNotes: lead.leadNotes,
+          leadStage: lead.leadStage,
+          correctionsBlock: corrections,
+          pipeline: lead.pipeline,
+          taskBrief: brokerOpeningBrief(lead.welcomeText ?? "", false),
+        });
+        if (retry.text) {
+          text = retry.text;
+          attachments = retry.attachments;
+        }
+      }
 
       await db.insert(pendingSuggestionsTable).values({
         leadId: lead.leadId,

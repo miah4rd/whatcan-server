@@ -242,6 +242,26 @@ const PAGE_HTML = `<!doctype html>
   .setup { max-width: 340px; margin: 80px auto; padding: 24px; text-align: center; }
   .setup input { width: 100%; background: #181d2e; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 12px; font-size: 15px; margin: 14px 0; }
   .setup button { width: 100%; background: #2dd4bf; color: #06121a; border: none; border-radius: 8px; padding: 12px; font-size: 15px; font-weight: 700; cursor: pointer; }
+  /* Clients — the request table. Six columns have to survive a 460px amoCRM
+     panel, so the wrapper scrolls sideways instead of the rows reflowing into
+     unreadable stacks. */
+  .cl-tools { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  .cl-tools input, .cl-tools select, .cl-tools button { background: #181d2e; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 7px 9px; font-size: 12.5px; }
+  .cl-tools input { flex: 1; min-width: 100px; }
+  .cl-tools button { cursor: pointer; white-space: nowrap; }
+  .cl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid #2a3146; border-radius: 10px; background: #141828; }
+  table.cl { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.cl th, table.cl td { padding: 7px 8px; text-align: left; white-space: nowrap; border-bottom: 1px solid #222839; }
+  table.cl th { position: sticky; top: 0; background: #181d2e; color: #8b95ad; font-weight: 600; cursor: pointer; user-select: none; }
+  table.cl th.on { color: #2dd4bf; }
+  table.cl tbody tr:last-child td { border-bottom: none; }
+  table.cl tbody tr:hover { background: #1a2032; }
+  table.cl a { color: #e6e8ee; text-decoration: none; }
+  table.cl a:hover { color: #2dd4bf; }
+  .cl-cut { display: inline-block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+  .cl-dash { color: #454c60; }
+  .cl-sub { color: #6b7488; font-size: 11px; }
+  .cl-note { color: #6b7488; font-size: 11.5px; margin: 10px 2px 0; line-height: 1.5; }
   .temp-ctl { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -4px 0 14px; }
   .temp-ctl-lbl { font-size: 11.5px; color: #6b7488; font-weight: 600; margin-right: 2px; }
   .temp-btn { font-size: 11.5px; font-weight: 700; padding: 4px 9px; border-radius: 7px; border: 1px solid #2a3146; background: transparent; color: #8a93a8; cursor: pointer; }
@@ -359,6 +379,20 @@ const PAGE_HTML = `<!doctype html>
   // report is about the broker, not about a lead, and sitting in that row it
   // read as a fourth pile of work to get through.
   var reportView = false;
+
+  // ── Clients (the request table) ──────────────────────────────────────────
+  // Its own screen, like the report and for the same reason: Live / Reach /
+  // Push are three queues of replies to write, this is a register of who is in
+  // play and what they asked for. The brokers wanted to stop opening cards one
+  // by one to remember which client wanted three bedrooms in Umalas from
+  // November — so every row is one client, and the whole list reads at a glance.
+  var clientsView = false;
+  var clientsRows = null;    // null = never loaded, [] = loaded and empty
+  var clientsBusy = false;
+  var clientsAll = false;    // false = only the logged-in broker's own clients
+  var clientsQuery = "";
+  var clientsSort = "recent";
+  var clientsDesc = true;
 
   // ── Add a listing ────────────────────────────────────────────────────────
   // The team used to publish listings by sharing ONE Claude account across
@@ -1602,6 +1636,151 @@ const PAGE_HTML = `<!doctype html>
     };
   }
 
+  // ── Clients ──────────────────────────────────────────────────────────────
+  // A plain read: every field was distilled when the lead last wrote, so
+  // opening this tab costs no AI call and no amoCRM call.
+  function fetchClients() {
+    var b = activeBroker();
+    clientsBusy = true;
+    var q = API + "/clients?limit=400";
+    if (!clientsAll && b) q += "&responsibleUser=" + encodeURIComponent(b);
+    if (pipelineView) q += "&pipeline=" + encodeURIComponent(pipelineView);
+    return fetch(q, { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (!d.error) clientsRows = d.items || []; })
+      .catch(function () {})
+      .then(function () { clientsBusy = false; if (clientsView) render(); });
+  }
+
+  // An em-dash, not a blank: "we do not know" is information the broker acts on
+  // (it is the next question to ask), while an empty cell reads as a bug.
+  function clCell(v) {
+    return (v === null || v === undefined || v === "") ? '<span class="cl-dash">\\u2014</span>' : esc(String(v));
+  }
+
+  // Brokers here say "45 jt", never "45,000,000".
+  function clMoney(v) {
+    if (!v) return '<span class="cl-dash">\\u2014</span>';
+    return Math.round(v / 1000000) + " jt";
+  }
+
+  function clientsFiltered() {
+    var rows = (clientsRows || []).slice();
+    var qq = clientsQuery.trim().toLowerCase();
+    if (qq) {
+      rows = rows.filter(function (r) {
+        var hay = (r.name || "") + " " + (r.areas || "") + " " + (r.intent || "") + " " + (r.stage || "") + " " + r.lead_id;
+        return hay.toLowerCase().indexOf(qq) >= 0;
+      });
+    }
+    var key = clientsSort, dir = clientsDesc ? -1 : 1;
+    function val(r) {
+      if (key === "name") return (r.name || "\\uffff").toLowerCase();
+      if (key === "where") return (r.areas || "\\uffff").toLowerCase();
+      if (key === "when") return (r.move_in || "\\uffff").toLowerCase();
+      if (key === "pax") return r.pax || 0;
+      if (key === "br") return r.bedrooms || 0;
+      if (key === "budget") return r.budget_idr_monthly || 0;
+      return r.last_message_at || "";
+    }
+    rows.sort(function (a, b) {
+      var av = val(a), bv = val(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+    return rows;
+  }
+
+  // Tab-separated, which is exactly what a paste into Google Sheets or Excel
+  // wants — the request started as "can we have a spreadsheet", and this is the
+  // half-second version of that answer.
+  function clientsCopy() {
+    var rows = clientsFiltered();
+    var out = ["Client\\tPeople\\tBedrooms\\tWhen\\tFor how long\\tWhere\\tBudget/mo IDR\\tStage\\tBroker"];
+    rows.forEach(function (r) {
+      out.push([
+        r.name || ("Lead " + r.lead_id),
+        r.pax == null ? "" : r.pax,
+        r.bedrooms == null ? "" : r.bedrooms,
+        r.move_in || "",
+        r.stay || "",
+        r.areas || "",
+        r.budget_idr_monthly == null ? "" : r.budget_idr_monthly,
+        r.stage || "",
+        r.responsible_user || ""
+      ].join("\\t"));
+    });
+    var text = out.join("\\n");
+    function fallback() {
+      // The panel runs in a cross-origin iframe, where the async clipboard API
+      // is gated off by Permissions-Policy. This older path still works there.
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      ta.remove();
+      showToast(ok ? (rows.length + " rows copied \\u2014 paste into Sheets") : "Could not copy here");
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        showToast(rows.length + " rows copied \\u2014 paste into Sheets");
+      }).catch(fallback);
+    } else fallback();
+  }
+
+  function renderClients() {
+    var rows = clientsFiltered();
+    var cols = [
+      ["name", "Client"], ["pax", "People"], ["br", "BR"], ["when", "When"],
+      ["where", "Where"], ["budget", "Budget"], ["recent", "Last"]
+    ];
+    var html = "";
+    html += '<div class="cl-tools">';
+    html += '<input id="cl-q" placeholder="Filter by name, area, stage" value="' + esc(clientsQuery) + '">';
+    html += '<select id="cl-scope"><option value="mine"' + (clientsAll ? "" : " selected") + '>My clients</option>' +
+      '<option value="all"' + (clientsAll ? " selected" : "") + '>Everyone</option></select>';
+    html += '<button id="cl-copy" title="Copy as a spreadsheet">\\ud83d\\udccb Copy</button>';
+    html += '</div>';
+
+    if (clientsRows === null && clientsBusy) return html + '<div class="empty">Loading clients\\u2026</div>';
+    if (rows.length === 0) {
+      return html + '<div class="empty">' +
+        (clientsQuery ? "Nothing matches that filter." :
+          "No clients here yet.<br>Rows appear as leads write and the bot reads what they asked for.") +
+        '</div>';
+    }
+
+    html += '<div class="cl-wrap"><table class="cl"><thead><tr>';
+    cols.forEach(function (c) {
+      html += '<th class="' + (clientsSort === c[0] ? "on" : "") + '" data-sort="' + c[0] + '">' + c[1] +
+        (clientsSort === c[0] ? (clientsDesc ? " \\u2193" : " \\u2191") : "") + '</th>';
+    });
+    html += '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      var leadUrl = "https://unicornproperty.amocrm.ru/leads/detail/" + encodeURIComponent(r.lead_id);
+      html += "<tr>";
+      html += '<td><a href="' + leadUrl + '" target="_blank" rel="noopener" title="' + esc(r.intent || "") + '">' +
+        '<span class="cl-cut">' + (r.name ? esc(r.name) : "Lead " + esc(r.lead_id)) + '</span></a></td>';
+      html += "<td>" + clCell(r.pax) + "</td>";
+      html += "<td>" + clCell(r.bedrooms) + "</td>";
+      html += "<td>" + clCell(r.move_in) + (r.stay ? ' <span class="cl-sub">' + esc(r.stay) + "</span>" : "") + "</td>";
+      html += '<td><span class="cl-cut" title="' + esc(r.areas || "") + '">' + clCell(r.areas) + "</span></td>";
+      html += "<td>" + clMoney(r.budget_idr_monthly) + "</td>";
+      html += '<td class="cl-sub">' + (r.last_message_at ? esc(fmtAgo(r.last_message_at)) : "\\u2014") + "</td>";
+      html += "</tr>";
+    });
+    html += "</tbody></table></div>";
+    html += '<div class="cl-note">' + rows.length + ' client' + (rows.length === 1 ? "" : "s") +
+      '. A dash means the client has not said it yet \\u2014 that is the next thing to ask them. ' +
+      'Bedrooms, area and budget are also taken from the ad form when it was filled in. Tap a name to open the lead.</div>';
+    return html;
+  }
+
   // ── Report ───────────────────────────────────────────────────────────────
   function fetchReport() {
     var b = activeBroker();
@@ -1860,6 +2039,7 @@ const PAGE_HTML = `<!doctype html>
       html += '<button class="refresh-btn" id="toggle-push-btn" title="' + (pushOn ? "Disable notifications" : "Enable notifications") + '" style="' + (pushOn ? "" : "opacity:.45") + '">' + (pushOn ? "\\ud83d\\udd14" : "\\ud83d\\udd15") + '</button>';
     }
     html += '<button class="refresh-btn" id="listing-btn" title="Add a listing" style="opacity:.65">\\ud83c\\udfe1</button>';
+    html += '<button class="refresh-btn" id="clients-btn" title="' + (clientsView ? "Back to leads" : "Clients \\u2014 who wants what") + '" style="' + (clientsView ? "color:#2dd4bf" : "opacity:.65") + '">\\ud83d\\udc65</button>';
     html += '<button class="refresh-btn" id="report-btn" title="' + (reportView ? "Back to leads" : "My report") + '" style="' + (reportView ? "color:#2dd4bf" : "opacity:.65") + '">\\ud83d\\udcca</button>';
     html += '<button class="refresh-btn" id="refresh-btn" title="Refresh">\\u27f3</button>';
     html += '<button class="refresh-btn" id="autopilot-btn" title="Autopilot">\\ud83e\\udd16</button>';
@@ -1886,7 +2066,7 @@ const PAGE_HTML = `<!doctype html>
       html += '<button class="refresh-btn" id="ap-save" style="margin-top:6px">Save</button>';
       html += "</div>";
     }
-    if (!reportView) {
+    if (!reportView && !clientsView) {
       html += '<div class="tabs">';
       for (var i = 0; i < tabDef.length; i++) {
         var key = tabDef[i][0], label = tabDef[i][1];
@@ -1902,6 +2082,8 @@ const PAGE_HTML = `<!doctype html>
 
     if (reportView) {
       html += renderReport();
+    } else if (clientsView) {
+      html += renderClients();
     } else if (list.length === 0) {
       var emptyText = activeTab === "live"
         ? "All live replies handled. New ones will appear here as leads respond."
@@ -1932,7 +2114,7 @@ const PAGE_HTML = `<!doctype html>
     html += "</main>";
     app.innerHTML = html;
 
-    $("#refresh-btn").onclick = fetchInbox;
+    $("#refresh-btn").onclick = function () { if (clientsView) fetchClients(); else fetchInbox(); };
     var pipeSelect = $("#pipeline-select");
     if (pipeSelect) pipeSelect.onchange = function () {
       pipelineView = pipeSelect.value;
@@ -2007,6 +2189,42 @@ const PAGE_HTML = `<!doctype html>
       render();
       if (reportView) fetchReport();
     };
+    var clientsBtn = $("#clients-btn");
+    if (clientsBtn) clientsBtn.onclick = function () {
+      clientsView = !clientsView;
+      if (clientsView) reportView = false;
+      render();
+      if (clientsView && clientsRows === null) fetchClients();
+    };
+    var clQ = $("#cl-q");
+    if (clQ) clQ.oninput = function () {
+      clientsQuery = clQ.value;
+      render();
+      // render() rebuilds the whole screen, so the field the broker is typing
+      // in is a new element — put the cursor back where it was or they lose a
+      // character every keystroke.
+      var again = $("#cl-q");
+      if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+    };
+    var clScope = $("#cl-scope");
+    if (clScope) clScope.onchange = function () {
+      clientsAll = clScope.value === "all";
+      clientsRows = null;
+      render();
+      fetchClients();
+    };
+    var clCopy = $("#cl-copy");
+    if (clCopy) clCopy.onclick = clientsCopy;
+    document.querySelectorAll("table.cl th[data-sort]").forEach(function (el) {
+      el.onclick = function () {
+        var k = el.getAttribute("data-sort");
+        // Same column again flips the direction; a new column starts the way
+        // that column is actually useful — biggest budget first, but names A-Z.
+        if (clientsSort === k) clientsDesc = !clientsDesc;
+        else { clientsSort = k; clientsDesc = (k !== "name" && k !== "where" && k !== "when"); }
+        render();
+      };
+    });
     document.querySelectorAll(".tab").forEach(function (el) {
       el.onclick = function () { activeTab = el.getAttribute("data-tab"); render(); };
     });
@@ -2574,6 +2792,7 @@ const PAGE_HTML = `<!doctype html>
 
   // The 8am report push deep-links straight to the tab it is about.
   if (_qs.get("view") === "report") reportView = true;
+  if (_qs.get("view") === "clients") clientsView = true;
   // A half-written listing survives a reload, a phone lock, or amoCRM
   // navigating the panel away — the broker retyping the owner's message is
   // exactly the friction this screen exists to remove.
@@ -2590,9 +2809,10 @@ const PAGE_HTML = `<!doctype html>
     syncPushSubscription();
     fetchPushCoverage();
     if (reportView) fetchReport();
+    if (clientsView) fetchClients();
     fetchInbox().then(openDeepLinkedLead);
   }
-  setInterval(function () { if (!openItem) fetchInbox(); }, 20000);
+  setInterval(function () { if (!openItem && !clientsView) fetchInbox(); }, 20000);
 })();
 </script>
 </body>
