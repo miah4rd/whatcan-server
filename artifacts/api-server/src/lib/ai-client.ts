@@ -126,7 +126,46 @@ function sanitize<T>(value: T): T {
   return value;
 }
 
+/**
+ * The stop tap on every paid call, flippable without a deploy.
+ *
+ * There is exactly ONE credential here — ANTHROPIC_API_KEY — so nothing ever
+ * "switches" to another wallet; this server has always spent the org's API
+ * credits and only those. What was missing was a way to make it STOP on
+ * purpose: when the balance is gone the API refuses and no tokens are spent,
+ * but the owner had no switch for the case of wanting it to stop BEFORE that.
+ * Set broker_settings key `ai_enabled` to "off" and every model call refuses
+ * immediately; set it back to "on" (or delete the row) to resume.
+ */
+let aiEnabledCache: { at: number; on: boolean } | null = null;
+const AI_ENABLED_TTL_MS = 30_000;
+
+export async function aiEnabled(): Promise<boolean> {
+  if (aiEnabledCache && Date.now() - aiEnabledCache.at < AI_ENABLED_TTL_MS) return aiEnabledCache.on;
+  let on = true;
+  try {
+    const r = await pool.query("SELECT value FROM broker_settings WHERE key = 'ai_enabled' LIMIT 1");
+    const v = String(r.rows?.[0]?.value ?? "").trim().toLowerCase();
+    if (v === "off" || v === "false" || v === "0") on = false;
+  } catch {
+    // Unreadable setting must not silently disable the product.
+  }
+  aiEnabledCache = { at: Date.now(), on };
+  return on;
+}
+
+export class AiDisabledError extends Error {
+  constructor() {
+    super("AI calls are switched off (broker_settings.ai_enabled = off)");
+    this.name = "AiDisabledError";
+  }
+}
+
 export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatCompletionResult> {
+  if (!(await aiEnabled())) {
+    logger.warn({ model: opts.model, label: opts.label }, "model call refused — ai_enabled is off");
+    throw new AiDisabledError();
+  }
   const client = getAnthropic();
 
   // A prefix shorter than ~1000 tokens is silently NOT cached (Anthropic's
