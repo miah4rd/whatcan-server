@@ -2,6 +2,7 @@ import { db, leadsSyncTable } from "@workspace/db";
 import { eq, and, isNotNull, desc } from "drizzle-orm";
 import { HELPER_MODEL, chatCompletionJSON } from "./ai-client";
 import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
+import { getLeadCardCriteria } from "./lead-card-fields";
 import { logger } from "./logger";
 
 /**
@@ -61,6 +62,55 @@ export type LeadProfile = {
   alive: "alive" | "dead_candidate"; // dead ONLY when content says so, never from silence
   summary: string; // 1-2 line essence
 };
+
+/**
+ * The client's request in the shape a broker recognises them by: who, how many
+ * people, how many bedrooms, when, where. Every field is nullable on purpose —
+ * a dash in the table is honest, an invented number is worse than nothing.
+ */
+export type LeadRequest = {
+  pax: number | null;
+  bedrooms: number | null;
+  areas: string[];
+  moveIn: string | null;
+  stay: string | null;
+  budgetIdrMonthly: number | null;
+};
+
+const EMPTY_REQUEST: LeadRequest = {
+  pax: null, bedrooms: null, areas: [], moveIn: null, stay: null, budgetIdrMonthly: null,
+};
+
+function intInRange(v: unknown, min: number, max: number): number | null {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  const r = Math.round(n);
+  return r >= min && r <= max ? r : null;
+}
+
+function shortText(v: unknown, max: number): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  if (!t || t.toLowerCase() === "null" || t.toLowerCase() === "unclear") return null;
+  return t.slice(0, max);
+}
+
+function coerceRequest(raw: unknown): LeadRequest {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const areas = Array.isArray(r.areas)
+    ? [...new Set(r.areas.map((x) => shortText(x, 40)).filter((x): x is string => !!x))].slice(0, 5)
+    : [];
+  return {
+    // Upper bounds are sanity rails, not business rules: a "pax" of 400 is the
+    // model having copied a price, and it must not reach the broker's table.
+    pax: intInRange(r.pax, 1, 40),
+    bedrooms: intInRange(r.bedrooms, 1, 14),
+    areas,
+    moveIn: shortText(r.moveIn, 60),
+    stay: shortText(r.stay, 60),
+    budgetIdrMonthly: intInRange(r.budgetIdrMonthly, 1_000_000, 2_000_000_000),
+  };
+}
 
 const TEMP_VALUES = new Set(["cold", "warm", "hot"]);
 const ALIVE_VALUES = new Set(["alive", "dead_candidate"]);
@@ -155,7 +205,7 @@ export async function refreshLeadProfile(opts: {
 
   let profile: LeadProfile;
   try {
-    const raw = await chatCompletionJSON<Partial<LeadProfile>>({
+    const raw = await chatCompletionJSON<Partial<LeadProfile> & { request?: unknown }>({
       model: HELPER_MODEL,
       label: "lead-profile",
       system: `You maintain a compact intelligence profile for a real-estate lead, for a Bali property brokerage. Read the conversation and output a JSON profile.
@@ -172,6 +222,13 @@ Fields:
 - openQuestion: true if the lead asked a real question that was never properly answered.
 - alive: "alive" | "dead_candidate" (per the rule above).
 - summary: 1-2 lines capturing the essence of this lead (who they are, what they want, where it stands).
+- request: an object holding what this client concretely asked for. Use null (and [] for areas) for anything they have NOT said. NEVER guess, never fill in a typical case — the broker reads this to remember a real person.
+  - pax: how many people will actually live there, as an integer. "me and my wife" is 2, "family of four" is 4. This is people, NOT bedrooms.
+  - bedrooms: how many bedrooms they want, as an integer. If they gave a range, use the lower number.
+  - areas: array of the Bali areas or districts they named, e.g. ["Canggu", "Umalas"]. Empty array if none.
+  - moveIn: when they want to move in, in their own words - "1 November", "mid-October", "asap", "after New Year". Do NOT convert it into a date.
+  - stay: how long they need it - "3 months", "a year", "6-12 months".
+  - budgetIdrMonthly: their MONTHLY rental budget in rupiah, as an integer. Convert what they said: "40 juta" / "40 million" is 40000000, and dollars convert at 16000 rupiah to 1 USD. Null for a purchase budget or when no monthly figure was given.
 
 Respond with ONLY the JSON object.${calibrationBlock}`,
       messages: [
@@ -180,7 +237,7 @@ Respond with ONLY the JSON object.${calibrationBlock}`,
           content: `Lead stage (may be stale): ${opts.leadStage ?? "unknown"}\nLead card notes: ${opts.leadNotes?.trim() || "(none)"}\n\nConversation (timestamped, oldest → newest):\n${dialog}`,
         },
       ],
-      max_tokens: 300,
+      max_tokens: 450, // +150 for the request object
     });
     profile = coerceProfile(raw);
   } catch (err) {

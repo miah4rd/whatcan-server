@@ -71,17 +71,27 @@ const BROKER_OPENING_DELAY_MS = 15 * 60 * 1000;
  * caught them. Work from the request when we have it, and when we do not, ask
  * for the pieces a shortlist actually needs — and say why we are asking.
  */
-const BROKER_OPENING_BRIEF = `SITUATION: This is a paid-ad lead. Fifteen minutes ago they clicked an ad for one villa and received an automatic welcome with that listing. They have not replied. Their only words are the enquiry above — which also carries whatever the Meta lead form asked them (budget, area, bedrooms, move-in timing, free-text notes).
+function brokerOpeningBrief(welcomeSent: string): string {
+  return `SITUATION: This is a paid-ad lead. Fifteen minutes ago they clicked an ad for one villa. They have not replied. Their only words are the enquiry above — which also carries whatever the Meta lead form asked them (budget, area, bedrooms, move-in timing, free-text notes).
 
-Task: Write the broker's FIRST real message. It has to earn the reply the automatic welcome did not get, so it must add something that message did not contain.
+THEY HAVE ALREADY RECEIVED THIS MESSAGE FROM US, VERBATIM:
+"""
+${welcomeSent.trim()}
+"""
 
+Task: Write the broker's FIRST real message. Everything in the block above has already been said, so saying any of it again is the one way this message fails.
+
+ABSOLUTE, both of them:
+- Do NOT describe that villa again — not its bedrooms, pool, rooftop, view, area, price, or "brand new". Not its link. They have it. Naming it in passing is fine; selling it again is not.
+- Do NOT ask when they are moving in, for how long, or their dates — ANYWHERE in the message, opening or closing. The message above already asked an open question and got silence; asking a bigger one is not an answer to that.
+
+What to write instead:
 - The form answers are the REQUEST. The villa they clicked is only the ad that caught their eye — they may well want something else. Work from the request whenever you have it.
-- If you know what they want (any of: budget, area, bedrooms, dates): say briefly that you have places that fit THAT, and close with ONE question that moves things forward — narrowing the shortlist or proposing a viewing.
-- If the request is missing or only partial: ask ONLY for what you still need in order to shortlist properly, and say why you are asking — so you can send the right places instead of a random list. At most two things, in one natural sentence.
-- NEVER open with a bare "when are you looking to move in?" or "how long do you need it?". On its own that is a chase: it asks the client to do work and gives them nothing.
-- Do not repeat the welcome, and do not re-send the same listing link.
+- If you know what they want (any of: budget, area, bedrooms): say you have other places that fit THAT and offer to send them. This is the whole point — it gives them something the first message did not.
+- If you know nothing beyond the click: ask ONE thing that would let you shortlist — what matters most to them, or which area or budget they are working to — and say why you are asking, so it reads as work you are doing for them rather than a form to fill in.
 
-Under 90 words.`
+Under 70 words. One question, not two.`;
+}
 
 /**
  * Kill switch. The owner can stop every automatic welcome without a deploy by
@@ -328,6 +338,7 @@ export async function processAdLeadBrokerOpening(): Promise<number> {
       leadStage: leadsSyncTable.leadStage,
       pipeline: leadsSyncTable.pipeline,
       welcomeAt: sentMessagesTable.createdAt,
+      welcomeText: sentMessagesTable.messageText,
     })
     .from(sentMessagesTable)
     .innerJoin(leadsSyncTable, eq(leadsSyncTable.leadId, sentMessagesTable.leadId))
@@ -408,7 +419,7 @@ export async function processAdLeadBrokerOpening(): Promise<number> {
         leadStage: lead.leadStage,
         correctionsBlock: corrections,
         pipeline: lead.pipeline,
-        taskBrief: BROKER_OPENING_BRIEF,
+        taskBrief: brokerOpeningBrief(lead.welcomeText ?? ""),
       });
       if (!text) continue;
 
