@@ -3,6 +3,7 @@ import { lt, isNotNull, eq, and, or, isNull, inArray, desc, sql } from "drizzle-
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL } from "./ai-client";
 import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming, conversationWindow } from "./dialog-parser";
 import { getFollowupSteps, getQualificationSteps } from "./settings";
+import { createHash } from "node:crypto";
 import { logger } from "./logger";
 import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestion";
 import { OBJECTION_PLAYBOOK, type PlaybookEntry } from "./objection-playbook";
@@ -361,7 +362,27 @@ Constraints: minimum 6 hours, maximum 360 hours (15 days). Return null if no cle
  * wrong number, not interested, already bought, hostile, blocked, etc.
  * Uses GPT-4o-mini for speed — non-fatal, defaults to true on error.
  */
+/**
+ * Memoised on the exact text it judges.
+ *
+ * The verdict is a pure function of the conversation and the stage, but the
+ * scheduler re-asked it on every pass for every lead still in the queue — 30
+ * calls an hour, every hour, for days, almost all of them re-deciding an
+ * unchanged conversation (~$0.9/day of the ~$4/day baseline, 2026-08-21).
+ * Keyed on a hash of the input, so a lead who says "not interested" is judged
+ * afresh the moment their words change; nothing is held stale.
+ */
+const aliveVerdicts = new Map<string, boolean>();
+const ALIVE_CACHE_MAX = 5000;
+
+function aliveKey(content: string, stage: string): string {
+  return createHash("sha1").update(`${stage}\u0000${content}`).digest("hex");
+}
+
 async function isLeadActiveForFollowup(content: string, stage: string): Promise<boolean> {
+  const key = aliveKey(content, stage);
+  const cached = aliveVerdicts.get(key);
+  if (cached !== undefined) return cached;
   try {
     const snippet = conversationWindow(content, 1000, 3000);
     const parsed = await chatCompletionJSON<{ active?: boolean; reason?: string }>({
@@ -392,10 +413,19 @@ When in doubt → return true. False positives (following up on a dead lead) are
       ],
       max_tokens: 60,
     });
+    // Bounded: this runs for the life of the process, so it must not grow
+    // without limit. Oldest-first eviction is enough — a verdict that falls out
+    // is simply recomputed.
+    if (aliveVerdicts.size >= ALIVE_CACHE_MAX) {
+      const oldest = aliveVerdicts.keys().next().value;
+      if (oldest !== undefined) aliveVerdicts.delete(oldest);
+    }
     if (parsed.active === false) {
       logger.info({ stage, reason: parsed.reason }, "relevance check: lead marked inactive");
+      aliveVerdicts.set(key, false);
       return false;
     }
+    aliveVerdicts.set(key, true);
     return true;
   } catch {
     return true; // non-fatal — default to active
