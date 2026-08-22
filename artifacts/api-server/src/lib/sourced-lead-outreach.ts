@@ -35,9 +35,16 @@ async function fetchLeadNote(leadId: string): Promise<string | null> {
     const data = await amoFetch<{ _embedded?: { notes?: AmoNote[] } }>(
       `/api/v4/leads/${leadId}/notes?limit=25`,
     );
+    // The 20-character floor was there to skip system chatter, and it silently
+    // ate the client's own words: the website form writes free text as
+    // "Client notes: Pets" — eighteen characters — so "Pets", "Quiet area",
+    // "With office" all vanished before anything could read them (lead
+    // 23321145, 2026-08-22). Length was never the right test for noise; the
+    // housekeeping pattern is, and it already exists. Keep anything that is not
+    // system chatter and is more than a stray character.
     const texts = (data?._embedded?.notes ?? [])
       .map((n) => (n.params?.text ?? "").trim())
-      .filter((t) => t.length > 20);
+      .filter((t) => t.length > 2 && !NOTE_HOUSEKEEPING.test(t));
     return texts.length > 0 ? texts.join("\n").slice(0, 2000) : null;
   } catch (err) {
     logger.warn({ err, leadId }, "sourced-lead: notes fetch failed");
