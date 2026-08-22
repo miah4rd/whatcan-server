@@ -31,6 +31,7 @@ import brokerAgentRouter from "./broker-agent";
 import reportRouter from "./report";
 import autopilotReadinessRouter from "./autopilot-readiness";
 import clientsRouter from "./clients";
+import applyLeadRouter from "./apply-lead";
 
 const router = Router();
 
@@ -66,5 +67,6 @@ router.use(listingIntakeRouter);
 router.use(brokerAgentRouter);
 router.use(reportRouter);
 router.use(clientsRouter);
+router.use(applyLeadRouter);
 
 export default router;
