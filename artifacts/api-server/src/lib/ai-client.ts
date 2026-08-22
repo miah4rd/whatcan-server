@@ -154,6 +154,67 @@ export async function aiEnabled(): Promise<boolean> {
   return on;
 }
 
+/**
+ * The ceiling. Nothing here is allowed to spend without a limit.
+ *
+ * The account emptied overnight because two passes rewrote the same drafts once
+ * a minute and nothing was watching the total — the first anyone knew was a
+ * dead product in the morning (2026-08-21). A specific loop is now fixed, but
+ * the class of failure is "some pass calls in a circle", and the only defence
+ * that survives the NEXT one is a number the code refuses to cross.
+ *
+ * Rolling 24 hours, not a calendar day: the timezone in this database is not
+ * what it claims, and a cap that can be reset by a boundary nobody agrees on is
+ * not a cap. Default 25 USD, overridable with broker_settings key
+ * `ai_daily_cap_usd`. Normal days run 2–5 USD, so 25 is far above real work and
+ * far below a runaway.
+ */
+const DEFAULT_DAILY_CAP_USD = 25;
+const CAP_TTL_MS = 60_000;
+let capCache: { at: number; spent: number; cap: number } | null = null;
+
+export class AiSpendCapError extends Error {
+  constructor(spent: number, cap: number) {
+    super(`AI daily spend cap reached: $${spent.toFixed(2)} of $${cap.toFixed(2)} in the last 24h`);
+    this.name = "AiSpendCapError";
+  }
+}
+
+async function readDailyCapUsd(): Promise<number> {
+  try {
+    const r = await pool.query("SELECT value FROM broker_settings WHERE key = 'ai_daily_cap_usd' LIMIT 1");
+    const v = Number(String(r.rows?.[0]?.value ?? "").trim());
+    if (Number.isFinite(v) && v > 0) return v;
+  } catch { /* fall through to the default */ }
+  return DEFAULT_DAILY_CAP_USD;
+}
+
+async function assertUnderSpendCap(): Promise<void> {
+  if (capCache && Date.now() - capCache.at < CAP_TTL_MS) {
+    if (capCache.spent >= capCache.cap) throw new AiSpendCapError(capCache.spent, capCache.cap);
+    return;
+  }
+  let spent = 0;
+  let cap = DEFAULT_DAILY_CAP_USD;
+  try {
+    cap = await readDailyCapUsd();
+    const r = await pool.query(
+      "SELECT coalesce(sum(cost_usd), 0)::float8 AS spent FROM ai_usage WHERE created_at > now() - interval '24 hours'",
+    );
+    spent = Number(r.rows?.[0]?.spent ?? 0);
+  } catch {
+    // An unreadable ledger must not take the product down; a real runaway will
+    // still be caught on the next tick when the query works.
+    capCache = { at: Date.now(), spent: 0, cap };
+    return;
+  }
+  capCache = { at: Date.now(), spent, cap };
+  if (spent >= cap) {
+    logger.error({ spent: Number(spent.toFixed(2)), cap }, "AI SPEND CAP REACHED — refusing every model call until spend falls below the cap");
+    throw new AiSpendCapError(spent, cap);
+  }
+}
+
 export class AiDisabledError extends Error {
   constructor() {
     super("AI calls are switched off (broker_settings.ai_enabled = off)");
@@ -166,6 +227,7 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<ChatComp
     logger.warn({ model: opts.model, label: opts.label }, "model call refused — ai_enabled is off");
     throw new AiDisabledError();
   }
+  await assertUnderSpendCap();
   const client = getAnthropic();
 
   // A prefix shorter than ~1000 tokens is silently NOT cached (Anthropic's
