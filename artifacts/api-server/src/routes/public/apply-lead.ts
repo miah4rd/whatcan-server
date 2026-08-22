@@ -111,13 +111,20 @@ router.post("/apply-lead", async (req, res) => {
   // lead, same as a fresh Meta Instant Form submission used to be. (amoCRM's
   // own account-level duplicate-contact merging, if ever turned on in its
   // settings, sits outside what this endpoint's request body controls.)
-  let result: { _embedded?: { leads?: Array<{ id: number }> } } | null = null;
+  //
+  // /leads/complex (not plain /leads) — verified live: plain POST /api/v4/leads
+  // rejects an inline (id-less) _embedded.contacts entry with "FieldMissing:
+  // _embedded.contacts.0.id" — it only accepts a reference to an EXISTING
+  // contact. /leads/complex is amoCRM's endpoint for creating a lead and a new
+  // contact in one call, and returns a flat array, not an _embedded wrapper.
+  type ComplexLeadResult = Array<{ id: number; contact_id?: number }>;
+  let result: ComplexLeadResult | null = null;
   try {
-    result = await amoPost<{ _embedded?: { leads?: Array<{ id: number }> } }>("/api/v4/leads", leadPayload);
+    result = await amoPost<ComplexLeadResult>("/api/v4/leads/complex", leadPayload);
   } catch (err) {
     logger.error({ err, listingCode }, "apply-lead: amoCRM request threw");
   }
-  const leadId = result?._embedded?.leads?.[0]?.id ?? null;
+  const leadId = result?.[0]?.id ?? null;
 
   if (!leadId) {
     logger.error({ listingCode, budget, bedrooms }, "apply-lead: amoCRM did not accept the lead");
