@@ -68,6 +68,7 @@ router.post("/apply-lead", async (req, res) => {
   const areas = Array.isArray(body.areas)
     ? body.areas.filter(isNonEmptyString).map((a) => a.trim().slice(0, 40)).slice(0, 20)
     : [];
+  const notes = isNonEmptyString(body.notes) ? body.notes.trim().slice(0, 1000) : "";
   const name = isNonEmptyString(body.name) ? body.name.trim().slice(0, 100) : "";
   const phone = isNonEmptyString(body.phone) ? body.phone.trim().slice(0, 20) : "";
 
@@ -133,6 +134,23 @@ router.post("/apply-lead", async (req, res) => {
   }
 
   logger.info({ leadId, listingCode, budget, bedrooms, moveIn, areas }, "apply-lead: lead created from website form");
+
+  // The form's free-text field has no custom-field home on the card, so it
+  // goes on the lead as a note — the same place the old ad-form integration
+  // already put qualitative answers (see lib/lead-card-fields.ts's header
+  // comment on "Form answers:" in the note). English only, no markers: this
+  // account's card is read by the bot, and non-English text in a note has
+  // broken its logic before.
+  if (notes) {
+    try {
+      await amoPost(`/api/v4/leads/${leadId}/notes`, [
+        { note_type: "common", params: { text: `Client notes: ${notes}` } },
+      ]);
+    } catch (err) {
+      logger.warn({ err, leadId }, "apply-lead: could not attach the notes field (non-fatal)");
+    }
+  }
+
   res.json({ ok: true, leadId });
 
   // Meta Conversions API — fired only after this point, i.e. only for a lead
