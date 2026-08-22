@@ -3,7 +3,7 @@ import { eq, and, isNotNull, desc } from "drizzle-orm";
 import { HELPER_MODEL, chatCompletionJSON } from "./ai-client";
 import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
 import { getLeadCardCriteria } from "./lead-card-fields";
-import { syncRequestToAmoCard, type RequestFieldValues } from "./amo-request-fields";
+import { syncRequestToAmoCard } from "./amo-request-fields";
 import { logger } from "./logger";
 
 /**
@@ -261,31 +261,16 @@ Respond with ONLY the JSON object.${calibrationBlock}`,
   // effective value the broker set.
   let brokerOverridden = false;
   let effectiveTemp = profile.temperature;
-  // What the card already says, read in the SAME query as the temperature
-  // override so the write-back below can send only what actually changed.
-  let prevRequest: Partial<RequestFieldValues> = {};
   try {
     const [cur] = await db
       .select({
         src: leadsSyncTable.profileTemperatureSource,
         temp: leadsSyncTable.profileTemperature,
-        pax: leadsSyncTable.reqPax,
-        bedrooms: leadsSyncTable.reqBedrooms,
-        areas: leadsSyncTable.reqAreas,
-        moveIn: leadsSyncTable.reqMoveIn,
-        stay: leadsSyncTable.reqStay,
-        budgetIdrMonthly: leadsSyncTable.reqBudgetIdrMonthly,
       })
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, opts.leadId))
       .limit(1);
     brokerOverridden = cur?.src === "broker";
-    if (cur) {
-      prevRequest = {
-        pax: cur.pax, bedrooms: cur.bedrooms, areas: cur.areas,
-        moveIn: cur.moveIn, stay: cur.stay, budgetIdrMonthly: cur.budgetIdrMonthly,
-      };
-    }
     if (brokerOverridden && TEMP_VALUES.has(String(cur?.temp))) {
       effectiveTemp = cur!.temp as LeadProfile["temperature"];
     }
@@ -356,7 +341,6 @@ Respond with ONLY the JSON object.${calibrationBlock}`,
       stay: request.stay,
       budgetIdrMonthly: request.budgetIdrMonthly,
     },
-    prevRequest,
   );
 
   // Return the EFFECTIVE profile so callers (ranking, generation) act on the
