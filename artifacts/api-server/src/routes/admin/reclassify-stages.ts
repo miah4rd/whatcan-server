@@ -106,7 +106,16 @@ router.post("/admin/reclassify-stages", async (req, res) => {
         conversationText: formatDialogForAI(dialog.messages),
         replyText: "",
         attachmentsCount: 0,
-      }).catch(() => null);
+      }).catch((err) => {
+        // classifyStage logs its OWN thrown errors, but a throw from
+        // loadPipelines() (an amoCRM lookup, outside classifyStage's own
+        // try/catch) reaches only this .catch — silently, with nothing in the
+        // log to tell "genuinely nothing to do" apart from "something broke".
+        // 52 of 62 leads landed in noChange with zero explanation for it
+        // (2026-08-25) — this is that explanation.
+        logger.warn({ err, leadId: lead.leadId }, "reclassify-stages: classifyStage threw");
+        return null;
+      });
 
       if (!state) {
         skipped.noChange++;
