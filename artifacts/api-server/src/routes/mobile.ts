@@ -2385,26 +2385,12 @@ const PAGE_HTML = `<!doctype html>
       html += '</div>';
     } else {
       html += '<button class="act approve" id="approve-btn" ' + ((it.busy || it.loading) ? "disabled" : "") + '>' + (it.busy ? "Sending…" : "\\u2713 Approve &amp; Send") + '</button>';
-      if (it.kind === "live") {
-        html += '<button class="act replied" id="replied-btn" ' + (it.busy ? "disabled" : "") + '>\\ud83d\\udeab No reply needed</button>';
-      } else {
-        html += '<button class="act skip" id="skip-btn" ' + (it.busy ? "disabled" : "") + '>\\u2715 Skip</button>';
-      }
+      html += '<button class="act skip" id="skip-btn" ' + (it.busy ? "disabled" : "") + '>\\u2715 Skip</button>';
       html += '<button class="act edit" id="edit-btn" ' + ((it.busy || it.loading) ? "disabled" : "") + '>\\u270e Edit</button>';
     }
     html += '</div>';
 
-    if (!editing && !it._stageConfirm && it.kind === "live") {
-      html += '<div class="resched-row">';
-      html += '<button class="resched-toggle" id="resched-toggle">\\ud83d\\udcc5 ' + (it._reschedOpen ? "Cancel reschedule" : "Reschedule follow-up") + '</button>';
-      if (it._reschedOpen) {
-        html += '<input type="date" id="resched-date" class="resched-date" value="' + (it._reschedDate || "") + '">';
-        html += '<button class="mini" id="resched-confirm">\\u2713 Set date</button>';
-      }
-      html += '</div>';
-    }
-
-    if (it._skipExpanded && it.kind !== "live") {
+    if (it._skipExpanded) {
       html += '<div class="skip-panel">';
       if (it._skipTaskMode) {
         html += '<textarea class="aiinput" id="skip-task-voice" placeholder="Describe task by voice or text…" rows="2" style="background:#141827;border:1px solid #2a3146;border-radius:8px;padding:10px">' + esc(it._skipTaskVoice || "") + '</textarea>';
@@ -2667,31 +2653,20 @@ const PAGE_HTML = `<!doctype html>
       it._approving = true;
       await approveServer(it, fullText);
     };
-    if (it.kind === "live") {
-      $("#replied-btn").onclick = function () { brokerReplied(it); };
-    } else {
-      $("#skip-btn").onclick = function () { it._skipExpanded = !it._skipExpanded; it._skipTaskMode = false; render(); };
-    }
+    $("#skip-btn").onclick = function () { it._skipExpanded = !it._skipExpanded; it._skipTaskMode = false; render(); };
     $("#edit-btn").onclick = function () { editing = true; editValue = it.text; render(); };
 
-    var reschedToggle = $("#resched-toggle");
-    if (reschedToggle) reschedToggle.onclick = function () { it._reschedOpen = !it._reschedOpen; renderDetail(); };
-    var reschedConfirm = $("#resched-confirm");
-    if (reschedConfirm) reschedConfirm.onclick = async function () {
-      var dEl = $("#resched-date"); var d = dEl ? dEl.value : "";
-      if (!d) { showToast("Pick a date first"); return; }
-      it._reschedDate = d; it.busy = true; render();
-      try {
-        var iso = new Date(d + "T09:00:00").toISOString();
-        await fetch(API + "/reschedule-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: String(it.lead_id), taskDate: iso }) });
-        showToast("Follow-up moved to " + d);
-        openItem = null; await fetchInbox();
-      } catch (e) { showToast("Reschedule failed"); it.busy = false; render(); }
-    };
-
-    if (it._skipExpanded && it.kind !== "live") {
+    if (it._skipExpanded) {
       if (!it._skipTaskMode) {
-        $("#skip-trash-btn").onclick = function () { skipServer(it); };
+        // A LIVE draft has no "push" state to advance — the lead just spoke and
+        // needs an adaptive next-touch scheduled, which is exactly what
+        // /no-reply-needed does (and correctly closes/replaces amoCRM tasks).
+        // Routing a live-kind "Skip" through the generic /skip endpoint would
+        // silently drop the follow-up entirely, since that endpoint's schedule-
+        // advance logic only runs for kind === "push".
+        $("#skip-trash-btn").onclick = function () {
+          if (it.kind === "live") { brokerReplied(it); } else { skipServer(it); }
+        };
         [1, 3, 5, 7].forEach(function (n) {
           var btn = $("#skip-resched-" + n);
           if (btn) btn.onclick = function () { quickReschedule(it, n); };
