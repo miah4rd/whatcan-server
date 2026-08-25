@@ -1474,6 +1474,23 @@ const PAGE_HTML = `<!doctype html>
     await fetchInbox();
   }
 
+  async function quickReschedule(item, days) {
+    item.busy = true; render();
+    try {
+      var target = new Date();
+      target.setDate(target.getDate() + days);
+      var y = target.getFullYear(), m = String(target.getMonth() + 1).padStart(2, "0"), d = String(target.getDate()).padStart(2, "0");
+      var iso = new Date(y + "-" + m + "-" + d + "T09:00:00").toISOString();
+      await fetch(API + "/reschedule-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: String(item.lead_id), taskDate: iso }) });
+      showToast("Follow-up moved +" + days + "d");
+      openItem = null;
+      await fetchInbox();
+    } catch (e) {
+      showToast("Reschedule failed");
+      item.busy = false; render();
+    }
+  }
+
   async function brokerReplied(item) {
     item.busy = true; render();
     try {
@@ -2377,7 +2394,7 @@ const PAGE_HTML = `<!doctype html>
     }
     html += '</div>';
 
-    if (!editing && !it._stageConfirm) {
+    if (!editing && !it._stageConfirm && it.kind === "live") {
       html += '<div class="resched-row">';
       html += '<button class="resched-toggle" id="resched-toggle">\\ud83d\\udcc5 ' + (it._reschedOpen ? "Cancel reschedule" : "Reschedule follow-up") + '</button>';
       if (it._reschedOpen) {
@@ -2389,18 +2406,30 @@ const PAGE_HTML = `<!doctype html>
 
     if (it._skipExpanded && it.kind !== "live") {
       html += '<div class="skip-panel">';
-      if (!it._skipTaskMode) {
-        html += '<div class="skip-row">';
-        html += '<span class="skip-lbl">Skip:</span>';
-        html += '<button class="mini" id="skip-auto-btn">\\u2715 Continue auto schedule</button>';
-        html += '<button class="mini" id="skip-taskmode-btn">\\ud83d\\udcc5 Set manual task</button>';
-        html += '<button class="mini mini-danger" id="bot-exclude-btn">\\u2298 Remove from bot</button>';
-        html += '</div>';
-      } else {
+      if (it._skipTaskMode) {
         html += '<textarea class="aiinput" id="skip-task-voice" placeholder="Describe task by voice or text…" rows="2" style="background:#141827;border:1px solid #2a3146;border-radius:8px;padding:10px">' + esc(it._skipTaskVoice || "") + '</textarea>';
         html += '<div class="ai-btn-row" style="margin-top:6px">';
         html += '<button class="ai-mic-btn" id="skip-task-voice-btn" title="Voice input">\\ud83c\\udf99 Dictate</button>';
         html += '<button class="ai-send-btn" id="skip-task-confirm-btn" ' + (it.busy ? "disabled" : "") + '>\\u2713 Set Task</button>';
+        html += '</div>';
+      } else if (it._skipReschedOpen) {
+        html += '<div class="skip-row">';
+        html += '<span class="skip-lbl">Reschedule follow-up:</span>';
+        html += '<button class="mini" id="skip-resched-1">+1 day</button>';
+        html += '<button class="mini" id="skip-resched-3">+3 days</button>';
+        html += '<button class="mini" id="skip-resched-5">+5 days</button>';
+        html += '<button class="mini" id="skip-resched-7">+7 days</button>';
+        html += '<button class="mini" id="skip-resched-cancel">\\u2715 Cancel</button>';
+        html += '</div>';
+      } else {
+        html += '<div class="skip-row">';
+        html += '<span class="skip-lbl">Skip:</span>';
+        html += '<button class="mini" id="skip-trash-btn">\\u2715 Skip (trash)</button>';
+        html += '<button class="mini" id="skip-resched-open-btn">\\ud83d\\udcc5 Reschedule follow-up</button>';
+        html += '</div>';
+        html += '<div class="skip-row" style="margin-top:8px">';
+        html += '<button class="mini" id="skip-taskmode-btn">Set manual task</button>';
+        html += '<button class="mini mini-danger" id="bot-exclude-btn">\\u2298 Remove from bot</button>';
         html += '</div>';
       }
       html += '</div>';
@@ -2644,7 +2673,7 @@ const PAGE_HTML = `<!doctype html>
     if (it.kind === "live") {
       $("#replied-btn").onclick = function () { brokerReplied(it); };
     } else {
-      $("#skip-btn").onclick = function () { it._skipExpanded = !it._skipExpanded; it._skipTaskMode = false; render(); };
+      $("#skip-btn").onclick = function () { it._skipExpanded = !it._skipExpanded; it._skipTaskMode = false; it._skipReschedOpen = false; render(); };
     }
     $("#edit-btn").onclick = function () { editing = true; editValue = it.text; render(); };
 
@@ -2664,8 +2693,15 @@ const PAGE_HTML = `<!doctype html>
     };
 
     if (it._skipExpanded && it.kind !== "live") {
-      if (!it._skipTaskMode) {
-        $("#skip-auto-btn").onclick = function () { skipServer(it); };
+      if (it._skipReschedOpen) {
+        $("#skip-resched-cancel").onclick = function () { it._skipReschedOpen = false; render(); };
+        [1, 3, 5, 7].forEach(function (n) {
+          var btn = $("#skip-resched-" + n);
+          if (btn) btn.onclick = function () { quickReschedule(it, n); };
+        });
+      } else if (!it._skipTaskMode) {
+        $("#skip-trash-btn").onclick = function () { skipServer(it); };
+        $("#skip-resched-open-btn").onclick = function () { it._skipReschedOpen = true; render(); };
         $("#skip-taskmode-btn").onclick = function () { it._skipTaskMode = true; render(); };
         $("#bot-exclude-btn").onclick = async function () {
           if (!confirm("Remove this lead from the bot? It will no longer appear in Push or Live. The lead stays in CRM.")) return;
