@@ -2412,20 +2412,17 @@ const PAGE_HTML = `<!doctype html>
         html += '<button class="ai-mic-btn" id="skip-task-voice-btn" title="Voice input">\\ud83c\\udf99 Dictate</button>';
         html += '<button class="ai-send-btn" id="skip-task-confirm-btn" ' + (it.busy ? "disabled" : "") + '>\\u2713 Set Task</button>';
         html += '</div>';
-      } else if (it._skipReschedOpen) {
+      } else {
         html += '<div class="skip-row">';
+        html += '<span class="skip-lbl">Skip:</span>';
+        html += '<button class="mini" id="skip-trash-btn">\\u2715 Skip (trash)</button>';
+        html += '</div>';
+        html += '<div class="skip-row" style="margin-top:8px">';
         html += '<span class="skip-lbl">Reschedule follow-up:</span>';
         html += '<button class="mini" id="skip-resched-1">+1 day</button>';
         html += '<button class="mini" id="skip-resched-3">+3 days</button>';
         html += '<button class="mini" id="skip-resched-5">+5 days</button>';
         html += '<button class="mini" id="skip-resched-7">+7 days</button>';
-        html += '<button class="mini" id="skip-resched-cancel">\\u2715 Cancel</button>';
-        html += '</div>';
-      } else {
-        html += '<div class="skip-row">';
-        html += '<span class="skip-lbl">Skip:</span>';
-        html += '<button class="mini" id="skip-trash-btn">\\u2715 Skip (trash)</button>';
-        html += '<button class="mini" id="skip-resched-open-btn">\\ud83d\\udcc5 Reschedule follow-up</button>';
         html += '</div>';
         html += '<div class="skip-row" style="margin-top:8px">';
         html += '<button class="mini" id="skip-taskmode-btn">Set manual task</button>';
@@ -2673,7 +2670,7 @@ const PAGE_HTML = `<!doctype html>
     if (it.kind === "live") {
       $("#replied-btn").onclick = function () { brokerReplied(it); };
     } else {
-      $("#skip-btn").onclick = function () { it._skipExpanded = !it._skipExpanded; it._skipTaskMode = false; it._skipReschedOpen = false; render(); };
+      $("#skip-btn").onclick = function () { it._skipExpanded = !it._skipExpanded; it._skipTaskMode = false; render(); };
     }
     $("#edit-btn").onclick = function () { editing = true; editValue = it.text; render(); };
 
@@ -2693,15 +2690,12 @@ const PAGE_HTML = `<!doctype html>
     };
 
     if (it._skipExpanded && it.kind !== "live") {
-      if (it._skipReschedOpen) {
-        $("#skip-resched-cancel").onclick = function () { it._skipReschedOpen = false; render(); };
+      if (!it._skipTaskMode) {
+        $("#skip-trash-btn").onclick = function () { skipServer(it); };
         [1, 3, 5, 7].forEach(function (n) {
           var btn = $("#skip-resched-" + n);
           if (btn) btn.onclick = function () { quickReschedule(it, n); };
         });
-      } else if (!it._skipTaskMode) {
-        $("#skip-trash-btn").onclick = function () { skipServer(it); };
-        $("#skip-resched-open-btn").onclick = function () { it._skipReschedOpen = true; render(); };
         $("#skip-taskmode-btn").onclick = function () { it._skipTaskMode = true; render(); };
         $("#bot-exclude-btn").onclick = async function () {
           if (!confirm("Remove this lead from the bot? It will no longer appear in Push or Live. The lead stays in CRM.")) return;
