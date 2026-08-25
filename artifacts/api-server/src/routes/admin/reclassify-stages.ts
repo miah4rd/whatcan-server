@@ -30,6 +30,18 @@ const router = Router();
 router.post("/admin/reclassify-stages", async (req, res) => {
   const pipeline = String(req.query.pipeline ?? "rental").trim();
   const broker = req.query.broker ? String(req.query.broker).trim() : null;
+  // Scope to leads CURRENTLY sitting in one named stage. Exists for the case
+  // this docstring didn't cover: a funnel restructure that RENAMES an
+  // existing status_id inherits that status's old leads under the new label
+  // without moving a single card. "Viewing Suggested" on the 2026-08-22
+  // restructure absorbed leads from whatever it used to be called — most had
+  // never had a viewing suggested at all, they were mid-budget-qualifying or
+  // even a soft close ("we don't have much matching that budget"). The
+  // pipeline-wide backfill above is forward-only and correctly leaves them
+  // alone (they're already at-or-past this stage's rank); this scope lets a
+  // specific mislabelled stage be re-checked with allowBackward on ITS OWN,
+  // without touching the rest of the funnel.
+  const onlyStage = req.query.stage ? String(req.query.stage).trim().toLowerCase() : null;
   const limit = Math.min(Number(req.query.limit ?? 200) || 200, 500);
   const apply = req.query.apply === "1" || req.query.apply === "true";
   // A backfill only promotes. Deciding in bulk that 50 conversations have
@@ -57,6 +69,7 @@ router.post("/admin/reclassify-stages", async (req, res) => {
           // backfill that silently skips most of the funnel is worse than none.
           sql`${leadsSyncTable.botExcluded} IS NOT TRUE`,
           ...(broker ? [sql`lower(${leadsSyncTable.responsibleUser}) = ${broker.toLowerCase()}`] : []),
+          ...(onlyStage ? [sql`lower(trim(${leadsSyncTable.leadStage})) = ${onlyStage}`] : []),
         ),
       )
       .limit(limit);
