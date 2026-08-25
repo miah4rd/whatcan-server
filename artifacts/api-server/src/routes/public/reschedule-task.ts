@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, leadCrmTasksTable, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { closeAmoTasksForLead, createAmoTask, getAmoLead } from "../../lib/amo-client.js";
 
 const router = Router();
@@ -64,8 +64,11 @@ router.post("/reschedule-task", async (req, res) => {
     .set({ nextFollowupAt: parsedDate })
     .where(eq(leadsSyncTable.leadId, leadId));
 
-  // 4. If deferred to the future, retire today's pending push so it leaves the
-  //    list now and regenerates fresh when the new date is due.
+  // 4. If deferred to the future, retire today's pending draft — push OR live —
+  //    so it leaves the list now and regenerates fresh when the new date is due.
+  //    A live-kind draft was left out of this once: a broker rescheduling a LIVE
+  //    lead's follow-up saw it stay pinned in LIVE for good, since only "push"
+  //    was ever cleared here.
   const BALI_OFFSET_MS = 8 * 60 * 60 * 1000;
   const nowBali = new Date(Date.now() + BALI_OFFSET_MS);
   const endOfTodayBali = new Date(
@@ -80,7 +83,7 @@ router.post("/reschedule-task", async (req, res) => {
         and(
           eq(pendingSuggestionsTable.leadId, leadId),
           eq(pendingSuggestionsTable.status, "pending"),
-          eq(pendingSuggestionsTable.kind, "push"),
+          inArray(pendingSuggestionsTable.kind, ["push", "live"]),
         ),
       );
     retiredPush = (result as unknown as { rowCount?: number }).rowCount ?? 0;
