@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, leadsSyncTable, pendingSuggestionsTable, leadCrmTasksTable } from "@workspace/db";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { computeNextFollowupDays } from "../../lib/adaptive-followup";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { createAmoTask, getAmoLead, closeAmoTasksForLead } from "../../lib/amo-client.js";
@@ -19,12 +19,38 @@ router.options("/no-reply-needed", (_req, res) => res.sendStatus(204));
  *
  * Difference from /broker-replied (which is "I already answered → drop it, no
  * follow-up"): this one keeps the lead alive with a next touch scheduled.
+ *
+ * EXCEPT when the conversation is already over. "Thanks, we found our place"
+ * is also a closer needing no reply, and scheduling a chase for it is not a
+ * lulled conversation being kept warm — it is us pestering someone who has
+ * told us they are done. The stage classifier had already read Kimberly
+ * Muylaert's "Thank you but we found our place!" and marked the draft
+ * `Closed - lost` / terminal, twice; this endpoint ignored that and booked a
+ * follow-up for two days later, so Amelia's trash tap produced a fresh amoCRM
+ * task on a dead lead (23291381, 2026-08-26) and read as the button not
+ * working. The verdict was sitting on the very suggestion being dismissed.
+ *
+ * A terminal lead is dismissed and left alone: tasks closed, no clock, no new
+ * task. It is NOT closed automatically — that stays the broker's tap, the same
+ * rule the classifier follows everywhere else.
  */
 router.post("/no-reply-needed", async (req, res) => {
   const { leadId } = req.body as { leadId?: string; brokerId?: string };
   if (!leadId) return void res.status(400).json({ error: "leadId required" });
 
   try {
+    // Read the verdict BEFORE the pending row is marked skipped below.
+    const [pending] = await db
+      .select({
+        suggestedStage: pendingSuggestionsTable.suggestedStage,
+        terminal: pendingSuggestionsTable.suggestedStageTerminal,
+      })
+      .from(pendingSuggestionsTable)
+      .where(and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending")))
+      .orderBy(desc(pendingSuggestionsTable.createdAt))
+      .limit(1);
+    const conversationIsOver = pending?.terminal === true;
+
     const [lead] = await db
       .select({
         leadStage: leadsSyncTable.leadStage,
@@ -49,7 +75,7 @@ router.post("/no-reply-needed", async (req, res) => {
       temperature: (lead?.profileTemperature as "cold" | "warm" | "hot" | null) ?? undefined,
       ageDays,
     });
-    const taskDate = new Date(Date.now() + days * 86400000);
+    const taskDate = conversationIsOver ? null : new Date(Date.now() + days * 86400000);
 
     // 1. Drop the pending LIVE (and any pending push) so it leaves the inbox now.
     // 2. Mark us as last sender so the poll / unanswered-live pass don't re-raise
@@ -78,6 +104,15 @@ router.post("/no-reply-needed", async (req, res) => {
       req.log.warn({ err: e, leadId }, "no-reply-needed: closing existing amo tasks failed (non-fatal)");
     });
 
+    if (!taskDate) {
+      req.log.info(
+        { leadId, suggestedStage: pending?.suggestedStage },
+        "no-reply-needed: conversation is over — dismissed with no follow-up, lead left for the broker to close",
+      );
+      res.json({ ok: true, nextFollowupAt: null, terminal: true, suggestedStage: pending?.suggestedStage ?? null });
+      return;
+    }
+
     let amoOk = false;
     try {
       const amoLead = await getAmoLead(leadId);
@@ -94,7 +129,7 @@ router.post("/no-reply-needed", async (req, res) => {
     });
 
     req.log.info({ leadId, days, taskDate, amoOk }, "no-reply-needed: dismissed from LIVE, follow-up scheduled");
-    res.json({ ok: true, nextFollowupAt: taskDate, days });
+    res.json({ ok: true, nextFollowupAt: taskDate, days, terminal: false });
   } catch (err) {
     req.log.error({ err, leadId }, "no-reply-needed error");
     res.status(500).json({ error: "internal error" });
