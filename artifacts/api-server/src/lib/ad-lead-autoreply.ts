@@ -32,7 +32,6 @@
 import { db, leadsSyncTable, sentMessagesTable, pendingSuggestionsTable, brokerSettingsTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { amoFetch } from "./amo-client";
 import { describePropertiesByIds } from "./property-catalog";
 import { brokerDisplayName } from "./broker-identity";
 import { correctionsPromptBlock, deriveSituation } from "./broker-corrections";
@@ -41,6 +40,7 @@ import { notifyBrokerForLead } from "./push-notifications";
 import { resolveSendChannel, deliverText, sendAttachmentLinks } from "./outbound-send";
 import { parseDialogContent } from "./dialog-parser";
 import { getLeadCardCriteria, type LeadCardAnswers } from "./lead-card-fields";
+import { leadPhone, phoneAlreadyMessaged } from "./phone-dedupe";
 
 /**
  * Marks a delivery as the automatic ad-lead welcome. This is the ONLY record
@@ -210,69 +210,6 @@ function formatAsOurMessage(at: Date, text: string): string {
     `${p(shifted.getUTCHours())}:${p(shifted.getUTCMinutes())}:${p(shifted.getUTCSeconds())}`;
   const oneLine = text.replace(/\s*\n+\s*/g, " ").trim();
   return `${stamp} Manager (менеджер - whatsapp) → ${oneLine}`;
-}
-
-/** Digits only — "+62 811 …" and "62811…" are the same person. */
-function normalisePhone(raw: string): string {
-  return (raw ?? "").replace(/\D+/g, "");
-}
-
-/** The lead's contact phone, or "" when it cannot be read. */
-async function leadPhone(leadId: string): Promise<string> {
-  try {
-    const lead = await amoFetch<{ _embedded?: { contacts?: Array<{ id: number }> } }>(
-      `/api/v4/leads/${leadId}?with=contacts`,
-    );
-    const contactId = lead?._embedded?.contacts?.[0]?.id;
-    if (!contactId) return "";
-    const contact = await amoFetch<{
-      custom_fields_values?: Array<{ field_code?: string; values?: Array<{ value?: string }> }>;
-    }>(`/api/v4/contacts/${contactId}`);
-    const phone = (contact?.custom_fields_values ?? [])
-      .find((f) => f.field_code === "PHONE")
-      ?.values?.[0]?.value;
-    return normalisePhone(String(phone ?? ""));
-  } catch {
-    return "";
-  }
-}
-
-/**
- * Has this PHONE already been written to?
- *
- * The scout and the ad forms both create duplicate cards: Larissalara and Anna
- * Shahumyan each existed twice, with different contact ids and the same number,
- * and each received two different opening messages a minute apart. Contact id
- * is not a dedupe key here — the number is. With a human in the loop this was
- * embarrassing; with an automatic welcome it would be systematic.
- */
-async function phoneAlreadyMessaged(leadId: string, phone: string): Promise<boolean> {
-  if (!phone) return false;
-  try {
-    const found = await amoFetch<{
-      _embedded?: { contacts?: Array<{ _embedded?: { leads?: Array<{ id: number }> } }> };
-    }>(`/api/v4/contacts?query=${encodeURIComponent(phone)}&with=leads&limit=10`);
-    const siblingLeadIds = (found?._embedded?.contacts ?? [])
-      .flatMap((c) => c._embedded?.leads ?? [])
-      .map((l) => String(l.id))
-      .filter((id) => id !== leadId);
-    if (siblingLeadIds.length === 0) return false;
-
-    const [row] = await db
-      .select({ id: sentMessagesTable.id })
-      .from(sentMessagesTable)
-      .where(sql`${sentMessagesTable.leadId} IN (${sql.join(siblingLeadIds.map((i) => sql`${i}`), sql`, `)})`)
-      .limit(1);
-    if (row) {
-      logger.warn({ leadId, phone, siblingLeadIds }, "ad welcome skipped — this phone already received a message on another lead");
-      return true;
-    }
-    return false;
-  } catch (err) {
-    // A failed lookup must not become a second message to the same person.
-    logger.warn({ err, leadId }, "ad welcome: phone dedupe lookup failed — skipping the send to stay safe");
-    return true;
-  }
 }
 
 /**

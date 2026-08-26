@@ -26,6 +26,7 @@ import { decodeAmoEntities } from "./amo-text";
 import { describePropertiesByIds } from "./property-catalog";
 import { enforceBudgetFilter } from "./budget-filter";
 import { sendAdLeadWelcome } from "./ad-lead-autoreply";
+import { leadPhone, phoneIsAlreadyInConversation } from "./phone-dedupe";
 
 type AmoNote = { note_type?: string; params?: { text?: string } };
 
@@ -288,6 +289,16 @@ export async function processSourcedLeadOutreach(): Promise<number> {
       }
 
       if (!adListing && (!note || !looksLikeClientRequest(note))) continue;
+
+      // Are we already talking to this person on another card? The scout
+      // re-finds the same FB post on a later sweep and amoCRM has no idea the
+      // new contact is the old one — different id, sometimes a different
+      // alphabet for the same name. Seeding here would write a cold opening for
+      // a client who is mid-conversation, and that draft does not read as a
+      // duplicate in the inbox: it reads as the bot having lost the thread,
+      // which is how Amelia reported it (23365147 beside the live 23353083,
+      // 2026-08-26 — Yuliia was arranging a Sunday viewing at the time).
+      if (await phoneIsAlreadyInConversation(lead.leadId, await leadPhone(lead.leadId))) continue;
 
       // The ad/scout form may carry the budget — a below-threshold lead goes to
       // the bin instead of being seeded and worked.
