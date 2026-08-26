@@ -25,7 +25,30 @@ const FIELD_BEDROOMS_SELECT = 512421; // "Bedrooms" (multiselect: 1BR…5BR)
 const FIELD_AREA_TEXT = 959039; // "Preferred Area or District" (text)
 const FIELD_AREA_SELECT = 512215; // "Location/District" (multiselect)
 const FIELD_LOCATIONS_TEXT = 956457; // "Preferred Locations" (text)
+const FIELD_MOVE_IN = 968367; // "Move-in Timeline" (text)
+const FIELD_REQUEST_NOTES = 968369; // "Client Request Notes" (textarea)
 const FIELD_BUDGET_FREEFORM = [539057, 921063, 930669, 877631]; // older budget questions
+
+/**
+ * The client's answers in THEIR OWN words, exactly as the form recorded them.
+ *
+ * The parsed fields above are for deciding things — filtering a shortlist,
+ * running the budget gate — and parsing necessarily throws the phrasing away:
+ * "Rp 30–50 million/month" becomes 50000000, a range flattened to its ceiling.
+ * That is right for a filter and wrong for anything the CLIENT reads back,
+ * because quoting their "30–50" as "50" tells them we misread the one thing
+ * they took the trouble to fill in.
+ *
+ * So these stay untouched strings. Nothing here is parsed, normalised or
+ * re-worded — a value we cannot repeat verbatim is a value we leave out.
+ */
+export type LeadCardAnswers = {
+  bedrooms: string | null;
+  areas: string | null;
+  budget: string | null;
+  moveIn: string | null;
+  notes: string | null;
+};
 
 export type LeadCardCriteria = {
   /** Monthly rupiah budget as stated on the card, when it parses to one. */
@@ -34,11 +57,20 @@ export type LeadCardCriteria = {
   areas: string[];
   /** Every budget-ish string found — handed to the gate so it parses them itself. */
   budgetTexts: string[];
+  /** The same answers unparsed, for anything the client themselves will read. */
+  answers: LeadCardAnswers;
 };
 
 type AmoField = { field_id?: number; values?: Array<{ value?: unknown }> };
 
-const EMPTY: LeadCardCriteria = { budgetIdrMonthly: null, bedrooms: null, areas: [], budgetTexts: [] };
+const NO_ANSWERS: LeadCardAnswers = { bedrooms: null, areas: null, budget: null, moveIn: null, notes: null };
+const EMPTY: LeadCardCriteria = {
+  budgetIdrMonthly: null,
+  bedrooms: null,
+  areas: [],
+  budgetTexts: [],
+  answers: NO_ANSWERS,
+};
 
 // A lead's card is read on the gate AND on matching within the same second —
 // a tiny cache keeps that to one API call without ever going stale in practice.
@@ -97,6 +129,13 @@ export async function getLeadCardCriteria(leadId: string): Promise<LeadCardCrite
       bedrooms: bedrooms && bedrooms > 0 && bedrooms < 15 ? bedrooms : null,
       areas,
       budgetTexts,
+      answers: {
+        bedrooms: textOf(fields, FIELD_BEDROOMS_TEXT) || textOf(fields, FIELD_BEDROOMS_SELECT) || null,
+        areas: textOf(fields, FIELD_AREA_TEXT) || textOf(fields, FIELD_AREA_SELECT) || null,
+        budget: textOf(fields, FIELD_BUDGET) || null,
+        moveIn: textOf(fields, FIELD_MOVE_IN) || null,
+        notes: textOf(fields, FIELD_REQUEST_NOTES) || null,
+      },
     };
     cache.set(leadId, { at: Date.now(), value });
     if (budgetIdrMonthly || bedrooms || areas.length) {

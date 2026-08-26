@@ -40,6 +40,7 @@ import { generateSuggestion } from "./generate-suggestion";
 import { notifyBrokerForLead } from "./push-notifications";
 import { resolveSendChannel, deliverText, sendAttachmentLinks } from "./outbound-send";
 import { parseDialogContent } from "./dialog-parser";
+import { getLeadCardCriteria, type LeadCardAnswers } from "./lead-card-fields";
 
 /**
  * Marks a delivery as the automatic ad-lead welcome. This is the ONLY record
@@ -117,24 +118,76 @@ async function autoWelcomeEnabled(): Promise<boolean> {
 }
 
 /**
+ * The client's form answers as one line they can recognise as their own.
+ *
+ * Every value is repeated VERBATIM from the card — "3BR", "Rp 30–50
+ * million/month", "3–6 months". Nothing is parsed on the way here, because the
+ * point of the line is that the client reads back the answer they gave: a
+ * budget range re-quoted as its ceiling ("Rp 50 million") is not their answer,
+ * it is ours, and it lands as us having misread the form.
+ *
+ * A missing field is simply absent. There is no placeholder, no "not
+ * specified", and no field re-asked in passing — a gap the form left is the
+ * broker's to close 15 minutes later, in a message a human approves.
+ */
+function requestLine(answers: LeadCardAnswers): string {
+  const parts = [
+    answers.bedrooms,
+    answers.areas,
+    answers.budget,
+    answers.moveIn ? `move-in ${answers.moveIn}` : null,
+    // Free text: the client's own extra wish ("Big garden"). Repeated only when
+    // it is short enough to be a phrase — this field also collects the odd
+    // pasted paragraph, and a wall of text quoted back reads as a machine.
+    answers.notes && answers.notes.length <= 60 ? answers.notes.replace(/\s+/g, " ") : null,
+  ].filter((p): p is string => Boolean(p && p.trim()));
+  return parts.join(", ");
+}
+
+/**
  * The welcome text. Deliberately a template and not a model call: it goes out
  * with nobody reading it first, so it may not be capable of inventing a price,
- * a date or an availability. Everything in it is either the client's own name
- * or a fact read straight from the catalog.
+ * a date or an availability. Everything in it is either the client's own name,
+ * their own form answers, or a fact read straight from the catalog.
+ *
+ * It does NOT re-ask what the form already asked. Every ad lead now answers the
+ * qualifying questions before they ever reach us, so the old closing line —
+ * "is this the villa you had in mind, or would you like something different?" —
+ * asked a client to type out a request they had just finished typing. From
+ * their side that is not a welcome, it is proof nobody read it.
+ *
+ * The closing question stays, though, and is deliberately still a question: an
+ * opening that ends in a full stop gives a stranger no reason to reply at all.
+ * What changed is what it asks FOR. It no longer asks them to re-state the
+ * request; it offers the next thing they actually need — more villas to compare
+ * against the one they clicked, since nobody rents the first place they see.
+ *
+ * With no form answers on the card we genuinely do not know the request, and
+ * the original open question is the honest thing to send.
  *
  * The URL is NOT in this text — it follows as its own message, both because
  * WhatsApp only unfurls a preview for a link that stands alone and because a
  * bare link as the very first thing from an unknown number is what spam looks
  * like to WhatsApp's own filters.
  */
-function welcomeText(opts: { clientName: string; brokerName: string; listingLabel: string }): string {
+function welcomeText(opts: {
+  clientName: string;
+  brokerName: string;
+  listingLabel: string;
+  answers: LeadCardAnswers;
+}): string {
   const hi = opts.clientName ? `Hi ${opts.clientName}!` : "Hi!";
   const who = opts.brokerName ? `${opts.brokerName} here from Unicorn Property.` : "Unicorn Property here.";
-  return (
+  const opening =
     `${hi} ${who} Thanks for your enquiry about ${opts.listingLabel}. ` +
-    `Sending you the full listing now — photos, price and location.\n\n` +
-    `Is this the villa you had in mind, or would you like me to look for something different — another area, size or budget?`
-  );
+    `Sending you the full listing now — photos, price and location.`;
+
+  const request = requestLine(opts.answers);
+  const closing = request
+    ? `I can also see your request: ${request}. Want me to send over a few more matching options too?`
+    : `Is this the villa you had in mind, or would you like me to look for something different — another area, size or budget?`;
+
+  return `${opening}\n\n${closing}`;
 }
 
 /**
@@ -269,10 +322,24 @@ export async function sendAdLeadWelcome(opts: {
     return false;
   }
 
+  // The client's own form answers, read from the card they arrived on. A card
+  // we cannot read costs us the recap line, not the welcome: the template falls
+  // back to the open question rather than sending a half-written request back
+  // at them.
+  const card = await getLeadCardCriteria(leadId).catch(() => null);
+  const answers: LeadCardAnswers = card?.answers ?? {
+    bedrooms: null,
+    areas: null,
+    budget: null,
+    moveIn: null,
+    notes: null,
+  };
+
   const text = welcomeText({
     clientName: opts.clientName,
     brokerName: brokerDisplayName(responsibleUser),
     listingLabel: listing.clientLabel || listing.title,
+    answers,
   });
 
   const delivery = await deliverText(leadId, text, log);
