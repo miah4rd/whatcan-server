@@ -511,6 +511,21 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   regex; that is how they drifted.
 - **Badge count and inbox must share visibility rules** (`lib/pending-visibility.ts`)
   or the number on the app icon disagrees with what the broker sees.
+- **"Needs no reply" and "this conversation is over" are not the same closer.**
+  `/no-reply-needed` exists for a lull — "thanks", "bye", 👍 — and keeps the lead
+  alive by booking an adaptive next touch. It applied that to every dismissal,
+  including one on a client who had just written "Thank you but we found our
+  place!". The stage classifier had already marked that draft `Closed - lost` /
+  terminal, twice, and the verdict was sitting on the very suggestion being
+  dismissed; the endpoint never read it, so Amelia's trash tap booked a chase
+  for two days later on a dead lead and looked like the button was broken
+  (23291381, 2026-08-26). Terminal now means dismissed and left alone — clock
+  nulled, open tasks closed, nothing new booked — and NOT closed automatically,
+  which stays the broker's tap like every other terminal stage. Anything else
+  that schedules a chase gets the same question first: has the conversation
+  already ended? The toast has to match, too — announcing "will follow up later"
+  when nothing was booked sends the broker hunting for a task that never
+  existed.
 - **A notification that reached nobody is not a notification.** The broker's own
   promise to a client ("I'll check with the owner and get back to you") is
   detected and scheduled correctly — but the reminder was a push and ONLY a
