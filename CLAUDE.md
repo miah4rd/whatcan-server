@@ -598,6 +598,25 @@ the naming (2026-08-21) — see "the numbering is not cosmetic" below.
 - **The phone, not the contact id, is the dedupe key** — the ad forms and the
   scout both create duplicate cards for one number. A failed phone lookup skips
   the send rather than risking a second opening message.
+- **A DRAFT on a duplicate card is its own bug, not a lesser one.** The phone
+  dedupe lived privately inside ad-lead-autoreply.ts, so it guarded only the
+  automatic welcome and the scout path had nothing. The scout re-found Yuliia's
+  FB post on its 26.08 sweep; amoCRM saw an unrelated contact (new id, and the
+  same name in a different alphabet — "Yuliia Nikonenko" 25.08 / "Юлія
+  Ніконенко" 26.08), so lead 23365147 was seeded from the 465-byte scout note
+  and drafted a cold "so to confirm, you're after a 3-4BR villa" — while on
+  23353083 that same person sat at "viewing Suggested" with 3101 bytes of
+  conversation, having just agreed to a Sunday viewing. Amelia reported it as
+  the bot no longer processing the conversation, and she was right to: a draft
+  is not harmless because a human still has to tap it, since it presents itself
+  in the inbox as the current state of that client. Everything phone-shaped now
+  lives in `lib/phone-dedupe.ts`, and anything that OPENS a conversation asks
+  `phoneIsAlreadyInConversation` first. That guard is deliberately wider than
+  the send guard (any open sibling we have spoken on, not just one that
+  received a message), ignores CLOSED siblings (a fresh request months later is
+  a real enquiry), and fails OPEN where the send guard fails closed — refusing
+  to send twice costs nothing, refusing to seed drops real leads on an amoCRM
+  hiccup.
 
 **There is now ONE send path** (`lib/outbound-send.ts`): channel guards,
 delivery record, link pacing. `approve.ts` and the auto-welcome both go through
