@@ -115,21 +115,26 @@ export async function phoneIsAlreadyInConversation(leadId: string, phone: string
     if (siblings.length === 0) return false;
     const idList = sql.join(siblings.map((i) => sql`${i}`), sql`, `);
 
-    const rows = await db
+    type SiblingRow = {
+      leadId: string;
+      leadStage: string | null;
+      lastOurMessageAt: Date | null;
+    };
+
+    const rows: SiblingRow[] = await db
       .select({
         leadId: leadsSyncTable.leadId,
         leadStage: leadsSyncTable.leadStage,
         lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
-        lastMessageFrom: leadsSyncTable.lastMessageFrom,
       })
       .from(leadsSyncTable)
       .where(sql`${leadsSyncTable.leadId} IN (${idList})`);
 
-    const live = rows.filter((r) => !/closed/i.test(r.leadStage ?? ""));
+    const live = rows.filter((r: SiblingRow) => !/closed/i.test(r.leadStage ?? ""));
     if (live.length === 0) return false;
 
     // Anything we have said to them, on any of their open cards.
-    const talking = live.find((r) => r.lastOurMessageAt !== null);
+    const talking = live.find((r: SiblingRow) => r.lastOurMessageAt !== null);
     if (talking) {
       logger.warn(
         { leadId, phone, siblingLeadId: talking.leadId, siblingStage: talking.leadStage },
@@ -141,7 +146,7 @@ export async function phoneIsAlreadyInConversation(leadId: string, phone: string
     const [sent] = await db
       .select({ leadId: sentMessagesTable.leadId })
       .from(sentMessagesTable)
-      .where(sql`${sentMessagesTable.leadId} IN (${sql.join(live.map((r) => sql`${r.leadId}`), sql`, `)})`)
+      .where(sql`${sentMessagesTable.leadId} IN (${sql.join(live.map((r: SiblingRow) => sql`${r.leadId}`), sql`, `)})`)
       .limit(1);
     if (sent) {
       logger.warn(
