@@ -1493,11 +1493,18 @@ const PAGE_HTML = `<!doctype html>
 
   async function brokerReplied(item) {
     item.busy = true; render();
+    // The server decides whether a follow-up was scheduled at all: on a
+    // conversation it has already read as over ("we found our place") it
+    // dismisses and books nothing. Saying "will follow up later" there would be
+    // a straight lie about a task the broker would then go looking for.
+    var terminal = false;
     try {
-      await fetch(API + "/no-reply-needed", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: item.lead_id }) });
+      var r = await fetch(API + "/no-reply-needed", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: item.lead_id }) });
+      var j = await r.json();
+      terminal = j && j.terminal === true;
     } catch (e) {}
     openItem = null; editing = false;
-    showToast("No reply needed - will follow up later");
+    showToast(terminal ? "Dismissed - client is done, no follow-up. Close the lead when ready." : "No reply needed - will follow up later");
     await fetchInbox();
   }
 
