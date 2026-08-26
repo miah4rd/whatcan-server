@@ -534,14 +534,38 @@ then the broker's first message. The owner decided the shape (2026-08-19) and
 the naming (2026-08-21) — see "the numbering is not cosmetic" below.
 `lib/ad-lead-autoreply.ts`:
 
-- **The auto-welcome — outside the count, automatic.** Greeting + the villa they clicked + one open
-  question, sent the moment the lead is seeded, with no broker tap. This is the
+- **The auto-welcome — outside the count, automatic.** Greeting + the villa they
+  clicked + their own request read back + one question, sent the moment the lead
+  is seeded, with no broker tap. This is the
   ONLY message in the system that reaches a client unattended, which is why it
   is a template and not a model call: nothing that sends itself may be capable
   of inventing a price or a date. Kill switch: `broker_settings.ad_auto_welcome`
   = `off`. The text goes first and the link follows as its own message — a bare
   link as the first thing from an unknown number is what spam looks like to
   WhatsApp, and only a lone link unfurls a preview.
+- **The welcome does not re-ask what the form already asked.** Every ad lead now
+  answers the qualifying questions before reaching us, and the closing line used
+  to be "is this the villa you had in mind, or would you like something
+  different — another area, size or budget?" — put to someone who had just
+  finished typing exactly that. It reads as proof nobody looked. The answers are
+  on the card in plain English the moment the welcome fires (lead 23365161:
+  "3BR", "Seseh", "Rp 30–50 million/month", "3–6 months", "Big garden"), so the
+  line is read, not inferred. It stays a QUESTION on purpose — an opening that
+  ends in a full stop gives a stranger no reason to reply, and the owner's point
+  (2026-08-26) is that a question is how you start a conversation, not how you
+  verify a fact. What changed is what it asks FOR: not the request again, but
+  the next thing they need — more villas to compare, since nobody rents the
+  first place they see.
+- **What the client reads back is quoted VERBATIM from the card, never from the
+  parsed criteria.** `getLeadCardCriteria` returns both: parsed values for
+  filtering and `answers` as untouched strings. Parsing flattens "Rp 30–50
+  million/month" to its 50000000 ceiling — correct for a shortlist filter, wrong
+  in the client's own mouth, because quoting their "30–50" back as "50" says we
+  misread the one thing they took the trouble to fill in. A field we cannot
+  repeat word for word is left out: a gap the form left belongs to the broker's
+  message 15 minutes later, which a human approves. No answers at all on the
+  card means we genuinely do not know the request, and the old open question is
+  the honest thing to send.
 - **The broker's FIRST message — 15 minutes of silence, ordinary Copilot path.**
   Bot drafts, broker approves. Kind `live`, never `push`: it is still the
   opening conversation, so it must not count as a chase in the report or burn a
