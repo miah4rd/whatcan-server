@@ -629,6 +629,7 @@ router.post("/approve", async (req, res) => {
         deliveryRow?.id ?? null,
         hookBody,
         req.log,
+        deliveryText,
       );
     }
 

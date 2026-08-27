@@ -300,7 +300,15 @@ export async function sendAdLeadWelcome(opts: {
     })
     .returning({ id: sentMessagesTable.id });
 
-  await sendAttachmentLinks(leadId, [{ url: listing.url }], 0, deliveryRow?.id ?? null, delivery.hookBody, log);
+  await sendAttachmentLinks(
+    leadId,
+    [{ url: listing.url }],
+    0,
+    deliveryRow?.id ?? null,
+    delivery.hookBody,
+    log,
+    delivery.deliveryText,
+  );
 
   const now = new Date();
   const ourLine = formatAsOurMessage(now, `${delivery.deliveryText} ${listing.url}`);

@@ -53,7 +53,7 @@ function messageId(leadId: string, eventTs: number, authorId: string, text: stri
  * answers 200 to the same Bearer token every other call in this codebase uses,
  * message text included. No browser, no captcha, nothing to configure.
  */
-async function getAmoAuth(): Promise<string | null> {
+export async function getAmoAuth(): Promise<string | null> {
   const token = await getAccessToken();
   if (!token) {
     logger.error("timeline sync: no amoCRM access token available");
@@ -106,7 +106,7 @@ function eventTs(ev: TimelineEvent): number {
   return 0;
 }
 
-async function fetchTimeline(
+export async function fetchTimeline(
   authHeader: string,
   leadId: string,
   limit = 200,
@@ -148,7 +148,7 @@ interface RawMessage {
   channelSourceName?: string;
 }
 
-function parseTimelineEvents(leadId: string, events: TimelineEvent[]): RawMessage[] {
+export function parseTimelineEvents(leadId: string, events: TimelineEvent[]): RawMessage[] {
   const messages: RawMessage[] = [];
 
   for (const ev of events) {
