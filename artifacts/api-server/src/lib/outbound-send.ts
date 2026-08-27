@@ -21,6 +21,7 @@ import { updateLeadCustomField, triggerSalesbot } from "./amo-chat-client";
 import { resolveOutboundSource, fillMessengerFromResponsibleIfNoMessages } from "./amo-messenger-field";
 import { countActiveWhatsappChats } from "./amo-client.js";
 import { stripEmojiForDelivery } from "./message-delivery.js";
+import { fetchTimeline, parseTimelineEvents, getAmoAuth } from "./amo-timeline-sync.js";
 
 /** amoCRM custom field the Salesbot reads the outgoing text from. */
 export const COMPANION_FIELD_ID = 965907;
@@ -140,6 +141,59 @@ export async function deliverText(leadId: string, text: string, log: Log): Promi
 }
 
 /**
+ * What has ACTUALLY reached the client, read back from the amoCRM timeline.
+ *
+ * Every guard below used to reason from our own bookkeeping — "we wrote the
+ * field, so the message went out", "this suggestion id was sent before". Both
+ * assumptions broke in production: the Salesbot reads the shared field late and
+ * sends whatever it finds there, and a broker editing a draft produces a NEW
+ * suggestion id that our dedupe could not recognise. The timeline is the only
+ * source that cannot disagree with what the client sees.
+ */
+async function outboundTexts(leadId: string): Promise<string[] | null> {
+  const auth = await getAmoAuth();
+  if (!auth) return null;
+  const events = await fetchTimeline(auth, leadId, 30);
+  if (!events.length) return null;
+  return parseTimelineEvents(leadId, events)
+    .filter((m) => m.direction === "outbound")
+    .map((m) => m.text ?? "");
+}
+
+/** Loose match: WhatsApp and the Salesbot both reflow whitespace. */
+function normalise(s: string): string {
+  return s.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function alreadyOut(sent: string[], value: string): boolean {
+  const needle = normalise(value);
+  if (!needle) return false;
+  return sent.some((t) => normalise(t).includes(needle.slice(0, 120)));
+}
+
+/**
+ * Block until `value` shows up as an outbound message, or the budget runs out.
+ *
+ * This replaces a flat sleep. The old code waited 3000ms and then overwrote the
+ * shared field regardless — if the Salesbot had not read it yet, the text was
+ * destroyed before it was ever sent and the client received only the link.
+ * Returns false when nothing could be confirmed, and the caller must then NOT
+ * overwrite: a missing link is a nuisance, a swallowed message is a lost lead.
+ */
+async function waitForOutbound(leadId: string, value: string, budgetMs: number): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const sent = await outboundTexts(leadId).catch(() => null);
+    // Timeline unreadable — fall back to the old timing behaviour rather than
+    // blocking the send entirely.
+    if (sent === null) return true;
+    if (alreadyOut(sent, value)) return true;
+  }
+  return false;
+}
+
+/**
  * Deliver the property links, each as its OWN WhatsApp message — glued into one
  * message, WhatsApp only unfurls a rich preview banner for the first link.
  *
@@ -166,9 +220,20 @@ export async function sendAttachmentLinks(
   sentMessageId: string | null,
   hookBody: string,
   log: Log,
+  /**
+   * The message written into the shared field immediately before this call.
+   * We refuse to overwrite the field until this text is confirmed delivered —
+   * pass null only when it is already known to have reached the client (resume).
+   */
+  precedingText: string | null = null,
 ): Promise<number> {
   const total = attachments.length;
   let delivered = startIndex;
+  // One read of the conversation up front tells us what the client already has,
+  // so a re-approved or edited draft cannot repeat a link they can see.
+  let sent = (await outboundTexts(leadId).catch(() => null)) ?? [];
+  let pending = precedingText;
+
   for (let i = startIndex; i < total; i++) {
     const url = attachments[i]?.url;
     // Still counts as "done" — the progress marker is an index into this list,
@@ -177,7 +242,32 @@ export async function sendAttachmentLinks(
       delivered = i + 1;
       continue;
     }
-    await new Promise((r) => setTimeout(r, i === 0 ? 3000 : 1200));
+
+    // The shared field still holds the previous message. Overwriting it before
+    // the Salesbot has read it is exactly how the text got swallowed; wait for
+    // proof, and if it never comes, stop rather than destroy the message.
+    if (pending) {
+      const confirmed = await waitForOutbound(leadId, pending, 20_000);
+      if (!confirmed) {
+        log.warn(
+          { leadId, delivered, total },
+          "previous message not confirmed in the timeline — stopping before it is overwritten",
+        );
+        break;
+      }
+      pending = null;
+      sent = (await outboundTexts(leadId).catch(() => null)) ?? sent;
+    }
+
+    // The client already has this exact link — a broker editing a draft creates
+    // a new suggestion id, so id-based dedupe cannot see it. The conversation can.
+    if (alreadyOut(sent, url)) {
+      log.warn({ leadId, url }, "link already present in the conversation — skipped");
+      delivered = i + 1;
+      continue;
+    }
+
+    await new Promise((r) => setTimeout(r, 1200));
     try {
       const linkField = await updateLeadCustomField(leadId, COMPANION_FIELD_ID, url);
       // The lead vanished between the text and this link (deleted or merged in
@@ -186,6 +276,8 @@ export async function sendAttachmentLinks(
       if (linkField.ok) {
         await triggerSalesbot(leadId, COMPANION_ROBERT_BOT_ID);
         delivered = i + 1;
+        // Guard the NEXT overwrite on this one actually landing.
+        pending = url;
         if (sentMessageId) {
           await db
             .update(sentMessagesTable)
