@@ -12,7 +12,7 @@ import { followupClockAfterReply } from "./rental-followup";
 import { reconcileTasksAfterManualReply } from "./manual-reply-followup";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
 import { notifyBrokerForLead } from "./push-notifications";
-import { TRACKED_PIPELINE_NAMES, isReachStageName } from "./pipelines";
+import { TRACKED_PIPELINE_NAMES, isReachStageName, REACH_STAGE_KEYWORDS } from "./pipelines";
 import { fillMessengerFromResponsibleIfNoMessages } from "./amo-messenger-field";
 
 type AmoLead = {
@@ -561,11 +561,12 @@ export async function syncTaskSchedule(): Promise<void> {
     .where(
       and(
         isNull(leadsSyncTable.nextFollowupAt),
-        or(
-          ilike(leadsSyncTable.leadStage, "%1st follow up%"),
-          ilike(leadsSyncTable.leadStage, "%2nd follow up%"),
-          ilike(leadsSyncTable.leadStage, "%final follow up%"),
-        ),
+        // Same REACH stage list as everywhere else — built from the shared
+        // constant so a stage added there is swept here too. Three inline
+        // ilike()s used to live at this spot, and a stage missing from THIS
+        // copy fails the quietest way of all: the card sits on the stage, the
+        // tab stays empty, and nothing logs.
+        or(...REACH_STAGE_KEYWORDS.map((kw) => ilike(leadsSyncTable.leadStage, `%${kw}%`))),
       ),
     );
 
