@@ -21,7 +21,7 @@ import { processAdLeadBrokerOpening } from "./ad-lead-autoreply";
 import { processListingAcquisitionOutreach } from "./listing-acquisition-outreach";
 import { isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { logStuckLeads } from "./stuck-leads";
-import { logUnknownPipelines } from "./pipelines";
+import { logUnknownPipelines, isReachStageName } from "./pipelines";
 import { amoFetch } from "./amo-client";
 import { correctionsPromptBlock } from "./broker-corrections";
 import { maybeAutopilot } from "./autopilot";
@@ -624,8 +624,7 @@ export async function processFollowups(): Promise<void> {
       // shows kind=push items whose stage matches follow-up keywords).
       // These leads MUST get a push suggestion generated — only skip the
       // whitelist and bulk-push guards that apply to non-qualification stages.
-      const REACH_KEYWORDS = ["1st follow up", "2nd follow up", "final follow up"];
-      const isReachStage = REACH_KEYWORDS.some(kw => leadStage.toLowerCase().includes(kw));
+      const isReachStage = isReachStageName(leadStage);
 
       // Rental and Rental Listings use their own stage vocabulary, which doesn't
       // overlap with the Unicorn-oriented push whitelist below — bypass that

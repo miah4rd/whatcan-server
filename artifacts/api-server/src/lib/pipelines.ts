@@ -126,3 +126,29 @@ export async function logUnknownPipelines(
     /* never let a diagnostic break the scheduler */
   }
 }
+
+/**
+ * Stages whose cards belong in the extension's REACH tab.
+ *
+ * REACH is not a separate row kind — it is `kind: "push"` rows whose stage name
+ * matches one of these keywords. Three separate gates need to agree on that
+ * list (amo-sync scheduling, followup-scheduler generation, pending-visibility
+ * display); when they disagreed the tab silently went empty, which is the exact
+ * failure mode this file was created to stop. Add a stage here, not in three
+ * inline arrays.
+ *
+ * Matching is substring, case-insensitive, against the amoCRM stage name.
+ */
+export const REACH_STAGE_KEYWORDS = [
+  // Unicorn sales qualification
+  "1st follow up",
+  "2nd follow up",
+  "final follow up",
+  // Rental Listings — weekly availability check with listing owners
+  "weekly check sent",
+] as const;
+
+export function isReachStageName(stage: string | null | undefined): boolean {
+  const s = (stage ?? "").toLowerCase();
+  return REACH_STAGE_KEYWORDS.some((kw) => s.includes(kw));
+}

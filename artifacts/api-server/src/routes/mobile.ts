@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { REACH_STAGE_KEYWORDS } from "../lib/pipelines";
 
 const router = Router();
 
@@ -1163,7 +1164,10 @@ const PAGE_HTML = `<!doctype html>
       var res = await fetch(url, { cache: "no-store" });
       var data = await res.json();
       var all = data.items || [];
-      var REACH_STAGES = ["1st follow up", "2nd follow up", "final follow up"];
+      // Single source of truth: REACH_STAGE_KEYWORDS in lib/pipelines.ts. Kept in
+      // sync by interpolation rather than a fourth hand-copied array — the three
+      // server-side gates and this client filter must agree or the tab goes empty.
+      var REACH_STAGES = ${JSON.stringify(REACH_STAGE_KEYWORDS)};
       var isReachStage = function (stage) {
         if (!stage) return false;
         var s = stage.toLowerCase();
