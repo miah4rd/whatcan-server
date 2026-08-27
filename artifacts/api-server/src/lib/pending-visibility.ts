@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { parseDialogContent } from "./dialog-parser";
 import { shouldSuppressPush, isClosedWonStage, isPostSigningStage } from "./stage-routing";
 import { isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whitelist";
+import { isReachStageName } from "./pipelines";
 import { isRentalScopedBroker, isHosTrackedPipeline } from "./adaptive-followup";
 
 // Shared visibility rules for pending suggestions. This is the single source of
@@ -172,9 +173,7 @@ export function isPendingVisible(
   // live in the extension's REACH tab — they're never in the CE/NA/OS whitelist, so
   // exempt them too (same bypass the scheduler uses), otherwise the REACH tab is empty.
   const ownVocabulary = usesOwnStageVocabulary(sync?.pipeline);
-  const isReachStage = ["1st follow up", "2nd follow up", "final follow up"].some((k) =>
-    stage.toLowerCase().includes(k),
-  );
+  const isReachStage = isReachStageName(stage);
   if (r.kind === "push" && !ownVocabulary && !isReachStage && !isPushStageAllowed(pushWhitelist, stage)) return false;
 
   // Push tab: exclude Shanti Agencies pipeline — different business, not part of this copilot

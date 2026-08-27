@@ -12,7 +12,7 @@ import { followupClockAfterReply } from "./rental-followup";
 import { reconcileTasksAfterManualReply } from "./manual-reply-followup";
 import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelist";
 import { notifyBrokerForLead } from "./push-notifications";
-import { TRACKED_PIPELINE_NAMES } from "./pipelines";
+import { TRACKED_PIPELINE_NAMES, isReachStageName } from "./pipelines";
 import { fillMessengerFromResponsibleIfNoMessages } from "./amo-messenger-field";
 
 type AmoLead = {
@@ -493,10 +493,9 @@ export async function syncTaskSchedule(): Promise<void> {
       .from(leadsSyncTable)
       .where(inArray(leadsSyncTable.leadId, leadIds));
 
-    const REACH_KW = ["1st follow up", "2nd follow up", "final follow up"];
     for (const lead of leads) {
       if (shouldSuppressPush(lead.leadStage ?? "")) continue;
-      const isReachLead = REACH_KW.some(kw => (lead.leadStage ?? "").toLowerCase().includes(kw));
+      const isReachLead = isReachStageName(lead.leadStage);
       const actualTaskDate = dueTasks.get(lead.leadId)!;
 
       if (!isReachLead) {
