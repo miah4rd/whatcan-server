@@ -63,7 +63,25 @@ export function villaFromLeadName(name: string): string {
   return cleaned || head || "your villa";
 }
 
-async function fetchOwnerName(leadId: string): Promise<string> {
+/**
+ * Is this "name" actually the villa wearing a person's slot?
+ *
+ * Scout cards are often created with the property as the contact — "Casa
+ * Emilia", "Villa Azul Canggu (Google Maps)" — because that is all the advert
+ * gave. Greeting that contact by "name" produces "Hi Casa, quick check on Casa
+ * Emilia", which tells the owner immediately that a machine wrote it. No
+ * greeting at all reads as normal shorthand; a wrong one does not.
+ */
+function looksLikeTheVilla(name: string, villa: string): boolean {
+  const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean);
+  const nameWords = norm(name);
+  const villaWords = new Set(norm(villa));
+  if (nameWords.length === 0) return false;
+  if (nameWords.some((w) => villaWords.has(w))) return true;
+  return /\b(villa|casa|resort|residence|suites?|property|management|maps)\b/i.test(name);
+}
+
+async function fetchOwnerName(leadId: string, villa: string): Promise<string> {
   try {
     const lead = await amoFetch<{ _embedded?: { contacts?: Array<{ id: number }> } }>(
       `/api/v4/leads/${leadId}?with=contacts`,
@@ -74,7 +92,8 @@ async function fetchOwnerName(leadId: string): Promise<string> {
     const name = (contact?.name ?? "").trim();
     // Scout cards sometimes carry a placeholder or a bare phone number as the
     // contact name. "Hi 62812..." is worse than no name at all.
-    if (!name || /^\+?\d[\d\s()-]*$/.test(name) || /^<|dummy|test lead|full_name|google maps/i.test(name)) return "";
+    if (!name || /^\+?\d[\d\s()-]*$/.test(name) || /^<|dummy|test lead|full_name/i.test(name)) return "";
+    if (looksLikeTheVilla(name, villa)) return "";
     return name.split(/\s+/)[0]!;
   } catch {
     return "";
@@ -148,7 +167,7 @@ export async function processWeeklyAvailabilityCheck(): Promise<number> {
 
       const title = await fetchLeadTitle(lead.leadId);
       const villa = villaFromLeadName(title);
-      const owner = await fetchOwnerName(lead.leadId);
+      const owner = await fetchOwnerName(lead.leadId, villa);
 
       await db.insert(pendingSuggestionsTable).values({
         leadId: lead.leadId,
