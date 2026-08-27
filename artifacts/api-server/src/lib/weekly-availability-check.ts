@@ -120,6 +120,7 @@ export async function processWeeklyAvailabilityCheck(): Promise<number> {
       pipeline: leadsSyncTable.pipeline,
       leadStage: leadsSyncTable.leadStage,
       botExcluded: leadsSyncTable.botExcluded,
+      amoCreatedAt: leadsSyncTable.amoCreatedAt,
     })
     .from(leadsSyncTable)
     .where(sql`lower(${leadsSyncTable.leadStage}) LIKE ${"%" + WEEKLY_CHECK_STAGE + "%"}`);
@@ -162,6 +163,16 @@ export async function processWeeklyAvailabilityCheck(): Promise<number> {
 
       if (lastSent?.sentAt) {
         const ageDays = (Date.now() - lastSent.sentAt.getTime()) / 86_400_000;
+        if (ageDays < CHECK_INTERVAL_DAYS) continue;
+      } else if (lead.amoCreatedAt) {
+        // Never asked before — but taking a villa onto our books IS a
+        // confirmation that it was free, so the clock starts there rather than
+        // at zero. Without this the gate above passes trivially on a brand-new
+        // listing (no sent row yet) and the owner is asked whether the villa
+        // they handed us on Monday is still available. That is not diligence,
+        // it reads as not having listened, and it teaches the one person whose
+        // weekly answer we depend on that our messages are worth ignoring.
+        const ageDays = (Date.now() - lead.amoCreatedAt.getTime()) / 86_400_000;
         if (ageDays < CHECK_INTERVAL_DAYS) continue;
       }
 
