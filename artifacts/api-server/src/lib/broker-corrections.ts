@@ -126,10 +126,28 @@ Respond with JSON only: {"instruction": "...", "situation": "style|${SITUATIONS.
     const instruction = parsed.instruction?.trim();
     if (!instruction || instruction.length < 5) return;
 
-    const situation: LessonTag =
+    // The model guesses the situation; the code KNOWS it. deriveSituation reads
+    // the same pipeline/stage/kind the draft was written from, so letting a
+    // Haiku call overrule it filed lessons under moments they were never taught
+    // in — and a mis-filed lesson is not merely mistagged, it is silently
+    // switched off. Yudi's sharpest one ("confirm whether the quoted price
+    // already includes the 10% agency commission") was tagged "qualifying"
+    // while every Rental Listings draft asks for "owner_intake", so it never
+    // reached a single draft and he re-added the question by hand, four times
+    // in twelve edits. One of his 36 lessons carried the tag of the funnel he
+    // works in almost exclusively.
+    //
+    // "style" stays the model's to give: a rule about tone, length or signature
+    // genuinely does apply everywhere, and only the model can tell that a
+    // correction was about the voice rather than the moment.
+    const guessed: LessonTag | null =
       parsed.situation && (SITUATIONS as readonly string[]).includes(parsed.situation)
         ? (parsed.situation as Situation)
-        : "style";
+        : parsed.situation === "style"
+          ? "style"
+          : null;
+    const derived = ctx ? deriveSituation({ pipeline: ctx.pipeline, leadStage: ctx.leadStage, lastLeadText: ctx.lastLeadText }) : null;
+    const situation: LessonTag = guessed === "style" ? "style" : (derived ?? guessed ?? "style");
 
     const existing = await activeLessons(brokerId, 60);
     if (existing.some((r) => similar(r.instruction, instruction))) return;
@@ -186,6 +204,80 @@ async function activeLessons(brokerId: string, limit: number, situation?: Situat
   return rows
     .map((r) => ({ id: r.id, instruction: (r.instruction ?? "").trim(), situation: r.situation }))
     .filter((r) => r.instruction);
+}
+
+/**
+ * Learn from a MANUAL edit — the broker rewrote the draft instead of dictating
+ * an instruction, which is how most teaching actually happens.
+ *
+ * This lived as a private copy inside routes/public/approve.ts, and being a
+ * copy it drifted the way every copy in this project has: it never assigned a
+ * situation (19 of Yudi's 36 lessons came out untagged), never retired what a
+ * new lesson contradicted (so "skip commission terms upfront" and "state
+ * commission terms upfront" were both live), never deduped, and stored the
+ * responsible user's name in the field meant for the stage. Approve is the
+ * path manual edits take, so the weaker half of the system was the half
+ * carrying most of the teaching.
+ *
+ * Same store, same tagging, same retirement as learnFromRevision — only the
+ * distilling prompt differs, because here the input is a before/after pair
+ * rather than the broker's own words.
+ */
+export async function learnFromEdit(
+  brokerName: string | null | undefined,
+  originalText: string,
+  editedText: string,
+  ctx?: { pipeline?: string | null; leadStage?: string | null; kind?: string | null; lastLeadText?: string | null },
+): Promise<void> {
+  const before = (originalText ?? "").trim();
+  const after = (editedText ?? "").trim();
+  if (!before || !after || before === after) return;
+  const brokerId = brokerKey(brokerName);
+
+  try {
+    const parsed = await chatCompletionJSON<{ instruction?: string; situation?: string }>({
+      model: HELPER_MODEL,
+      label: "learn-edit",
+      system: `A real-estate broker rewrote an AI-drafted WhatsApp message. Extract the REUSABLE preference behind the change (max 120 chars) — what they changed and why, phrased so it can be applied to future messages. Drop everything specific to this lead or property. If the edit was purely one-off, return an empty instruction. Copy any name the broker uses EXACTLY as written.
+
+Also classify WHEN this preference applies. "style" = tone, greeting, signature, language or length — it applies to every message. Otherwise pick the ONE conversation moment it belongs to: ${SITUATIONS.join(", ")}. When unsure, prefer "style".
+
+Respond with JSON only: {"instruction": "...", "situation": "style|${SITUATIONS.join("|")}"}`,
+      messages: [
+        {
+          role: "user",
+          content: `AI draft:\n"${before.slice(0, 600)}"\n\nBroker sent instead:\n"${after.slice(0, 600)}"`,
+        },
+      ],
+      max_tokens: 120,
+    });
+    const instruction = parsed.instruction?.trim();
+    if (!instruction || instruction.length < 5) return;
+
+    // Same rule as learnFromRevision: the code knows the moment, the model only
+    // gets to say that a lesson is about the voice rather than the moment.
+    const guessed: LessonTag | null =
+      parsed.situation && (SITUATIONS as readonly string[]).includes(parsed.situation)
+        ? (parsed.situation as Situation)
+        : parsed.situation === "style"
+          ? "style"
+          : null;
+    const derived = ctx ? deriveSituation(ctx) : null;
+    const situation: LessonTag = guessed === "style" ? "style" : (derived ?? guessed ?? "style");
+
+    const existing = await activeLessons(brokerId, 60);
+    if (existing.some((r) => similar(r.instruction, instruction))) return;
+
+    const situationContext = ctx
+      ? [ctx.pipeline, ctx.leadStage].filter(Boolean).join(" / ") || null
+      : null;
+    await db.insert(brokerCorrectionsTable).values({ brokerId, instruction, situation, situationContext });
+    logger.info({ brokerId, instruction, situation }, "learned from the broker's manual edit");
+
+    await retireContradicted(brokerId, instruction, existing);
+  } catch (err) {
+    logger.warn({ err, brokerId }, "learnFromEdit failed (non-fatal)");
+  }
 }
 
 /**
@@ -249,7 +341,11 @@ Respond with JSON only: {"supersedes": [numbers]}`,
 export async function correctionsPromptBlock(
   brokerName: string | null | undefined,
   situation?: Situation | null,
-  limit = 30,
+  /** Yudi held 36 active lessons against a cap of 30, so his six oldest were
+   *  dropped without a word — the same silent-window failure the retirement
+   *  pass exists to make safe. Retirement is what keeps this list followable;
+   *  the cap only decides how much of an already-consistent list survives. */
+  limit = 60,
 ): Promise<string> {
   try {
     const lessons = await activeLessons(brokerKey(brokerName), limit, situation);
