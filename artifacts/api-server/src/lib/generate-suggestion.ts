@@ -556,6 +556,65 @@ export function textMentionsAnyAttachment(
   return false;
 }
 
+/**
+ * Phrasings that present villas as arriving WITH this message.
+ *
+ * A pre-filter only — deliberately loose, because it is allowed to be wrong in
+ * one direction: everything it catches is judged properly by the model below.
+ * What it must never do is miss "would you consider any of these?", which is
+ * exactly what reached a client with nothing under it.
+ */
+const OFFERS_LISTINGS_NOW =
+  /here (are|is|'s)\b|\b(link|links|option|options|villa|villas|listing|listings|one)s?\s+(below|attached)\b|\bbelow\b|\battached\b|\b(any|one|either|some) of (these|them)\b|\bthese (options|villas|properties|listings|three|two)\b|\bi (?:have |'ve )?(?:picked|pulled|put together|lined up|got) (?:a few|three|two|some|these)|\bвот\b|\bниже\b|прилага|подобрал|скинул|отправляю|berikut|di bawah|ini beberapa|saya kirim/i;
+
+/**
+ * THE invariant, in the one place every path already passes through: a message
+ * must never present villas that are not attached to it.
+ *
+ * The text and the links are ONE message — split into several WhatsApp bubbles
+ * only so a preview renders for each. So "the text offers options" and "the
+ * options are attached" cannot disagree, and which tab produced the draft (LIVE,
+ * PUSH, an ad-lead opening, a broker revision) has nothing to do with it. Every
+ * caller of reconcileTextWithAttachments used to get an early `return text` the
+ * moment the list was empty — the one case where the message can lie.
+ *
+ * The regex only decides whether to ask. The model decides whether the message
+ * is OFFERING villas now (must be repaired) or merely REFERRING BACK to ones the
+ * client already has ("the two I sent last week"), which is normal and correct.
+ */
+async function stripUnbackedListingOffer(text: string): Promise<string> {
+  if (!text || !OFFERS_LISTINGS_NOW.test(text)) return text;
+  try {
+    const fixed = await chatCompletion({
+      model: WRITER_MODEL,
+      label: "unbacked-offer",
+      system: `You check one WhatsApp message a broker is about to send a client.
+
+NO property links are attached to it. Nothing will arrive after it.
+
+First decide which of these the message is doing:
+(A) It presents villas as being HERE — "here are three", "the link below", "any of these?", a numbered list of properties. The client would look for something that never comes.
+(B) It only refers BACK to villas already sent earlier, or asks a question, or mentions no properties at all. Nothing is missing.
+
+If (B): return the message EXACTLY as given, character for character.
+
+If (A): rewrite it so it no longer presents or promises any property. Keep the same language, the same voice, the same length and the same closing question if that question is not about sending links. Do not replace the offer with a promise to send options later — say nothing about listings at all. Referring to villas the client already received is fine and should be kept.
+
+Your entire output is the message. No preamble, no explanation.`,
+      messages: [{ role: "user", content: text }],
+      max_tokens: 400,
+    });
+    const out = sanitizeSuggestion(fixed.content);
+    if (out.trim().length > 15 && out.trim() !== text.trim()) {
+      logger.info({}, "message offered villas that were not attached — the offer was removed");
+      return out;
+    }
+  } catch (err) {
+    logger.warn({ err }, "unbacked-offer check failed (non-fatal, keeping the draft)");
+  }
+  return text;
+}
+
 export async function reconcileTextWithAttachments(
   text: string,
   attachments: GeneratedSuggestion["attachments"],
@@ -571,7 +630,8 @@ export async function reconcileTextWithAttachments(
    * English-speaking client, so the target is now stated outright. */
   language?: string | null,
 ): Promise<string> {
-  if (attachments.length === 0) return text;
+  // Nothing attached is precisely when the message is free to lie — see above.
+  if (attachments.length === 0) return stripUnbackedListingOffer(text);
   // A quoted figure for a listing whose price nobody has filled in is a made-up
   // number going to a client. Checked in code, not hoped for: the prompt already
   // said never to invent a price and it did anyway.
