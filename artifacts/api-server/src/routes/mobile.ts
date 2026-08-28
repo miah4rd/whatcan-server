@@ -928,6 +928,15 @@ const PAGE_HTML = `<!doctype html>
       var q = "?pipeline=" + encodeURIComponent(pl);
       var r = await fetch(API + "/autopilot" + q, { cache: "no-cache" });
       apData = await r.json();
+      // The bot classifies three of amoCRM's ten funnels; the rest have no
+      // stage list at all, so pointing the panel at one leaves the stage
+      // dropdown holding nothing but "Off" — which reads as the stage picker
+      // having vanished. Land on a funnel that can actually be delegated.
+      var usable = (apData && apData.pipelines) || [];
+      if (usable.length && !usable.some(function (n) { return n.toLowerCase() === pl.toLowerCase(); })) {
+        apPipeline = usable[0];
+        return await loadAutopilot(apPipeline);
+      }
       var rb = await fetch(API + "/budget-filter" + q, { cache: "no-cache" });
       var jb = await rb.json();
       apData.bf = (jb && jb.setting) || { enabled: false, minMonthlyIdr: 0 };
@@ -2119,17 +2128,17 @@ const PAGE_HTML = `<!doctype html>
       // Every funnel has its own stages and its own setting, so the funnel is
       // part of what you are configuring, not something read off the tab.
       html += '<div style="margin-top:6px">Funnel: <select id="ap-pipe" style="max-width:60%">';
-      var apPipes = pipelineOptions.length ? pipelineOptions : [apPipeline];
+      var apPipes = (apData && apData.pipelines && apData.pipelines.length) ? apData.pipelines : [apPipeline];
       for (var pi = 0; pi < apPipes.length; pi++) {
         html += '<option value="' + esc(apPipes[pi]) + '"' + (apPipeline.toLowerCase() === String(apPipes[pi]).toLowerCase() ? " selected" : "") + '>' + esc(apPipes[pi]) + '</option>';
       }
       html += '</select></div>';
-      html += '<select id="ap-sel" style="margin:6px 6px 0 0;max-width:75%">';
+      html += '<div style="margin-top:6px">Send without approval: <select id="ap-sel" style="max-width:60%">';
       html += '<option value=""' + (!apOn ? " selected" : "") + '>Off</option>';
       for (var ai = 0; ai < apStages.length; ai++) {
         html += '<option value="' + esc(apStages[ai]) + '"' + (apOn && apSet.upToStageName === apStages[ai] ? " selected" : "") + '>Up to \\u201c' + esc(apStages[ai]) + '\\u201d</option>';
       }
-      html += "</select>";
+      html += "</select></div>";
       var bf = (apData && apData.bf) || { enabled: false, minMonthlyIdr: 0 };
       // enforceBudgetFilter() bails out on anything but Rental, by the owner's
       // own rule. Offering the dial on another funnel would let it be switched
