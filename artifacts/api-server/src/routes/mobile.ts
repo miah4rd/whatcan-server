@@ -160,6 +160,13 @@ const PAGE_HTML = `<!doctype html>
   /* Detail view */
   .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
   .back-btn { background: #181d2e; border: 1px solid #2a3146; color: #e6e8ee; border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+  .lead-contact { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 2px 0 0; font-size: 13px; color: #9aa3b8; min-height: 0; }
+  .lead-contact:empty { display: none; }
+  .lead-contact .lc-name { color: #cfd4e2; }
+  .lead-contact a.lc-phone { color: #5eead4; text-decoration: none; font-variant-numeric: tabular-nums; }
+  .lead-contact a.lc-phone:hover { text-decoration: underline; }
+  .lead-contact .lc-copy { background: #181d2e; border: 1px solid #2a3146; color: #9aa3b8; border-radius: 6px; padding: 2px 7px; font-size: 11px; cursor: pointer; }
+  .lead-contact .lc-none { opacity: .55; }
   .openlead-btn { font-size: 11px; font-weight: 700; color: #7dd3fc; text-decoration: none; background: rgba(45,212,191,.1); border: 1px solid rgba(45,212,191,.25); border-radius: 8px; padding: 7px 10px; white-space: nowrap; }
   .lead-hdr { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
   .lead-hdr-name { font-size: 16px; font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2279,6 +2286,28 @@ const PAGE_HTML = `<!doctype html>
     });
   }
 
+  function contactHtml(c) {
+    if (!c || (!c.phone && !c.name)) return '<span class="lc-none">No contact attached to this lead</span>';
+    var out = "";
+    if (c.name) out += '<span class="lc-name">' + esc(c.name) + '</span>';
+    if (c.phone) {
+      var pretty = c.phoneRaw || ("+" + c.phone);
+      out += '<a class="lc-phone" href="https://wa.me/' + esc(c.phone) + '" target="_blank" rel="noopener">' + esc(pretty) + '</a>';
+      out += '<button class="lc-copy" data-copyphone="' + esc(pretty) + '">copy</button>';
+    }
+    return out;
+  }
+
+  function bindContactCopy() {
+    document.querySelectorAll("[data-copyphone]").forEach(function (b) {
+      b.onclick = function () {
+        var v = b.getAttribute("data-copyphone") || "";
+        try { navigator.clipboard.writeText(v); b.textContent = "copied"; } catch (e) {}
+        setTimeout(function () { b.textContent = "copy"; }, 1200);
+      };
+    });
+  }
+
   function renderDetail() {
     var it = openItem;
     var leadUrl = "https://unicornproperty.amocrm.ru/leads/detail/" + encodeURIComponent(it.lead_id);
@@ -2288,6 +2317,10 @@ const PAGE_HTML = `<!doctype html>
     html += '<a class="openlead-btn" href="' + leadUrl + '" target="_blank" rel="noopener">\\u2197 Open Lead</a>';
     html += "</div>";
     html += '<div class="lead-hdr"><span class="lead-hdr-name">' + (it.lead_name ? esc(it.lead_name) + ' <span style="opacity:.5;font-weight:400">#' + esc(it.lead_id) + '</span>' : "Lead " + esc(it.lead_id)) + '</span>' + taskStatusBadge(it.next_followup_at) + '</div>';
+    // The client's name and number, so the broker never opens amoCRM for it.
+    // Filled in after render — it costs two amoCRM calls and must never hold
+    // the card up. Kept on the item so a re-render does not ask again.
+    html += '<div class="lead-contact" id="lead-contact">' + (it._contact ? contactHtml(it._contact) : '') + '</div>';
     html += "</header><main>";
 
     // Broker-editable temperature. Their pick is authoritative and sticky
@@ -2439,6 +2472,27 @@ const PAGE_HTML = `<!doctype html>
     if (convEl) convEl.scrollTop = convEl.scrollHeight;
 
     $("#back-btn").onclick = function () { openItem = null; editing = false; render(); };
+
+    // Contact strip: name + phone, tap to open WhatsApp, one tap to copy.
+    // A lead with no contact attached says so plainly rather than staying blank
+    // and looking like it is still loading.
+    if (!it._contact) {
+      (function (leadId) {
+        fetch(API + "/lead-contact?leadId=" + encodeURIComponent(leadId), { cache: "no-cache" })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (c) {
+            if (!c) return;
+            if (!openItem || openItem.lead_id !== leadId) return;
+            openItem._contact = c;
+            var box = $("#lead-contact");
+            if (box) box.innerHTML = contactHtml(c);
+            bindContactCopy();
+          })
+          .catch(function () {});
+      })(it.lead_id);
+    } else {
+      bindContactCopy();
+    }
 
     // Temperature chip — sticky broker override, POSTs /set-temperature.
     document.querySelectorAll("[data-settemp]").forEach(function (btn) {
