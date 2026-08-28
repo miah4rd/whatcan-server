@@ -1019,6 +1019,78 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     // property links at all. Kept attached, they turned a question about the
     // future into an offer in the present, which is exactly what it was told
     // not to do.
+    // A property link pasted into "Tell AI what to change" IS an instruction to
+    // send that villa. Amelia asked outright whether it works there or whether
+    // she has to use the link field every time (28.08) — it did not work: only
+    // the LEAD's own messages were ever scanned for a listing id, so a URL the
+    // broker pasted into the revision box reached the matcher as free text and
+    // usually vanished. It now behaves exactly like the "+ Add" field.
+    //
+    // Union, never replace: a link already on the draft is not dropped because
+    // the broker pasted another one. Removing one stays a panel action.
+    const pastedLinks = [
+      ...new Map(
+        Array.from(String(revision ?? "").matchAll(/(https?:\/\/[^\s<>"']*\/property\/([A-Za-z0-9-]+))/gi)).map(
+          (m) => [m[2]!.toUpperCase(), m[1]!] as const,
+        ),
+      ),
+    ];
+    // "remove https://…/property/R-X" also contains a link, and adding it would
+    // do the exact opposite of what was asked.
+    const REVISION_REMOVES = /\b(remove|delete|drop|take out|without|exclude|убер|удал|без|исключ|не отправ|hapus|jangan)\b/i;
+    if (pastedLinks.length > 0 && !REVISION_REMOVES.test(String(revision ?? ""))) {
+      const existing = (body.attachments ?? []).filter((a) => !!a.url);
+      const haveIds = new Set(
+        existing
+          .map((a) => a.url!.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1]?.toUpperCase())
+          .filter((x): x is string => !!x),
+      );
+      const allIds = [...new Set([...haveIds, ...pastedLinks.map(([id]) => id)])];
+      const known = await describePropertiesByIds(allIds).catch(() => new Map());
+      const resolve = (id: string, fallbackUrl: string, fallbackLabel?: string | null) => {
+        const hit = known.get(id);
+        return {
+          type: "link" as const,
+          url: hit?.url ?? fallbackUrl,
+          label: hit?.label ?? fallbackLabel ?? id,
+        };
+      };
+      const merged = [
+        ...existing.map((a) =>
+          resolve(a.url!.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1]?.toUpperCase() ?? "", a.url!, a.label),
+        ),
+        ...pastedLinks.filter(([id]) => !haveIds.has(id)).map(([id, url]) => resolve(id, url)),
+      ];
+      const added = merged.length - existing.length;
+      req.log.info(
+        { leadId: body.leadId, pasted: pastedLinks.length, added, total: merged.length },
+        "suggest: property links pasted into the revision box — attached like the link field",
+      );
+      // force=true — the text was written before these links existed, so it has
+      // to be made to name them rather than merely checked against them.
+      const leadWordsForBudget = (body.messages ?? []).filter((m) => m.from === "lead").map((m) => m.text);
+      finalText = await reconcileTextWithAttachments(
+        text,
+        merged,
+        true,
+        extractBudgetIdr([...leadWordsForBudget.reverse(), transcript]),
+        outputLang === "auto" ? null : outputLang,
+      );
+      if (outputLang !== "auto") finalText = await enforceLanguage(finalText, outputLang);
+      res.json({
+        text: finalText,
+        rationale,
+        suggestionId: randomUUID(),
+        task_hint: taskHint ?? null,
+        stage_hint: stageHint,
+        kind: "live",
+        recent_messages: recentMessages,
+        reassessed_temperature: reassessedTemp ?? null,
+        attachments: merged,
+      });
+      return;
+    }
+
     if (revision && intent?.sendNoListings) {
       // "Send nothing yet" means don't push a SHORTLIST — it does not mean
       // throwing away the villa the client themselves asked about. An ad lead

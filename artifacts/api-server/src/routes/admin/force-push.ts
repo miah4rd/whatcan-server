@@ -70,6 +70,10 @@ router.post("/admin/force-push", async (req, res) => {
       followupLevel: 1,
       lastContent: lead.content ?? "",
       leadNotes: lead.leadNotes,
+      // Without these the matcher has no stage and no funnel, so a forced
+      // warmup came out promising villas it had no way to pick.
+      leadStage: lead.leadStage,
+      pipeline: lead.pipeline,
     });
 
     if (!generated.text) {
@@ -97,7 +101,7 @@ router.post("/admin/force-push", async (req, res) => {
       suggestionText: generated.text,
       status: "pending",
       objectionCategory: generated.entry.id,
-      attachments: [],
+      attachments: generated.attachments,
     });
 
     // Advance lead to level 0 so next scheduler step is follow-up #1 in 23h
