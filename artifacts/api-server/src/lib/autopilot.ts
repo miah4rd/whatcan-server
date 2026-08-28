@@ -24,6 +24,7 @@ import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { getPipelineStages } from "./stage-classifier";
+import { mayOpenNewConversation, isFirstOutbound, NEW_CONTACT_DAILY_CAP } from "./new-contact-budget";
 
 export type AutopilotMode = "off" | "dry" | "on";
 export type AutopilotSetting = {
@@ -133,6 +134,20 @@ export async function maybeAutopilot(leadId: string): Promise<void> {
         "autopilot DRY RUN: would have auto-sent this (switch to 'on' to actually send)",
       );
       return;
+    }
+
+    // Opening a conversation is the one autopilot send Meta cares about — a
+    // reply to someone already talking to us is ordinary traffic. Out of
+    // budget, the draft simply waits in the inbox for the broker.
+    if (await isFirstOutbound(leadId)) {
+      const budget = await mayOpenNewConversation(sug.responsibleUser);
+      if (!budget.ok) {
+        logger.warn(
+          { leadId, used: budget.used, cap: NEW_CONTACT_DAILY_CAP },
+          "autopilot held back — this line has already opened its day's worth of new conversations",
+        );
+        return;
+      }
     }
 
     // Real send — through the same door a human uses, so every guard applies.
