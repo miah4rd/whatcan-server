@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { learnFromEdit } from "../../lib/broker-corrections";
 import { shouldSuppressPush } from "../../lib/stage-routing";
 import { db, pendingSuggestionsTable, sentMessagesTable, leadsSyncTable, stageEventsTable, brokerCorrectionsTable, leadCrmTasksTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
@@ -227,58 +228,6 @@ async function autoCreateCrmTask(
 }
 
 router.options("/approve", (_req, res) => res.sendStatus(204));
-
-/**
- * Analyze the diff between original AI draft and broker's manual edit,
- * extract a reusable instruction, and save it to broker_corrections so
- * the AI learns from this edit in future suggestions.
- * Fire-and-forget — never blocks the approve response.
- */
-async function learnFromManualEdit(
-  brokerId: string,
-  originalText: string,
-  editedText: string,
-  stage: string,
-  log: { info: (obj: object, msg: string) => void; error: (obj: object, msg: string) => void },
-): Promise<void> {
-  try {
-    const parsed = await chatCompletionJSON<{ instruction?: string }>({
-      model: HELPER_MODEL,
-      system: `You are a writing coach analyzing how a real estate broker edited an AI-generated message.
-Extract a SHORT, REUSABLE instruction (max 120 chars) that describes WHAT the broker changed and WHY, 
-so an AI can apply this preference to future messages automatically.
-
-Focus on style/tone/content patterns — not the specific lead or property.
-Examples of good instructions:
-- "Use a more casual, friendly tone — avoid formal greetings"
-- "Always end with a concrete question, not a soft statement"
-- "Keep messages under 3 sentences — remove filler phrases"
-- "Mention specific ROI numbers when discussing investment properties"
-
-Respond with JSON only: {"instruction": "..."}`,
-      messages: [
-        {
-          role: "user",
-          content: `Original AI draft:\n"${originalText.slice(0, 600)}"\n\nBroker edited to:\n"${editedText.slice(0, 600)}"`,
-        },
-      ],
-      max_tokens: 80,
-    });
-    const instruction = parsed.instruction?.trim();
-
-    if (!instruction || instruction.length < 5) return;
-
-    await db.insert(brokerCorrectionsTable).values({
-      brokerId: brokerId.toLowerCase().slice(0, 64),
-      instruction,
-      situationContext: stage || null,
-    });
-
-    log.info({ brokerId, instruction }, "auto-correction saved from manual edit");
-  } catch (err) {
-    log.error({ err }, "learnFromManualEdit failed (non-fatal)");
-  }
-}
 
 router.post("/approve", async (req, res) => {
   const body = req.body as {
@@ -640,13 +589,14 @@ router.post("/approve", async (req, res) => {
       body.brokerId &&
       body.originalText.trim() !== body.message.trim()
     ) {
-      learnFromManualEdit(
-        body.brokerId,
-        body.originalText,
-        body.message,
-        explicitNewStage ?? currentResponsibleUser ?? "",
-        req.log,
-      ).catch(() => {});
+      // The moment this edit was taught in — the pipeline and the lead's stage,
+      // NOT the responsible user, which is what used to be passed here and is
+      // why every lesson from this path was filed against a broker's name.
+      learnFromEdit(body.brokerId, body.originalText, body.message, {
+        pipeline: prevSyncRow?.pipeline ?? null,
+        leadStage: explicitNewStage ?? prevSyncRow?.leadStage ?? null,
+        kind: sug.kind,
+      }).catch(() => {});
     }
 
     // ── Auto-create CRM task (close previous, open new) ──────────────────────
