@@ -41,6 +41,7 @@ import { resolveSendChannel, deliverText, sendAttachmentLinks } from "./outbound
 import { parseDialogContent } from "./dialog-parser";
 import { getLeadCardCriteria, type LeadCardAnswers } from "./lead-card-fields";
 import { leadPhone, phoneAlreadyMessaged } from "./phone-dedupe";
+import { mayOpenNewConversation, NEW_CONTACT_DAILY_CAP } from "./new-contact-budget";
 
 /**
  * Marks a delivery as the automatic ad-lead welcome. This is the ONLY record
@@ -249,6 +250,18 @@ export async function sendAdLeadWelcome(opts: {
     // client clicked, so there is nothing safe to send unattended. The broker
     // gets the ordinary draft instead.
     logger.warn({ leadId, listingId }, "ad welcome skipped — listing not found in catalog");
+    return false;
+  }
+
+  // This message OPENS a conversation with a stranger, and Meta counts those.
+  // Out of budget: the welcome is not sent, the ordinary draft still lands in
+  // the inbox and the broker can send it by hand whenever they judge it safe.
+  const budget = await mayOpenNewConversation(responsibleUser);
+  if (!budget.ok) {
+    logger.warn(
+      { leadId, responsibleUser, used: budget.used, cap: NEW_CONTACT_DAILY_CAP },
+      "ad welcome held back — this line has already opened its day's worth of new conversations",
+    );
     return false;
   }
 
