@@ -19,6 +19,7 @@ import { isBroker, brokerKey } from "../lib/broker-identity";
 import { isHosTrackedPipeline } from "../lib/adaptive-followup";
 import { movesStageOnReply } from "../lib/pipelines";
 import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments } from "../lib/generate-suggestion";
+import { getMergedDialog } from "../lib/merged-conversation";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
 import { enforceBudgetFilter } from "../lib/budget-filter";
@@ -88,7 +89,10 @@ export async function generateSuggestion(opts: {
 
 
 
-  const dialog = parseDialogContent(opts.contentSnippet);
+  // Same merge as the library implementation — see lib/merged-conversation.ts.
+  // This copy reading raw content while the other read the merged thread is
+  // exactly the drift this file's own comments keep warning about.
+  const dialog = await getMergedDialog(opts.leadId, opts.contentSnippet);
   const formattedDialog = formatDialogForAI(dialog.messages);
   const lastLeadText = opts.lastLeadMessage.trim() || dialog.lastLeadMessage?.text || "";
   const lastBrokerText = dialog.lastOurMessage?.text ?? "";

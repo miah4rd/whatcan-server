@@ -82,3 +82,36 @@ export async function getMergedConversation(
   merged.sort((a, b) => a.at.getTime() - b.at.getTime());
   return merged;
 }
+
+/**
+ * The same shape parseDialogContent returns, but built from the MERGED thread.
+ *
+ * Every draft used to be written off leads_sync.content alone — the one source
+ * that provably freezes. A broker answering from their own phone, and sometimes
+ * the client's own reply, land only in lead_messages, so the writer composed
+ * against a conversation that had moved on without it: on lead 23303055 content
+ * stops at 21.08 while the broker had sent two more villas by hand on the 21st
+ * and the 26th, and the follow-up on the 28th offered "one more" as if nothing
+ * had happened. 195 leads in the last 30 days had their newest message missing
+ * from content, 9 of them a message from the CLIENT.
+ *
+ * Only the three fields the generators actually read are returned.
+ * leadRepliedAfterUs and lastLeadChannel are derived from amoCRM sender strings
+ * that timeline rows do not carry, and faking them would be worse than not
+ * offering them — callers that need those still parse content directly.
+ */
+export async function getMergedDialog(
+  leadId: string,
+  content: string | null | undefined,
+): Promise<{
+  messages: ParsedMessage[];
+  lastOurMessage: ParsedMessage | null;
+  lastLeadMessage: ParsedMessage | null;
+}> {
+  const messages = await getMergedConversation(leadId, content);
+  return {
+    messages,
+    lastOurMessage: [...messages].reverse().find((m) => m.from === "us") ?? null,
+    lastLeadMessage: [...messages].reverse().find((m) => m.from === "lead") ?? null,
+  };
+}

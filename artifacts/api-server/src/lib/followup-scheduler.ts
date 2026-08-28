@@ -9,9 +9,9 @@ import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestio
 import { OBJECTION_PLAYBOOK, type PlaybookEntry } from "./objection-playbook";
 import { shouldSuppressPush, isStageWhitelisted } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whitelist";
-import { getMergedConversation } from "./merged-conversation";
+import { getMergedConversation, getMergedDialog } from "./merged-conversation";
 import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
-import { generateSuggestion } from "./generate-suggestion";
+import { generateSuggestion, pickPropertyAttachments, reconcileTextWithAttachments, type GeneratedSuggestion } from "./generate-suggestion";
 import { isAdaptiveBroker, isHosTrackedPipeline } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
@@ -130,21 +130,100 @@ async function classifyObjection(
   return matched ?? OBJECTION_PLAYBOOK[0]!;
 }
 
+/**
+ * The property links that ride WITH a follow-up — and the paragraph that tells
+ * the writer, BEFORE it writes, which ones it actually has.
+ *
+ * Follow-ups were inserted with a hardcoded `attachments: []` on every path
+ * while their text was free to say "link below" or "would you consider any of
+ * these?". The client got the sentence and nothing under it — lead 23291217 on
+ * 25.08, lead 23303055 on 28.08, and the owner's screenshots of both. LIVE
+ * drafts never had this problem because they go through pickPropertyAttachments;
+ * PUSH simply never called it. Same matcher, same gates (a lead already
+ * discussing one of ours, or past the browsing stages, still gets nothing), so
+ * the two paths cannot drift apart again.
+ *
+ * Telling the writer up front beats correcting it afterwards: a message written
+ * knowing it has no shortlist never promises one, and there is no regex trying
+ * to tell "here are two options" from "the two options I sent last week".
+ */
+async function followupListings(opts: {
+  leadId: string;
+  responsibleUser: string | null;
+  pipeline: string | null;
+  leadStage: string | null;
+  leadNotes: string | null;
+  messages: Awaited<ReturnType<typeof getMergedDialog>>["messages"];
+  formattedDialog: string;
+}): Promise<{ attachments: GeneratedSuggestion["attachments"]; brief: string }> {
+  // Acquiring listings from owners is not a shortlist conversation at all.
+  if (isListingAcquisitionPipeline(opts.pipeline)) {
+    return { attachments: [], brief: "" };
+  }
+  const lastLeadText = [...opts.messages].reverse().find((m) => m.from === "lead")?.text ?? "";
+  const attachments = await pickPropertyAttachments({
+    leadId: opts.leadId,
+    brokerId: opts.responsibleUser,
+    isRental: (opts.pipeline ?? "").trim().toLowerCase() === "rental",
+    contentSnippet: opts.formattedDialog,
+    dialogMessages: opts.messages,
+    formattedDialog: opts.formattedDialog,
+    lastLeadText,
+    leadStage: opts.leadStage,
+    leadNotes: opts.leadNotes,
+  }).catch((err) => {
+    logger.warn({ err, leadId: opts.leadId }, "followup property matcher threw — writing without listings");
+    return [] as GeneratedSuggestion["attachments"];
+  });
+
+  const brief = attachments.length
+    ? `
+
+PROPERTY LINKS ATTACHED TO THIS MESSAGE (${attachments.length}) — they are delivered right after it, automatically:
+${attachments.map((a, i) => `${i + 1}. ${a.label}`).join("\n")}
+Name each of them and say which area it is in. Quote only the prices above, never invent one. Never write a URL or an internal listing code — the links are attached. Never ask permission to send them or promise them "later": they are already on their way.`
+    : `
+
+YOU HAVE NO PROPERTY LINKS TO ATTACH TO THIS MESSAGE. Nothing will arrive after it. So do not write "here are", "below", "attached", "these options", "any of these", and do not promise to send or prepare anything — whatever you offer here would reach the client empty. Referring back to villas you already sent EARLIER in the conversation above is fine, and naming them is better than "the options I sent".`;
+
+  return { attachments, brief };
+}
+
 export async function generateFollowup(opts: {
   leadId: string;
   responsibleUser: string | null;
   followupLevel: number;
   lastContent: string;
   leadNotes?: string | null;
+  leadStage?: string | null;
+  pipeline?: string | null;
   /** Pre-built corrections block to inject into system prompt */
   correctionsBlock?: string;
-}): Promise<{ text: string; entry: PlaybookEntry; rationale: string; formattedDialog: string }> {
+}): Promise<{
+  text: string;
+  entry: PlaybookEntry;
+  rationale: string;
+  formattedDialog: string;
+  attachments: GeneratedSuggestion["attachments"];
+}> {
   // The SIGNING name, not the login: "HoS" is an account, the person is Nick.
   const brokerName = brokerDisplayName(opts.responsibleUser) || opts.responsibleUser || "Broker";
-  const parsedDialog = parseDialogContent(opts.lastContent);
+  // content alone freezes — merge the timeline poll in (merged-conversation.ts).
+  const parsedDialog = await getMergedDialog(opts.leadId, opts.lastContent);
   const formattedDialog = formatDialogForAI(parsedDialog.messages);
   const leadName =
     parsedDialog.messages.find((m) => m.from === "lead")?.senderName ?? "there";
+
+  // What this message can honestly offer, decided BEFORE it is written.
+  const listings = await followupListings({
+    leadId: opts.leadId,
+    responsibleUser: opts.responsibleUser,
+    pipeline: opts.pipeline ?? null,
+    leadStage: opts.leadStage ?? null,
+    leadNotes: opts.leadNotes ?? null,
+    messages: parsedDialog.messages,
+    formattedDialog,
+  });
 
   // Classify objection to decide which attachments to suggest.
   // The classification does NOT dictate the message text — it only selects
@@ -181,7 +260,7 @@ RULES:
 - Return ONLY the message body — no preamble, no quotes, no subject line
 
 AVAILABLE TACTICS (use only if genuinely relevant to the conversation, not forced):
-${tacticsHint}${opts.correctionsBlock ?? (await correctionsPromptBlock(opts.responsibleUser, "followup"))}${AVOID_PHRASES_REMINDER}`,
+${tacticsHint}${listings.brief}${opts.correctionsBlock ?? (await correctionsPromptBlock(opts.responsibleUser, "followup"))}${AVOID_PHRASES_REMINDER}`,
     messages: [
       {
         role: "user",
@@ -199,13 +278,16 @@ Write the follow-up message.`,
     // (returns a 400) — omit it rather than hardcoding a value.
   });
 
-  const text = sanitizeSuggestion(
-    completion.content,
+  // Same safety net the LIVE path has: the words must match the links that
+  // will actually arrive, not the ones the writer imagined.
+  const text = await reconcileTextWithAttachments(
+    sanitizeSuggestion(completion.content),
+    listings.attachments,
   );
 
   const rationale = `Follow-up #${opts.followupLevel} — context-aware. Situation tactic: ${entry.label}.`;
 
-  return { text, entry, rationale, formattedDialog };
+  return { text, entry, rationale, formattedDialog, attachments: listings.attachments };
 }
 
 /**
@@ -229,7 +311,8 @@ export async function generatePushFollowup(opts: {
   leadNotes?: string | null;
   trailingUnanswered: number;
   correctionsBlock?: string;
-}): Promise<{ text: string; rationale: string }> {
+  pipeline?: string | null;
+}): Promise<{ text: string; rationale: string; attachments: GeneratedSuggestion["attachments"] }> {
   const brokerName = opts.responsibleUser ?? "Broker";
   // Merge content + lead_messages so a push is never built from a frozen,
   // truncated thread (see lib/merged-conversation.ts).
@@ -238,6 +321,17 @@ export async function generatePushFollowup(opts: {
   const formattedDialog = formatDialogForAI(mergedMessages, 500, true);
   const timingSummary = describeConversationTiming(mergedMessages, now);
   const isCold = opts.trailingUnanswered >= 3;
+
+  // What this follow-up can honestly offer — decided before a word is written.
+  const listings = await followupListings({
+    leadId: opts.leadId,
+    responsibleUser: opts.responsibleUser,
+    pipeline: opts.pipeline ?? null,
+    leadStage: opts.leadStage,
+    leadNotes: opts.leadNotes ?? null,
+    messages: mergedMessages,
+    formattedDialog,
+  });
 
   const leadContext = opts.leadNotes?.trim()
     ? `\nLead card notes: ${opts.leadNotes.trim()}`
@@ -279,7 +373,7 @@ STYLE:
 - Under 80 words unless the situation genuinely needs more.
 - No "Just checking in", "Hope you're doing well", or other filler openers.
 - No formal sign-offs. Sign naturally if it fits, don't force it.
-- Return ONLY the message body — no preamble, no quotes, no explanation of your reasoning.${opts.correctionsBlock ?? ""}${AVOID_PHRASES_REMINDER}`,
+- Return ONLY the message body — no preamble, no quotes, no explanation of your reasoning.${listings.brief}${opts.correctionsBlock ?? ""}${AVOID_PHRASES_REMINDER}`,
     messages: [
       {
         role: "user",
@@ -289,12 +383,15 @@ STYLE:
     max_tokens: 250,
   });
 
-  const text = sanitizeSuggestion(completion.content);
+  const text = await reconcileTextWithAttachments(
+    sanitizeSuggestion(completion.content),
+    listings.attachments,
+  );
   const rationale = isCold
     ? `PUSH — re-engagement (${opts.trailingUnanswered} unanswered touches), stage "${opts.leadStage}".`
     : `PUSH — adaptive follow-up, stage "${opts.leadStage}".`;
 
-  return { text, rationale };
+  return { text, rationale, attachments: listings.attachments };
 }
 
 /**
@@ -816,6 +913,9 @@ export async function processFollowups(): Promise<void> {
         let warmupText: string;
         let warmupEntry: PlaybookEntry;
         let warmupRationale: string;
+        // Only the AI branch can offer listings; a broker's own script/template
+        // is sent as written and never has links bolted onto it.
+        let warmupAttachments: GeneratedSuggestion["attachments"] = [];
 
         if (warmupTemplateText) {
           warmupText = warmupTemplateText;
@@ -836,11 +936,14 @@ export async function processFollowups(): Promise<void> {
             followupLevel: 1,
             lastContent: lead.content ?? "",
             leadNotes: lead.leadNotes,
+            leadStage: lead.leadStage,
+            pipeline: lead.pipeline,
             correctionsBlock: warmupCorrections,
           });
           warmupText = warmupAI.text;
           warmupEntry = warmupAI.entry;
           warmupRationale = warmupAI.rationale;
+          warmupAttachments = warmupAI.attachments;
         }
 
         if (!warmupText) {
@@ -880,7 +983,7 @@ export async function processFollowups(): Promise<void> {
             suggestionText: warmupText,
             status: "pending",
             objectionCategory: warmupEntry.id,
-            attachments: [],
+            attachments: warmupAttachments,
           });
           // Same rule as the main follow-up path below: queued work the broker
           // has to act on always announces itself.
@@ -921,6 +1024,9 @@ export async function processFollowups(): Promise<void> {
       let entry: PlaybookEntry;
       let rationale: string;
       let formattedDialog: string;
+      // Stays empty for a broker's preset/qual-script/template message: that
+      // text is sent exactly as written and gets no links bolted onto it.
+      let pushAttachments: GeneratedSuggestion["attachments"] = [];
 
       if (!isReachStage && !ownVocabulary) {
         // ── Active-funnel PUSH (CE / Needs Assessed / Options Sent) ─────────
@@ -985,8 +1091,10 @@ export async function processFollowups(): Promise<void> {
           leadNotes: lead.leadNotes,
           trailingUnanswered,
           correctionsBlock: pushCorrections,
+          pipeline: lead.pipeline,
         });
         text = generated.text;
+        pushAttachments = generated.attachments;
         entry = OBJECTION_PLAYBOOK[0]!; // not classified on this path — field kept for schema/analytics compat
         rationale = generated.rationale;
         formattedDialog = formatDialogForAI(leadParsed.messages);
@@ -1055,9 +1163,12 @@ export async function processFollowups(): Promise<void> {
             followupLevel: nextLevel,
             lastContent: lead.content ?? "",
             leadNotes: lead.leadNotes,
+            leadStage: lead.leadStage,
+            pipeline: lead.pipeline,
             correctionsBlock: genCorrections,
           });
           text = generated.text;
+          pushAttachments = generated.attachments;
           entry = generated.entry;
           rationale = generated.rationale;
           formattedDialog = generated.formattedDialog;
@@ -1103,7 +1214,7 @@ export async function processFollowups(): Promise<void> {
           suggestionText: text,
           status: "pending",
           objectionCategory: entry.id,
-          attachments: [],
+          attachments: pushAttachments,
         });
         // A follow-up waiting to be sent is work the broker owes, exactly like a
         // lead's reply — the owner's rule: "any action the broker has to take in
