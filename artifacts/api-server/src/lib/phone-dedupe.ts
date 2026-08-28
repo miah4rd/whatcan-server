@@ -26,24 +26,44 @@ export function normalisePhone(raw: string): string {
   return (raw ?? "").replace(/\D+/g, "");
 }
 
-/** The lead's contact phone, or "" when it cannot be read. */
-export async function leadPhone(leadId: string): Promise<string> {
+/**
+ * The lead's contact card: who they are and how to reach them.
+ *
+ * amoCRM keeps the phone on the CONTACT, never on the lead, which is why
+ * nothing in our own database has it — amo_contacts has never had a row. Two
+ * calls, so callers that want it per screen must cache.
+ */
+export async function leadContact(
+  leadId: string,
+): Promise<{ name: string; phone: string; phoneRaw: string }> {
+  const empty = { name: "", phone: "", phoneRaw: "" };
   try {
     const lead = await amoFetch<{ _embedded?: { contacts?: Array<{ id: number }> } }>(
       `/api/v4/leads/${leadId}?with=contacts`,
     );
     const contactId = lead?._embedded?.contacts?.[0]?.id;
-    if (!contactId) return "";
+    if (!contactId) return empty;
     const contact = await amoFetch<{
+      name?: string;
       custom_fields_values?: Array<{ field_code?: string; values?: Array<{ value?: string }> }>;
     }>(`/api/v4/contacts/${contactId}`);
-    const phone = (contact?.custom_fields_values ?? [])
-      .find((f) => f.field_code === "PHONE")
-      ?.values?.[0]?.value;
-    return normalisePhone(String(phone ?? ""));
+    const phoneRaw = String(
+      (contact?.custom_fields_values ?? []).find((f) => f.field_code === "PHONE")?.values?.[0]
+        ?.value ?? "",
+    );
+    return {
+      name: String(contact?.name ?? "").trim(),
+      phone: normalisePhone(phoneRaw),
+      phoneRaw: phoneRaw.trim(),
+    };
   } catch {
-    return "";
+    return empty;
   }
+}
+
+/** The lead's contact phone, or "" when it cannot be read. */
+export async function leadPhone(leadId: string): Promise<string> {
+  return (await leadContact(leadId)).phone;
 }
 
 /**
