@@ -12,6 +12,7 @@ import { buildRentalPromptParts } from "./rental-prompt";
 import { buildSalesPromptParts } from "./sales-prompt";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { matchProperties, availabilityForCriteria, describePropertiesByIds, type PropertyPick, type BrokerIntent } from "./property-catalog";
+import { getMergedDialog } from "./merged-conversation";
 import { db, pendingSuggestionsTable } from "@workspace/db";
 import { eq, inArray, and } from "drizzle-orm";
 
@@ -853,7 +854,12 @@ export async function generateSuggestion(opts: {
       });
   const cachePrefix = rentalParts ? rentalParts.prefix : salesParts!.prefix;
   const systemPrompt = rentalParts ? rentalParts.tail : salesParts!.tail;
-  const dialog = parseDialogContent(opts.contentSnippet);
+  // leads_sync.content alone is NOT the conversation — it freezes for whole
+  // channels, most reliably the broker's own WhatsApp replies typed on their
+  // phone. Writing the draft off it produced messages that talked over villas
+  // the broker had already sent by hand (lead 23303055, 26.08). Merge in the
+  // timeline poll and our own send record before a single word is written.
+  const dialog = await getMergedDialog(opts.leadId, opts.contentSnippet);
   const formattedDialog = formatDialogForAI(dialog.messages, 500, true);
   const timingSummary = describeConversationTiming(dialog.messages);
   const lastLeadText = opts.lastLeadMessage.trim() || dialog.lastLeadMessage?.text || "";
