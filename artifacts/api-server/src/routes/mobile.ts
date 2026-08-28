@@ -369,6 +369,11 @@ const PAGE_HTML = `<!doctype html>
   // up to stage X" from here. Settings live server-side (/api/public/autopilot).
   var apOpen = false;
   var apData = null;
+  // WHICH funnel the panel is configuring. The setting is per-pipeline and every
+  // funnel has its own stage names, so this was never a constant — the panel
+  // asked for "rental" no matter what, and a broker looking at UNICORN was shown
+  // Rental's stages and, on Save, set Rental's autopilot.
+  var apPipeline = "";
   var items = { live: [], push: [], reach: [] };
   var openItem = null;
   var editing = false;
@@ -915,6 +920,20 @@ const PAGE_HTML = `<!doctype html>
       }
     } catch (e) { /* keep built-in defaults */ }
   }
+  // Autopilot + budget filter for ONE funnel. Both settings are keyed by
+  // pipeline server-side, so they are always read and written together with the
+  // pipeline the panel is currently pointed at.
+  async function loadAutopilot(pl) {
+    try {
+      var q = "?pipeline=" + encodeURIComponent(pl);
+      var r = await fetch(API + "/autopilot" + q, { cache: "no-cache" });
+      apData = await r.json();
+      var rb = await fetch(API + "/budget-filter" + q, { cache: "no-cache" });
+      var jb = await rb.json();
+      apData.bf = (jb && jb.setting) || { enabled: false, minMonthlyIdr: 0 };
+    } catch (e) { apData = null; }
+  }
+
   async function fetchPipelineOptions() {
     try {
       var res = await fetch(API + "/pipelines", { cache: "no-cache" });
@@ -2097,6 +2116,14 @@ const PAGE_HTML = `<!doctype html>
       var apOn = apSet.mode === "on" && apSet.upToStageName;
       html += '<div class="stage-hint" id="ap-panel" style="margin-top:8px">';
       html += '<b>\\ud83e\\udd16 Autopilot</b> \\u2014 send without approval up to a chosen stage. Off = every message waits for you, as now.<br>';
+      // Every funnel has its own stages and its own setting, so the funnel is
+      // part of what you are configuring, not something read off the tab.
+      html += '<div style="margin-top:6px">Funnel: <select id="ap-pipe" style="max-width:60%">';
+      var apPipes = pipelineOptions.length ? pipelineOptions : [apPipeline];
+      for (var pi = 0; pi < apPipes.length; pi++) {
+        html += '<option value="' + esc(apPipes[pi]) + '"' + (apPipeline.toLowerCase() === String(apPipes[pi]).toLowerCase() ? " selected" : "") + '>' + esc(apPipes[pi]) + '</option>';
+      }
+      html += '</select></div>';
       html += '<select id="ap-sel" style="margin:6px 6px 0 0;max-width:75%">';
       html += '<option value=""' + (!apOn ? " selected" : "") + '>Off</option>';
       for (var ai = 0; ai < apStages.length; ai++) {
@@ -2104,12 +2131,20 @@ const PAGE_HTML = `<!doctype html>
       }
       html += "</select>";
       var bf = (apData && apData.bf) || { enabled: false, minMonthlyIdr: 0 };
-      html += '<div style="margin-top:8px"><b>\\ud83d\\udcb0 Budget filter</b> \\u2014 rental leads with a stated budget below this go to Closed Lost automatically, no tokens spent:</div>';
-      html += '<input id="bf-min" type="number" min="1" step="1" value="' + (bf.minMonthlyIdr ? Math.round(bf.minMonthlyIdr / 1000000) : 40) + '" style="width:70px;margin:6px 4px 0 0"> million IDR/mo ';
-      html += '<select id="bf-on" style="margin:6px 0">';
-      html += '<option value="off"' + (!bf.enabled ? " selected" : "") + '>Off</option>';
-      html += '<option value="on"' + (bf.enabled ? " selected" : "") + '>On</option>';
-      html += "</select><br>";
+      // enforceBudgetFilter() bails out on anything but Rental, by the owner's
+      // own rule. Offering the dial on another funnel would let it be switched
+      // on and quietly do nothing, which is worse than not offering it.
+      var bfApplies = apPipeline.trim().toLowerCase() === "rental";
+      if (bfApplies) {
+        html += '<div style="margin-top:8px"><b>\\ud83d\\udcb0 Budget filter</b> \\u2014 rental leads with a stated budget below this go to Closed Lost automatically, no tokens spent:</div>';
+        html += '<input id="bf-min" type="number" min="1" step="1" value="' + (bf.minMonthlyIdr ? Math.round(bf.minMonthlyIdr / 1000000) : 40) + '" style="width:70px;margin:6px 4px 0 0"> million IDR/mo ';
+        html += '<select id="bf-on" style="margin:6px 0">';
+        html += '<option value="off"' + (!bf.enabled ? " selected" : "") + '>Off</option>';
+        html += '<option value="on"' + (bf.enabled ? " selected" : "") + '>On</option>';
+        html += "</select><br>";
+      } else {
+        html += '<div style="margin-top:8px;opacity:.6">\\ud83d\\udcb0 Budget filter applies to the Rental funnel only.</div>';
+      }
       html += '<button class="refresh-btn" id="ap-save" style="margin-top:6px">Save</button>';
       html += "</div>";
     }
@@ -2179,33 +2214,44 @@ const PAGE_HTML = `<!doctype html>
     var apBtn = $("#autopilot-btn");
     if (apBtn) apBtn.onclick = async function () {
       apOpen = !apOpen;
-      if (apOpen && !apData) {
-        try {
-          var r = await fetch(API + "/autopilot?pipeline=rental");
-          apData = await r.json();
-          var rb = await fetch(API + "/budget-filter?pipeline=rental");
-          var jb = await rb.json();
-          apData.bf = (jb && jb.setting) || { enabled: false, minMonthlyIdr: 0 };
-        } catch (e) { apData = null; }
+      if (apOpen) {
+        // The funnel being viewed is the one the broker means. On "All
+        // pipelines" there is nothing to infer, so fall back to the first real
+        // funnel and let them switch it in the panel.
+        if (!apPipeline) apPipeline = pipelineView || pipelineOptions[0] || "Rental";
+        if (!apData) await loadAutopilot(apPipeline);
       }
+      render();
+    };
+    var apPipeSel = $("#ap-pipe");
+    if (apPipeSel) apPipeSel.onchange = async function () {
+      apPipeline = apPipeSel.value;
+      apData = null;
+      render();
+      await loadAutopilot(apPipeline);
       render();
     };
     var apSave = $("#ap-save");
     if (apSave) apSave.onclick = async function () {
       var v = $("#ap-sel").value;
       var payload = v
-        ? { pipeline: "rental", mode: "on", upToStageName: v, dailyCap: 30 }
-        : { pipeline: "rental", mode: "off", upToStageName: null, dailyCap: 30 };
+        ? { pipeline: apPipeline, mode: "on", upToStageName: v, dailyCap: 30 }
+        : { pipeline: apPipeline, mode: "off", upToStageName: null, dailyCap: 30 };
       try {
         var r2 = await fetch(API + "/autopilot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
         var j2 = await r2.json();
-        var bfOn = $("#bf-on").value === "on";
-        var bfMin = Math.max(0, Math.round(Number($("#bf-min").value) || 0)) * 1000000;
-        var r3 = await fetch(API + "/budget-filter", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pipeline: "rental", enabled: bfOn, minMonthlyIdr: bfMin }) });
-        var j3 = await r3.json();
+        // Absent on a non-Rental funnel — the filter is not saved there at all.
+        var bfEl = $("#bf-on");
+        var bfOn = !!bfEl && bfEl.value === "on";
+        var bfMin = bfEl ? Math.max(0, Math.round(Number($("#bf-min").value) || 0)) * 1000000 : 0;
+        var j3 = { ok: true, setting: (apData && apData.bf) || { enabled: false, minMonthlyIdr: 0 } };
+        if (bfEl) {
+          var r3 = await fetch(API + "/budget-filter", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pipeline: apPipeline, enabled: bfOn, minMonthlyIdr: bfMin }) });
+          j3 = await r3.json();
+        }
         if (j2 && j2.ok && j3 && j3.ok) {
           if (apData) { apData.setting = j2.setting; apData.bf = j3.setting; }
-          showToast((v ? "Autopilot up to \\u201c" + v + "\\u201d" : "Autopilot off") + " \\u00b7 Budget filter " + (bfOn ? "ON at " + Math.round(bfMin / 1000000) + "M" : "off"));
+          showToast(apPipeline + ": " + (v ? "Autopilot up to \\u201c" + v + "\\u201d" : "Autopilot off") + (bfEl ? " \\u00b7 Budget filter " + (bfOn ? "ON at " + Math.round(bfMin / 1000000) + "M" : "off") : ""));
           apOpen = false; render();
         }
         else showToast((j2 && j2.error) || (j3 && j3.error) || "Could not save");
