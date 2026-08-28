@@ -5,7 +5,7 @@
  */
 import { Router } from "express";
 import { getAutopilotSetting, setAutopilotSetting, type AutopilotMode } from "../../lib/autopilot";
-import { getPipelineStages } from "../../lib/stage-classifier";
+import { getPipelineStages, listAutopilotPipelines } from "../../lib/stage-classifier";
 
 const router = Router();
 
@@ -14,12 +14,18 @@ router.options("/autopilot", (_req, res) => res.sendStatus(204));
 router.get("/autopilot", async (req, res) => {
   const pipeline = String(req.query["pipeline"] ?? "rental").toLowerCase();
   try {
-    const [setting, stages] = await Promise.all([
+    const [setting, stages, pipelines] = await Promise.all([
       getAutopilotSetting(pipeline),
       getPipelineStages(pipeline),
+      listAutopilotPipelines(),
     ]);
     res.json({
       setting,
+      // The funnels the bot can be handed at all. Offering the rest is offering
+      // a dial with nothing behind it: seven of the ten funnels amoCRM reports
+      // have no stage list here, so their stage dropdown came up holding only
+      // "Off" and read as the stage picker having disappeared.
+      pipelines,
       // Only stages the bot may ever act in — the closes carry money and
       // reporting weight and are never delegated, same as the auto-stage rule.
       stages: (stages?.selectable ?? [])

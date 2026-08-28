@@ -163,6 +163,9 @@ let cache: {
    *  Used to answer "does this stage id belong to the funnel this lead is in?",
    *  which has to be answerable for a lead in any funnel. */
   byId: Map<number, { key: string; all: StageDef[] }>;
+  /** key → amoCRM's own spelling, so a UI can show the funnel as the broker
+   *  sees it everywhere else rather than the lowercased lookup key. */
+  displayNames: Map<string, string>;
 } | null = null;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -174,9 +177,11 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
   );
   const byPipeline = new Map<string, PipelineStages>();
   const byId = new Map<number, { key: string; all: StageDef[] }>();
+  const displayNames = new Map<string, string>();
 
   for (const p of data?._embedded?.pipelines ?? []) {
     const key = p.name.trim().toLowerCase();
+    displayNames.set(key, p.name.trim());
 
     const ordered = [...(p._embedded?.statuses ?? [])].sort((a, b) => a.sort - b.sort);
     const all: StageDef[] = ordered.map((s) => ({ name: s.name, id: s.id }));
@@ -218,7 +223,7 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
   }
 
   if (byPipeline.size > 0) {
-    cache = { at: Date.now(), byPipeline, byId };
+    cache = { at: Date.now(), byPipeline, byId, displayNames };
     logger.info(
       { pipelines: [...byPipeline.keys()], stages: [...byPipeline.values()].map((v) => v.selectable.length) },
       "stage-classifier: pipeline map refreshed from amoCRM",
@@ -302,6 +307,24 @@ export async function safeStageIdForLead(opts: {
 /** The live stage map for one pipeline — autopilot needs the funnel's own order. */
 export async function getPipelineStages(pipeline: string): Promise<PipelineStages | null> {
   return (await loadPipelines()).get(pipeline.trim().toLowerCase()) ?? null;
+}
+
+/**
+ * The funnels that actually have a stage list here — the only ones any
+ * stage-scoped feature (autopilot) can be pointed at. amoCRM reports ten
+ * pipelines; the bot classifies three.
+ *
+ * Returns amoCRM's own display names, not the lowercased keys, so the UI can
+ * show them as the broker sees them everywhere else.
+ */
+export async function listAutopilotPipelines(): Promise<string[]> {
+  const map = await loadPipelines();
+  const out: string[] = [];
+  for (const [key, stages] of map) {
+    if (stages.selectable.length === 0) continue;
+    out.push(cache?.displayNames?.get(key) ?? key);
+  }
+  return out;
 }
 
 export type StageClassification = {
