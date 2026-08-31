@@ -1320,6 +1320,27 @@ export async function matchProperties(opts: {
   // statement of what should be attached.
   const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
   const criteria = await extractLeadCriteria(criteriaSource, pool);
+  // The ad form's answers fill whatever the conversation left unknown — never
+  // override, the client's own words always win.
+  //
+  // This merge existed only in candidatesForLead, the OTHER shortlist builder;
+  // here the card was accepted as a parameter and then read for its budget
+  // alone. An ad lead states its area and size on the FORM, not in the chat, so
+  // criteria.areas came out empty, the area filter below was skipped entirely,
+  // and the whole island stayed in play — at which point ranking decides, and
+  // ranking likes view count. One villa (3BR Balangan, Rp 77M, 813 views) was
+  // therefore attached to nine of the last ten drafts that carried a Balangan
+  // link, to clients asking for Pererenan, Canggu and Seminyak, several of them
+  // wanting 2 bedrooms under Rp 50M. Amelia read it as the bot pushing Balangan
+  // and asked for the listing to be deleted; the listing was never the problem.
+  if (opts.cardCriteria) {
+    if (criteria.bedrooms === null && opts.cardCriteria.bedrooms) {
+      criteria.bedrooms = opts.cardCriteria.bedrooms;
+    }
+    if (criteria.areas.length === 0 && opts.cardCriteria.areas.length > 0) {
+      criteria.areas = [...opts.cardCriteria.areas];
+    }
+  }
 
   // The broker's own instruction, parsed rather than pattern-matched, and applied
   // over the criteria taken from the lead. Their words win for this one message.
