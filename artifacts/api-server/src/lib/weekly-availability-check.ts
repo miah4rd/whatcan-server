@@ -73,6 +73,10 @@ export function villaFromLeadName(name: string): string {
   // listing id. "Quick check on R-YUD-002" tells the owner they are a row in
   // someone's database; the neutral fallback reads like ordinary shorthand.
   if (/^R-[A-Z]+-\d+$/i.test(cleaned)) return "your villa";
+  // amoCRM titles a card with no name of its own "Сделка #23308431" / "Deal
+  // #23308431". That is our CRM's row number in Russian, and it went out to an
+  // owner as "following up on Сделка #23308431".
+  if (/^(сделка|deal|lead)\s*#?\s*\d+$/i.test(cleaned) || /^#?\d+$/.test(cleaned)) return "your villa";
   return cleaned || beforeSpec || head || "your villa";
 }
 
