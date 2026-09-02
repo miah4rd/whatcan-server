@@ -122,13 +122,17 @@ const EXTRACT_SYSTEM = `You read a WhatsApp thread between a Bali rental agency 
 
 The thread may be in English, Indonesian, or both. Prices are Indonesian rupiah and appear as "45 juta", "45jt", "IDR 45.000.000", "45 million", "45 mio". "juta"/"jt"/"mio"/"million" all mean million.
 
-Report ONLY what someone in the thread actually said. Never infer a price from another villa, never convert a yearly price into a monthly one yourself, never guess a bedroom count from the villa's name.
+WHO SAID IT MATTERS. Every line is prefixed with its speaker: "lead:" is the owner or their manager, "broker:" and "bot:" are US, the agency.
+
+Take bedrooms, prices and availability ONLY from "lead:" lines. We open these conversations by quoting the price from the seller's public ad ("I came across the 2BR villa listed at IDR 38jt/month") — that number is the ad's, not the owner's, and putting it on the card as their price is exactly the mistake this field exists to prevent. If a figure appears only in our own lines and the owner never repeated or confirmed it, report null.
+
+Report ONLY what was actually said. Never infer a price from another villa, never convert a yearly price into a monthly one yourself, never guess a bedroom count from the villa's name.
 
 Fields:
 - bedrooms: integer, the villa's own bedroom count. If the thread offers several unit types (a 2BR and a 3BR), report the SMALLEST, and put the rest in nothing — the agency lists units separately.
 - monthly_idr / yearly_idr: full rupiah integers (45 juta -> 45000000). null when not stated.
 - commission: "included" if someone said the price already contains the agency's commission; "net" if the owner said the price is net / the fee is added on top; "unknown" otherwise. This is the field the agency cares about most — do not guess it.
-- available_from: the owner's own words about when it frees up ("20 September", "now", "from November", "1 October"). null if never discussed.
+- available_from: the owner's own words about when it frees up — a date or a clear period ("20 September", "now", "from November", "1 October", "after Nov 2026"). A fragment that is not an answer about timing ("Masih", "yes", "August" with no year or context) is null, not a guess.
 - area: the district or village the villa is in (Pererenan, Umalas, Seseh...). Not the whole address.
 - maps_link: a Google Maps / goo.gl / maps.app link if one was shared, else null.
 - photos_link: a Google Drive, Dropbox, WeTransfer or photo-gallery link if one was shared, else null.
