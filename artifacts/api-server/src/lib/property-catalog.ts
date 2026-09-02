@@ -93,6 +93,18 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
  * the broker had just added were invisible and the bot fell back to
  * re-qualifying the client instead of offering them.
  */
+/**
+ * The rentals that are actually on the site — published, not drafts.
+ *
+ * `fetchAllProperties` already filters `is_draft=false`, so membership here is
+ * the answer to "do we really carry this villa?". Anything relying on an
+ * amoCRM stage to answer that is trusting a field a human moves by hand.
+ */
+export async function publishedRentals(): Promise<SupabaseProperty[]> {
+  const all = await fetchAllProperties();
+  return all.filter((p) => p.listing_type === "rent");
+}
+
 export function invalidatePropertyCache(): void {
   _cacheAt = 0;
 }

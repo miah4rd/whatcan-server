@@ -27,6 +27,7 @@ import { and, eq, sql, desc } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch } from "./amo-client";
 import { isListingAcquisition } from "./pipelines";
+import { publishedRentals } from "./property-catalog";
 
 /** The stage that means "we asked this week". Matches amoCRM case-insensitively. */
 const WEEKLY_CHECK_STAGE = "weekly check sent";
@@ -109,6 +110,53 @@ async function fetchLeadTitle(leadId: string): Promise<string> {
   }
 }
 
+/** Listing ids look like R-YUD-002; some card titles carry one, most do not. */
+const LISTING_ID = /\bR-[A-Z]+-\d+\b/i;
+
+function normaliseVilla(s: string): string {
+  return (s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/**
+ * Is this card a villa we actually carry on the site?
+ *
+ * The pass used to answer that from the amoCRM stage alone. A stage is moved by
+ * hand, and on 20.08 a card was dropped into "live" while the villa was not
+ * published anywhere — a week later its owner was asked whether a listing we
+ * never carried was still free. Of the six cards sitting in Weekly Check Sent
+ * when this was found, not one could be traced to a published listing.
+ *
+ * So ask the catalog instead. Refusing to send is the safe failure: a check
+ * skipped this week goes out next week, while a message to an owner cannot be
+ * recalled — the same reasoning that keeps the buyer script off this funnel.
+ */
+async function listingIsOnSite(title: string): Promise<{ ok: boolean; id?: string; why: string }> {
+  const rentals = await publishedRentals();
+  if (rentals.length === 0) {
+    return { ok: false, why: "property catalog returned nothing — cannot verify, so not asking" };
+  }
+
+  const idMatch = title.match(LISTING_ID);
+  if (idMatch) {
+    const id = idMatch[0].toUpperCase();
+    const hit = rentals.find((p) => p.id.toUpperCase() === id);
+    return hit
+      ? { ok: true, id, why: "matched by listing id" }
+      : { ok: false, why: `no published listing ${id}` };
+  }
+
+  const villa = normaliseVilla(villaFromLeadName(title));
+  // "Villa", "2BR" and the like are not a name — matching on them would pair the
+  // card with whatever listing happens to share the word.
+  if (villa.replace(/\bvilla\b/g, "").trim().length < 4) {
+    return { ok: false, why: "card title carries neither a listing id nor a usable villa name" };
+  }
+  const hit = rentals.find((p) => normaliseVilla(p.title).includes(villa));
+  return hit
+    ? { ok: true, id: hit.id, why: "matched by villa name" }
+    : { ok: false, why: `no published listing matching "${villa}"` };
+}
+
 /**
  * Queue one availability check per due listing. Returns how many were written.
  */
@@ -177,6 +225,18 @@ export async function processWeeklyAvailabilityCheck(): Promise<number> {
       }
 
       const title = await fetchLeadTitle(lead.leadId);
+
+      // The gate that the stage name cannot provide: only ask about villas the
+      // site actually shows.
+      const onSite = await listingIsOnSite(title);
+      if (!onSite.ok) {
+        logger.warn(
+          { leadId: lead.leadId, title, reason: onSite.why },
+          "weekly-availability: card is in Weekly Check Sent but no published listing backs it — owner NOT asked",
+        );
+        continue;
+      }
+
       const villa = villaFromLeadName(title);
       const owner = await fetchOwnerName(lead.leadId, villa);
 
