@@ -31,7 +31,8 @@ import {
   meetsQualified,
   type ListingFacts,
 } from "./listing-card-fields";
-import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
+import { formatDialogForAI } from "./dialog-parser";
+import { getMergedConversation } from "./merged-conversation";
 import { sanitizeSuggestion } from "./sanitize-suggestion";
 import { logger } from "./logger";
 
@@ -118,9 +119,18 @@ export async function generateListingAcquisitionReply(
   const learned = await correctionsPromptBlock(opts.responsibleUser, "owner_intake");
   const system = SYSTEM_PROMPT + identityRule + learned;
 
-  const dialog = parseDialogContent(opts.contentSnippet);
-  const formattedDialog = formatDialogForAI(dialog.messages, 500, true);
-  const lastLeadText = opts.lastLeadMessage.trim() || dialog.lastLeadMessage?.text || "";
+  // MERGED, not `contentSnippet` alone. `leads_sync.content` is webhook-fed and
+  // freezes for anything sent through Salesbot, so a reply written from it
+  // answers a message we already answered: on Villa Rasa Rasa the thread ended
+  // on the owner's "yes, we manage the villa" for twelve days while our answer
+  // sat in lead_messages the whole time. Fixed here, in the one function both
+  // live paths call, rather than at either call site.
+  const messages = await getMergedConversation(opts.leadId, opts.contentSnippet);
+  const formattedDialog = formatDialogForAI(messages, 500, true);
+  const lastLeadText =
+    opts.lastLeadMessage.trim() ||
+    [...messages].reverse().find((m) => m.from === "lead")?.text ||
+    "";
 
   // The seeding pass writes the poster's own ad in as the lead's first message,
   // so this arrives as a LIVE "they replied" generation even though nobody has
@@ -129,7 +139,7 @@ export async function generateListingAcquisitionReply(
   // this wrong produces a reply that thanks them for an enquiry they never sent.
   // Decided BEFORE the fact extraction below, which is skipped on a first
   // contact: the only text in the thread there is their own public ad.
-  const weHaveSpoken = dialog.messages.some((m) => m.from === "us");
+  const weHaveSpoken = messages.some((m) => m.from === "us");
   const isFirstContact = opts.isFirstContact || !weHaveSpoken;
 
   const leadContextBase = opts.leadNotes?.trim()
