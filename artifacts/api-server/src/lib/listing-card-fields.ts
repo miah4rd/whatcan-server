@@ -137,7 +137,7 @@ Fields:
 - area: the district or village the villa is in (Pererenan, Umalas, Seseh...). Not the whole address.
 - maps_link: a Google Maps / goo.gl / maps.app link if one was shared, else null.
 - photos_link: a Google Drive, Dropbox, WeTransfer or photo-gallery link if one was shared, else null.
-- counterpart: "owner" if they said they own it; "manager" if they manage it, run its reception, or are the developer; "agent" if they are a third-party broker or a catalogue; "unclear" otherwise.
+- counterpart: "owner" if they said they own it; "manager" if they manage it, run its reception, or are the developer — someone on the villa's OWN side, whose commission is our commission. "agent" for anyone standing between us and the villa's side: a third-party broker, a catalogue, or a management company that wants a cut of its own — "we work with agents through a rate contract", "we don't work on a commission basis", "our published rate less 10% for agents", "the owner is our client too". They are commercially the same thing whatever they call themselves: a second commission on the same villa, and terms we cannot agree with them. "unclear" otherwise.
 - stop_signal: quote the phrase that means this villa CANNOT be offered for long-term rental now — fully booked, already rented out for the year, daily rental only, short term only. null if there is none. Being occupied until a stated date is NOT a stop signal on its own; that is availability.
 
 Respond with JSON only:
