@@ -115,6 +115,16 @@ export type ListingFacts = {
   mapsLink: string | null;
   photosLink: string | null;
   counterpart: "owner" | "manager" | "agent" | "unclear";
+  /**
+   * A commission rate THEY proposed for us, when it is not our 10%.
+   *
+   * Luxso answered our rate question with "we could offer 5% commission for
+   * agent from rental villa rates" — a real offer, half of ours, and the card
+   * auto-qualified straight past it. Whether we work at someone else's rate is a
+   * commercial decision with a person in it, so a card carrying one is not ready
+   * to list no matter how complete the rest of it looks.
+   */
+  theirCommissionPct: number | null;
   /** A phrase that disqualifies the card, quoted: "fully booked", "daily only". */
   stopSignal: string | null;
 };
@@ -140,10 +150,11 @@ Fields:
 - maps_link: a Google Maps / goo.gl / maps.app link if one was shared, else null.
 - photos_link: a Google Drive, Dropbox, WeTransfer or photo-gallery link if one was shared, else null.
 - counterpart: "owner" if they said they own it, OR if they answered a "do you handle this yourself?" question with themselves personally — "saya kelola sendiri", "I manage it myself", "it's my own villa", "I handle it directly". The tell is the singular and the word "myself"/"sendiri": a company answers as "we"/"kami" and names itself. Someone speaking for themselves off a private number on their own listing is the owner side, and calling them an agency is both wrong and insulting. "manager" if a COMPANY manages it, runs its reception, or is the developer — still the villa's OWN side, whose commission is our commission. "agent" for anyone standing between us and the villa's side: a third-party broker, a catalogue, or a management company that wants a cut of its own — "we work with agents through a rate contract", "we don't work on a commission basis", "our published rate less 10% for agents", "the owner is our client too". They are commercially the same thing whatever they call themselves: a second commission on the same villa, and terms we cannot agree with them. "unclear" otherwise.
+- their_commission_pct: if THEY proposed a commission rate for the agent ("we could offer 5% commission for agent", "we give agents 10% off the published rate", "our agent rate is 7"), report that number. null if they never named a rate, and null if they simply accepted ours.
 - stop_signal: quote the phrase that means this villa CANNOT be offered for long-term rental now — fully booked, already rented out for the year, daily rental only, short term only. null if there is none. Being occupied until a stated date is NOT a stop signal on its own; that is availability.
 
 Respond with JSON only:
-{"bedrooms":n|null,"monthly_idr":n|null,"yearly_idr":n|null,"commission":"included"|"net"|"unknown","available_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","stop_signal":s|null}`;
+{"bedrooms":n|null,"monthly_idr":n|null,"yearly_idr":n|null,"commission":"included"|"net"|"unknown","available_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","their_commission_pct":n|null,"stop_signal":s|null}`;
 
 /**
  * Remove quoted text before the model ever sees it.
@@ -197,6 +208,7 @@ export async function extractListingFacts(conversation: string): Promise<Listing
       mapsLink: str(raw["maps_link"]),
       photosLink: str(raw["photos_link"]),
       counterpart: oneOf(raw["counterpart"], ["owner", "manager", "agent", "unclear"] as const, "unclear"),
+      theirCommissionPct: int(raw["their_commission_pct"]),
       stopSignal: str(raw["stop_signal"]),
     };
   } catch (err) {
@@ -331,6 +343,12 @@ export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[
   if (!f.monthlyIdr && !f.yearlyIdr) missing.push("price");
   else if (f.commission === "unknown") missing.push("commission position");
   if (f.counterpart !== "owner" && f.counterpart !== "manager") missing.push("entitled counterpart");
+  // They named a rate that is not ours. Working at someone else's commission is
+  // a decision with a person in it — never something a card walks past because
+  // every other box is ticked.
+  if (f.theirCommissionPct !== null && f.theirCommissionPct !== 10) {
+    missing.push(`commission terms to agree (they offer ${f.theirCommissionPct}%)`);
+  }
   if (f.stopSignal) missing.push(`stop signal: ${f.stopSignal}`);
   return { ok: missing.length === 0, missing };
 }
