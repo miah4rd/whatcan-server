@@ -83,26 +83,18 @@ router.get("/suggestions", async (req, res) => {
     // complaint, and it was never about the sync: the data was there all along.
     const timelineMsgRows =
       allLeadIds.length > 0
-        ? ((
-            await db.execute(sql`
-              SELECT lead_id, sender_type, sender_name, text, channel, sent_at
-                FROM (
-                  SELECT m.lead_id, m.sender_type, m.sender_name, m.text, m.channel, m.sent_at,
-                         row_number() OVER (PARTITION BY m.lead_id ORDER BY m.sent_at DESC) AS rn
-                    FROM lead_messages m
-                   WHERE m.lead_id = ANY(${allLeadIds})
-                ) t
-               WHERE rn <= 15
-               ORDER BY sent_at DESC
-            `)
-          ).rows as Array<Record<string, unknown>>).map((r) => ({
-            leadId: String(r["lead_id"]),
-            senderType: String(r["sender_type"] ?? ""),
-            senderName: (r["sender_name"] as string | null) ?? null,
-            text: (r["text"] as string | null) ?? null,
-            channel: (r["channel"] as string | null) ?? null,
-            sentAt: new Date(r["sent_at"] as string),
-          }))
+        ? await db
+            .select({
+              leadId: leadMessagesTable.leadId,
+              senderType: leadMessagesTable.senderType,
+              senderName: leadMessagesTable.senderName,
+              text: leadMessagesTable.text,
+              channel: leadMessagesTable.channel,
+              sentAt: leadMessagesTable.sentAt,
+            })
+            .from(leadMessagesTable)
+            .where(inArray(leadMessagesTable.leadId, allLeadIds))
+            .orderBy(desc(leadMessagesTable.sentAt))
         : [];
     const timelineMsgsByLead = new Map<string, typeof timelineMsgRows>();
     for (const m of timelineMsgRows) {
