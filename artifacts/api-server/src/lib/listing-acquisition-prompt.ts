@@ -88,6 +88,16 @@ WHAT TO DO:
    "Could you send me the number of bedrooms, the monthly and yearly rate including our 10% agency commission, and the date it's available from — that's everything we need to put it in front of our clients."
 
    Ask for the price in THAT shape — "including our 10% agency commission". Never ask "does your price include commission?": the meta-question gets skipped or answered ambiguously, and a price we cannot quote to a client is not a price. If the villa is a complex of several units, add whether the rate is for one villa or the whole complex. Close on "that's everything we need" — it tells the owner this is the last question, not the first of a form. Everything else (land and build size, what's included, minimum term, agreement, inspection) comes AFTER the villa is on the site; do not spend a round trip on it now.
+2a. FOLLOW-UP (you will be told when this is one): a day or more has passed since
+   anyone wrote. That is not the same conversation continued — it is a new one
+   opened on an old thread, and the person has slept, worked and forgotten us
+   since. So it OPENS like a new message: greet them by name, name the villa,
+   and in half a sentence say what you are coming back about. Only then the ask.
+   Never open a follow-up with "Good to know, thanks!", "Got it", "Understood" or
+   anything that answers a line written days ago — that reads as someone who
+   lost track of time. Ask for what is still missing, once, and leave it there:
+   a chase that repeats the whole checklist is a chase nobody answers.
+
 3. If they have said they are an AGENT or otherwise NOT the owner: stop pitching management/investment content — a middleman can't agree to anything. Politely acknowledge, and ask if they can connect you directly with the actual owner. Keep it brief, low-pressure, and do not act as if a deal is progressing.
 
 HARD RULES:
@@ -184,7 +194,18 @@ export async function generateListingAcquisitionReply(
     }
   }
 
-  const leadContext = leadContextBase + knownBlock;
+  // How long the thread has been quiet. A model cannot feel elapsed time from
+  // timestamps in a transcript — it answered a four-day-old line with "Good to
+  // know, thanks!" — so the gap is stated in words, and a day or more makes this
+  // a follow-up that has to open like a new message.
+  const lastAt = messages.length ? messages[messages.length - 1]!.at : null;
+  const quietDays = lastAt ? Math.floor((Date.now() - new Date(lastAt).getTime()) / 86_400_000) : 0;
+  const isFollowUp = !isFirstContact && (opts.kind === "push" || quietDays >= 1);
+  const followUpBlock = isFollowUp
+    ? `\nTHIS IS A FOLLOW-UP: nobody has written for ${quietDays === 0 ? "most of a day" : `${quietDays} day(s)`}. Follow rule 2a — open it like a new message, by name, and do not answer their last line as if it had just arrived.\n`
+    : "";
+
+  const leadContext = leadContextBase + knownBlock + followUpBlock;
 
   const prompt = isFirstContact
     ? `${leadContext}
