@@ -145,8 +145,27 @@ Fields:
 Respond with JSON only:
 {"bedrooms":n|null,"monthly_idr":n|null,"yearly_idr":n|null,"commission":"included"|"net"|"unknown","available_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","stop_signal":s|null}`;
 
+/**
+ * Remove quoted text before the model ever sees it.
+ *
+ * WhatsApp replies carry the message they answer, and our sync writes it inline
+ * behind ">>". So our own words arrive attributed to the owner: Nila Residence
+ * qualified on a commission position that was our question quoted back, and a
+ * draft went on to tell that owner "5% works on our side" — a rate said by
+ * nobody. Asking the model to ignore ">>" was not enough; it kept reading them.
+ * Deleting the quote is deterministic, and a quote never carries a fact the
+ * original speaker did not already say somewhere else in the thread.
+ */
+export function stripQuotedText(conversation: string): string {
+  return conversation
+    .split("\n")
+    .map((line) => line.replace(/>>.*$/s, "").trimEnd())
+    .filter((line) => line.trim() !== "" && !/^\s*(lead|broker|bot)\s*:\s*$/i.test(line))
+    .join("\n");
+}
+
 export async function extractListingFacts(conversation: string): Promise<ListingFacts | null> {
-  const text = conversation.trim();
+  const text = stripQuotedText(conversation).trim();
   if (!text) return null;
   try {
     const raw = await chatCompletionJSON<Record<string, unknown>>({
