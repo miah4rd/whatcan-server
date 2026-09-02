@@ -45,10 +45,14 @@ const OPEN_STAGES = [
 
 /** Silence that counts as "went quiet". */
 const FIRST_NUDGE_HOURS = 24;
-/** Second nudge waits longer — an owner who ignored one message is not busy. */
-const SECOND_NUDGE_HOURS = 72;
-/** Two nudges and we stop. A third is not persistence, it is noise. */
-const MAX_NUDGES = 2;
+/**
+ * One nudge per card, then stop.
+ *
+ * Deliberately conservative for the first run of this funnel: we have never
+ * followed up an owner here, so nobody knows yet how they react. A second round
+ * is a one-line change once the first has been watched.
+ */
+const MAX_NUDGES = 1;
 
 /**
  * How many drafts one pass may write.
@@ -68,19 +72,12 @@ function isOpenStage(stage: string | null): boolean {
  * The owner reads this. Short enough to answer from a lock screen, and it says
  * what we want rather than asking how they are.
  */
-export function composeNudge(ownerName: string, villa: string, round: number): string {
+export function composeNudge(ownerName: string, villa: string): string {
   const who = ownerName ? ` ${ownerName}` : "";
   const what = villa || "your villa";
-  if (round <= 1) {
-    return (
-      `Hi${who}, just following up on ${what} — are you still looking to rent it out?\n\n` +
-      `We have clients searching in the area and I'd like to bring you a tenant.`
-    );
-  }
   return (
-    `Hi${who}, last note from me on ${what}.\n\n` +
-    `If it's already rented out or you'd rather not list it with us, just say so ` +
-    `and I'll close it off. If you're still interested, I'm here.`
+    `Hi${who}, just following up on ${what} — are you still looking to rent it out?\n\n` +
+    `We have clients searching in the area and I'd like to bring you a tenant.`
   );
 }
 
@@ -130,9 +127,8 @@ export async function processListingOwnerFollowup(): Promise<number> {
       const round = (lead.followupLevel ?? 0) + 1;
       if (round > MAX_NUDGES) continue;
 
-      const waitHours = round === 1 ? FIRST_NUDGE_HOURS : SECOND_NUDGE_HOURS;
       const silentHours = (Date.now() - lead.lastOurMessageAt!.getTime()) / 3_600_000;
-      if (silentHours < waitHours) continue;
+      if (silentHours < FIRST_NUDGE_HOURS) continue;
 
       // Already waiting for the broker — a second identical card every five
       // minutes is how a queue becomes something people stop opening.
@@ -159,7 +155,7 @@ export async function processListingOwnerFollowup(): Promise<number> {
         // tab is selected by stage name (REACH_STAGE_KEYWORDS) and none of the
         // open acquisition stages are in it.
         kind: "push",
-        suggestionText: composeNudge(owner, villa, round),
+        suggestionText: composeNudge(owner, villa),
         status: "pending",
       });
 
