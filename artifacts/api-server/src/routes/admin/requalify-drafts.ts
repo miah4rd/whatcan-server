@@ -24,6 +24,7 @@ import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { logger } from "../../lib/logger";
 import { generateListingAcquisitionReply } from "../../lib/listing-acquisition-prompt";
 import { extractListingFacts, meetsQualified } from "../../lib/listing-card-fields";
+import { getMergedConversation } from "../../lib/merged-conversation";
 
 const router = Router();
 
@@ -59,9 +60,17 @@ router.post("/admin/requalify-drafts", async (req, res) => {
       continue;
     }
 
+    // The MERGED thread, never `content` alone: content freezes for anything
+    // sent through Salesbot, so a draft written from it answers a message we
+    // already answered — which is exactly what it did on Villa Rasa Rasa.
+    const merged = await getMergedConversation(lead.leadId, lead.content);
+    const conversation = merged
+      .map((m) => `${m.from === "lead" ? "lead" : "broker"}: ${m.text}`)
+      .join("\n");
+
     // What the thread already gave us — reported so the caller can see WHY a
     // message came out short, without reading the conversation.
-    const facts = await extractListingFacts(lead.content ?? "");
+    const facts = await extractListingFacts(conversation);
     const known = facts
       ? {
           bedrooms: facts.bedrooms,
@@ -79,8 +88,9 @@ router.post("/admin/requalify-drafts", async (req, res) => {
         leadId: lead.leadId,
         responsibleUser: lead.responsibleUser ?? null,
         kind: (draft.kind === "push" ? "push" : "live") as "push" | "live",
-        lastLeadMessage: "",
         contentSnippet: lead.content ?? "",
+        // and the freshest turn we know of, so the reply answers the real last message
+        lastLeadMessage: [...merged].reverse().find((m) => m.from === "lead")?.text ?? "",
         leadNotes: lead.leadNotes ?? null,
       });
       text = gen.text.trim();

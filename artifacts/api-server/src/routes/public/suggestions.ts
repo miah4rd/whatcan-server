@@ -70,21 +70,39 @@ router.get("/suggestions", async (req, res) => {
     // which only updates when an amoCRM webhook fires. Without merging these in,
     // the conversation view lags behind and the broker thinks the bot "didn't see"
     // the lead's newest reply.
+    // The newest 15 messages PER LEAD, not the newest 600 across all of them.
+    //
+    // A flat `.limit(600)` over ~500 leads meant the merge only ever saw the
+    // most recent messages in the whole account: any card whose conversation was
+    // more than a few days old got no timeline rows at all, so the panel fell
+    // back to `leads_sync.content` — which FREEZES for replies sent through
+    // Salesbot. Villa Rasa Rasa (23298745) showed the lead's "yes, we manage the
+    // villa" as the last word for twelve days while our answer sat in
+    // lead_messages, and every draft written from that view answered a message
+    // we had already answered. That is the "the bot doesn't see our reply"
+    // complaint, and it was never about the sync: the data was there all along.
     const timelineMsgRows =
       allLeadIds.length > 0
-        ? await db
-            .select({
-              leadId: leadMessagesTable.leadId,
-              senderType: leadMessagesTable.senderType,
-              senderName: leadMessagesTable.senderName,
-              text: leadMessagesTable.text,
-              channel: leadMessagesTable.channel,
-              sentAt: leadMessagesTable.sentAt,
-            })
-            .from(leadMessagesTable)
-            .where(inArray(leadMessagesTable.leadId, allLeadIds))
-            .orderBy(desc(leadMessagesTable.sentAt))
-            .limit(600)
+        ? ((
+            await db.execute(sql`
+              SELECT lead_id, sender_type, sender_name, text, channel, sent_at
+                FROM (
+                  SELECT m.lead_id, m.sender_type, m.sender_name, m.text, m.channel, m.sent_at,
+                         row_number() OVER (PARTITION BY m.lead_id ORDER BY m.sent_at DESC) AS rn
+                    FROM lead_messages m
+                   WHERE m.lead_id = ANY(${allLeadIds})
+                ) t
+               WHERE rn <= 15
+               ORDER BY sent_at DESC
+            `)
+          ).rows as Array<Record<string, unknown>>).map((r) => ({
+            leadId: String(r["lead_id"]),
+            senderType: String(r["sender_type"] ?? ""),
+            senderName: (r["sender_name"] as string | null) ?? null,
+            text: (r["text"] as string | null) ?? null,
+            channel: (r["channel"] as string | null) ?? null,
+            sentAt: new Date(r["sent_at"] as string),
+          }))
         : [];
     const timelineMsgsByLead = new Map<string, typeof timelineMsgRows>();
     for (const m of timelineMsgRows) {
