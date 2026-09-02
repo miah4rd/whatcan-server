@@ -24,6 +24,7 @@ import { eq, isNull, and } from "drizzle-orm";
 import { chatCompletionJSON, WRITER_MODEL } from "./ai-client";
 import { brokerDisplayName } from "./broker-identity";
 import { correctionsPromptBlock } from "./broker-corrections";
+import { extractListingFacts, syncListingFactsToCard } from "./listing-card-fields";
 import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
 import { sanitizeSuggestion } from "./sanitize-suggestion";
 import { logger } from "./logger";
@@ -173,6 +174,24 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
     } catch (err) {
       logger.warn({ err, leadId: opts.leadId }, "listing-acquisition: failed to flag agent contact");
     }
+  }
+
+  // Fill the card from the SAME thread this reply was written from.
+  //
+  // It lives here, not at the call sites, because generate-suggestion.ts and
+  // amocrm-webhook.ts BOTH call this function — a hook added to one of them is
+  // this project's oldest bug shape, and it fails silently.
+  //
+  // Only once the owner has actually replied: on first contact the only text in
+  // the thread is their public ad, and the regulation is explicit that a price
+  // taken from a listing ad is not a price the owner gave us.
+  //
+  // Deliberately not awaited — a Haiku call plus two amoCRM round trips, and
+  // nothing about the draft depends on it. If it fails the card stays as it was.
+  if (!isFirstContact) {
+    void extractListingFacts(formattedDialog || lastLeadText)
+      .then((facts) => (facts ? syncListingFactsToCard(opts.leadId, facts) : null))
+      .catch((err) => logger.warn({ err, leadId: opts.leadId }, "listing-acquisition: card fill failed (non-fatal)"));
   }
 
   return { text, contactType };
