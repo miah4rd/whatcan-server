@@ -59,9 +59,21 @@ function composeMessage(ownerName: string, villa: string): string {
  */
 export function villaFromLeadName(name: string): string {
   const head = (name ?? "").split("|")[0]!.trim();
-  const beforeSpec = head.split(/\s-\s/)[0]!.trim();
-  const cleaned = beforeSpec.replace(/\s*\(owner[^)]*\)\s*$/i, "").trim();
-  return cleaned || head || "your villa";
+  const beforeSpec = head.split(/\s[-\u2014]\s/)[0]!.trim();
+  const cleaned = beforeSpec
+    // Internal bookkeeping the scout writes into the title. The owner must
+    // never read it back: "following up on Aquamarine Villas III (BREIG) —
+    // Pererenan (FB SESEH PERERENAN VILLAS)" and "[LISTED] Luxfield Villa"
+    // both went out looking exactly like the database row they came from.
+    .replace(/\[[^\]]*\]/g, " ")
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  // Cards titled "R-YUD-002 - 2BR Umalas (owner: Bram)" reduce to our own
+  // listing id. "Quick check on R-YUD-002" tells the owner they are a row in
+  // someone's database; the neutral fallback reads like ordinary shorthand.
+  if (/^R-[A-Z]+-\d+$/i.test(cleaned)) return "your villa";
+  return cleaned || beforeSpec || head || "your villa";
 }
 
 /**
