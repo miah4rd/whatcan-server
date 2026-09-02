@@ -137,7 +137,7 @@ Fields:
 - area: the district or village the villa is in (Pererenan, Umalas, Seseh...). Not the whole address.
 - maps_link: a Google Maps / goo.gl / maps.app link if one was shared, else null.
 - photos_link: a Google Drive, Dropbox, WeTransfer or photo-gallery link if one was shared, else null.
-- counterpart: "owner" if they said they own it; "manager" if they manage it, run its reception, or are the developer — someone on the villa's OWN side, whose commission is our commission. "agent" for anyone standing between us and the villa's side: a third-party broker, a catalogue, or a management company that wants a cut of its own — "we work with agents through a rate contract", "we don't work on a commission basis", "our published rate less 10% for agents", "the owner is our client too". They are commercially the same thing whatever they call themselves: a second commission on the same villa, and terms we cannot agree with them. "unclear" otherwise.
+- counterpart: "owner" if they said they own it, OR if they answered a "do you handle this yourself?" question with themselves personally — "saya kelola sendiri", "I manage it myself", "it's my own villa", "I handle it directly". The tell is the singular and the word "myself"/"sendiri": a company answers as "we"/"kami" and names itself. Someone speaking for themselves off a private number on their own listing is the owner side, and calling them an agency is both wrong and insulting. "manager" if a COMPANY manages it, runs its reception, or is the developer — still the villa's OWN side, whose commission is our commission. "agent" for anyone standing between us and the villa's side: a third-party broker, a catalogue, or a management company that wants a cut of its own — "we work with agents through a rate contract", "we don't work on a commission basis", "our published rate less 10% for agents", "the owner is our client too". They are commercially the same thing whatever they call themselves: a second commission on the same villa, and terms we cannot agree with them. "unclear" otherwise.
 - stop_signal: quote the phrase that means this villa CANNOT be offered for long-term rental now — fully booked, already rented out for the year, daily rental only, short term only. null if there is none. Being occupied until a stated date is NOT a stop signal on its own; that is availability.
 
 Respond with JSON only:
@@ -208,11 +208,19 @@ export function priceLine(f: ListingFacts): string | null {
   return `${money} — ${note}`;
 }
 
+/**
+ * The card's three options do not map one-to-one onto the four things we can
+ * tell apart, and the collision matters: an owner's own manager and a
+ * third-party agency both used to land on "Manager or agency", which is exactly
+ * the distinction that decides whether a card can be qualified at all. A
+ * middleman is therefore reported as NOT verified — because that is the truth:
+ * we have not reached anyone entitled to let this villa.
+ */
 function verifiedLabel(c: ListingFacts["counterpart"]): string | null {
   if (c === "owner") return "Owner confirmed";
   if (c === "manager") return "Manager or agency";
-  if (c === "agent") return "Manager or agency";
-  return null; // "unclear" leaves the field alone rather than asserting "Not verified"
+  if (c === "agent") return "Not verified";
+  return null; // "unclear" leaves the field alone rather than asserting anything
 }
 
 async function readCard(leadId: string, ids: FieldMap): Promise<Record<number, string>> {
