@@ -71,13 +71,26 @@ function isOpenStage(stage: string | null): boolean {
 /**
  * The owner reads this. Short enough to answer from a lock screen, and it says
  * what we want rather than asking how they are.
+ *
+ * It carries the WHOLE qualification ask in one sentence — bedrooms, price, and
+ * the date free — because a card only reaches QUALIFIED once bedrooms and a
+ * commission-inclusive price are known, and every extra round trip is a day
+ * lost. The price is asked for in the form we need ("including our 10% agency
+ * commission") rather than as "does your price include commission?": the
+ * meta-question gets skipped or answered ambiguously, and the card then sits in
+ * "commission position NOT confirmed" — a number we cannot put on the site.
+ * "That's everything we need" is a promise, not filler: it tells the owner this
+ * is the last question, not the first of a form.
  */
 export function composeNudge(ownerName: string, villa: string): string {
   const who = ownerName ? ` ${ownerName}` : "";
   const what = villa || "your villa";
   return (
-    `Hi${who}, just following up on ${what} — are you still looking to rent it out?\n\n` +
-    `We have clients searching in the area and I'd like to bring you a tenant.`
+    `Hi${who}, just following up on ${what} — are you still looking to rent it out? ` +
+    `We have clients searching in the area right now.\n\n` +
+    `If so, could you send me the number of bedrooms, the monthly and yearly rate ` +
+    `including our 10% agency commission, and the date it's available from — ` +
+    `that's everything we need to put it in front of them.`
   );
 }
 
