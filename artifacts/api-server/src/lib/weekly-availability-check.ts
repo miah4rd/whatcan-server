@@ -82,7 +82,7 @@ function looksLikeTheVilla(name: string, villa: string): boolean {
   return /\b(villa|casa|resort|residence|suites?|property|management|maps)\b/i.test(name);
 }
 
-async function fetchOwnerName(leadId: string, villa: string): Promise<string> {
+export async function fetchOwnerName(leadId: string, villa: string): Promise<string> {
   try {
     const lead = await amoFetch<{ _embedded?: { contacts?: Array<{ id: number }> } }>(
       `/api/v4/leads/${leadId}?with=contacts`,
@@ -101,7 +101,7 @@ async function fetchOwnerName(leadId: string, villa: string): Promise<string> {
   }
 }
 
-async function fetchLeadTitle(leadId: string): Promise<string> {
+export async function fetchLeadTitle(leadId: string): Promise<string> {
   try {
     const lead = await amoFetch<{ name?: string }>(`/api/v4/leads/${leadId}`);
     return (lead?.name ?? "").trim();

@@ -20,6 +20,7 @@ import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
 import { processAdLeadBrokerOpening } from "./ad-lead-autoreply";
 import { processListingAcquisitionOutreach } from "./listing-acquisition-outreach";
 import { processWeeklyAvailabilityCheck } from "./weekly-availability-check";
+import { processListingOwnerFollowup } from "./listing-owner-followup";
 import { isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { logStuckLeads } from "./stuck-leads";
 import { logUnknownPipelines, isReachStageName } from "./pipelines";
@@ -1533,6 +1534,7 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
     processUnansweredLive().catch((err) => logger.error({ err }, "unanswered live error"));
     processSourcedLeadOutreach().catch((err) => logger.error({ err }, "sourced lead outreach error"));
     processWeeklyAvailabilityCheck().catch((err) => logger.error({ err }, "weekly availability check error"));
+    processListingOwnerFollowup().catch((err) => logger.error({ err }, "listing owner followup error"));
   }, 10_000);
   schedulerHandle = setInterval(() => {
     processFollowups().catch((err) => logger.error({ err }, "followup scheduler error"));
@@ -1541,6 +1543,9 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
     // for this whole funnel so the buyer-facing qualification template can never
     // reach a villa owner. The cadence gate lives inside the pass.
     processWeeklyAvailabilityCheck().catch((err) => logger.error({ err }, "weekly availability check error"));
+    // Owner nudges for Rental Listings — the "later phase" the block above
+    // names. Its own pass with its own words, so the buyer script stays out.
+    processListingOwnerFollowup().catch((err) => logger.error({ err }, "listing owner followup error"));
   }, intervalMs);
 
   // A paid ad lead sat unnoticed for up to ten minutes: one 5-min pass to seed
