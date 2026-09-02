@@ -246,17 +246,24 @@ export function priceLine(f: ListingFacts): string | null {
 }
 
 /**
- * The card's three options do not map one-to-one onto the four things we can
- * tell apart, and the collision matters: an owner's own manager and a
- * third-party agency both used to land on "Manager or agency", which is exactly
- * the distinction that decides whether a card can be qualified at all. A
- * middleman is therefore reported as NOT verified — because that is the truth:
- * we have not reached anyone entitled to let this villa.
+ * Two buckets, and the line between them is the commission — the owner's rule:
+ *
+ *   "Owner confirmed"    the owner, or the owner's own person (assistant, staff,
+ *                        family). We deal directly and split nothing.
+ *   "Manager or agency"  a management company or another agency. Workable, but
+ *                        the commission is shared, so it is a different deal.
+ *
+ * "Not verified" is kept for exactly one thing: we genuinely do not know yet.
+ * It is never an opinion about who they are.
+ *
+ * Qualification still separates `manager` from `agent` internally (the funnel's
+ * own rule), so the card being coarser than the model here is deliberate: this
+ * field answers "do we split?", and the commission-rate gate in meetsQualified
+ * answers "on what terms?".
  */
 function verifiedLabel(c: ListingFacts["counterpart"]): string | null {
   if (c === "owner") return "Owner confirmed";
-  if (c === "manager") return "Manager or agency";
-  if (c === "agent") return "Not verified";
+  if (c === "manager" || c === "agent") return "Manager or agency";
   return null; // "unclear" leaves the field alone rather than asserting anything
 }
 
