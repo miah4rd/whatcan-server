@@ -58,6 +58,7 @@ router.get("/suggestions", async (req, res) => {
               profileSummary: leadsSyncTable.profileSummary,
               discardFlaggedAt: leadsSyncTable.discardFlaggedAt,
               discardReason: leadsSyncTable.discardReason,
+              priorityAt: leadsSyncTable.priorityAt,
             })
             .from(leadsSyncTable)
             .where(inArray(leadsSyncTable.leadId, allLeadIds))
@@ -233,6 +234,7 @@ router.get("/suggestions", async (req, res) => {
         pipeline: sync?.pipeline ?? null,
         last_message_at: sync?.lastMessageAt?.toISOString() ?? null,
         next_followup_at: sync?.nextFollowupAt?.toISOString() ?? null,
+        priority_at: sync?.priorityAt?.toISOString() ?? null,
         last_lead_channel: lastLeadChannel,
         trailing_unanswered: trailingUnanswered,
         // Conversation-derived funnel stage. Non-terminal ones apply themselves
@@ -491,6 +493,27 @@ router.get("/suggestions", async (req, res) => {
         // Within same stage group: newest lead first (higher AmoCRM ID = newer)
         try { return Number(BigInt(b.lead_id) - BigInt(a.lead_id)); } catch { return 0; }
       });
+    }
+
+    // ── Hand-picked priority wins over every ranking above ──────────────────
+    //
+    // Last on purpose: there are three sort paths here (adaptive score, the
+    // stage→task→warmth sort, and the LIVE-only stage rank), and a lift added
+    // inside one of them silently would not apply in the other two — a list of
+    // cards spanning both tabs is exactly what this is for. Lifting after all of
+    // them is one rule that cannot be half-applied, and it is stable, so the
+    // ordering a broker already knows survives underneath.
+    //
+    // The window exists so nobody has to remember to unpin: a priority list is
+    // about this week's work, and one that never expires quietly becomes the
+    // permanent top of the inbox, which is the same as having no priority.
+    const PRIORITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+    const pinnedNow = (i: (typeof enriched)[0]): boolean => {
+      const p = i.priority_at ? new Date(i.priority_at).getTime() : null;
+      return p !== null && Number.isFinite(p) && Date.now() - p < PRIORITY_WINDOW_MS;
+    };
+    if (enriched.some(pinnedNow)) {
+      enriched = [...enriched.filter(pinnedNow), ...enriched.filter((i) => !pinnedNow(i))];
     }
 
     res.json({ items: enriched });

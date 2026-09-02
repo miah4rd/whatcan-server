@@ -24,7 +24,7 @@ import { eq, isNull, and } from "drizzle-orm";
 import { chatCompletionJSON, WRITER_MODEL } from "./ai-client";
 import { brokerDisplayName } from "./broker-identity";
 import { correctionsPromptBlock } from "./broker-corrections";
-import { extractListingFacts, syncListingFactsToCard } from "./listing-card-fields";
+import { extractListingFacts, syncListingFactsToCard, promoteIfQualified } from "./listing-card-fields";
 import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
 import { sanitizeSuggestion } from "./sanitize-suggestion";
 import { logger } from "./logger";
@@ -190,7 +190,15 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
   // nothing about the draft depends on it. If it fails the card stays as it was.
   if (!isFirstContact) {
     void extractListingFacts(formattedDialog || lastLeadText)
-      .then((facts) => (facts ? syncListingFactsToCard(opts.leadId, facts) : null))
+      .then(async (facts) => {
+        if (!facts) return;
+        // Fields first, stage second. A card promoted to QUALIFIED with its
+        // columns still empty is an agent opening a "ready" listing that tells
+        // them nothing — the exact state this whole change exists to end.
+        await syncListingFactsToCard(opts.leadId, facts);
+        const outcome = await promoteIfQualified(opts.leadId, facts);
+        logger.info({ leadId: opts.leadId, ...outcome }, "listing-acquisition: qualification checked");
+      })
       .catch((err) => logger.warn({ err, leadId: opts.leadId }, "listing-acquisition: card fill failed (non-fatal)"));
   }
 

@@ -15,7 +15,8 @@
  * 45 juta", "450jt/year net", "available from 20th of september". A regex that
  * survives that does not exist; a cheap model reads it in one pass.
  */
-import { amoFetch, amoPatch, amoPost } from "./amo-client";
+import { amoFetch, amoPatch, amoPost, getAmoLead, updateLeadStatus } from "./amo-client";
+import { safeStageIdForLead } from "./stage-classifier";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { logger } from "./logger";
 
@@ -280,4 +281,83 @@ export async function syncListingFactsToCard(
     logger.warn({ err, leadId }, "listing fields: card update threw (non-fatal)");
     return { written: 0, fields: [] };
   }
+}
+
+// ── Automatic promotion to QUALIFIED ────────────────────────────────────────
+
+/**
+ * The regulation, in code.
+ *
+ * QUALIFIED means "this villa can go on the site", not "someone replied
+ * politely" — so it needs the two facts a listing cannot be published without,
+ * from someone entitled to let the villa.
+ *
+ * A price whose commission position is unknown does NOT qualify. It is a number
+ * nobody may quote a client, and a card promoted on it sends the agent to
+ * publish a figure that has to be corrected in front of the customer.
+ */
+export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[] } {
+  const missing: string[] = [];
+  if (!f.bedrooms) missing.push("bedrooms");
+  if (!f.monthlyIdr && !f.yearlyIdr) missing.push("price");
+  else if (f.commission === "unknown") missing.push("commission position");
+  if (f.counterpart !== "owner" && f.counterpart !== "manager") missing.push("entitled counterpart");
+  if (f.stopSignal) missing.push(`stop signal: ${f.stopSignal}`);
+  return { ok: missing.length === 0, missing };
+}
+
+/**
+ * Stages a card may be promoted FROM.
+ *
+ * Deliberately a whitelist. Everything past QUALIFIED is a person's judgement
+ * about a listing already in flight, and a bot that moved a card back from
+ * `agreement` because this round's extraction came out thinner would undo work
+ * nobody asked it to touch. Promotion only moves forward, and never touches a
+ * closed card.
+ */
+const PROMOTABLE_FROM = ["incoming leads", "initial contact", "taken to work"];
+const QUALIFIED_STAGE = "QUALIFIED (Pre-listed)";
+
+async function stageIdByName(pipelineId: number, name: string): Promise<string | null> {
+  const { id } = await safeStageIdForLead({ pipelineId, stageId: null, stageName: name });
+  return id;
+}
+
+/**
+ * Move a card to QUALIFIED once the conversation has earned it.
+ *
+ * Never closes anything: a stop signal withholds promotion, it does not bin the
+ * card. Deciding a villa is dead stays a person's tap, like every other terminal
+ * stage in this system.
+ */
+export async function promoteIfQualified(
+  leadId: string,
+  f: ListingFacts,
+): Promise<{ moved: boolean; reason: string }> {
+  const verdict = meetsQualified(f);
+  if (!verdict.ok) return { moved: false, reason: `not yet: ${verdict.missing.join(", ")}` };
+
+  const lead = await getAmoLead(leadId);
+  if (!lead?.pipeline_id) return { moved: false, reason: "amoCRM did not return the lead's funnel" };
+
+  // Resolved against the funnel amoCRM says the lead is in, never our own
+  // `pipeline` column — that column is exactly what lags when a human moves a
+  // card, and a status id from the wrong funnel RELOCATES the lead.
+  const target = await stageIdByName(lead.pipeline_id, QUALIFIED_STAGE);
+  if (!target) return { moved: false, reason: `no "${QUALIFIED_STAGE}" stage in this funnel` };
+  if (String(lead.status_id ?? "") === target) return { moved: false, reason: "already qualified" };
+
+  const promotable: string[] = [];
+  for (const name of PROMOTABLE_FROM) {
+    const id = await stageIdByName(lead.pipeline_id, name);
+    if (id) promotable.push(id);
+  }
+  if (!promotable.includes(String(lead.status_id ?? ""))) {
+    return { moved: false, reason: `stage ${lead.status_id} is at or past QUALIFIED — left alone` };
+  }
+
+  const ok = await updateLeadStatus(leadId, Number(target));
+  if (!ok) return { moved: false, reason: "amoCRM refused the stage change" };
+  logger.info({ leadId, from: lead.status_id, to: target }, "listing card auto-qualified");
+  return { moved: true, reason: "qualified" };
 }

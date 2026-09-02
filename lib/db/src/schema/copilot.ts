@@ -116,6 +116,15 @@ export const leadsSyncTable = pgTable("leads_sync", {
   // content-based discard candidate; surfaced for BROKER confirmation, never auto-acted.
   discardFlaggedAt: timestamp("discard_flagged_at", { withTimezone: true }),
   discardReason: text("discard_reason"),
+  // ── Hand-picked priority. Set when a human decides THESE cards are the ones
+  // to work now — a shortlist of listings whose price is the only thing standing
+  // between us and publishing them, say. It lifts a card to the top of the inbox
+  // in BOTH tabs, above every ranking: PUSH already had a lever (the task date),
+  // LIVE is ordered by funnel stage and had none, so a list spanning both could
+  // not be raised at all. Deliberately a timestamp and not a boolean — priority
+  // is about "now", and one that never expires is one nobody trusts. Reads as
+  // unpinned once PRIORITY_WINDOW_DAYS have passed; nothing has to clear it.
+  priorityAt: timestamp("priority_at", { withTimezone: true }),
   // ── The client's request, in the five things a broker needs to recognise them
   // at a glance: who, how many people, how many bedrooms, when, where. Asked for
   // by the brokers ("I just want to scan the request and remember the clients").
