@@ -125,6 +125,8 @@ The thread may be in English, Indonesian, or both. Prices are Indonesian rupiah 
 
 WHO SAID IT MATTERS. Every line is prefixed with its speaker: "lead:" is the owner or their manager, "broker:" and "bot:" are US, the agency.
 
+A "lead:" line that begins with ">>" is a QUOTE of an earlier message, usually ours, pasted back when they reply to it. The words inside it are not theirs — attribute them to whoever said them first, which for a ">>" block is almost always us. Ignore quoted text entirely when deciding what the owner told you: a card that qualified on our own words quoted back is worse than one that never qualified.
+
 Take bedrooms, prices and availability ONLY from "lead:" lines. We open these conversations by quoting the price from the seller's public ad ("I came across the 2BR villa listed at IDR 38jt/month") — that number is the ad's, not the owner's, and putting it on the card as their price is exactly the mistake this field exists to prevent. If a figure appears only in our own lines and the owner never repeated or confirmed it, report null.
 
 Report ONLY what was actually said. Never infer a price from another villa, never convert a yearly price into a monthly one yourself, never guess a bedroom count from the villa's name.
