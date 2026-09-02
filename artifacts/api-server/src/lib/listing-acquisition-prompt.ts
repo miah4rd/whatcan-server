@@ -24,7 +24,13 @@ import { eq, isNull, and } from "drizzle-orm";
 import { chatCompletionJSON, WRITER_MODEL } from "./ai-client";
 import { brokerDisplayName } from "./broker-identity";
 import { correctionsPromptBlock } from "./broker-corrections";
-import { extractListingFacts, syncListingFactsToCard, promoteIfQualified } from "./listing-card-fields";
+import {
+  extractListingFacts,
+  syncListingFactsToCard,
+  promoteIfQualified,
+  meetsQualified,
+  type ListingFacts,
+} from "./listing-card-fields";
 import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
 import { sanitizeSuggestion } from "./sanitize-suggestion";
 import { logger } from "./logger";
@@ -115,17 +121,59 @@ export async function generateListingAcquisitionReply(
   const formattedDialog = formatDialogForAI(dialog.messages, 500, true);
   const lastLeadText = opts.lastLeadMessage.trim() || dialog.lastLeadMessage?.text || "";
 
-  const leadContext = opts.leadNotes?.trim()
-    ? `\nLISTING / LEAD CARD INFO (whatever is known about the property and contact):\n${opts.leadNotes.trim()}\n`
-    : "";
-
   // The seeding pass writes the poster's own ad in as the lead's first message,
   // so this arrives as a LIVE "they replied" generation even though nobody has
   // written to us. WE have not spoken yet iff there is no outbound message in
   // the thread — that, not the `kind`, is what makes it first contact. Getting
   // this wrong produces a reply that thanks them for an enquiry they never sent.
+  // Decided BEFORE the fact extraction below, which is skipped on a first
+  // contact: the only text in the thread there is their own public ad.
   const weHaveSpoken = dialog.messages.some((m) => m.from === "us");
   const isFirstContact = opts.isFirstContact || !weHaveSpoken;
+
+  const leadContextBase = opts.leadNotes?.trim()
+    ? `\nLISTING / LEAD CARD INFO (whatever is known about the property and contact):\n${opts.leadNotes.trim()}\n`
+    : "";
+
+  // ── What this thread has ALREADY answered ────────────────────────────────
+  //
+  // Telling the model "ask only for what is missing" is not enough on a long
+  // thread: it re-asked a bedroom count the owner had given, under a message
+  // that literally read "it's going to be available again around next week".
+  // So the facts are extracted BEFORE the reply is written and handed over as
+  // settled — an instruction the model cannot lose track of halfway down a
+  // conversation. Re-asking a fact someone already gave you is what makes a
+  // message read as a robot, and it costs the reply.
+  //
+  // The same extraction then feeds the card fill and the stage check below, so
+  // this is one model call, not two.
+  const facts: ListingFacts | null = isFirstContact
+    ? null
+    : await extractListingFacts(formattedDialog || lastLeadText).catch(() => null);
+
+  let knownBlock = "";
+  if (facts) {
+    const settled: string[] = [];
+    if (facts.bedrooms) settled.push(`bedrooms: ${facts.bedrooms}`);
+    if (facts.monthlyIdr) settled.push(`monthly rate: ${Math.round(facts.monthlyIdr / 1_000_000)} juta`);
+    if (facts.yearlyIdr) settled.push(`yearly rate: ${Math.round(facts.yearlyIdr / 1_000_000)} juta`);
+    if (facts.commission !== "unknown") settled.push(`commission position: ${facts.commission}`);
+    if (facts.availableFrom) settled.push(`available from: ${facts.availableFrom}`);
+    if (facts.area) settled.push(`area: ${facts.area}`);
+    if (facts.counterpart !== "unclear") settled.push(`who we are speaking to: ${facts.counterpart}`);
+    const missing = meetsQualified(facts).missing;
+    if (settled.length) {
+      knownBlock =
+        `\nALREADY ANSWERED IN THIS THREAD — treat as settled, do NOT ask for any of it again:\n- ${settled.join("\n- ")}\n`;
+    }
+    if (missing.length) {
+      knownBlock += `\nSTILL MISSING before this villa can be listed: ${missing.join(", ")}. Ask ONLY for these, and only for the ones it makes sense to ask THIS person.\n`;
+    } else {
+      knownBlock += `\nNothing is missing — this villa can be listed. Do not re-ask anything; move the conversation to the next real step instead.\n`;
+    }
+  }
+
+  const leadContext = leadContextBase + knownBlock;
 
   const prompt = isFirstContact
     ? `${leadContext}
@@ -188,18 +236,19 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
   //
   // Deliberately not awaited — a Haiku call plus two amoCRM round trips, and
   // nothing about the draft depends on it. If it fails the card stays as it was.
-  if (!isFirstContact) {
-    void extractListingFacts(formattedDialog || lastLeadText)
-      .then(async (facts) => {
-        if (!facts) return;
-        // Fields first, stage second. A card promoted to QUALIFIED with its
-        // columns still empty is an agent opening a "ready" listing that tells
-        // them nothing — the exact state this whole change exists to end.
-        await syncListingFactsToCard(opts.leadId, facts);
-        const outcome = await promoteIfQualified(opts.leadId, facts);
-        logger.info({ leadId: opts.leadId, ...outcome }, "listing-acquisition: qualification checked");
-      })
-      .catch((err) => logger.warn({ err, leadId: opts.leadId }, "listing-acquisition: card fill failed (non-fatal)"));
+  if (!isFirstContact && facts) {
+    // Reuses the facts already extracted above — one model call feeds the
+    // message, the card and the stage.
+    void (async () => {
+      // Fields first, stage second. A card promoted to QUALIFIED with its
+      // columns still empty is an agent opening a "ready" listing that tells
+      // them nothing — the exact state this whole change exists to end.
+      await syncListingFactsToCard(opts.leadId, facts);
+      const outcome = await promoteIfQualified(opts.leadId, facts);
+      logger.info({ leadId: opts.leadId, ...outcome }, "listing-acquisition: qualification checked");
+    })().catch((err) =>
+      logger.warn({ err, leadId: opts.leadId }, "listing-acquisition: card fill failed (non-fatal)"),
+    );
   }
 
   return { text, contactType };
