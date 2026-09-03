@@ -12,7 +12,12 @@ const BANNED_PHRASES: [RegExp, string][] = [
   [/[Jj]ust checking in[!.]?\s*/g, ""],
   [/[Hh]appy to help[!.]?\s*/g, ""],
   [/[Hh]appy to reconnect[!.]?\s*/g, ""],
-  [/[Ll]et me know if\b/g, "If you'd like"],
+  // Only at the start of a sentence. "Let me know if" → "If you'd like" reads
+  // fine there and nowhere else: mid-sentence it produced "could you If you'd
+  // like it can be offered on a 12 month contract?", which went into a draft
+  // queued for a villa owner. A slightly weak phrase is better than broken
+  // English, so a mid-sentence occurrence is left exactly as the model wrote it.
+  [/(^|[.!?]\s+)[Ll]et me know if\b/g, "$1If you'd like"],
   [/[Ff]eel free to reach out\b[^.]*\./g, ""],
   [/[Ff]eel free to reach out/g, ""],
 ];
