@@ -21,6 +21,7 @@ import { processAdLeadBrokerOpening } from "./ad-lead-autoreply";
 import { processListingAcquisitionOutreach } from "./listing-acquisition-outreach";
 import { processWeeklyAvailabilityCheck } from "./weekly-availability-check";
 import { processListingOwnerFollowup } from "./listing-owner-followup";
+import { processHandoverDrafts } from "./handover-draft";
 import { isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { logStuckLeads } from "./stuck-leads";
 import { logUnknownPipelines, isReachStageName } from "./pipelines";
@@ -1546,6 +1547,11 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
     // Owner nudges for Rental Listings — the "later phase" the block above
     // names. Its own pass with its own words, so the buyer script stays out.
     processListingOwnerFollowup().catch((err) => logger.error({ err }, "listing owner followup error"));
+    // The handover itself must produce something the broker can act on, or a
+    // card that crossed the autopilot threshold belongs to nobody: the bot has
+    // let it go and the inbox, which lists drafts rather than cards, shows
+    // nothing until the owner happens to write again.
+    processHandoverDrafts().catch((err) => logger.error({ err }, "handover draft error"));
   }, intervalMs);
 
   // A paid ad lead sat unnoticed for up to ten minutes: one 5-min pass to seed
