@@ -167,7 +167,7 @@ Fields:
 
   REQUIRE EVIDENCE. "I manage this villa" / "saya manage villa uma" on its own decides nothing — it is precisely the sentence both a salaried assistant and a management company say. Without a company name, a "we" that means an organisation, or an office/admin/contract behind it, report "unclear" and let the draft ask. This field decides whether we split a commission; a guess here is worse than a question. "agent" for anyone standing between us and the villa's side: a third-party broker, a catalogue, or a management company that wants a cut of its own — "we work with agents through a rate contract", "we don't work on a commission basis", "our published rate less 10% for agents", "the owner is our client too". They are commercially the same thing whatever they call themselves: a second commission on the same villa, and terms we cannot agree with them. "unclear" otherwise.
 - their_commission_pct: if THEY proposed a commission rate for the agent ("we could offer 5% commission for agent", "we give agents 10% off the published rate", "our agent rate is 7"), report that number. null if they never named a rate, and null if they simply accepted ours.
-- stop_kind: "occupied" when the villa IS lettable long term and is simply taken for now (fully booked, rented for a year, occupied until a date, tenant in place). "not_our_format" when it could never be ours as it stands (daily only, short stay only, rented by the room, they no longer look after it, they refuse to work with agencies). null when there is no stop signal. These go opposite ways: the first is a contact worth keeping warm until a date, the second is not.
+- stop_kind: "occupied" when the villa IS lettable long term and is simply taken for MORE THAN ABOUT THREE MONTHS (rented for a year, booked out for six months, tenant in place until a date well ahead). A villa free within roughly three months is NOT a stop signal at all: that is a real option we can offer now, so leave stop_kind null and just report free_from_iso. "not_our_format" when it could never be ours as it stands (daily only, short stay only, rented by the room, they no longer look after it, they refuse to work with agencies). null when there is no stop signal. These go opposite ways: the first is a contact worth keeping warm until a date, the second is not.
 - free_from_iso: if the thread lets you work out WHEN it frees up, give it as YYYY-MM-DD, resolving relative wording against the newest message's date ("available in 3 months", "rented for a year from June"). null when nobody said, or when it cannot be pinned to a month.
 - stop_signal: quote the phrase that means this villa CANNOT be offered for long-term rental now — fully booked, already rented out for the year, daily rental only, short term only. null if there is none. Being occupied until a stated date is NOT a stop signal on its own; that is availability.
 
@@ -371,7 +371,12 @@ export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[
   if (!f.bedrooms) missing.push("bedrooms");
   if (!f.monthlyIdr && !f.yearlyIdr) missing.push("price");
   else if (f.commission === "unknown") missing.push("commission position");
-  if (f.counterpart !== "owner" && f.counterpart !== "manager") missing.push("entitled counterpart");
+  // WHO we are talking to is the BASIS of qualification, not one field among
+  // several. A management company or another agency means not qualified however
+  // complete the listing details are: we would be sharing the fee with a
+  // business that already holds the villa. Only the owner, or the staff he pays,
+  // can put it on our site on our terms.
+  if (f.counterpart !== "owner") missing.push("not the owner or his own staff");
   // They named a rate that is not ours. Working at someone else's commission is
   // a decision with a person in it — never something a card walks past because
   // every other box is ticked.
@@ -444,8 +449,10 @@ const CO_BROKE_STAGE = "co-broke Agents";
 const LONG_TERM_STAGE = "long term";
 
 /** How far ahead of the free date we want to be talking again. A villa is
- *  re-let before it empties, so landing on the day itself is landing late. */
-const REMIND_BEFORE_DAYS = 45;
+ *  re-let before it empties, so landing on the day itself is landing late.
+ *  Two weeks is the owner's call: close enough that the conversation is about
+ *  the actual handover, early enough to be first. */
+const REMIND_BEFORE_DAYS = 14;
 
 /**
  * Route a card the qualification rule turned down.
@@ -482,8 +489,15 @@ export async function routeUnqualified(
     return updateLeadStatus(leadId, Number(id));
   };
 
-  // Occupied but ours: keep it warm, and make "we'll come back" a real thing
-  // rather than a polite sentence.
+  // WHO first. A management company or another agency holds the villa, so the
+  // listing details do not change the answer: we are not taking it on our terms.
+  if (f.counterpart === "manager" || f.counterpart === "agent") {
+    const ok = await move(CO_BROKE_STAGE);
+    return { moved: ok, to: CO_BROKE_STAGE, reason: `counterpart is ${f.counterpart}` };
+  }
+
+  // Ours, just let for a long stretch: keep it warm, and make "we'll come back"
+  // a real thing rather than a polite sentence.
   if (f.stopKind === "occupied") {
     const ok = await move(LONG_TERM_STAGE);
     if (ok && f.freeFromIso) {
@@ -497,11 +511,6 @@ export async function routeUnqualified(
       );
     }
     return { moved: ok, to: LONG_TERM_STAGE, reason: f.freeFromIso ? `free from ${f.freeFromIso}` : "occupied, date unknown" };
-  }
-
-  if (f.counterpart === "manager" || f.counterpart === "agent") {
-    const ok = await move(CO_BROKE_STAGE);
-    return { moved: ok, to: CO_BROKE_STAGE, reason: `counterpart is ${f.counterpart}` };
   }
 
   return { moved: false, reason: "nothing to route on yet" };
