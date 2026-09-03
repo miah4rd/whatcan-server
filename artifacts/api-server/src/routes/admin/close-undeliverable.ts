@@ -15,6 +15,10 @@ const router = Router();
 router.post("/admin/close-undeliverable", async (req, res) => {
   const apply = String(req.query["apply"] ?? "") === "1";
   const limit = Math.min(Number(req.query["limit"]) || 200, 500);
+  // Scoped by funnel on purpose. A delivery failure means the same thing
+  // everywhere, but closing cards in the owner's SALES funnel is his call, not
+  // a side effect of a listings fix.
+  const pipeline = String(req.query["pipeline"] ?? "").trim().toLowerCase();
 
   // Only cards where the notice is the LAST thing in the conversation: one that
   // later carried a real reply means the owner reached us another way, and that
@@ -34,6 +38,7 @@ router.post("/admin/close-undeliverable", async (req, res) => {
        AND lower(coalesce(l.lead_stage, '')) NOT LIKE '%closed%'
        AND lower(coalesce(l.lead_stage, '')) NOT LIKE '%lost%'
        AND lower(coalesce(l.lead_stage, '')) NOT LIKE '%won%'
+       AND (${pipeline} = '' OR lower(coalesce(l.pipeline, '')) = ${pipeline})
      LIMIT ${limit}
   `);
 
