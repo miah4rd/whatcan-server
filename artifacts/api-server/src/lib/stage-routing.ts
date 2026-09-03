@@ -42,6 +42,19 @@ const PUSH_SUPPRESSED_RAW: string[] = [
   // the wrong conversation entirely. They are NOT hidden though — see
   // isPostSigningStage, which keeps their own incoming messages in LIVE.
   "inventory",
+  // Rental Listings parking stages, both the owner's decision (2026-09-03):
+  //
+  //   "co-broke Agents" — a management company or another agency holds this
+  //   villa. We keep the contact rather than throwing it away, but we do not
+  //   work it: no drafts, no tasks, no chasing. Nothing to say until something
+  //   changes on their side.
+  //
+  //   "long term" — the villa is genuinely ours to take, just occupied for six
+  //   or twelve months. The ONLY thing that should happen is the dated task we
+  //   set when it goes here; a weekly "still available?" to someone who told us
+  //   the answer is next April is how a good contact stops replying.
+  "co-broke",
+  "long term",
 ];
 
 /**
