@@ -1556,7 +1556,10 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
     // the first version looped because queueSuggestion rewrites a pending row
     // in place and created_at never moved. Verified idempotent by hand: three
     // consecutive runs gave 2, 0, 0.
-    processHandoverDrafts().catch((err) => logger.error({ err }, "handover draft error"));
+    // DISABLED again 2026-09-03: a silent deleter removes the handover row
+    // between passes and takes the guard's stamp with it. Find and fix the
+    // deleter (or move the stamp off the row) before re-enabling.
+    // processHandoverDrafts().catch((err) => logger.error({ err }, "handover draft error"));
   }, intervalMs);
 
   // A paid ad lead sat unnoticed for up to ten minutes: one 5-min pass to seed
