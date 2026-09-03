@@ -19,6 +19,8 @@ import {
   ensureListingFields,
   extractListingFacts,
   syncListingFactsToCard,
+  promoteIfQualified,
+  routeUnqualified,
   priceLine,
 } from "../../lib/listing-card-fields";
 
@@ -28,6 +30,10 @@ type Row = { lead_id: string; lead_stage: string | null; convo: string | null };
 
 router.post("/admin/backfill-listing-fields", async (req, res) => {
   const apply = String(req.query["apply"] ?? "") === "1";
+  // `&route=1` also MOVES cards: qualified ones forward, the rest into the two
+  // parking stages. Separate from `apply` on purpose — filling a field and
+  // moving a card in the owner's live CRM are different sizes of act.
+  const route = String(req.query["route"] ?? "") === "1";
   const limit = Math.min(Number(req.query["limit"] ?? 400) || 400, 400);
   const only = String(req.query["lead"] ?? "").trim();
 
@@ -66,6 +72,16 @@ router.post("/admin/backfill-listing-fields", async (req, res) => {
     if (facts.bedrooms) withBedrooms++;
     if (facts.monthlyIdr || facts.yearlyIdr) withPrice++;
 
+    let routed: string | null = null;
+    if (route) {
+      const promoted = await promoteIfQualified(r.lead_id, facts);
+      if (promoted.moved) routed = "QUALIFIED";
+      else if (promoted.reason.startsWith("not yet")) {
+        const parked = await routeUnqualified(r.lead_id, facts);
+        if (parked.moved) routed = parked.to ?? null;
+      }
+    }
+
     let written = 0;
     let names: string[] = [];
     if (apply) {
@@ -86,6 +102,7 @@ router.post("/admin/backfill-listing-fields", async (req, res) => {
       stop_signal: facts.stopSignal,
       photos: facts.photosLink ? "yes" : null,
       ...(apply ? { written, fields: names } : {}),
+      ...(routed ? { movedTo: routed } : {}),
     });
   }
 
