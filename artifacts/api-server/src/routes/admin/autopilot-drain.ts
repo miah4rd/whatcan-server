@@ -16,9 +16,9 @@
  */
 import { Router } from "express";
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { logger } from "../../lib/logger";
-import { getAutopilotSetting, maybeAutopilot } from "../../lib/autopilot";
+import { delegatedStageNames, getAutopilotSetting, maybeAutopilot } from "../../lib/autopilot";
 
 const router = Router();
 
@@ -74,6 +74,15 @@ router.post("/admin/autopilot-drain", async (req, res) => {
   }
   const room = force ? limit : Math.min(limit, DAILY_CAP - already);
 
+  // Only the stages the broker delegated. Without this the drain picked the
+  // oldest drafts in the whole funnel — which live in `live` and `Weekly Check
+  // Sent`, past the threshold — and every one of them was declined in silence.
+  const eligibleStages = await delegatedStageNames(pipeline);
+  if (!eligibleStages || eligibleStages.length === 0) {
+    res.json({ sent: 0, skipped: `no delegated stages resolved for ${pipeline}` });
+    return;
+  }
+
   // Oldest first: a draft that has waited longest is the one whose conversation
   // is closest to going cold.
   const backlog = await db
@@ -84,6 +93,7 @@ router.post("/admin/autopilot-drain", async (req, res) => {
       and(
         eq(pendingSuggestionsTable.status, "pending"),
         sql`lower(${leadsSyncTable.pipeline}) = ${pipeline}`,
+        inArray(leadsSyncTable.leadStage, eligibleStages),
       ),
     )
     .orderBy(asc(pendingSuggestionsTable.createdAt))
@@ -100,18 +110,35 @@ router.post("/admin/autopilot-drain", async (req, res) => {
 
   // maybeAutopilot re-checks the stage threshold and every send guard itself —
   // this endpoint decides only WHEN, never WHETHER.
+  // Count what LEFT, not what was tried: reporting attempts as sends is how a
+  // batch of fifteen silent declines got announced as fifteen delivered
+  // messages, and the owner would have believed it.
   let sent = 0;
+  const declined: Record<string, number> = {};
   for (const leadId of picked) {
     try {
-      await maybeAutopilot(leadId);
-      sent++;
+      const outcome = await maybeAutopilot(leadId);
+      if (outcome.sent) sent++;
+      else declined[outcome.reason] = (declined[outcome.reason] ?? 0) + 1;
     } catch (err) {
       logger.warn({ err, leadId }, "autopilot-drain: lead failed (non-fatal)");
+      declined["threw"] = (declined["threw"] ?? 0) + 1;
     }
   }
 
-  logger.info({ pipeline, picked: picked.length, alreadyToday: already }, "autopilot-drain finished");
-  res.json({ pipeline, attempted: picked.length, alreadyToday: already, dailyCap: DAILY_CAP, sent });
+  logger.info(
+    { pipeline, picked: picked.length, sent, declined, alreadyToday: already },
+    "autopilot-drain finished",
+  );
+  res.json({
+    pipeline,
+    attempted: picked.length,
+    sent,
+    declined,
+    alreadyToday: already,
+    dailyCap: DAILY_CAP,
+    eligibleStages,
+  });
 });
 
 export default router;
