@@ -96,13 +96,15 @@ export async function loadReplySignals(leadIds: string[]): Promise<Map<string, R
     .select({
       leadId: leadMessagesTable.leadId,
       lastLeadMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (where ${leadMessagesTable.senderType} = 'lead')) * 1000, 0)`,
+      // A PLAIN aggregate. The welcome discount used to live inside this FILTER
+      // as a correlated subquery, and it returned 0 for every lead — our own
+      // outgoing messages were plainly in the table, the same aggregate typed by
+      // hand gave the right timestamp, and the endpoint still saw zero. Zero is
+      // always smaller than the lead's last message, so every answered lead
+      // stayed in LIVE forever however many times we replied. The discount does
+      // not need to be in SQL at all: `welcomeByLead` is already loaded above.
       lastOursMs: sql<string>`coalesce(extract(epoch from max(${leadMessagesTable.sentAt}) filter (
         where ${leadMessagesTable.senderType} <> 'lead'
-          and ${leadMessagesTable.sentAt} > coalesce(
-            (select max(sm.created_at) + ${sql.raw(`interval '${WELCOME_BURST_MS} milliseconds'`)}
-               from sent_messages sm
-              where sm.lead_id = ${leadMessagesTable.leadId} and sm.kind = ${AD_AUTO_KIND}),
-            '-infinity'::timestamptz)
       )) * 1000, 0)`,
     })
     .from(leadMessagesTable)
@@ -110,10 +112,17 @@ export async function loadReplySignals(leadIds: string[]): Promise<Map<string, R
     .groupBy(leadMessagesTable.leadId);
 
   for (const r of rows) {
+    const welcomeAt = welcomeByLead.get(r.leadId) ?? 0;
+    const lastOurs = Number(r.lastOursMs) || 0;
+    // Same rule the subquery meant to express: the automatic welcome is not a
+    // turn in the conversation. Since `lastOurs` is the MAXIMUM, it falling
+    // inside the welcome burst means every message we sent is the welcome —
+    // exactly the case the discount is for.
+    const oursDiscounted = welcomeAt && lastOurs && lastOurs <= welcomeAt + WELCOME_BURST_MS ? 0 : lastOurs;
     out.set(r.leadId, {
       lastLeadAt: Number(r.lastLeadMs) || 0,
-      lastOursAt: Number(r.lastOursMs) || 0,
-      adWelcomeAtMs: welcomeByLead.get(r.leadId) ?? 0,
+      lastOursAt: oursDiscounted,
+      adWelcomeAtMs: welcomeAt,
     });
   }
   // A lead with a welcome but no timeline rows yet still needs the discount.
