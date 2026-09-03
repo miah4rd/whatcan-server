@@ -38,6 +38,18 @@ export const pendingSuggestionsTable = pgTable("pending_suggestions", {
   requestedAt: timestamp("requested_at", { withTimezone: true }),
   /** True when autopilot sent this without a human approve (see lib/autopilot). */
   autoSent: boolean("auto_sent").default(false),
+  /**
+   * Why autopilot did NOT send this draft, when the lead sits on a stage the
+   * broker has delegated. Null means autopilot either sent it or was never
+   * responsible for it.
+   *
+   * The inbox reads this to answer a question it could not answer before: a
+   * draft on a delegated stage is the bot's job, not the broker's, and showing
+   * it for approval invites someone to send by hand a message the bot is about
+   * to send itself. Only a draft autopilot could not deliver belongs in front
+   * of a person.
+   */
+  autopilotSkippedReason: text("autopilot_skipped_reason"),
   suggestionText: text("suggestion_text").notNull(),
   triggeredByMessageAt: timestamp("triggered_by_message_at", { withTimezone: true }),
   status: text("status").notNull().default("pending"),
