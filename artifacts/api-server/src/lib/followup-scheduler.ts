@@ -1551,7 +1551,14 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
     // card that crossed the autopilot threshold belongs to nobody: the bot has
     // let it go and the inbox, which lists drafts rather than cards, shows
     // nothing until the owner happens to write again.
-    processHandoverDrafts().catch((err) => logger.error({ err }, "handover draft error"));
+    // DISABLED 2026-09-03 — it looped. queueSuggestion updates an existing
+    // pending row IN PLACE (see CLAUDE.md: a delete+reinsert once changed the id
+    // under a broker with the card open), so a card that already had an old
+    // draft row kept that row's created_at. The guard here is "nothing written
+    // since our last message", which therefore never became true: every pass
+    // rewrote the same row and fired another push at the broker. Re-enable only
+    // with a guard that does not depend on created_at.
+    // processHandoverDrafts().catch((err) => logger.error({ err }, "handover draft error"));
   }, intervalMs);
 
   // A paid ad lead sat unnoticed for up to ten minutes: one 5-min pass to seed
