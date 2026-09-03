@@ -23,7 +23,16 @@ import { getAutopilotSetting, maybeAutopilot } from "../../lib/autopilot";
 const router = Router();
 
 const BATCH = 15;
-const DAILY_CAP = 60;
+/**
+ * A ceiling for the drain's own pace, not a rule about messaging.
+ *
+ * The real limit lives elsewhere and is about STRANGERS: opening a thread with
+ * someone who has never written to us is what Meta blocks a number for, and
+ * new-contact-budget.ts caps that at nine a day on its own. Replying to a person
+ * who is already talking to us is not policed, so this number exists only to
+ * stop a backlog leaving as one burst.
+ */
+const DAILY_CAP = 200;
 const OPEN_HOUR = 8;
 const CLOSE_HOUR = 20;
 
@@ -60,7 +69,7 @@ router.post("/admin/autopilot-drain", async (req, res) => {
   `);
   const already = Number((sentToday.rows?.[0] as { n?: number } | undefined)?.n ?? 0);
   if (!force && already >= DAILY_CAP) {
-    res.json({ sent: 0, skipped: `daily cap reached (${already}/${DAILY_CAP})` });
+    res.json({ sent: 0, skipped: `drain pace cap reached (${already}/${DAILY_CAP})` });
     return;
   }
   const room = force ? limit : Math.min(limit, DAILY_CAP - already);

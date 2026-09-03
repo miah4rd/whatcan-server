@@ -24,7 +24,14 @@ import { sql } from "drizzle-orm";
 import { logger } from "./logger";
 
 /** Meta tolerates far more than this; the point is to stay unremarkable. */
-export const NEW_CONTACT_DAILY_CAP = 8;
+/**
+ * Opening a conversation with a stranger is the only outbound Meta actually
+ * polices: a number that starts many new threads a day gets read as spam and
+ * blocked. Replying to someone who has written to us is not the same act and
+ * carries no such ceiling, which is why this budget counts FIRST messages only.
+ * Nine is the owner's figure (2026-09-03).
+ */
+export const NEW_CONTACT_DAILY_CAP = 9;
 
 /** Bali — the day boundary the brokers actually live in. */
 const TZ = "Asia/Makassar";
