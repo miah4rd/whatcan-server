@@ -28,6 +28,7 @@ import {
   extractListingFacts,
   syncListingFactsToCard,
   promoteIfQualified,
+  routeUnqualified,
   meetsQualified,
   type ListingFacts,
 } from "./listing-card-fields";
@@ -295,6 +296,12 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
       await syncListingFactsToCard(opts.leadId, facts);
       const outcome = await promoteIfQualified(opts.leadId, facts);
       logger.info({ leadId: opts.leadId, ...outcome }, "listing-acquisition: qualification checked");
+      // Only when it did NOT qualify: a management company we have agreed terms
+      // with is a listing, not something to file away.
+      if (!outcome.moved && outcome.reason.startsWith("not yet")) {
+        const routed = await routeUnqualified(opts.leadId, facts);
+        if (routed.moved) logger.info({ leadId: opts.leadId, ...routed }, "listing card parked");
+      }
     })().catch((err) =>
       logger.warn({ err, leadId: opts.leadId }, "listing-acquisition: card fill failed (non-fatal)"),
     );

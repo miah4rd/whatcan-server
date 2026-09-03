@@ -15,7 +15,7 @@
  * 45 juta", "450jt/year net", "available from 20th of september". A regex that
  * survives that does not exist; a cheap model reads it in one pass.
  */
-import { amoFetch, amoPatch, amoPost, getAmoLead, updateLeadStatus } from "./amo-client";
+import { amoFetch, amoPatch, amoPost, getAmoLead, updateLeadStatus, createAmoTask } from "./amo-client";
 import { safeStageIdForLead } from "./stage-classifier";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { logger } from "./logger";
@@ -127,6 +127,14 @@ export type ListingFacts = {
   theirCommissionPct: number | null;
   /** A phrase that disqualifies the card, quoted: "fully booked", "daily only". */
   stopSignal: string | null;
+  /**
+   * WHY it is disqualified, because the two answers go opposite ways.
+   * "occupied" — ours to take, just let until a date. Worth keeping warm.
+   * "not_our_format" — daily, per-room, someone else's villa. Never ours.
+   */
+  stopKind: "occupied" | "not_our_format" | null;
+  /** Best-effort ISO date the villa frees up, when the thread allows one. */
+  freeFromIso: string | null;
 };
 
 const EXTRACT_SYSTEM = `You read a WhatsApp thread between a Bali rental agency and a villa owner (or the villa's manager), and pull out what the agency needs to put the villa on its website.
@@ -159,10 +167,12 @@ Fields:
 
   REQUIRE EVIDENCE. "I manage this villa" / "saya manage villa uma" on its own decides nothing — it is precisely the sentence both a salaried assistant and a management company say. Without a company name, a "we" that means an organisation, or an office/admin/contract behind it, report "unclear" and let the draft ask. This field decides whether we split a commission; a guess here is worse than a question. "agent" for anyone standing between us and the villa's side: a third-party broker, a catalogue, or a management company that wants a cut of its own — "we work with agents through a rate contract", "we don't work on a commission basis", "our published rate less 10% for agents", "the owner is our client too". They are commercially the same thing whatever they call themselves: a second commission on the same villa, and terms we cannot agree with them. "unclear" otherwise.
 - their_commission_pct: if THEY proposed a commission rate for the agent ("we could offer 5% commission for agent", "we give agents 10% off the published rate", "our agent rate is 7"), report that number. null if they never named a rate, and null if they simply accepted ours.
+- stop_kind: "occupied" when the villa IS lettable long term and is simply taken for now (fully booked, rented for a year, occupied until a date, tenant in place). "not_our_format" when it could never be ours as it stands (daily only, short stay only, rented by the room, they no longer look after it, they refuse to work with agencies). null when there is no stop signal. These go opposite ways: the first is a contact worth keeping warm until a date, the second is not.
+- free_from_iso: if the thread lets you work out WHEN it frees up, give it as YYYY-MM-DD, resolving relative wording against the newest message's date ("available in 3 months", "rented for a year from June"). null when nobody said, or when it cannot be pinned to a month.
 - stop_signal: quote the phrase that means this villa CANNOT be offered for long-term rental now — fully booked, already rented out for the year, daily rental only, short term only. null if there is none. Being occupied until a stated date is NOT a stop signal on its own; that is availability.
 
 Respond with JSON only:
-{"bedrooms":n|null,"monthly_idr":n|null,"yearly_idr":n|null,"commission":"included"|"net"|"unknown","available_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","their_commission_pct":n|null,"stop_signal":s|null}`;
+{"bedrooms":n|null,"monthly_idr":n|null,"yearly_idr":n|null,"commission":"included"|"net"|"unknown","available_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","their_commission_pct":n|null,"stop_kind":"occupied"|"not_our_format"|null,"free_from_iso":s|null,"stop_signal":s|null}`;
 
 /**
  * Remove quoted text before the model ever sees it.
@@ -218,6 +228,10 @@ export async function extractListingFacts(conversation: string): Promise<Listing
       counterpart: oneOf(raw["counterpart"], ["owner", "manager", "agent", "unclear"] as const, "unclear"),
       theirCommissionPct: int(raw["their_commission_pct"]),
       stopSignal: str(raw["stop_signal"]),
+      stopKind: (["occupied", "not_our_format"] as const).includes(String(raw["stop_kind"]) as never)
+        ? (String(raw["stop_kind"]) as "occupied" | "not_our_format")
+        : null,
+      freeFromIso: /^\d{4}-\d{2}-\d{2}$/.test(String(raw["free_from_iso"] ?? "")) ? String(raw["free_from_iso"]) : null,
     };
   } catch (err) {
     logger.warn({ err }, "listing fields: extraction failed (non-fatal)");
@@ -422,4 +436,73 @@ export async function promoteIfQualified(
   if (!ok) return { moved: false, reason: "amoCRM refused the stage change" };
   logger.info({ leadId, from: lead.status_id, to: target }, "listing card auto-qualified");
   return { moved: true, reason: "qualified" };
+}
+
+// ── Where a card belongs when it is NOT going to QUALIFIED ──────────────────
+
+const CO_BROKE_STAGE = "co-broke Agents";
+const LONG_TERM_STAGE = "long term";
+
+/** How far ahead of the free date we want to be talking again. A villa is
+ *  re-let before it empties, so landing on the day itself is landing late. */
+const REMIND_BEFORE_DAYS = 45;
+
+/**
+ * Route a card the qualification rule turned down.
+ *
+ * The owner's two parking stages, and the reasoning behind each:
+ *
+ *   co-broke Agents — a management company or another agency holds this villa.
+ *   Not thrown away, because the contact may matter later, but not worked
+ *   either: the stage suppresses drafts and no task is set. Nothing to say
+ *   until something changes on their side.
+ *
+ *   long term — the villa IS ours to take, it is simply let for six or twelve
+ *   months. This is the opposite of a dead card: we thank them, we say when we
+ *   will be back, and we set the task that makes that true. The stage suppresses
+ *   routine chasing precisely so the ONLY thing that happens is that task.
+ *
+ * A card that still qualifies is never parked — a management company we have
+ * agreed terms with is a listing, not a filing cabinet.
+ */
+export async function routeUnqualified(
+  leadId: string,
+  f: ListingFacts,
+): Promise<{ moved: boolean; to?: string; reason: string }> {
+  const lead = await getAmoLead(leadId);
+  if (!lead?.pipeline_id) return { moved: false, reason: "amoCRM did not return the lead's funnel" };
+
+  const move = async (stageName: string): Promise<boolean> => {
+    const { id } = await safeStageIdForLead({ pipelineId: lead.pipeline_id!, stageId: null, stageName });
+    if (!id) {
+      logger.warn({ leadId, stageName }, "listing routing: stage not found in this funnel");
+      return false;
+    }
+    if (String(lead.status_id ?? "") === id) return false;
+    return updateLeadStatus(leadId, Number(id));
+  };
+
+  // Occupied but ours: keep it warm, and make "we'll come back" a real thing
+  // rather than a polite sentence.
+  if (f.stopKind === "occupied") {
+    const ok = await move(LONG_TERM_STAGE);
+    if (ok && f.freeFromIso) {
+      const free = new Date(`${f.freeFromIso}T09:00:00+08:00`);
+      const due = new Date(free.getTime() - REMIND_BEFORE_DAYS * 86_400_000);
+      const soonest = new Date(Date.now() + 7 * 86_400_000);
+      await createAmoTask(
+        leadId,
+        `Villa frees up around ${f.freeFromIso}. Get back in touch now, before it is re-let.`,
+        due > soonest ? due : soonest,
+      );
+    }
+    return { moved: ok, to: LONG_TERM_STAGE, reason: f.freeFromIso ? `free from ${f.freeFromIso}` : "occupied, date unknown" };
+  }
+
+  if (f.counterpart === "manager" || f.counterpart === "agent") {
+    const ok = await move(CO_BROKE_STAGE);
+    return { moved: ok, to: CO_BROKE_STAGE, reason: `counterpart is ${f.counterpart}` };
+  }
+
+  return { moved: false, reason: "nothing to route on yet" };
 }
