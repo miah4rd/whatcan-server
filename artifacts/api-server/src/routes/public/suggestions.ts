@@ -113,6 +113,25 @@ router.get("/suggestions", async (req, res) => {
     // stayed stuck in LIVE (and why their conversation looked truncated).
     const signalByLead = await loadReplySignals(allLeadIds);
 
+    // `?debug=visibility` reports what the LIVE staleness rule actually saw for
+    // each pending row. Added because the rule's inputs looked right in the
+    // database while the tab still showed 16 answered leads, and reading the
+    // code a fourth time was not going to settle it.
+    if (String(req.query["debug"] ?? "") === "visibility") {
+      const rows = allPending.slice(0, 400).map((r) => {
+        const sig = signalByLead.get(r.leadId);
+        return {
+          lead: r.leadId,
+          kind: r.kind,
+          visible: isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, sig),
+          signal: sig ?? null,
+          hasSync: !!syncByLeadId.get(r.leadId),
+        };
+      });
+      res.json({ rows });
+      return;
+    }
+
     let items = allPending.filter((r) =>
       isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, signalByLead.get(r.leadId)),
     );
