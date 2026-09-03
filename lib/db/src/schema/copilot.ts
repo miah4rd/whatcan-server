@@ -50,6 +50,10 @@ export const pendingSuggestionsTable = pgTable("pending_suggestions", {
    * of a person.
    */
   autopilotSkippedReason: text("autopilot_skipped_reason"),
+  /** When the reason above was written. The handover pass keys on THIS, never on
+   * created_at: queueSuggestion rewrites a pending row in place, so created_at
+   * says when the row was born, not when the bot last decided about it. */
+  autopilotSkippedAt: timestamp("autopilot_skipped_at", { withTimezone: true }),
   suggestionText: text("suggestion_text").notNull(),
   triggeredByMessageAt: timestamp("triggered_by_message_at", { withTimezone: true }),
   status: text("status").notNull().default("pending"),

@@ -264,7 +264,7 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
     const decline = async (reason: string): Promise<AutopilotOutcome> => {
       await db
         .update(pendingSuggestionsTable)
-        .set({ autopilotSkippedReason: reason })
+        .set({ autopilotSkippedReason: reason, autopilotSkippedAt: new Date() })
         .where(eq(pendingSuggestionsTable.id, sug.id))
         .catch(() => undefined);
       return { sent: false, reason };

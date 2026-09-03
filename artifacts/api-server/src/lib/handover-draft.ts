@@ -13,10 +13,16 @@
  * that approval is what carries the card into the next stage — which is exactly
  * how every other move in this system happens.
  *
- * Deliberately ONE draft per outbound message: the guard is "no suggestion row
- * of any status created since our last message". A draft the broker skipped
- * leaves a row behind, so skipping means skipping, not asking again in five
- * minutes.
+ * ONE draft per arrival at the handover stage. The first version of this guard
+ * keyed on pending_suggestions.created_at and looped: queueSuggestion rewrites a
+ * pending row IN PLACE (a delete+reinsert once changed the id under a broker
+ * with the card open), so a card that already carried an old draft kept that
+ * row's created_at, the guard never became true, and every pass rewrote the same
+ * row and fired another push notification at the broker. The guard now keys on
+ * the verdict stamp this pass writes itself (autopilot_skipped_at), compared
+ * against when the card ARRIVED at the stage — so a broker who skipped the draft
+ * is not asked again until the card re-enters, and a draft already written is
+ * never written twice.
  */
 import { db, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
 import { and, desc, eq, sql } from "drizzle-orm";
@@ -27,6 +33,8 @@ import { getAutopilotSetting, getHandoverStageName } from "./autopilot";
 
 /** One pass may write this many, so a first run cannot become a wall. */
 const BATCH_LIMIT = 10;
+
+export const HANDOVER_VERDICT = "handed over to the broker";
 
 export async function processHandoverDrafts(): Promise<number> {
   let queued = 0;
@@ -43,6 +51,7 @@ export async function processHandoverDrafts(): Promise<number> {
       if (setting.mode !== "on") continue;
       const handoverStage = await getHandoverStageName(pipeline);
       if (!handoverStage) continue;
+      const stageLower = handoverStage.toLowerCase();
 
       const candidates = await db
         .select({
@@ -57,15 +66,24 @@ export async function processHandoverDrafts(): Promise<number> {
         .where(
           and(
             sql`lower(${leadsSyncTable.pipeline}) = ${pipeline.toLowerCase()}`,
-            sql`lower(coalesce(${leadsSyncTable.leadStage},'')) = ${handoverStage.toLowerCase()}`,
+            sql`lower(coalesce(${leadsSyncTable.leadStage},'')) = ${stageLower}`,
             sql`${leadsSyncTable.botExcluded} is not true`,
-            sql`${leadsSyncTable.lastOurMessageAt} is not null`,
-            // Nothing written for this card since we last spoke — see the note
-            // on skipping above.
+            // The owner spoke last: the LIVE path owns that card and its draft
+            // is already visible. Writing over it here would replace a real
+            // answer with a generic next step.
+            sql`lower(coalesce(${leadsSyncTable.lastMessageFrom},'')) <> 'lead'`,
+            // Already handed over since the card arrived here. Arrival is the
+            // newest stage_events move INTO this stage; a card that was here
+            // before tracking has no such row and falls back to "ever".
             sql`NOT EXISTS (
               SELECT 1 FROM pending_suggestions p
                WHERE p.lead_id = ${leadsSyncTable.leadId}
-                 AND p.created_at > ${leadsSyncTable.lastOurMessageAt}
+                 AND p.autopilot_skipped_reason = ${HANDOVER_VERDICT}
+                 AND p.autopilot_skipped_at >= coalesce(
+                       (SELECT max(e.changed_at) FROM stage_events e
+                         WHERE e.lead_id = ${leadsSyncTable.leadId}
+                           AND lower(e.to_stage) = ${stageLower}),
+                       to_timestamp(0))
             )`,
           ),
         )
@@ -105,12 +123,13 @@ export async function processHandoverDrafts(): Promise<number> {
             attachments,
             leadMessageText: lastIncoming?.text ?? "",
           });
-          // Stamp the verdict so the inbox knows this draft is the broker's and
-          // must not be judged by the "have we already answered?" rule — our own
-          // message is always the newest one on a card we just handed over.
+          // The stamp is BOTH the inbox's reason to show this draft despite our
+          // own message being the newest, AND this pass's own memory that the
+          // card has been handed over. Without the timestamp the memory has no
+          // "since when", and created_at cannot stand in for it (see header).
           await db
             .update(pendingSuggestionsTable)
-            .set({ autopilotSkippedReason: "handed over to the broker" })
+            .set({ autopilotSkippedReason: HANDOVER_VERDICT, autopilotSkippedAt: new Date() })
             .where(
               and(
                 eq(pendingSuggestionsTable.leadId, lead.leadId),
