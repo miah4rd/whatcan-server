@@ -1,6 +1,7 @@
 import webpush from "web-push";
 import { db, pushSubscriptionsTable, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable } from "@workspace/db";
 import { eq, and, sql, inArray } from "drizzle-orm";
+import { delegatedStagesByPipeline } from "./autopilot";
 import { logger } from "./logger";
 import { parseDialogContent } from "./dialog-parser";
 import { getPushStageWhitelist } from "./push-stage-whitelist";
@@ -154,6 +155,8 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
         // isPendingVisible, and omitting a field it reads makes the number on the
         // app icon disagree with what the broker sees.
         requestedAt: pendingSuggestionsTable.requestedAt,
+        autopilotSkippedReason: pendingSuggestionsTable.autopilotSkippedReason,
+        createdAt: pendingSuggestionsTable.createdAt,
       })
       .from(pendingSuggestionsTable)
       .leftJoin(leadsSyncTable, eq(leadsSyncTable.leadId, pendingSuggestionsTable.leadId))
@@ -193,8 +196,13 @@ async function countPendingForBroker(brokerId: string): Promise<number> {
       signalByLead = await loadReplySignals(leadIds);
     } catch { /* fall back to content-only rules */ }
 
+    // The badge must count exactly what the inbox shows, delegated stages
+    // included — a number that disagrees with the list is worse than no number.
+    const delegatedStages = await delegatedStagesByPipeline();
     const visible = dedupePushPerLead(
-      rows.filter((r) => isPendingVisible(r, syncByLeadId.get(r.leadId), whitelist, signalByLead.get(r.leadId))),
+      rows.filter((r) =>
+        isPendingVisible(r, syncByLeadId.get(r.leadId), whitelist, signalByLead.get(r.leadId), delegatedStages),
+      ),
     );
     return visible.length;
   } catch {

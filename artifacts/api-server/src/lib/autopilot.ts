@@ -119,6 +119,28 @@ export async function delegatedStageNames(pipeline: string): Promise<string[] | 
 }
 
 /**
+ * Every funnel's delegated stage names, for the funnels autopilot is ON for.
+ *
+ * The inbox needs this to decide whether a draft is the bot's job or the
+ * broker's, and it needs it for ALL funnels in one call rather than per row.
+ */
+export async function delegatedStagesByPipeline(): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>();
+  try {
+    const res = await db.execute(sql`SELECT pipeline FROM autopilot_settings WHERE mode = 'on'`);
+    const rows = (res as { rows?: Array<{ pipeline: string }> }).rows ?? [];
+    for (const r of rows) {
+      const names = await delegatedStageNames(r.pipeline);
+      if (names) out.set(r.pipeline.trim().toLowerCase(), new Set(names.map((n) => n.trim().toLowerCase())));
+    }
+  } catch (err) {
+    // Fail OPEN: an empty map shows every draft, which is the old behaviour.
+    logger.warn({ err }, "autopilot: could not read delegated stages — the inbox will show everything");
+  }
+  return out;
+}
+
+/**
  * Called after a suggestion lands in the inbox. Decides — by the broker's own
  * per-stage setting — whether the bot sends it itself.
  */
@@ -195,6 +217,23 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
       .limit(1);
     if (!sug || !sug.text?.trim()) return { sent: false, reason: "no pending draft" };
 
+    /**
+     * Record on the draft itself why it was not sent.
+     *
+     * The inbox uses this to stop showing the broker work that is not his: a
+     * draft on a delegated stage that autopilot will handle is hidden, and one
+     * autopilot could NOT deliver is shown. Without a stored reason those two
+     * look identical from the outside.
+     */
+    const decline = async (reason: string): Promise<AutopilotOutcome> => {
+      await db
+        .update(pendingSuggestionsTable)
+        .set({ autopilotSkippedReason: reason })
+        .where(eq(pendingSuggestionsTable.id, sug.id))
+        .catch(() => undefined);
+      return { sent: false, reason };
+    };
+
     if (setting.mode === "dry") {
       logger.info(
         {
@@ -205,7 +244,7 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
         },
         "autopilot DRY RUN: would have auto-sent this (switch to 'on' to actually send)",
       );
-      return { sent: false, reason: "dry run" };
+      return decline("dry run");
     }
 
     // Opening a conversation is the one autopilot send Meta cares about — a
@@ -215,10 +254,9 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
       // Nobody wants a cold message from an unknown agency at three in the
       // morning, and the draft loses nothing by waiting until Bali is awake.
       if (!withinOutreachHours()) {
-        return {
-          sent: false,
-          reason: `outside outreach hours (${OUTREACH_OPEN_HOUR}:00-${OUTREACH_CLOSE_HOUR}:00 Bali)`,
-        };
+        return decline(
+          `waiting for outreach hours (${OUTREACH_OPEN_HOUR}:00-${OUTREACH_CLOSE_HOUR}:00 Bali)`,
+        );
       }
       const budget = await mayOpenNewConversation(sug.responsibleUser);
       if (!budget.ok) {
@@ -226,7 +264,7 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
           { leadId, used: budget.used, cap: NEW_CONTACT_DAILY_CAP },
           "autopilot held back — this line has already opened its day's worth of new conversations",
         );
-        return { sent: false, reason: `new-contact budget spent (${budget.used}/${NEW_CONTACT_DAILY_CAP})` };
+        return decline(`waiting for tomorrow's new-contact budget (${budget.used}/${NEW_CONTACT_DAILY_CAP})`);
       }
     }
 
@@ -255,7 +293,10 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
         { leadId, status: res.status, body: body.slice(0, 160) },
         "autopilot: approve refused — left in inbox for the broker",
       );
-      return { sent: false, reason: `approve refused (${res.status})` };
+      // NOT a "waiting" reason: a refusal here is a card the bot cannot deliver
+      // to at all (a duplicate WhatsApp thread, a deleted lead), and it is
+      // exactly the case that needs a person.
+      return decline(`approve refused (${res.status}): ${body.slice(0, 80)}`);
     }
   } catch (err) {
     logger.error({ err, leadId }, "autopilot failed (non-fatal, suggestion stays in inbox)");

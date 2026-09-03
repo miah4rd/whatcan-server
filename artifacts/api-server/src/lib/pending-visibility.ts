@@ -19,6 +19,45 @@ export interface PendingRowLike {
    * "a future task is already scheduled, don't prompt" snooze, which otherwise
    * hid the draft they had just requested. */
   requestedAt?: Date | null;
+  /** Why autopilot did not send it (null = it sent it, or was never asked). */
+  autopilotSkippedReason?: string | null;
+  /** When the draft was written — used only as a safety net below. */
+  createdAt?: Date | null;
+}
+
+/**
+ * Stage names each funnel has delegated to autopilot, lowercased.
+ * Built once per request by the caller; empty map = nothing delegated.
+ */
+export type DelegatedStages = Map<string, Set<string>>;
+
+/**
+ * A draft on a delegated stage is the BOT's job, not the broker's.
+ *
+ * Showing it for approval invites someone to send by hand a message the bot is
+ * about to send itself, which is the owner's objection: "брокер по ошибке может
+ * запушить какое-то сообщение на этапе, которая уже стоит в автопилоте".
+ *
+ * The exception is the whole point of the rule: a draft autopilot COULD NOT
+ * deliver — a duplicate WhatsApp thread, a deleted card — is precisely the case
+ * that needs a person, so it stays visible. Reasons that begin with "waiting"
+ * are temporary by construction (tomorrow's budget, outreach hours) and the bot
+ * will send those itself.
+ */
+function autopilotOwnsThisDraft(r: PendingRowLike, stage: string, pipeline: string | null | undefined, delegated?: DelegatedStages): boolean {
+  if (!delegated || delegated.size === 0) return false;
+  const stages = delegated.get((pipeline ?? "").trim().toLowerCase());
+  if (!stages?.has(stage.trim().toLowerCase())) return false;
+
+  const reason = (r.autopilotSkippedReason ?? "").trim();
+  if (reason && !reason.startsWith("waiting")) return false; // stuck — a person is needed
+
+  // Safety net: autopilot fires the moment a draft is written, so one still
+  // carrying no verdict half an hour later was never processed. Better a draft
+  // the broker did not need to see than one nobody ever sees.
+  if (!reason && r.createdAt && Date.now() - r.createdAt.getTime() > 30 * 60 * 1000) return false;
+
+  return true;
 }
 
 export interface SyncRowLike {
@@ -154,6 +193,8 @@ export function isPendingVisible(
    * available — it's the only source that sees our outgoing WhatsApp replies
    * when the webhook-fed `content` has frozen. */
   timeline?: RepliedSignal,
+  /** Stage names each funnel has handed to autopilot. */
+  delegatedStages?: DelegatedStages,
 ): boolean {
   // Never show bot-excluded leads
   if (sync?.botExcluded) return false;
@@ -172,6 +213,8 @@ export function isPendingVisible(
     const liveExempt = isClosedWonStage(stage) || isPostSigningStage(stage);
     if (!(r.kind === "live" && liveExempt)) return false;
   }
+
+  if (autopilotOwnsThisDraft(r, stage, sync?.pipeline, delegatedStages)) return false;
 
   // Push tab: only show stages in the dynamic whitelist (configurable via /api/admin/push-stages).
   // Pipelines with their own stage vocabulary (Rental, Rental Listings) match none of this

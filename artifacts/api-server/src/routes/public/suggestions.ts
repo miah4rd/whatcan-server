@@ -5,6 +5,7 @@ import { cleanLeadName } from "../../lib/lead-display-name";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
 import { computePushPriority, computeNextFollowupDays, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
+import { delegatedStagesByPipeline } from "../../lib/autopilot";
 import { isPendingVisible, dedupePushPerLead, repliedSignalFromTimeline, loadReplySignals } from "../../lib/pending-visibility";
 import { findStuckLeads } from "../../lib/stuck-leads";
 
@@ -113,6 +114,10 @@ router.get("/suggestions", async (req, res) => {
     // stayed stuck in LIVE (and why their conversation looked truncated).
     const signalByLead = await loadReplySignals(allLeadIds);
 
+    // Stages the broker handed to the bot. A draft sitting on one of those is
+    // not work the broker owes anyone — see autopilotOwnsThisDraft.
+    const delegatedStages = await delegatedStagesByPipeline();
+
     // `?debug=visibility` reports what the LIVE staleness rule actually saw for
     // each pending row. Added because the rule's inputs looked right in the
     // database while the tab still showed 16 answered leads, and reading the
@@ -123,7 +128,8 @@ router.get("/suggestions", async (req, res) => {
         return {
           lead: r.leadId,
           kind: r.kind,
-          visible: isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, sig),
+          visible: isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, sig, delegatedStages),
+          autopilotSkipped: r.autopilotSkippedReason ?? null,
           signal: sig ?? null,
           hasSync: !!syncByLeadId.get(r.leadId),
         };
@@ -133,7 +139,7 @@ router.get("/suggestions", async (req, res) => {
     }
 
     let items = allPending.filter((r) =>
-      isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, signalByLead.get(r.leadId)),
+      isPendingVisible(r, syncByLeadId.get(r.leadId), pushWhitelist, signalByLead.get(r.leadId), delegatedStages),
     );
 
     if (kind === "live" || kind === "push") items = items.filter((r) => r.kind === kind);
