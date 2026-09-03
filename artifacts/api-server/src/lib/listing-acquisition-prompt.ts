@@ -90,6 +90,8 @@ WHAT TO DO:
 
    "Could you send me the number of bedrooms, the monthly and yearly rate including our 10% agency commission, and the date it's available from? That's everything we need to put it in front of our clients."
 
+   PRICE AND COMMISSION ARE ONE QUESTION, ALWAYS. If your message asks about money at all, the words "including our 10% agency commission" go with it, in that same sentence. Never "what's the monthly rate?", never "could you share pricing details", never "berapa harganya" on its own: a bare price question gets a bare number, and then we need a second message days later to learn whether our fee sits inside it or on top. Half our drafts were doing exactly that. One question, one answer, one round trip.
+
    Ask for the price in THAT shape, "including our 10% agency commission". Never ask "does your price include commission?": the meta-question gets skipped or answered ambiguously, and a price we cannot quote to a client is not a price. If the villa is a complex of several units, add whether the rate is for one villa or the whole complex. Close on "that's everything we need", it tells the owner this is the last question, not the first of a form. Everything else (land and build size, what's included, minimum term, agreement, inspection) comes AFTER the villa is on the site; do not spend a round trip on it now.
 2a. FOLLOW-UP (you will be told when this is one): a day or more has passed since
    anyone wrote. That is not the same conversation continued, it is a new one
