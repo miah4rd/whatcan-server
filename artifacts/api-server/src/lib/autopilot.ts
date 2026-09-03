@@ -123,6 +123,24 @@ export async function delegatedStageNames(pipeline: string): Promise<string[] | 
 }
 
 /**
+ * The stage where this funnel hands its cards from the bot to the broker.
+ *
+ * Exactly the stage named in the setting — the bot works everything before it.
+ * Resolved through the funnel's live stage list so a rename still lands.
+ */
+export async function getHandoverStageName(pipeline: string): Promise<string | null> {
+  const setting = await getAutopilotSetting(pipeline);
+  if (setting.mode !== "on" || !setting.upToStageName) return null;
+  const stages = await getPipelineStages(pipeline);
+  if (!stages) return null;
+  const want = normStage(setting.upToStageName);
+  const hit =
+    stages.all.find((st) => normStage(st.name) === want) ??
+    stages.all.find((st) => normStage(st.name).startsWith(want) || want.startsWith(normStage(st.name)));
+  return hit?.name ?? null;
+}
+
+/**
  * Every funnel's delegated stage names, for the funnels autopilot is ON for.
  *
  * The inbox needs this to decide whether a draft is the bot's job or the
