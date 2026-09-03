@@ -19,7 +19,7 @@ import { db, sentMessagesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { updateLeadCustomField, triggerSalesbot } from "./amo-chat-client";
 import { resolveOutboundSource, fillMessengerFromResponsibleIfNoMessages } from "./amo-messenger-field";
-import { countActiveWhatsappChats } from "./amo-client.js";
+import { countActiveWhatsappChats, closeStaleDuplicateWhatsappTalks } from "./amo-client.js";
 import { stripEmojiForDelivery } from "./message-delivery.js";
 import { fetchTimeline, parseTimelineEvents, getAmoAuth } from "./amo-timeline-sync.js";
 
@@ -80,7 +80,13 @@ export async function resolveSendChannel(
   // number twice — "+61…" and "61…"), a single Salesbot send fans out to BOTH
   // and the client gets the message twice. Addressing is line-level, not
   // chat-level, so we cannot pick one from here.
-  const activeChats = await countActiveWhatsappChats(leadId);
+  let activeChats = await countActiveWhatsappChats(leadId);
+  if (activeChats >= 2) {
+    // Try to fix the cause rather than report it: close the stale duplicate and
+    // ask again. Only if that fails does anyone need to hear about it.
+    const closed = await closeStaleDuplicateWhatsappTalks(leadId);
+    if (closed > 0) activeChats = await countActiveWhatsappChats(leadId);
+  }
   if (activeChats >= 2) {
     return {
       ok: false,

@@ -316,16 +316,41 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
       if (row.lastOurMessageAt && row.lastOurMessageAt.getTime() >= newest.sentAt.getTime()) continue;
       if (shouldSuppressPush(row.leadStage ?? "")) continue;
 
+      /**
+       * "Newest" above means newest IN THIS BATCH, not newest in the thread.
+       *
+       * A sweep that ingests one of our older outgoing messages — a webhook the
+       * feed delivered late, a backfill — used to stamp lastMessageFrom='us'
+       * even when the lead had already answered AFTER it. The card then read as
+       * "we spoke last and they went quiet" and went to PUSH with a follow-up
+       * draft, while the conversation on screen plainly ended with the lead's
+       * own words. Villa Chempaka 23270729: the owner wrote "You are welcome"
+       * at 19:20, our 18:46 message landed in a later sweep, and the card was
+       * chased as unanswered for eleven days.
+       */
+      const [incoming] = await db
+        .select({ newest: sql<Date | null>`max(${leadMessagesTable.sentAt})` })
+        .from(leadMessagesTable)
+        .where(and(eq(leadMessagesTable.leadId, leadId), eq(leadMessagesTable.senderType, "lead")));
+      const leadNewest = incoming?.newest ? new Date(incoming.newest) : null;
+      const leadSpokeLater = !!leadNewest && leadNewest.getTime() > newest.sentAt.getTime();
+
       await db
         .update(leadsSyncTable)
         .set({
-          lastMessageFrom: "us",
+          // Our outgoing time is a fact either way; who spoke LAST is not.
           lastOurMessageAt: newest.sentAt,
-          ...(row.lastMessageFrom === "lead" ? { followupLevel: 0 } : {}),
-          nextFollowupAt: followupClockAfterReply(newest.sentAt, row.pipeline),
+          ...(leadSpokeLater
+            ? { lastMessageFrom: "lead", lastMessageAt: leadNewest }
+            : {
+                lastMessageFrom: "us",
+                nextFollowupAt: followupClockAfterReply(newest.sentAt, row.pipeline),
+                ...(row.lastMessageFrom === "lead" ? { followupLevel: 0 } : {}),
+              }),
           updatedAt: new Date(),
         })
         .where(eq(leadsSyncTable.leadId, leadId));
+      if (leadSpokeLater) continue;
 
       // Same "I'll check with the owner" detector approve.ts and the real-time
       // webhook use — this is the backup path for a message either one missed,
