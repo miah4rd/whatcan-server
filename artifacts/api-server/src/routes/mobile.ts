@@ -2136,7 +2136,7 @@ const PAGE_HTML = `<!doctype html>
       html += '<div style="margin-top:6px">Send without approval: <select id="ap-sel" style="max-width:60%">';
       html += '<option value=""' + (!apOn ? " selected" : "") + '>Off</option>';
       for (var ai = 0; ai < apStages.length; ai++) {
-        html += '<option value="' + esc(apStages[ai]) + '"' + (apOn && apSet.upToStageName === apStages[ai] ? " selected" : "") + '>Up to \\u201c' + esc(apStages[ai]) + '\\u201d</option>';
+        html += '<option value="' + esc(apStages[ai]) + '"' + (apOn && apSet.upToStageName === apStages[ai] ? " selected" : "") + '>Hands over at \\u201c' + esc(apStages[ai]) + '\\u201d</option>';
       }
       html += "</select></div>";
       var bf = (apData && apData.bf) || { enabled: false, minMonthlyIdr: 0 };

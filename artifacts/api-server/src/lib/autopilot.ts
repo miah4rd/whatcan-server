@@ -8,8 +8,10 @@
  * the broker can watch the bot run a stage for a day before flipping it live.
  *
  * Modes: 'off' (default — nothing changes), 'dry' (log only), 'on' (auto-send).
- * Scope: leads whose CURRENT stage sits at or before `up_to_stage_name` in the
- * funnel's own live order, in that pipeline only. Auto-send goes through the
+ * Scope: leads whose CURRENT stage sits STRICTLY BEFORE `up_to_stage_name` in
+ * the funnel's own live order, in that pipeline only. The named stage is where
+ * the bot hands the card to the broker, not the last stage it works — every
+ * card is owned by exactly one of them and none can fall between. Auto-send goes through the
  * real /approve endpoint on localhost, so every existing guard — duplicate
  * threads, channel resolution, stage advance, the owner-promise task, the
  * follow-up clock — applies to an autopilot send exactly as to a human one.
@@ -115,7 +117,9 @@ export async function delegatedStageNames(pipeline: string): Promise<string[] | 
     );
   }
   if (capIdx === -1) return null;
-  return stages.all.slice(0, capIdx + 1).map((st) => st.name);
+  // EXCLUSIVE: the threshold is the handover point, not the bot's last desk.
+  // See maybeAutopilot for why.
+  return stages.all.slice(0, capIdx).map((st) => st.name);
 }
 
 /**
@@ -201,7 +205,21 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
       return { sent: false, reason: "threshold stage does not exist in this funnel" };
     }
     if (leadIdx === -1) return { sent: false, reason: `stage not in this funnel: ${lead.leadStage}` };
-    if (leadIdx > capIdx) return { sent: false, reason: `stage past the delegated threshold: ${lead.leadStage}` };
+    /**
+     * The threshold is EXCLUSIVE: the bot works every stage BEFORE it and hands
+     * the card over on arrival.
+     *
+     * It used to be inclusive, and that made the last delegated stage a trap.
+     * A card reaching QUALIFIED had nothing left for the bot to ask, so no draft
+     * was written and nothing moved it on; and because the inbox hides whatever
+     * the bot owns, the broker never saw it either. Neither side owned it and it
+     * sat there. The owner's rule, and the reason this is exclusive: there must
+     * always be a handover point from autopilot to the human, wherever the dial
+     * is set, "иначе он просто теряется в системе".
+     */
+    if (leadIdx >= capIdx) {
+      return { sent: false, reason: `handed over to the broker at ${lead.leadStage}` };
+    }
 
     const [sug] = await db
       .select({
