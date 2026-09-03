@@ -248,6 +248,23 @@ export function isPendingVisible(
     if (!r.requestedAt && sync?.nextFollowupAt && sync.nextFollowupAt > endOfTodayBali) return false;
   }
 
+  /**
+   * A draft the SYSTEM has explicitly handed to the broker is shown regardless
+   * of the conversation's shape.
+   *
+   * The rules below judge a LIVE draft as an ANSWER: hide it if we already
+   * spoke after the lead did, because a stale answer to an old message is
+   * noise. A handover draft is not an answer — it is the next step on a card
+   * autopilot has finished with, and by definition our own message is the most
+   * recent one. Judged as an answer it was hidden the moment it was written,
+   * which is how the two QUALIFIED cards ended up with drafts nobody could see.
+   *
+   * "waiting" reasons are excluded: those drafts are still the bot's, it will
+   * send them itself, and surfacing them invites a duplicate send.
+   */
+  const verdict = (r.autopilotSkippedReason ?? "").trim();
+  if (verdict && !verdict.startsWith("waiting")) return true;
+
   if (r.kind !== "live") return true;
 
   // ── Has the broker already answered this LIVE? ────────────────────────────

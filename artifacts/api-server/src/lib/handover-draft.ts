@@ -105,6 +105,18 @@ export async function processHandoverDrafts(): Promise<number> {
             attachments,
             leadMessageText: lastIncoming?.text ?? "",
           });
+          // Stamp the verdict so the inbox knows this draft is the broker's and
+          // must not be judged by the "have we already answered?" rule — our own
+          // message is always the newest one on a card we just handed over.
+          await db
+            .update(pendingSuggestionsTable)
+            .set({ autopilotSkippedReason: "handed over to the broker" })
+            .where(
+              and(
+                eq(pendingSuggestionsTable.leadId, lead.leadId),
+                eq(pendingSuggestionsTable.status, "pending"),
+              ),
+            );
           queued++;
           logger.info(
             { leadId: lead.leadId, stage: lead.leadStage, pipeline },
