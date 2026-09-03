@@ -101,13 +101,39 @@ export async function maybeAutopilot(leadId: string): Promise<void> {
     // funnel's own live order (renames and re-orders keep working).
     const stages = await getPipelineStages(pipeline);
     if (!stages) return;
-    const idxOf = (name: string | null | undefined) =>
-      stages.all.findIndex(
-        (st) => st.name.trim().toLowerCase() === (name ?? "").trim().toLowerCase(),
+    // Exact name first, then a prefix match, because a stage rename must not
+    // silently switch the whole funnel back to manual. "QUALIFIED" was renamed
+    // to "QUALIFIED (Pre-listed)" in amoCRM and this threshold stopped
+    // resolving; autopilot then returned on every single lead for a day and
+    // nobody could see why — the setting still said "on".
+    const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
+    const idxOf = (name: string | null | undefined) => {
+      const want = norm(name);
+      if (!want) return -1;
+      const exact = stages.all.findIndex((st) => norm(st.name) === want);
+      if (exact !== -1) return exact;
+      const prefixed = stages.all.findIndex(
+        (st) => norm(st.name).startsWith(want) || want.startsWith(norm(st.name)),
       );
+      if (prefixed !== -1) {
+        logger.warn(
+          { pipeline, wanted: name, resolvedTo: stages.all[prefixed]!.name },
+          "autopilot: stage name no longer matches exactly — resolved by prefix. Re-save the setting with the current name.",
+        );
+      }
+      return prefixed;
+    };
     const leadIdx = idxOf(lead.leadStage);
     const capIdx = idxOf(setting.upToStageName);
-    if (leadIdx === -1 || capIdx === -1 || leadIdx > capIdx) return;
+    if (capIdx === -1) {
+      // Loud, not silent: "on" plus nothing happening is the worst state to debug.
+      logger.error(
+        { pipeline, upToStageName: setting.upToStageName, stages: stages.all.map((s) => s.name) },
+        "autopilot: threshold stage does not exist in this funnel — nothing will ever auto-send",
+      );
+      return;
+    }
+    if (leadIdx === -1 || leadIdx > capIdx) return;
 
     const [sug] = await db
       .select({
