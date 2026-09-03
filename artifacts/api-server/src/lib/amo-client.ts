@@ -270,6 +270,75 @@ export async function getAmoLead(
  */
 const WHATSAPP_TALK_ORIGINS = /wahelp|wababa|whatsapp|wapp|wa\./i;
 
+/**
+ * Close the stale duplicates when WAhelp has opened the same number twice.
+ *
+ * The duplicate is the integration's artefact, not a state anyone chose: one
+ * contact, one phone, two `in_work` talks on the same card. Verified on both
+ * cards that hit it — 23423545 and 23270729 — where one talk carries the real
+ * conversation and the other has no activity after the minute it was created.
+ *
+ * Refusing to send was the safe first move, but it left the broker told to go
+ * and do it in amoCRM by hand, on a lead who had just written to us. The owner's
+ * answer: "надо-то убрать дубликат, пускай Юди общается с ним." So we keep the
+ * talk with the most recent activity and close the rest, which is the same
+ * judgement a person makes when they look at the two.
+ *
+ * Returns how many were closed. Never closes anything when only one is active —
+ * there is nothing to disambiguate then, and closing the only thread would take
+ * the conversation away.
+ */
+export async function closeStaleDuplicateWhatsappTalks(leadId: string): Promise<number> {
+  try {
+    const data = await amoFetch<{
+      _embedded?: {
+        talks?: Array<{
+          talk_id?: number;
+          chat_id?: string;
+          is_in_work?: boolean;
+          origin?: string;
+          updated_at?: number;
+        }>;
+      };
+    }>(`/api/v4/talks?filter[entity_id]=${leadId}&filter[entity_type]=lead`);
+
+    const active = (data?._embedded?.talks ?? []).filter(
+      (t) => t.is_in_work && t.talk_id && (!t.origin || WHATSAPP_TALK_ORIGINS.test(t.origin)),
+    );
+    if (active.length < 2) return 0;
+
+    // Freshest activity wins. Ties keep the higher talk_id — the later thread,
+    // which is the one WAhelp is currently writing into.
+    const sorted = [...active].sort(
+      (a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0) || (b.talk_id ?? 0) - (a.talk_id ?? 0),
+    );
+    const keep = sorted[0]!;
+    let closed = 0;
+    for (const t of sorted.slice(1)) {
+      const ok = await amoFetch(`/api/v4/talks/${t.talk_id}/close`, {
+        method: "POST",
+        body: JSON.stringify({ force_close: true }),
+      })
+        .then(() => true)
+        .catch((err) => {
+          logger.warn({ leadId, talkId: t.talk_id, err }, "duplicate-thread cleanup: close refused");
+          return false;
+        });
+      if (ok) closed++;
+    }
+    if (closed > 0) {
+      logger.info(
+        { leadId, kept: keep.talk_id, closed },
+        "duplicate-thread cleanup: WAhelp had opened this number twice, stale threads closed",
+      );
+    }
+    return closed;
+  } catch (err) {
+    logger.warn({ leadId, err }, "duplicate-thread cleanup: could not read the lead's talks");
+    return 0;
+  }
+}
+
 export async function countActiveWhatsappChats(leadId: string): Promise<number> {
   try {
     const data = await amoFetch<{
