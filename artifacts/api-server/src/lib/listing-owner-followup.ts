@@ -45,8 +45,8 @@ const OPEN_STAGES = [
 
 /**
  * How long a card must have been quiet before each round, counted from OUR last
- * real message. The owner's cadence: a day, then two days after that, then four
- * (2026-09-03).
+ * real message. The owner's cadence: a day, then three days after that, then
+ * five (2026-09-03).
  *
  * Measuring every round from `lastOurMessageAt` rather than from the previous
  * DRAFT is what makes the spacing real: a nudge that actually sends moves that
@@ -54,7 +54,7 @@ const OPEN_STAGES = [
  * nudge the broker skipped never moves it, so the rounds still space out
  * instead of firing back to back the moment the draft leaves the queue.
  */
-const NUDGE_AFTER_HOURS = [24, 48, 96];
+const NUDGE_AFTER_HOURS = [24, 72, 120];
 /**
  * Three rounds, then stop.
  *
