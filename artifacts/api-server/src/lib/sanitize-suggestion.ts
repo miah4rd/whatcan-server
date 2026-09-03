@@ -1,5 +1,12 @@
 const BANNED_PHRASES: [RegExp, string][] = [
+  // A dash is the single loudest tell that a machine wrote the message. People
+  // writing on WhatsApp use commas and full stops; a model reaches for a dash in
+  // every second sentence, and the owner's brokers can spot it across the room.
   [/\s*—\s*/g, ", "],
+  // The en dash and a spaced hyphen do the same job and used to slip through.
+  // Guarded on both sides against digits so a price range ("Rp 30 - 50 million")
+  // survives, and requiring spaces so compounds ("long-term", "3-4BR") do too.
+  [/(?<=[^\d\s])\s+[–-]\s+(?=[^\d\s])/g, ", "],
   [/Hope you('re| are) doing well[!.]?\s*/gi, ""],
   [/Hope you('re| are) well[!.]?\s*/gi, ""],
   [/[Jj]ust checking in[!.]?\s*/g, ""],
