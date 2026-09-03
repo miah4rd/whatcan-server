@@ -24,7 +24,14 @@ import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { getPipelineStages } from "./stage-classifier";
-import { mayOpenNewConversation, isFirstOutbound, NEW_CONTACT_DAILY_CAP } from "./new-contact-budget";
+import {
+  mayOpenNewConversation,
+  isFirstOutbound,
+  withinOutreachHours,
+  NEW_CONTACT_DAILY_CAP,
+  OUTREACH_OPEN_HOUR,
+  OUTREACH_CLOSE_HOUR,
+} from "./new-contact-budget";
 
 export type AutopilotMode = "off" | "dry" | "on";
 /**
@@ -205,6 +212,14 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
     // reply to someone already talking to us is ordinary traffic. Out of
     // budget, the draft simply waits in the inbox for the broker.
     if (await isFirstOutbound(leadId)) {
+      // Nobody wants a cold message from an unknown agency at three in the
+      // morning, and the draft loses nothing by waiting until Bali is awake.
+      if (!withinOutreachHours()) {
+        return {
+          sent: false,
+          reason: `outside outreach hours (${OUTREACH_OPEN_HOUR}:00-${OUTREACH_CLOSE_HOUR}:00 Bali)`,
+        };
+      }
       const budget = await mayOpenNewConversation(sug.responsibleUser);
       if (!budget.ok) {
         logger.warn(
