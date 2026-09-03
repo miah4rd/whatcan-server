@@ -43,16 +43,30 @@ const OPEN_STAGES = [
   "agreement",
 ];
 
-/** Silence that counts as "went quiet". */
-const FIRST_NUDGE_HOURS = 24;
 /**
- * One nudge per card, then stop.
+ * How long a card must have been quiet before each round, counted from OUR last
+ * real message. The owner's cadence: a day, then two days after that, then four
+ * (2026-09-03).
  *
- * Deliberately conservative for the first run of this funnel: we have never
- * followed up an owner here, so nobody knows yet how they react. A second round
- * is a one-line change once the first has been watched.
+ * Measuring every round from `lastOurMessageAt` rather than from the previous
+ * DRAFT is what makes the spacing real: a nudge that actually sends moves that
+ * timestamp, so the next round waits its own full interval from the send. A
+ * nudge the broker skipped never moves it, so the rounds still space out
+ * instead of firing back to back the moment the draft leaves the queue.
  */
-const MAX_NUDGES = 1;
+const NUDGE_AFTER_HOURS = [24, 48, 96];
+/**
+ * Three rounds, then stop.
+ *
+ * It was ONE for the first run of this funnel — nobody had ever followed up an
+ * owner here and we did not know how they would react. That run happened, and
+ * the cost of the cap showed up in the data: 74 cards of 101 had already spent
+ * their single nudge, meaning an owner who ignored one message was never
+ * contacted again and the card sat in the funnel forever with nothing scheduled
+ * against it. Three rounds on a widening cadence is the owner's decision
+ * (2026-09-03).
+ */
+const MAX_NUDGES = NUDGE_AFTER_HOURS.length;
 
 /**
  * How many drafts one pass may write.
@@ -141,7 +155,7 @@ export async function processListingOwnerFollowup(): Promise<number> {
       if (round > MAX_NUDGES) continue;
 
       const silentHours = (Date.now() - lead.lastOurMessageAt!.getTime()) / 3_600_000;
-      if (silentHours < FIRST_NUDGE_HOURS) continue;
+      if (silentHours < NUDGE_AFTER_HOURS[round - 1]!) continue;
 
       // Already waiting for the broker — a second identical card every five
       // minutes is how a queue becomes something people stop opening.
