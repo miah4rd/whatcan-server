@@ -21,7 +21,7 @@ import { processAdLeadBrokerOpening } from "./ad-lead-autoreply";
 import { processListingAcquisitionOutreach } from "./listing-acquisition-outreach";
 import { processWeeklyAvailabilityCheck } from "./weekly-availability-check";
 import { processListingOwnerFollowup } from "./listing-owner-followup";
-import { processHandoverDrafts } from "./handover-draft";
+import { processHandoverDrafts, HANDOVER_VERDICT } from "./handover-draft";
 import { isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { logStuckLeads } from "./stuck-leads";
 import { logUnknownPipelines, isReachStageName } from "./pipelines";
@@ -633,6 +633,11 @@ export async function processFollowups(): Promise<void> {
             inArray(pendingSuggestionsTable.leadId, leadIds),
             eq(pendingSuggestionsTable.kind, "live"),
             eq(pendingSuggestionsTable.status, "pending"),
+            // A handover draft is LIVE on a card where we spoke last BY DESIGN:
+            // autopilot just finished with it and wrote the broker's next step.
+            // This cleaner deleted it every five minutes, silently, and the
+            // handover pass rewrote it and pinged the broker each time.
+            sql`${pendingSuggestionsTable.autopilotSkippedReason} IS DISTINCT FROM ${HANDOVER_VERDICT}`,
             sql`${pendingSuggestionsTable.leadId} NOT IN (
               SELECT sm.lead_id FROM sent_messages sm
               WHERE sm.kind = 'ad_auto'
@@ -1391,6 +1396,8 @@ export async function processUnansweredLive(): Promise<void> {
               eq(pendingSuggestionsTable.leadId, lead.leadId),
               eq(pendingSuggestionsTable.kind, "live"),
               eq(pendingSuggestionsTable.status, "pending"),
+              // Same exemption as the bulk cleanup above — see there.
+              sql`${pendingSuggestionsTable.autopilotSkippedReason} IS DISTINCT FROM ${HANDOVER_VERDICT}`,
             ),
           );
         logger.info({ leadId: lead.leadId }, "unanswered-live: stale lastMessageFrom fixed, LIVE cleared");
@@ -1556,10 +1563,10 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
     // the first version looped because queueSuggestion rewrites a pending row
     // in place and created_at never moved. Verified idempotent by hand: three
     // consecutive runs gave 2, 0, 0.
-    // DISABLED again 2026-09-03: a silent deleter removes the handover row
-    // between passes and takes the guard's stamp with it. Find and fix the
-    // deleter (or move the stamp off the row) before re-enabling.
-    // processHandoverDrafts().catch((err) => logger.error({ err }, "handover draft error"));
+    // The silent deleter was the stale-LIVE cleanup in this very file (a
+    // handover draft is LIVE with us speaking last, by design); both cleanup
+    // sites now exempt the handover verdict.
+    processHandoverDrafts().catch((err) => logger.error({ err }, "handover draft error"));
   }, intervalMs);
 
   // A paid ad lead sat unnoticed for up to ten minutes: one 5-min pass to seed
