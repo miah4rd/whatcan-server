@@ -36,6 +36,33 @@ export const NEW_CONTACT_DAILY_CAP = 9;
 /** Bali — the day boundary the brokers actually live in. */
 const TZ = "Asia/Makassar";
 
+/**
+ * The hours in which the bot may OPEN a conversation with a stranger.
+ *
+ * The budget resetting at midnight meant the day's nine cold messages could
+ * leave at 00:05 Bali, which is the owner's objection in his own words: do not
+ * write to people at night. It is also the worst possible first impression from
+ * an agency nobody has heard of yet.
+ *
+ * So the counting day starts at 10:00 rather than at midnight, and no unattended
+ * first contact goes out before 10:00 or after 20:00. This governs COLD outreach
+ * only — a reply to someone already talking to us is reactive and has no such
+ * window, and a broker tapping Approve is never blocked by any of this.
+ */
+export const OUTREACH_OPEN_HOUR = 10;
+export const OUTREACH_CLOSE_HOUR = 20;
+
+/** Bali's wall-clock hour right now. */
+function baliHour(): number {
+  return new Date(Date.now() + 8 * 60 * 60 * 1000).getUTCHours();
+}
+
+/** Is it a decent hour in Bali to write to someone for the first time? */
+export function withinOutreachHours(): boolean {
+  const h = baliHour();
+  return h >= OUTREACH_OPEN_HOUR && h < OUTREACH_CLOSE_HOUR;
+}
+
 function firstRow<T>(res: unknown): T | undefined {
   const withRows = res as { rows?: T[] };
   if (Array.isArray(withRows.rows)) return withRows.rows[0];
@@ -44,8 +71,8 @@ function firstRow<T>(res: unknown): T | undefined {
 }
 
 /**
- * Leads that received their VERY FIRST message from us today, on this broker's
- * line. A lead we have written to before does not count however many messages
+ * Leads that received their VERY FIRST message from us in the current outreach
+ * day — which starts at 10:00 Bali, not at midnight — on this broker's line. A lead we have written to before does not count however many messages
  * it got today — repeat contact is not what gets a number flagged.
  */
 export async function newContactsToday(responsibleUser: string | null): Promise<number> {
@@ -57,7 +84,11 @@ export async function newContactsToday(responsibleUser: string | null): Promise<
         FROM sent_messages
         ORDER BY lead_id, created_at ASC
       ) f
-      WHERE f.created_at >= (date_trunc('day', now() AT TIME ZONE ${TZ}) AT TIME ZONE ${TZ})
+      WHERE f.created_at >= (
+              CASE WHEN (now() AT TIME ZONE ${TZ})::time >= time '10:00'
+                   THEN date_trunc('day', now() AT TIME ZONE ${TZ}) + interval '10 hours'
+                   ELSE date_trunc('day', now() AT TIME ZONE ${TZ}) - interval '14 hours'
+              END AT TIME ZONE ${TZ})
         AND lower(coalesce(f.responsible_user, '')) = ${who}
     `);
     return Number(firstRow<{ n: number }>(res)?.n ?? 0);
