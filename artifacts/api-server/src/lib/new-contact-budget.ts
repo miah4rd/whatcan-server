@@ -22,6 +22,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "./logger";
+import { UNDELIVERABLE_LEAD_IDS } from "./undeliverable";
 
 /** Meta tolerates far more than this; the point is to stay unremarkable. */
 /**
@@ -90,6 +91,10 @@ export async function newContactsToday(responsibleUser: string | null): Promise<
                    ELSE date_trunc('day', now() AT TIME ZONE ${TZ}) - interval '14 hours'
               END AT TIME ZONE ${TZ})
         AND lower(coalesce(f.responsible_user, '')) = ${who}
+        -- A number with no WhatsApp on it received nothing. Meta cannot have
+        -- scored a conversation that never opened, so it must not spend the
+        -- day's budget: "была попытка связаться, но связи не было".
+        AND f.lead_id NOT IN ${UNDELIVERABLE_LEAD_IDS}
     `);
     return Number(firstRow<{ n: number }>(res)?.n ?? 0);
   } catch (err) {
