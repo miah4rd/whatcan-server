@@ -271,6 +271,34 @@ export async function getAmoLead(
 const WHATSAPP_TALK_ORIGINS = /wahelp|wababa|whatsapp|wapp|wa\./i;
 
 /**
+ * Close ONE talk, and report honestly whether amoCRM did it.
+ *
+ * Written as its own request rather than through amoFetch, which takes only a
+ * path and silently ignores any options passed to it — a "POST" written that
+ * way goes out as a GET, returns 200 with the talk untouched, and every caller
+ * reads that as success. That is exactly how the first version of this cleanup
+ * reported five closed threads while amoCRM still held ten.
+ */
+async function closeTalk(talkId: number, leadId: string): Promise<boolean> {
+  const token = await getAccessToken();
+  if (!token) return false;
+  const res = await fetch(`${AMO_BASE}/api/v4/talks/${talkId}/close`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ force_close: true }),
+  }).catch(() => null);
+  if (!res || !res.ok) {
+    const body = res ? await res.text().catch(() => "") : "no response";
+    logger.warn(
+      { leadId, talkId, status: res?.status ?? 0, body: body.slice(0, 200) },
+      "duplicate-thread cleanup: amoCRM refused to close this talk",
+    );
+    return false;
+  }
+  return true;
+}
+
+/**
  * Close the stale duplicates when WAhelp has opened the same number twice.
  *
  * The duplicate is the integration's artefact, not a state anyone chose: one
@@ -315,16 +343,7 @@ export async function closeStaleDuplicateWhatsappTalks(leadId: string): Promise<
     const keep = sorted[0]!;
     let closed = 0;
     for (const t of sorted.slice(1)) {
-      const ok = await amoFetch(`/api/v4/talks/${t.talk_id}/close`, {
-        method: "POST",
-        body: JSON.stringify({ force_close: true }),
-      })
-        .then(() => true)
-        .catch((err) => {
-          logger.warn({ leadId, talkId: t.talk_id, err }, "duplicate-thread cleanup: close refused");
-          return false;
-        });
-      if (ok) closed++;
+      if (await closeTalk(t.talk_id!, leadId)) closed++;
     }
     if (closed > 0) {
       logger.info(
