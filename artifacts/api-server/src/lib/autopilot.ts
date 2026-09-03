@@ -27,6 +27,15 @@ import { getPipelineStages } from "./stage-classifier";
 import { mayOpenNewConversation, isFirstOutbound, NEW_CONTACT_DAILY_CAP } from "./new-contact-budget";
 
 export type AutopilotMode = "off" | "dry" | "on";
+/**
+ * Why a lead did or did not auto-send.
+ *
+ * This used to be `void`, and the backlog drain counted its own CALLS as sends:
+ * it reported "sent: 15" for a batch where every single lead had silently
+ * returned at the stage check and not one message left the building. A caller
+ * that cannot tell "sent" from "declined" will eventually report the wrong one.
+ */
+export type AutopilotOutcome = { sent: boolean; reason: string };
 export type AutopilotSetting = {
   pipeline: string;
   mode: AutopilotMode;
@@ -75,11 +84,38 @@ export async function setAutopilotSetting(s: AutopilotSetting): Promise<void> {
   logger.info({ setting: { ...s, pipeline: key } }, "autopilot: setting saved");
 }
 
+const normStage = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
+
+/**
+ * The stages the broker has actually delegated, in the funnel's own live order.
+ *
+ * Exists so a caller can ASK which leads autopilot would take, instead of
+ * handing it leads and reading a silent no. The backlog drain used to pick the
+ * oldest drafts in the whole funnel: the oldest ones sit in `live` and
+ * `Weekly Check Sent`, far past the threshold, so a batch of fifteen produced
+ * fifteen silent declines and looked like a broken sender.
+ */
+export async function delegatedStageNames(pipeline: string): Promise<string[] | null> {
+  const setting = await getAutopilotSetting(pipeline);
+  if (setting.mode !== "on" || !setting.upToStageName) return null;
+  const stages = await getPipelineStages(pipeline);
+  if (!stages) return null;
+  const want = normStage(setting.upToStageName);
+  let capIdx = stages.all.findIndex((st) => normStage(st.name) === want);
+  if (capIdx === -1) {
+    capIdx = stages.all.findIndex(
+      (st) => normStage(st.name).startsWith(want) || want.startsWith(normStage(st.name)),
+    );
+  }
+  if (capIdx === -1) return null;
+  return stages.all.slice(0, capIdx + 1).map((st) => st.name);
+}
+
 /**
  * Called after a suggestion lands in the inbox. Decides — by the broker's own
  * per-stage setting — whether the bot sends it itself.
  */
-export async function maybeAutopilot(leadId: string): Promise<void> {
+export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> {
   try {
     const [lead] = await db
       .select({
@@ -90,17 +126,19 @@ export async function maybeAutopilot(leadId: string): Promise<void> {
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, leadId))
       .limit(1);
-    if (!lead || lead.botExcluded) return;
+    if (!lead) return { sent: false, reason: "no lead row" };
+    if (lead.botExcluded) return { sent: false, reason: "bot excluded" };
 
     const pipeline = (lead.pipeline ?? "").trim().toLowerCase();
-    if (!pipeline) return;
+    if (!pipeline) return { sent: false, reason: "lead has no pipeline" };
     const setting = await getAutopilotSetting(pipeline);
-    if (setting.mode === "off" || !setting.upToStageName) return;
+    if (setting.mode === "off") return { sent: false, reason: "autopilot off" };
+    if (!setting.upToStageName) return { sent: false, reason: "no delegated stage set" };
 
     // The lead's stage must sit AT OR BEFORE the delegated threshold, in the
     // funnel's own live order (renames and re-orders keep working).
     const stages = await getPipelineStages(pipeline);
-    if (!stages) return;
+    if (!stages) return { sent: false, reason: "funnel stages unavailable" };
     // Exact name first, then a prefix match, because a stage rename must not
     // silently switch the whole funnel back to manual. "QUALIFIED" was renamed
     // to "QUALIFIED (Pre-listed)" in amoCRM and this threshold stopped
@@ -131,9 +169,10 @@ export async function maybeAutopilot(leadId: string): Promise<void> {
         { pipeline, upToStageName: setting.upToStageName, stages: stages.all.map((s) => s.name) },
         "autopilot: threshold stage does not exist in this funnel — nothing will ever auto-send",
       );
-      return;
+      return { sent: false, reason: "threshold stage does not exist in this funnel" };
     }
-    if (leadIdx === -1 || leadIdx > capIdx) return;
+    if (leadIdx === -1) return { sent: false, reason: `stage not in this funnel: ${lead.leadStage}` };
+    if (leadIdx > capIdx) return { sent: false, reason: `stage past the delegated threshold: ${lead.leadStage}` };
 
     const [sug] = await db
       .select({
@@ -147,7 +186,7 @@ export async function maybeAutopilot(leadId: string): Promise<void> {
         and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending")),
       )
       .limit(1);
-    if (!sug || !sug.text?.trim()) return;
+    if (!sug || !sug.text?.trim()) return { sent: false, reason: "no pending draft" };
 
     if (setting.mode === "dry") {
       logger.info(
@@ -159,7 +198,7 @@ export async function maybeAutopilot(leadId: string): Promise<void> {
         },
         "autopilot DRY RUN: would have auto-sent this (switch to 'on' to actually send)",
       );
-      return;
+      return { sent: false, reason: "dry run" };
     }
 
     // Opening a conversation is the one autopilot send Meta cares about — a
@@ -172,7 +211,7 @@ export async function maybeAutopilot(leadId: string): Promise<void> {
           { leadId, used: budget.used, cap: NEW_CONTACT_DAILY_CAP },
           "autopilot held back — this line has already opened its day's worth of new conversations",
         );
-        return;
+        return { sent: false, reason: `new-contact budget spent (${budget.used}/${NEW_CONTACT_DAILY_CAP})` };
       }
     }
 
@@ -194,14 +233,17 @@ export async function maybeAutopilot(leadId: string): Promise<void> {
         .set({ autoSent: true })
         .where(eq(pendingSuggestionsTable.id, sug.id));
       logger.info({ leadId, stage: lead.leadStage }, "autopilot: sent without approval (stage is delegated)");
+      return { sent: true, reason: "sent" };
     } else {
       const body = await res.text().catch(() => "");
       logger.warn(
         { leadId, status: res.status, body: body.slice(0, 160) },
         "autopilot: approve refused — left in inbox for the broker",
       );
+      return { sent: false, reason: `approve refused (${res.status})` };
     }
   } catch (err) {
     logger.error({ err, leadId }, "autopilot failed (non-fatal, suggestion stays in inbox)");
+    return { sent: false, reason: "error" };
   }
 }
