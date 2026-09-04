@@ -40,6 +40,8 @@ export type ListingType = "sale" | "rent";
 export type SupabaseProperty = {
   id: string;
   title: string;
+  /** ISO timestamp; the freshness tie-break in rankForShortlist. */
+  created_at?: string | null;
   area: string | null;
   type: string | null;
   bedrooms: number | null;
@@ -120,10 +122,10 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
 
   const url =
     `${SUPABASE_URL}/rest/v1/properties` +
-    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description` +
+    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,created_at` +
     `&is_draft=eq.false` +
     `&status=neq.sold` +
-    `&order=views.desc`;
+    `&order=created_at.desc`;
 
   const res = await fetch(url, {
     headers: {
@@ -388,7 +390,7 @@ export async function fetchPropertyForShare(id: string): Promise<PropertyShareCa
 
   const url =
     `${SUPABASE_URL}/rest/v1/properties` +
-    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,images` +
+    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,images,created_at` +
     `&id=eq.${encodeURIComponent(key)}&limit=1`;
 
   const res = await fetch(url, {
@@ -663,11 +665,25 @@ export function priceOf(p: SupabaseProperty): number {
   return p.price_usd || p.leasehold_price_usd || 0;
 }
 
-/** Priced first, then what other clients actually look at. */
+/**
+ * Priced first, then cheapest first, then newest first. NOT by views.
+ *
+ * Views used to be the tie-break, and it turned the catalog into a closed
+ * loop: a villa gets sent, gets viewed, ranks higher, gets sent again. Eleven
+ * 2BR villas in Pererenan and Seseh went live on 2026-09-02 — the exact brief
+ * thirteen leads gave that week — and the matcher put them at the bottom of
+ * every shortlist while a 3BR in Balangan at Rp 77M (814 views) went out ten
+ * times to people who had asked for Pererenan under 50. Popularity is not fit.
+ * By the time this ranks, candidates are already filtered to the client's
+ * area, bedrooms and budget, so price order is the honest order: the cheapest
+ * fit first, and among equals the villa the client has not been shown yet.
+ */
 function rankForShortlist(a: SupabaseProperty, b: SupabaseProperty): number {
   const byPrice = (hasPrice(a) ? 0 : 1) - (hasPrice(b) ? 0 : 1);
   if (byPrice !== 0) return byPrice;
-  return (b.views ?? 0) - (a.views ?? 0);
+  const pa = priceOf(a), pb = priceOf(b);
+  if (pa > 0 && pb > 0 && pa !== pb) return pa - pb;
+  return (b.created_at ?? "").localeCompare(a.created_at ?? "");
 }
 
 /**
@@ -1050,8 +1066,14 @@ export async function candidatesForLead(opts: {
 
   const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
   const criteria = await extractLeadCriteria(criteriaSource, pool);
-  inheritCriteriaFromAnchor(criteria, opts.recentLeadMessages ?? [], pool);
-  // The ad form's answers fill whatever is still unknown — never override.
+  // The owner's rule: the client's own words, then the FORM, then the villa
+  // they clicked. The form used to come last, after inheritCriteriaFromAnchor,
+  // and the anchor is found in the enquiry WE seeded ("I saw this villa:
+  // .../R-YUD-066") — so a 2BR-in-Seseh click filled bedrooms and area before
+  // the form's "3BR, Umalas" was ever consulted. Alena wrote a paragraph
+  // correcting us; Dylan asked for Uluwatu three times (2026-09-03). The form
+  // is what they typed with their own hands; the click is only what caught
+  // their eye. Fill from the form first, let the click cover what is left.
   if (opts.cardCriteria) {
     if (criteria.bedrooms === null && opts.cardCriteria.bedrooms) {
       criteria.bedrooms = opts.cardCriteria.bedrooms;
@@ -1060,6 +1082,7 @@ export async function candidatesForLead(opts: {
       criteria.areas = [...opts.cardCriteria.areas];
     }
   }
+  inheritCriteriaFromAnchor(criteria, opts.recentLeadMessages ?? [], pool);
 
   let candidates = pool;
   if (criteria.areas.length > 0) {
@@ -1565,7 +1588,7 @@ Otherwise pick ${limit} listing IDs that fit what the lead described — ${MIN_S
 ${
         budgetKnown
           ? ""
-          : `\n\nTHE LEAD HAS NOT NAMED A BUDGET. Deliberately spread the shortlist across clearly different price points — one affordable, one mid, one premium — so their reaction tells us the budget without having to ask. The catalog is ordered best-first (priced and most viewed first); everything in it is a reasonable fit.`
+          : `\n\nTHE LEAD HAS NOT NAMED A BUDGET. Deliberately spread the shortlist across clearly different price points — one affordable, one mid, one premium — so their reaction tells us the budget without having to ask. The catalog is ordered cheapest-fit first, newest listings ahead of older ones at the same price; everything in it already matches the client's area and size.`
       }
 
 Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
