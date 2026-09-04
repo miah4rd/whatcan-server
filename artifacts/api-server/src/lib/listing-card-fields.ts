@@ -15,7 +15,7 @@
  * 45 juta", "450jt/year net", "available from 20th of september". A regex that
  * survives that does not exist; a cheap model reads it in one pass.
  */
-import { amoFetch, amoPatch, amoPost, getAmoLead, updateLeadStatus, createAmoTask } from "./amo-client";
+import { amoFetch, amoPatch, amoPost, getAmoLead, updateLeadStatus, createAmoTask, closeLeadAsLost } from "./amo-client";
 import { safeStageIdForLead } from "./stage-classifier";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { logger } from "./logger";
@@ -545,6 +545,22 @@ export async function routeUnqualified(
       );
     }
     return { moved: ok, to: LONG_TERM_STAGE, reason: f.freeFromIso ? `free from ${f.freeFromIso}` : "occupied, date unknown" };
+  }
+
+  // Not a villa we can ever list on our terms, said by the owner in plain words:
+  // leasehold only, daily only, three months maximum, rooms rather than the
+  // whole villa, booked out with events, "we don't look after that property
+  // anymore". Nothing here changes with time, so there is nothing to park and
+  // nothing to chase — the ladder would spend three more messages asking for a
+  // monthly rate that does not exist.
+  //
+  // A deliberate exception to "Closed - lost is never automatic": that rule
+  // protects a JUDGEMENT about a live negotiation. This is the counterpart
+  // stating the format, and the owner asked for it explicitly (04.09.2026).
+  if (f.stopKind === "not_our_format") {
+    const ok = await closeLeadAsLost(leadId);
+    logger.info({ leadId, stopSignal: f.stopSignal }, "listing closed: not a format we can list");
+    return { moved: ok, to: "Closed - lost", reason: `not our format: ${f.stopSignal ?? "stated by the counterpart"}` };
   }
 
   return { moved: false, reason: "nothing to route on yet" };
