@@ -632,11 +632,41 @@ export function allAttachmentsNamed(
   return labels.every((label, i) => textNamesVilla(text, label, labels.filter((_, j) => j !== i)));
 }
 
+/** The attached villas this text does NOT name (matcher labels, as attached). */
+function missingLabels(text: string, attachments: Array<{ label?: string }>): string[] {
+  const labels = attachments.map((a) => a.label ?? "");
+  return labels.filter((label, i) => !textNamesVilla(text, label, labels.filter((_, j) => j !== i)));
+}
+
+/** A villa described for a client from its matcher label: title, area, monthly price. */
+function describeForAppendix(label: string): string {
+  const title = titleOf(label).trim();
+  const area = /\(([^,)]+)/.exec(label)?.[1]?.trim() ?? "";
+  const price = /Rp\s?[\d.,]+\s?(?:million|billion)\/mo/i.exec(label)?.[0]?.replace(/\/mo$/i, "/month") ?? "";
+  const inArea = area && !title.toLowerCase().includes(area.toLowerCase()) ? ` in ${area}` : "";
+  return `${title}${inArea}${price ? ` at ${price}` : ""}`;
+}
+
+/**
+ * The exit invariant of every path that produces text over links: each attached
+ * villa is named. The writer and the reconcile step are models and can drop
+ * one (Jared, 2026-09-04: three links, two named — twice in a row). When they
+ * do, the missing villas are appended deterministically rather than letting a
+ * half-matched message reach the inbox. Loud in the log, because it should be
+ * rare.
+ */
+export function ensureAllNamed(text: string, attachments: Array<{ label?: string }>): string {
+  const missing = missingLabels(text, attachments);
+  if (missing.length === 0 || attachments.length === 0) return text;
+  logger.warn({ missing: missing.map((m) => titleOf(m)) }, "text still leaves attached villas unnamed — appending them deterministically");
+  return `${text.trim()}\n\nAlso attached: ${missing.map(describeForAppendix).join("; ")}.`;
+}
+
 /** The block the writer is given: the exact villas riding with this message. */
 export function attachedVillasBlock(attachments: Array<{ label?: string; url?: string }>): string {
   if (attachments.length === 0) return "";
   const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");
-  return `\n\nTHE VILLAS ATTACHED TO THIS EXACT MESSAGE — these ${attachments.length}, and no others:\n${list}\nName each of them by its title and area as written here. Do not describe, recommend or allude to any villa that is not on this list — the client will open exactly these links under your words.`;
+  return `\n\nTHE VILLAS ATTACHED TO THIS EXACT MESSAGE — these ${attachments.length}, and no others:\n${list}\nName each of them by its title as written here, mentioning its area naturally in the sentence — never as a bracket after the title, most titles already say where it is. Do not describe, recommend or allude to any villa that is not on this list — the client will open exactly these links under your words.`;
 }
 
 /**
@@ -809,7 +839,7 @@ export async function reconcileTextWithAttachments(
     ASKS_OR_PROMISES_TO_SEND.test(text) ||
     (attachments.length > 1 && CLAIMS_ONLY_ONE.test(text)) ||
     !textMentionsAnyAttachment(text, attachments);
-  if (!contradicts) return text;
+  if (!contradicts) return ensureAllNamed(text, attachments);
 
   const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");
   // Deliberately NOT told the budget. Given it, this step kept making arithmetic
@@ -817,11 +847,7 @@ export async function reconcileTextWithAttachments(
   // at 55). Its job is making the words match the links; budget honesty belongs to
   // the main prompt, which has the inventory and the numbers.
   const budgetLine = "";
-  try {
-    const fixed = await chatCompletion({
-      model: WRITER_MODEL,
-      label: "reconcile",
-      system: `You correct one specific inconsistency in a WhatsApp message a broker is about to send.
+  const systemFor = (missingNote: string) => `You correct one specific inconsistency in a WhatsApp message a broker is about to send.
 
 These ${attachments.length} property links are attached to that exact message and will arrive with it:
 ${list}${budgetLine}${
@@ -846,19 +872,37 @@ Rewrite the message so it matches that reality:
 
 Your entire output IS the WhatsApp message to the CLIENT. Never address the broker, never ask for more details, never explain what you are missing — if a listing's details look incomplete, write around it and keep the message natural. A question back to the broker would be sent to the client as-is.
 
-Output only the corrected message.`,
+Output only the corrected message.${missingNote}`;
+  const rewrite = async (missingNote: string): Promise<string | null> => {
+    const fixed = await chatCompletion({
+      model: WRITER_MODEL,
+      label: "reconcile",
+      system: systemFor(missingNote),
       messages: [{ role: "user", content: text }],
       max_tokens: 400,
     });
     const out = sanitizeSuggestion(fixed.content);
-    if (out.trim().length > 20) {
+    return out.trim().length > 20 ? out : null;
+  };
+  try {
+    let out = await rewrite("");
+    if (out && !allAttachmentsNamed(out, attachments)) {
+      // The rewrite itself dropped a villa. Once more, with the omission named.
+      const missing = missingLabels(out, attachments);
+      logger.warn({ missing: missing.map((m) => titleOf(m)) }, "reconcile: rewrite left attached villas unnamed — second attempt");
+      const again = await rewrite(
+        `\n\nYOUR PREVIOUS ATTEMPT LEFT THESE ATTACHED VILLAS OUT. This time EVERY one of them must be named in the message, by its title, with its area and price:\n${missing.map((m) => `- ${m}`).join("\n")}`,
+      );
+      if (again) out = again;
+    }
+    if (out) {
       logger.info({ attachments: attachments.length }, "reconciled the reply with its attachments");
-      return out;
+      return ensureAllNamed(out, attachments);
     }
   } catch (err) {
     logger.warn({ err }, "attachment reconciliation failed (non-fatal, keeping the draft)");
   }
-  return text;
+  return ensureAllNamed(text, attachments);
 }
 
 export async function buildPromptAdditions(opts: {
