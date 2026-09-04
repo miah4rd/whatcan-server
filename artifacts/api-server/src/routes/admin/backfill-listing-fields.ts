@@ -20,6 +20,7 @@ import {
   extractListingFacts,
   syncListingFactsToCard,
   promoteIfQualified,
+  meetsQualified,
   routeUnqualified,
   priceLine,
 } from "../../lib/listing-card-fields";
@@ -36,6 +37,9 @@ router.post("/admin/backfill-listing-fields", async (req, res) => {
   const route = String(req.query["route"] ?? "") === "1";
   const limit = Math.min(Number(req.query["limit"] ?? 400) || 400, 400);
   const only = String(req.query["lead"] ?? "").trim();
+  // `&stage=` audits one stage only — "do the cards sitting here actually meet
+  // the bar they claim?", which is a different question from filling blanks.
+  const onlyStage = String(req.query["stage"] ?? "").trim().toLowerCase();
 
   const { created, ids } = await ensureListingFields();
   if (!ids.bedrooms || !ids.price) {
@@ -54,6 +58,7 @@ router.post("/admin/backfill-listing-fields", async (req, res) => {
       FROM leads_sync l
      WHERE l.pipeline = 'Rental Listings'
        ${only ? sql`AND l.lead_id = ${only}` : sql``}
+       ${onlyStage ? sql`AND lower(coalesce(l.lead_stage,'')) = ${onlyStage}` : sql``}
        AND EXISTS (SELECT 1 FROM lead_messages m
                     WHERE m.lead_id = l.lead_id AND m.sender_type = 'lead')
      ORDER BY l.updated_at DESC
@@ -72,6 +77,7 @@ router.post("/admin/backfill-listing-fields", async (req, res) => {
     if (facts.bedrooms) withBedrooms++;
     if (facts.monthlyIdr || facts.yearlyIdr) withPrice++;
 
+    const verdict = meetsQualified(facts);
     let routed: string | null = null;
     if (route) {
       const promoted = await promoteIfQualified(r.lead_id, facts);
@@ -99,6 +105,8 @@ router.post("/admin/backfill-listing-fields", async (req, res) => {
       available_from: facts.availableFrom,
       area: facts.area,
       counterpart: facts.counterpart,
+      qualifies: verdict.ok,
+      missing: verdict.missing,
       stop_signal: facts.stopSignal,
       photos: facts.photosLink ? "yes" : null,
       ...(apply ? { written, fields: names } : {}),
