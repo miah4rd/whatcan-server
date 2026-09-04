@@ -1111,6 +1111,7 @@ export async function candidatesForLead(opts: {
   const priced = candidates.filter(hasPrice);
   if (priced.length >= MIN_SHORTLIST) candidates = priced;
 
+  const afterAreaBedrooms = candidates.length;
   const budgetIdr =
     opts.listingType === "rent"
       ? extractBudgetIdr(criteriaSource) ?? opts.cardCriteria?.budgetIdrMonthly ?? null
@@ -1143,6 +1144,21 @@ export async function candidatesForLead(opts: {
     candidates = [...candidates].sort(rankForShortlist);
   }
   candidates = dedupeByTitle(candidates);
+
+  // Empty-pool forensics: six broker edits on one lead came back with a text
+  // describing villas and zero links, because this pool was empty while the
+  // catalog held three villas that fit. Which filter emptied it was invisible.
+  if (candidates.length === 0) {
+    logger.warn(
+      {
+        areas: criteria.areas, bedrooms: criteria.bedrooms, bedroomsMax: criteria.bedroomsMax ?? null,
+        budgetIdr, budgetCeiling, budgetFloorIdr, budgetFloorFloor,
+        poolOfferable: pool.length, afterAreaBedrooms,
+        sample: criteriaSource.map((t) => t.slice(0, 80)),
+      },
+      "candidatesForLead: pool is EMPTY after filters",
+    );
+  }
 
   return {
     candidates,
