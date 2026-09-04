@@ -321,6 +321,12 @@ router.post("/approve", async (req, res) => {
         // broker's text actually name?
         const catalog = await fetchAllPropertiesForPriceLookup();
         const namedIds = villasNamedInText(finalMessage, catalog);
+        if (namedIds.length > 5) {
+          // A text does not name six villas. The matcher is confused — keep
+          // the links the broker already looked at rather than attach a pile.
+          req.log.warn({ leadId: sug.leadId, namedIds }, "approve: edited text seems to name too many villas — keeping the links as they are");
+          namedIds.length = 0;
+        }
         const currentIds = new Set(
           effectiveAttachments
             .map((a) => a.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1]?.toUpperCase())
