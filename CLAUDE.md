@@ -330,6 +330,19 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   in the ranking (`matchProperties`, `candidatesForLead`) and in
   `enforceBudgetFloor`, or the composer's candidate order and the code-level
   swap disagree about what "in range" means.
+- **Every draft the bot might send passes through autopilot when it is born,
+  and a PROACTIVE send waits for daytime.** The owner-nudge pass wrote its
+  drafts straight into `pending_suggestions`, so `maybeAutopilot` never judged
+  them; verdict-less, the inbox's 30-minute safety net surfaced them in the
+  broker's PUSH tab every evening (twelve at 21:00 on 2026-09-04), inviting him
+  to send by hand, at night, what the bot would send itself at 10:00. Now each
+  nudge is handed to `maybeAutopilot` on insert; a push-kind or first-contact
+  send outside 10:00–20:00 Bali is stamped "waiting for outreach hours" (which
+  the inbox reads as the bot's) and the drain sends it in the morning; a reply
+  to someone who just wrote is reactive and goes out any time. The drain judges
+  unjudged drafts first — a "waiting" draft is still pending, and oldest-first
+  kept re-evaluating the same fifteen. Anything new that writes a pending draft
+  must call `maybeAutopilot`, or it will show up as the broker's job.
 - **A budget FLOOR above the CEILING is a parse error, never a range — drop it.**
   "Rp 200-400 million/year (up to ~33 jt/month)" carries both a yearly range
   and a monthly figure. `extractBudgetIdr` read 33M a month; `extractBudgetFloorIdr`
