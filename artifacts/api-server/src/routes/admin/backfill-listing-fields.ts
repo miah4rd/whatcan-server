@@ -108,6 +108,10 @@ router.post("/admin/backfill-listing-fields", async (req, res) => {
       qualifies: verdict.ok,
       missing: verdict.missing,
       stop_signal: facts.stopSignal,
+      // The TYPE decides what happens to the card; the text only explains it.
+      // Reviewing a close without this was reviewing the wrong field.
+      stop_kind: facts.stopKind,
+      free_from: facts.freeFromIso,
       photos: facts.photosLink ? "yes" : null,
       ...(apply ? { written, fields: names } : {}),
       ...(routed ? { movedTo: routed } : {}),
