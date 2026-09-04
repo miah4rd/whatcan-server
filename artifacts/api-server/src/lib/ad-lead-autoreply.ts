@@ -136,7 +136,7 @@ function requestLine(answers: LeadCardAnswers): string {
     answers.bedrooms,
     answers.areas,
     answers.budget,
-    answers.moveIn ? `move-in ${answers.moveIn}` : null,
+    answers.moveIn ? `move-in ${answers.moveIn.replace(/^In\s+/i, "in ")}` : null,
     // Free text: the client's own extra wish ("Big garden"). Repeated only when
     // it is short enough to be a phrase — this field also collects the odd
     // pasted paragraph, and a wall of text quoted back reads as a machine.
