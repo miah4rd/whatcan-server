@@ -16,7 +16,7 @@ import {
 } from "../../lib/outbound-send.js";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL, followupClockAfterReply } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
-import { reconcileTextWithAttachments, allAttachmentsNamed, villasNamedInText } from "../../lib/generate-suggestion";
+import { reconcileTextWithAttachments, allAttachmentsNamed, villasNamedInText, textNamesVilla } from "../../lib/generate-suggestion";
 import { fetchAllPropertiesForPriceLookup, describePropertiesByIds } from "../../lib/property-catalog";
 import { recordCommitment } from "../../lib/commitment-scheduler.js";
 
@@ -317,38 +317,62 @@ router.post("/approve", async (req, res) => {
     const linksChanged = before.size !== after.size || [...after].some((u) => !before.has(u));
     try {
       if (textEdited) {
-        // Words changed → links follow the words. Which catalog villas does the
-        // broker's text actually name?
-        const catalog = await fetchAllPropertiesForPriceLookup();
-        const namedIds = villasNamedInText(finalMessage, catalog);
-        if (namedIds.length > 5) {
-          // A text does not name six villas. The matcher is confused — keep
-          // the links the broker already looked at rather than attach a pile.
-          req.log.warn({ leadId: sug.leadId, namedIds }, "approve: edited text seems to name too many villas — keeping the links as they are");
-          namedIds.length = 0;
-        }
+        // Words changed. Text and links are ONE message — there is no "main"
+        // half (the owner's words: the links are a mirror of the text and the
+        // text a mirror of the links). So the links are brought to what the
+        // words now say, in both directions at once:
+        //  · a villa the text still mentions keeps its link (lenient, judged
+        //    against the other attached villas);
+        //  · a villa the text no longer mentions loses its link;
+        //  · a villa the text names that is not attached gets its link (strict,
+        //    judged against the whole catalog) — but only on a message that
+        //    already carries links: a link-less text never grows links here,
+        //    the client may already hold that link ("ссылки в своей жизни живут");
+        //  · if the text mentions none of the attached villas and names no new
+        //    one, the words are rewritten under her links — nothing leaves
+        //    half-matched.
+        const labels = effectiveAttachments.map((a) => a.label);
+        const kept = effectiveAttachments.filter((a, i) =>
+          textNamesVilla(finalMessage, a.label, labels.filter((_, j) => j !== i)),
+        );
         const currentIds = new Set(
           effectiveAttachments
             .map((a) => a.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1]?.toUpperCase())
             .filter(Boolean) as string[],
         );
-        const namedSet = new Set(namedIds);
-        const differs = namedIds.length > 0 && (namedSet.size !== currentIds.size || [...namedSet].some((id) => !currentIds.has(id)));
-        if (differs) {
-          const known = await describePropertiesByIds(namedIds);
-          const rebuilt = namedIds
-            .map((id) => known.get(id))
-            .filter(Boolean)
-            .map((k) => ({ type: "link" as const, label: k!.label, url: k!.url }));
-          if (rebuilt.length > 0) {
-            req.log.info({ leadId: sug.leadId, from: [...currentIds], to: namedIds }, "approve: text was edited — links now follow the villas the text names");
-            effectiveAttachments = rebuilt;
+        let added: Array<{ type: "link"; label: string; url: string }> = [];
+        if (effectiveAttachments.length > 0) {
+          const catalog = await fetchAllPropertiesForPriceLookup();
+          let namedIds = villasNamedInText(finalMessage, catalog);
+          if (namedIds.length > 5) {
+            // A text does not name six villas. The recogniser is confused —
+            // add nothing rather than attach a pile.
+            req.log.warn({ leadId: sug.leadId, namedIds }, "approve: edited text seems to name too many villas — not adding any");
+            namedIds = [];
           }
-        } else if (namedIds.length === 0 && effectiveAttachments.length > 0 && !allAttachmentsNamed(finalMessage, effectiveAttachments)) {
-          // The broker's words name no villa at all while links are attached.
-          // Their words stand — but this is exactly the mismatch the client
-          // would see, so say so loudly rather than silently ship it.
-          req.log.warn({ leadId: sug.leadId, attached: effectiveAttachments.map((a) => a.label) }, "approve: edited text names none of the attached villas — sending as the broker wrote it");
+          const addIds = namedIds.filter((id) => !currentIds.has(id));
+          if (addIds.length > 0) {
+            const known = await describePropertiesByIds(addIds);
+            added = addIds
+              .map((id) => known.get(id))
+              .filter(Boolean)
+              .map((k) => ({ type: "link" as const, label: k!.label, url: k!.url }));
+          }
+        }
+        if (effectiveAttachments.length > 0 && kept.length === 0 && added.length === 0) {
+          req.log.info({ leadId: sug.leadId, attached: labels }, "approve: edited text mentions none of the attached villas — rewriting the words under the links");
+          finalMessage = await reconcileTextWithAttachments(finalMessage, effectiveAttachments, true);
+        } else if (kept.length !== effectiveAttachments.length || added.length > 0) {
+          req.log.info(
+            {
+              leadId: sug.leadId,
+              kept: kept.map((a) => a.label),
+              dropped: effectiveAttachments.filter((a) => !kept.includes(a)).map((a) => a.label),
+              added: added.map((a) => a.label),
+            },
+            "approve: text was edited — links now mirror the villas the text names",
+          );
+          effectiveAttachments = [...kept, ...added];
         }
       } else if (linksChanged) {
         // Links changed, words did not → words follow the links. Forced: the
