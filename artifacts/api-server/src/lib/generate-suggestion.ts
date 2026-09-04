@@ -527,6 +527,16 @@ const GENERIC_TITLE_WORDS = new Set([
   "villa", "villas", "bedroom", "bedrooms", "rental", "rent", "yearly", "monthly",
   "long", "term", "long-term", "for", "in", "with", "the", "and", "brand", "new",
   "house", "family", "private", "premium", "spacious", "bali",
+  // Words that describe half the catalog. "pool" + "Pererenan" was enough to
+  // count a villa as named while the text was about its neighbour.
+  "pool", "garden", "luxury", "modern", "stylish", "cozy", "beautiful", "stunning",
+  "furnished", "fully", "available", "sale", "apartment", "unit", "studio",
+  "near", "close", "walk", "minutes", "complex", "residence", "residences",
+]);
+
+/** Never identity on their own, never part of an identifying phrase. */
+const CONNECTIVE_WORDS = new Set([
+  "a", "an", "and", "at", "by", "for", "from", "in", "near", "of", "on", "or", "the", "to", "with",
 ]);
 
 /** Strict variant: EVERY attachment must be referenced — a hand-curated panel
@@ -542,30 +552,75 @@ export function textMentionsEveryAttachment(
 /**
  * Text and links are ONE message. The client receives the words and, seconds
  * later, the links — as a single thought. Every path that produces or changes
- * either half goes through these two helpers, so "does the text name this
- * villa" has exactly one definition in the codebase.
+ * either half goes through these helpers, so "does the text name this villa"
+ * has exactly one definition in the codebase.
+ *
+ * What counts as naming a villa is DISTINCTIVE evidence, judged against the
+ * other villas it could be confused with: the full title, or a two-word title
+ * phrase / a title word that those others do not share. "pool" and
+ * "Pererenan" are not a name — half the catalog has both — and the first cut
+ * of this gate accepted exactly that, so a text about villa A passed as also
+ * naming villa B, and an edited text "named" nineteen catalog villas at once.
  */
-function titleTokens(label: string): string[] {
-  const title = (label ?? "").split(" (")[0] ?? "";
-  return title
+function normWords(s: string): string[] {
+  return (s ?? "")
     .toLowerCase()
-    .split(/[^a-zа-яё0-9]+/)
-    .filter((w) => w.length > 3 && !GENERIC_TITLE_WORDS.has(w));
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
 }
 
-function labelArea(label: string): string {
-  const inParens = /\(([^,)]+)/.exec(label ?? "")?.[1]?.trim().toLowerCase() ?? "";
-  return inParens.split(/\s*,\s*/)[0] ?? "";
+function titleOf(label: string): string {
+  return (label ?? "").split(" (")[0] ?? "";
 }
 
-/** Does the text name THIS villa — its area plus at least one distinctive title word. */
-export function textNamesVilla(text: string, label: string): boolean {
-  const t = (text ?? "").toLowerCase();
-  const area = labelArea(label);
-  const areaOk = !area || area.length <= 3 || t.includes(area);
-  const words = titleTokens(label);
-  const wordOk = words.length === 0 || words.some((w) => t.includes(w));
-  return areaOk && wordOk;
+/** Padded so that `includes(" word ")` is a whole-word test. */
+function normText(text: string): string {
+  return ` ${normWords(text).join(" ")} `;
+}
+
+function hasWords(t: string, needle: string): boolean {
+  return t.includes(` ${needle} `);
+}
+
+/** Title words that can carry identity: not connectives, not generic. */
+function titleTokens(label: string): string[] {
+  return normWords(titleOf(label)).filter(
+    (w) => w.length > 3 && !GENERIC_TITLE_WORDS.has(w) && !CONNECTIVE_WORDS.has(w),
+  );
+}
+
+/** Two-word title phrases that can carry identity: no connective, not both generic. */
+function titlePhrases(title: string): string[] {
+  const w = normWords(title);
+  const out: string[] = [];
+  for (let i = 0; i + 1 < w.length; i++) {
+    const a = w[i]!;
+    const b = w[i + 1]!;
+    if (CONNECTIVE_WORDS.has(a) || CONNECTIVE_WORDS.has(b)) continue;
+    if (GENERIC_TITLE_WORDS.has(a) && GENERIC_TITLE_WORDS.has(b)) continue;
+    out.push(`${a} ${b}`);
+  }
+  return out;
+}
+
+/**
+ * Does the text name THIS villa, given the other villas riding in the same
+ * message? Distinctiveness is judged against the message, not the world: two
+ * Pererenan villas must be told apart by more than "Pererenan".
+ */
+export function textNamesVilla(text: string, label: string, others: string[] = []): boolean {
+  const t = normText(text);
+  const title = normWords(titleOf(label)).join(" ");
+  if (title.length >= 12 && hasWords(t, title)) return true;
+  const phrases = titlePhrases(titleOf(label));
+  const tokens = titleTokens(label);
+  if (phrases.length === 0 && tokens.length === 0) return true; // nothing to name it by
+  const otherPhrases = new Set(others.flatMap((o) => titlePhrases(titleOf(o))));
+  const otherTokens = new Set(others.flatMap((o) => titleTokens(o)));
+  if (phrases.some((ph) => !otherPhrases.has(ph) && hasWords(t, ph))) return true;
+  return tokens.some((w) => !otherTokens.has(w) && hasWords(t, w));
 }
 
 /** Every attached villa is named in the text. The deterministic gate — not a heuristic. */
@@ -573,7 +628,8 @@ export function allAttachmentsNamed(
   text: string,
   attachments: Array<{ label?: string }>,
 ): boolean {
-  return attachments.every((a) => textNamesVilla(text, a.label ?? ""));
+  const labels = attachments.map((a) => a.label ?? "");
+  return labels.every((label, i) => textNamesVilla(text, label, labels.filter((_, j) => j !== i)));
 }
 
 /** The block the writer is given: the exact villas riding with this message. */
@@ -585,24 +641,40 @@ export function attachedVillasBlock(attachments: Array<{ label?: string; url?: s
 
 /**
  * The reverse direction: which catalog villas does this text name? Used when a
- * broker rewrites the words — the links follow what they wrote.
+ * broker rewrites the words — the links follow what they wrote. Precision over
+ * recall on purpose: a miss keeps the links the broker already saw, a false
+ * match attaches a villa nobody chose. So a phrase counts only when exactly
+ * ONE villa in the catalog carries it, and a single phrase needs the villa's
+ * area beside it.
  */
 export function villasNamedInText(
   text: string,
   catalog: Array<{ id: string; title: string; area: string | null }>,
 ): string[] {
-  const t = (text ?? "").toLowerCase();
-  const byUrl = Array.from(t.matchAll(/\/property\/([a-z0-9-]+)/gi)).map((m) => m[1]!.toUpperCase());
-  const named = catalog
-    .filter((p) => {
-      const title = (p.title ?? "").toLowerCase().trim();
-      if (title.length >= 12 && t.includes(title)) return true;
-      const words = titleTokens(p.title ?? "");
-      const area = (p.area ?? "").toLowerCase();
-      // Strict on purpose: area present AND at least two distinctive title words.
-      return !!area && area.length > 3 && t.includes(area) && words.filter((w) => t.includes(w)).length >= 2;
-    })
-    .map((p) => p.id.toUpperCase());
+  const t = normText(text);
+  const byUrl = Array.from((text ?? "").matchAll(/\/property\/([a-z0-9-]+)/gi)).map((m) => m[1]!.toUpperCase());
+  const owners = new Map<string, Set<string>>();
+  for (const p of catalog) {
+    for (const ph of new Set(titlePhrases(p.title ?? ""))) {
+      const s = owners.get(ph) ?? new Set<string>();
+      s.add((p.id ?? "").toUpperCase());
+      owners.set(ph, s);
+    }
+  }
+  const named: string[] = [];
+  for (const p of catalog) {
+    const id = (p.id ?? "").toUpperCase();
+    if (!id) continue;
+    const title = normWords(p.title ?? "").join(" ");
+    if (title.length >= 12 && hasWords(t, title)) {
+      named.push(id);
+      continue;
+    }
+    const hits = titlePhrases(p.title ?? "").filter((ph) => owners.get(ph)?.size === 1 && hasWords(t, ph));
+    if (hits.length === 0) continue;
+    const areaOk = normWords(p.area ?? "").some((w) => w.length > 3 && hasWords(t, w));
+    if (hits.length >= 2 || areaOk) named.push(id);
+  }
   return Array.from(new Set([...byUrl, ...named]));
 }
 

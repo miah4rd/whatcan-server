@@ -82,9 +82,10 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
 2. Both route through **`lib/live-reply-debounce.ts`** — a per-lead 5s quiet
    window. Without it, both detectors fire for the same burst of messages and
    the lead gets near-duplicate replies minutes apart.
-3. **`lib/generate-suggestion.ts`** writes the reply. The main completion and
-   `matchProperties` run **concurrently** — serialising them delayed the push
-   notification by seconds.
+3. **`lib/generate-suggestion.ts`** writes the reply. Since 2026-09-04 the
+   villas are picked FIRST and the writer is handed the exact attached list
+   (`attachedVillasBlock`); the few seconds this costs were the owner's
+   explicit trade for text and links that agree.
 4. **`queueSuggestion`** (in `amocrm-webhook.ts`) persists to
    `pending_suggestions`, fires the push notification, **then** classifies the
    stage in the background (deliberately after the notification).
@@ -119,11 +120,17 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
 - **Always a real choice: 2-3 listings, never one.** A hard filter that leaves a
   single survivor is widened (bedrooms ±1) before it's accepted, and the shortlist
   is topped up in code — the model's "at most 3" was read as permission to send one.
-- **The reply text is written CONCURRENTLY with property matching**, so it cannot
-  know what got attached. Don't try to fix that with prompt wording alone — it kept
-  ending in "want me to send them over?" with three links already attached.
-  `reconcileTextWithAttachments` checks the invariant after both finish and only
-  pays for a rewrite when the text actually contradicts the links.
+- **Text and links are ONE message (owner, 2026-09-04: "текст и ссылки это одно
+  и то же").** The writer used to run concurrently with the matcher and could
+  not know what got attached; prompt wording alone never fixed it. Now every
+  generation path picks the villas first, puts the exact list in front of the
+  writer, and then `allAttachmentsNamed` — a deterministic check on DISTINCTIVE
+  title evidence, not "pool" + area — forces `reconcileTextWithAttachments`
+  when the text misses any attached villa. `approve.ts` is the last gate and
+  reconciles BOTH ways: an edited text pulls the links to the villas it names
+  (`villasNamedInText`, precision-first, capped), changed links pull a rewrite
+  of the text, and a stale mismatch is rewritten before it leaves. Nothing
+  downstream reads `body.message` raw; it reads `finalMessage`.
 - **A truncated AI answer is not a failed one.** `chatCompletionJSON` repairs a
   JSON object cut off by `max_tokens` — the matcher explained its reasoning first,
   ran out of room mid-array, and three chosen villas became an empty shortlist.
