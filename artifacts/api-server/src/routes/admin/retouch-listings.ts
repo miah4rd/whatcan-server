@@ -52,6 +52,7 @@ router.post("/admin/retouch-listings", async (req, res) => {
       leadNotes: leadsSyncTable.leadNotes,
       leadStage: leadsSyncTable.leadStage,
       pipeline: leadsSyncTable.pipeline,
+      lastMessageFrom: leadsSyncTable.lastMessageFrom,
     })
     .from(leadsSyncTable)
     .where(inArray(leadsSyncTable.leadId, leadIds));
@@ -94,10 +95,15 @@ router.post("/admin/retouch-listings", async (req, res) => {
       await db
         .delete(pendingSuggestionsTable)
         .where(eq(pendingSuggestionsTable.leadId, leadId));
+      // A client who never answered the welcome is being chased, not
+      // answered: LIVE hides a draft where we spoke last, so it would be
+      // written and never seen (Jared, Alexandra — 2 of the first 10). PUSH is
+      // the tab for exactly this.
+      const kind = lead.lastMessageFrom === "lead" ? "live" : "push";
       await db.insert(pendingSuggestionsTable).values({
         leadId,
         responsibleUser: lead.responsibleUser,
-        kind: "live",
+        kind,
         followupLevel: null,
         suggestionText: reconciled,
         status: "pending",
