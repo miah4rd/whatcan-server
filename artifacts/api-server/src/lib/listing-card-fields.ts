@@ -389,7 +389,15 @@ const MIN_LISTING_MONTHLY_IDR = 30_000_000;
 
 /** What a client would be quoted, from whatever we know about the price. */
 export function clientFacingMonthlyIdr(f: ListingFacts): number | null {
-  const monthly = f.monthlyIdr ?? (f.yearlyIdr ? Math.round(f.yearlyIdr / 12) : null);
+  /**
+   * A MONTHLY figure only. A yearly rate divided by twelve is not the monthly
+   * rate — it is the yearly discount, and every villa here quotes the two
+   * differently. 300jt a year works out at 25M a month and would be binned by
+   * the floor below, while the same villa's actual monthly ask is comfortably
+   * over it. Binning on that arithmetic is a guess, and the whole point of this
+   * check is that it is not one: no monthly price, no verdict.
+   */
+  const monthly = f.monthlyIdr;
   if (!monthly) return null;
   // "included" already carries our fee; "net" and "unknown" are both treated as
   // net here, which is the reading that makes the villa look most expensive and
