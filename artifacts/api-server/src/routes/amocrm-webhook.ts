@@ -18,7 +18,7 @@ import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
 import { isHosTrackedPipeline } from "../lib/adaptive-followup";
 import { movesStageOnReply } from "../lib/pipelines";
-import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments } from "../lib/generate-suggestion";
+import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments, attachedVillasBlock, allAttachmentsNamed } from "../lib/generate-suggestion";
 import { getMergedDialog } from "../lib/merged-conversation";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
@@ -172,21 +172,12 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     kind: opts.kind,
   });
 
-  const completion = await chatCompletion({
-    model: WRITER_MODEL,
-    label: "draft",
-    system: systemPrompt,
-    ...(cachePrefix ? { cachePrefix } : {}),
-    messages: [{ role: "user", content: prompt + promptAdditions }],
-    max_tokens: 400,
-  });
-
-  const draft = sanitizeSuggestion(completion.content);
-
   // Shared picker — already-sent exclusion, current area/bedroom criteria, and
   // the "lead already chose a villa" gate all live in ONE place. The bare
   // matchProperties call that used to sit here is why this path kept
   // re-attaching the same two already-sent listings whatever the lead asked.
+  // And it runs BEFORE the writer, so the writer is told the exact villas —
+  // see lib/generate-suggestion for why order is the whole fix.
   const attachments = await pickPropertyAttachments({
     leadId: opts.leadId,
     brokerId: opts.responsibleUser,
@@ -199,9 +190,19 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     leadNotes: opts.leadNotes ?? null,
   });
 
-  // The draft was written without knowing which listings the matcher would
-  // choose — make the two agree before this reaches the broker.
-  const text = await reconcileTextWithAttachments(draft, attachments);
+  const completion = await chatCompletion({
+    model: WRITER_MODEL,
+    label: "draft",
+    system: systemPrompt,
+    ...(cachePrefix ? { cachePrefix } : {}),
+    messages: [{ role: "user", content: prompt + promptAdditions + attachedVillasBlock(attachments) }],
+    max_tokens: 400,
+  });
+
+  const draft = sanitizeSuggestion(completion.content);
+  const named = allAttachmentsNamed(draft, attachments);
+  if (!named) logger.warn({ leadId: opts.leadId }, "webhook draft did not name every attached villa — forcing rewrite");
+  const text = await reconcileTextWithAttachments(draft, attachments, !named);
 
   return { text, attachments };
 }
