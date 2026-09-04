@@ -807,7 +807,16 @@ export function extractBudgetFloorIdr(messages: string[]): number | null {
       const a = parse(range[1]);
       const b = parse(range[2]);
       if (a > 0 && b > 0 && a < 100000 && b < 100000) {
-        return toMonthly(Math.min(a, b) * 1_000_000);
+        // The period that counts is the one written NEXT TO the range, not
+        // anywhere in the message. "Rp 200-400 million/year (up to ~33 jt/month)"
+        // carries both markers; judged per message, "per month" won and the
+        // yearly range became a 200M MONTHLY floor — above every villa on the
+        // island, so the pool came back empty and a broker's "attach the links"
+        // shipped a text describing villas with no links six times in a row.
+        const tail = m.slice((range.index ?? 0) + range[0].length, (range.index ?? 0) + range[0].length + 14);
+        const rangeIsYearly = PER_YEAR.test(tail) || perYear;
+        const low = Math.min(a, b) * 1_000_000;
+        return Math.round(rangeIsYearly ? low / 12 : low > 200_000_000 ? low / 12 : low);
       }
     }
   }
@@ -1121,7 +1130,15 @@ export async function candidatesForLead(opts: {
   // here too, and this is the pool the EDIT path's composer actually sees —
   // so a broker's own "stay in that 40-50 range" instruction had nothing
   // correctly ordered to draw from.
-  const budgetFloorIdr = opts.listingType === "rent" ? extractBudgetFloorIdr(criteriaSource) : null;
+  const budgetFloorRaw = opts.listingType === "rent" ? extractBudgetFloorIdr(criteriaSource) : null;
+  // A floor above the ceiling cannot be a real range — it is a parse error
+  // (a yearly range read as monthly), and enforcing it empties the pool. The
+  // ceiling is the number the whole system trusts; the floor is a refinement
+  // of it and never outranks it.
+  const budgetFloorIdr = budgetFloorRaw && budgetIdr && budgetFloorRaw > budgetIdr ? null : budgetFloorRaw;
+  if (budgetFloorRaw && budgetIdr && budgetFloorRaw > budgetIdr) {
+    logger.warn({ budgetFloorRaw, budgetIdr }, "candidatesForLead: floor above ceiling — floor ignored");
+  }
   // Same 15% headroom as the ceiling, mirrored downward — see matchProperties.
   const budgetFloorFloor = budgetFloorIdr ? Math.round(budgetFloorIdr * 0.85) : null;
   if (budgetCeiling) {
@@ -1488,7 +1505,13 @@ export async function matchProperties(opts: {
   // shortlist filled two of three slots with villas at 23 and 28.6, and a
   // broker edit repeating "stay in that range" still didn't move them,
   // because nothing downstream had ever been told where the range started.
-  const budgetFloorIdr = opts.listingType === "rent" ? extractBudgetFloorIdr(criteriaSource) : null;
+  const budgetFloorRaw = opts.listingType === "rent" ? extractBudgetFloorIdr(criteriaSource) : null;
+  // Same invariant as candidatesForLead: a floor above the ceiling is a parse
+  // error, never a range, and enforcing it empties the shortlist.
+  const budgetFloorIdr = budgetFloorRaw && budgetIdr && budgetFloorRaw > budgetIdr ? null : budgetFloorRaw;
+  if (budgetFloorRaw && budgetIdr && budgetFloorRaw > budgetIdr) {
+    logger.warn({ budgetFloorRaw, budgetIdr }, "matchProperties: floor above ceiling — floor ignored");
+  }
   // Same 15% the ceiling gets, mirrored downward: a villa just under the stated
   // floor is still a real answer to "60-65 million" — the owner's own read of
   // one at 55 was "that one's right". One at 39.8 (well past the headroom) is
