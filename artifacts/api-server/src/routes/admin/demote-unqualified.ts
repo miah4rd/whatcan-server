@@ -3,9 +3,9 @@
  *
  * A stage is a claim. "QUALIFIED (Pre-listed)" says bedrooms, a price with its
  * commission position, and the owner are all known — the broker reads it that
- * way and works the card accordingly. Cards reached it (and Details beyond it)
- * on the general classifier's looser reading, which is now fixed at the source;
- * this clears what that left behind.
+ * way and works the card accordingly. Cards reached it on the general
+ * classifier's looser reading, which is now fixed at the source; this clears
+ * what that left behind, on that stage alone.
  *
  * Back to TAKEN TO WORK on purpose, not to Closed: nothing is wrong with these
  * leads, we simply have not asked the remaining question yet. That stage is
@@ -23,9 +23,17 @@ import { qualificationVerdictForLead } from "../../lib/listing-card-fields";
 
 const router = Router();
 
-/** Stages that CLAIM qualification. Terminal and parking stages are not here:
- *  a parked card makes no claim about the listing's completeness. */
-const CLAIMING_STAGES = ["qualified (pre-listed)", "details", "agreement"];
+/**
+ * QUALIFIED only, and deliberately nothing beyond it.
+ *
+ * Details and agreement are past the autopilot handover, which means a person
+ * is already working those cards — the owner's instruction: "не трогай всё что
+ * дальше qualified, там уже человек работает". Pulling a card out from under a
+ * broker mid-conversation is worse than a stage label that overstates what we
+ * know. The classifier fix stops new cards landing there unearned; what is
+ * already there stays the broker's.
+ */
+const CLAIMING_STAGES = ["qualified (pre-listed)"];
 const BACK_TO = "TAKEN TO WORK";
 
 router.post("/admin/demote-unqualified", async (req, res) => {
