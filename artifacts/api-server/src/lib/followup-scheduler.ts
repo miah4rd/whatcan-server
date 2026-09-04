@@ -1261,7 +1261,49 @@ export async function processFollowups(): Promise<void> {
  * This ensures unanswered leads always have a live suggestion regardless of age.
  * Capped at 5 per run to avoid overloading OpenAI.
  */
+/**
+ * The flag said "we spoke last" while the timeline showed the client had.
+ *
+ * Dylan gave a precise list of areas, Alena a full brief with a school and a
+ * dog (2026-09-03); both sat 27 hours with no draft, because
+ * processUnansweredLive selects on last_message_from = 'lead' and something
+ * had flipped it back to 'us' after their reply. Whatever flips it, the
+ * timeline in lead_messages is the ground truth: newest inbound after newest
+ * outbound means the client is waiting. Repair the flag from that before the
+ * pass, so the pass can see them.
+ */
+async function repairLastMessageFromTimeline(): Promise<number> {
+  try {
+    const r = await pool.query(`
+      WITH sig AS (
+        SELECT lead_id,
+               max(sent_at) FILTER (WHERE sender_type = 'lead')  AS last_in,
+               max(sent_at) FILTER (WHERE sender_type <> 'lead') AS last_out
+          FROM lead_messages
+         GROUP BY lead_id
+      )
+      UPDATE leads_sync l
+         SET last_message_from = 'lead', updated_at = now()
+        FROM sig
+       WHERE sig.lead_id = l.lead_id
+         AND l.last_message_from = 'us'
+         AND sig.last_in IS NOT NULL
+         AND (sig.last_out IS NULL OR sig.last_in > sig.last_out)
+         AND coalesce(l.bot_excluded, false) = false
+         AND lower(coalesce(l.lead_stage,'')) NOT LIKE '%closed%'
+         AND lower(coalesce(l.lead_stage,'')) NOT LIKE '%lost%'
+       RETURNING l.lead_id`);
+    const n = r.rowCount ?? 0;
+    if (n > 0) logger.warn({ leadIds: r.rows.map((x: { lead_id: string }) => x.lead_id) }, "repair: client spoke last per timeline but flag said us — flag fixed");
+    return n;
+  } catch (err) {
+    logger.warn({ err }, "repair: last_message_from timeline check failed");
+    return 0;
+  }
+}
+
 export async function processUnansweredLive(): Promise<void> {
+  await repairLastMessageFromTimeline();
   const unansweredCorrectionsCache = new Map<string, string>();
   // Find ALL leads where DB says the lead wrote last
   const unanswered = await db

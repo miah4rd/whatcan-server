@@ -545,6 +545,17 @@ export function textMentionsAnyAttachment(
 ): boolean {
   if (attachments.length === 0) return true;
   const t = (text ?? "").toLowerCase();
+  // Any one shared word used to be enough — and "rental" is in nearly every
+  // title, so a text describing Pererenan and Tumbak Bayuh "matched" links to
+  // Kerobokan and Balangan (Ekaterina, Rori, 2026-08-31). The client reads one
+  // place and opens another. The area is the one word that cannot be generic:
+  // every attached villa's area must be named in the text, or the text is
+  // about villas that are not attached.
+  for (const a of attachments) {
+    const inParens = /\(([^,)]+)/.exec(a.label ?? "")?.[1]?.trim().toLowerCase() ?? "";
+    const area = inParens.split(/\s*,\s*/)[0] ?? "";
+    if (area && area.length > 3 && !t.includes(area)) return false;
+  }
   for (const a of attachments) {
     const title = (a.label ?? "").split(" (")[0] ?? "";
     const words = title
