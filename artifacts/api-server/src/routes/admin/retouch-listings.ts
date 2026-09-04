@@ -95,15 +95,17 @@ router.post("/admin/retouch-listings", async (req, res) => {
       await db
         .delete(pendingSuggestionsTable)
         .where(eq(pendingSuggestionsTable.leadId, leadId));
-      // A client who never answered the welcome is being chased, not
-      // answered: LIVE hides a draft where we spoke last, so it would be
-      // written and never seen (Jared, Alexandra — 2 of the first 10). PUSH is
-      // the tab for exactly this.
-      const kind = lead.lastMessageFrom === "lead" ? "live" : "push";
+      // ALWAYS push. A retouch is us going back to someone, by definition a
+      // chase — and LIVE is not merely hidden for such a lead, it is DELETED:
+      // the stale-LIVE sweep in processFollowups took 8 of the first 10 within
+      // a minute of the restart. requestedAt marks this as asked-for by hand,
+      // which lifts the "future task scheduled, don't prompt" snooze that would
+      // otherwise hide a push on a lead with a follow-up already on the clock.
       await db.insert(pendingSuggestionsTable).values({
         leadId,
         responsibleUser: lead.responsibleUser,
-        kind,
+        kind: "push",
+        requestedAt: new Date(),
         followupLevel: null,
         suggestionText: reconciled,
         status: "pending",
