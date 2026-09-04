@@ -242,6 +242,7 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
     const [sug] = await db
       .select({
         id: pendingSuggestionsTable.id,
+        kind: pendingSuggestionsTable.kind,
         text: pendingSuggestionsTable.suggestionText,
         attachments: pendingSuggestionsTable.attachments,
         responsibleUser: pendingSuggestionsTable.responsibleUser,
@@ -286,14 +287,20 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
     // Opening a conversation is the one autopilot send Meta cares about — a
     // reply to someone already talking to us is ordinary traffic. Out of
     // budget, the draft simply waits in the inbox for the broker.
+    // A PROACTIVE message — a first contact or a follow-up nudge — waits for
+    // Bali's working hours. A reply to someone who just wrote to us does not:
+    // that is reactive, and answering at 23:00 a person who wrote at 22:55 is
+    // ordinary. The nudge pass used to write its drafts straight into the
+    // table, so autopilot never judged them; they sat verdict-less in the PUSH
+    // tab all evening and the broker was invited to send at 21:00 by hand what
+    // the bot would have sent itself at 10:00.
+    const proactive = sug.kind === "push" || (await isFirstOutbound(leadId));
+    if (proactive && !withinOutreachHours()) {
+      return decline(
+        `waiting for outreach hours (${OUTREACH_OPEN_HOUR}:00-${OUTREACH_CLOSE_HOUR}:00 Bali)`,
+      );
+    }
     if (await isFirstOutbound(leadId)) {
-      // Nobody wants a cold message from an unknown agency at three in the
-      // morning, and the draft loses nothing by waiting until Bali is awake.
-      if (!withinOutreachHours()) {
-        return decline(
-          `waiting for outreach hours (${OUTREACH_OPEN_HOUR}:00-${OUTREACH_CLOSE_HOUR}:00 Bali)`,
-        );
-      }
       const budget = await mayOpenNewConversation(sug.responsibleUser);
       if (!budget.ok) {
         logger.warn(

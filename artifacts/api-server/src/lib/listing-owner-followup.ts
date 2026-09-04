@@ -27,6 +27,7 @@ import { logger } from "./logger";
 import { isListingAcquisition } from "./pipelines";
 import { villaFromLeadName, fetchLeadTitle, fetchOwnerName } from "./weekly-availability-check";
 import { closeLeadAsLost } from "./amo-client";
+import { maybeAutopilot } from "./autopilot";
 import { qualificationVerdictForLead } from "./listing-card-fields";
 
 /**
@@ -261,6 +262,11 @@ export async function processListingOwnerFollowup(): Promise<number> {
         { leadId: lead.leadId, villa, round, silentHours: Math.round(silentHours) },
         "listing-owner-followup: queued an owner nudge",
       );
+      // Autopilot judges the nudge NOW — sends it if the stage is delegated and
+      // it is daytime, or stamps "waiting" so the inbox knows the bot owns it.
+      // Inserted straight into the table, it had no verdict, and the inbox's
+      // 30-minute safety net then surfaced it to the broker as his to send.
+      void maybeAutopilot(lead.leadId);
     } catch (err) {
       logger.error({ err, leadId: lead.leadId }, "listing-owner-followup: failed for this card");
     }
