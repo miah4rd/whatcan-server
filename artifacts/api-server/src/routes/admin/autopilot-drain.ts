@@ -96,7 +96,14 @@ router.post("/admin/autopilot-drain", async (req, res) => {
         inArray(leadsSyncTable.leadStage, eligibleStages),
       ),
     )
-    .orderBy(asc(pendingSuggestionsTable.createdAt))
+    // Unjudged drafts first. A draft already stamped "waiting" is still
+    // pending, so oldest-first kept re-evaluating the same fifteen every run and
+    // never reached the newer ones behind them: two force runs, thirty verdicts,
+    // eight nudges still without one.
+    .orderBy(
+      sql`(${pendingSuggestionsTable.autopilotSkippedReason} IS NOT NULL)`,
+      asc(pendingSuggestionsTable.createdAt),
+    )
     .limit(room * 3);
 
   const seen = new Set<string>();

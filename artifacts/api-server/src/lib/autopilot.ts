@@ -23,7 +23,7 @@
  * the table/API but is not enforced.
  */
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, desc } from "drizzle-orm";
 import { logger } from "./logger";
 import { getPipelineStages } from "./stage-classifier";
 import {
@@ -251,6 +251,10 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
       .where(
         and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending")),
       )
+      // The newest draft is the one that reflects the conversation as it is now.
+      // Unordered, Postgres handed back whichever row it liked, and the verdict
+      // landed on a stale sibling while the draft that mattered stayed unjudged.
+      .orderBy(desc(pendingSuggestionsTable.createdAt))
       .limit(1);
     if (!sug || !sug.text?.trim()) return { sent: false, reason: "no pending draft" };
 
