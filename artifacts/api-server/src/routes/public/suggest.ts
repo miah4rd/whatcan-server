@@ -945,6 +945,20 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             );
           }
 
+          // The model decided to attach and named ids, and none of them exist:
+          // that is a composer handed an EMPTY candidate list inventing codes to
+          // satisfy an instruction it was told to obey. Shipping its text would
+          // describe villas with no links under them — the exact bug Amelia
+          // reported six edits in a row. Hand the job to the split path, which
+          // picks from the real catalog and reconciles the text to what it found.
+          if (composed.decision === "new_selection" && composed.listingIds.length > 0 && chosen.length === 0) {
+            req.log.warn(
+              { leadId: body.leadId, idsReturned: composed.listingIds, poolSize: pool.lines.length },
+              "suggest: composer picked ids that resolve to nothing — falling back to the split path",
+            );
+            throw new Error("composer ids unresolvable with an empty pool");
+          }
+
           if (mustReconcile) {
             finalText = await reconcileTextWithAttachments(
               composed.text,
