@@ -14,7 +14,7 @@ import { Router } from "express";
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, inArray } from "drizzle-orm";
 import { describePropertiesByIds } from "../../lib/property-catalog";
-import { generateSuggestion } from "../../lib/generate-suggestion";
+import { generateSuggestion, reconcileTextWithAttachments } from "../../lib/generate-suggestion";
 import { parseDialogContent } from "../../lib/dialog-parser";
 import { logger } from "../../lib/logger";
 
@@ -84,6 +84,11 @@ router.post("/admin/retouch-listings", async (req, res) => {
       // Replace whatever the matcher attached with the listings we chose — the
       // whole point of this endpoint is that the matcher's pick was wrong.
       const attachments = listings.map((l) => ({ type: "link" as const, label: l.label, url: l.url }));
+      // The writer runs concurrently with the internal matcher and describes
+      // THAT shortlist; on the first run 5 of 10 texts named villas that were
+      // not attached (a 4BR in Tabanan for a client who asked for 2BR). Force
+      // the text back onto the villas that are actually going out.
+      const reconciled = await reconcileTextWithAttachments(text, attachments, true);
       // One draft per lead: clear any pending live draft first so the broker
       // sees this one, not a stale one about the wrong villas.
       await db
@@ -94,12 +99,12 @@ router.post("/admin/retouch-listings", async (req, res) => {
         responsibleUser: lead.responsibleUser,
         kind: "live",
         followupLevel: null,
-        suggestionText: text,
+        suggestionText: reconciled,
         status: "pending",
         attachments,
       });
       logger.info({ leadId, listings: wanted }, "retouch: draft with the villas they actually asked for");
-      out.push({ leadId, ok: true, text });
+      out.push({ leadId, ok: true, text: reconciled });
     } catch (err) {
       logger.error({ err, leadId }, "retouch: failed");
       out.push({ leadId, ok: false, why: String((err as Error)?.message ?? err) });
