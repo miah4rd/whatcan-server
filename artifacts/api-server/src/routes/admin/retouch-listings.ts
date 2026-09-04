@@ -8,7 +8,8 @@
  * broker's LIVE inbox for one tap, exactly like any other draft.
  *
  *   POST /api/admin/retouch-listings
- *   body: { "leads": { "<leadId>": ["R-YUD-071", "R-YUD-070"], ... } }
+ *   body: { "leads": { "<leadId>": ["R-YUD-071", "R-YUD-070"], ... },
+ *           "brief"?: "<situation text for the writer — replaces the default 'new villas came in' brief>" }
  */
 import { Router } from "express";
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
@@ -39,6 +40,7 @@ Under 80 words. Do not apologise for the earlier options. Do not re-describe vil
 
 router.post("/admin/retouch-listings", async (req, res) => {
   const leads = (req.body?.leads ?? {}) as Record<string, string[]>;
+  const customBrief = typeof req.body?.brief === "string" && req.body.brief.trim() ? String(req.body.brief) : null;
   const leadIds = Object.keys(leads);
   if (leadIds.length === 0) {
     res.status(400).json({ error: "body.leads must map leadId → [listingId]" });
@@ -79,7 +81,7 @@ router.post("/admin/retouch-listings", async (req, res) => {
         leadNotes: lead.leadNotes,
         leadStage: lead.leadStage,
         pipeline: lead.pipeline,
-        taskBrief: brief(listings),
+        taskBrief: customBrief ? `${customBrief}\n\nTHE VILLAS ATTACHED (present these, and only these):\n${listings.map((l, i) => `${i + 1}. ${l.clientLabel}${l.priceIdr ? ` — Rp ${Math.round(l.priceIdr / 1_000_000)} million/month` : ""}`).join("\n")}` : brief(listings),
       });
       if (!text) { out.push({ leadId, ok: false, why: "empty text" }); continue; }
       // Replace whatever the matcher attached with the listings we chose — the
