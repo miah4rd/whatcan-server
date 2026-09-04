@@ -371,8 +371,40 @@ export async function syncListingFactsToCard(
  * nobody may quote a client, and a card promoted on it sends the agent to
  * publish a figure that has to be corrected in front of the customer.
  */
+/**
+ * The cheapest listing worth carrying, in rupiah a month, as the CLIENT sees it.
+ *
+ * The 30M floor has always existed on the client side: a rental lead whose own
+ * budget is under it is closed before a single token is spent. Nothing enforced
+ * the other half, so a villa at 18M a month qualified and went to Details —
+ * stock for which our funnel has, by our own rule, no buyer at all.
+ *
+ * 30M WITH our commission in it, the owner's own wording (2026-09-04) — so the
+ * comparison is against the QUOTED price, net plus 10%, never against the net
+ * figure the villa side names. A villa at 27.3M net quotes at 30M and stays; one
+ * at 25M net quotes at 27.5M and goes. A villa whose commission position is
+ * still unknown is read as net, the reading that bins the fewest.
+ */
+const MIN_LISTING_MONTHLY_IDR = 30_000_000;
+
+/** What a client would be quoted, from whatever we know about the price. */
+export function clientFacingMonthlyIdr(f: ListingFacts): number | null {
+  const monthly = f.monthlyIdr ?? (f.yearlyIdr ? Math.round(f.yearlyIdr / 12) : null);
+  if (!monthly) return null;
+  // "included" already carries our fee; "net" and "unknown" are both treated as
+  // net here, which is the reading that makes the villa look most expensive and
+  // therefore bins the fewest.
+  return f.commission === "included" ? monthly : Math.round(monthly * 1.1);
+}
+
 export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[] } {
   const missing: string[] = [];
+  const quoted = clientFacingMonthlyIdr(f);
+  if (quoted !== null && quoted < MIN_LISTING_MONTHLY_IDR) {
+    missing.push(
+      `below our floor: ${Math.round(quoted / 1_000_000)}M quoted, minimum ${MIN_LISTING_MONTHLY_IDR / 1_000_000}M`,
+    );
+  }
   if (!f.bedrooms) missing.push("bedrooms");
   if (!f.monthlyIdr && !f.yearlyIdr) missing.push("price");
   else if (f.commission === "unknown") missing.push("commission position");
@@ -606,6 +638,19 @@ export async function routeUnqualified(
   // A deliberate exception to "Closed - lost is never automatic": that rule
   // protects a JUDGEMENT about a live negotiation. This is the counterpart
   // stating the format, and the owner asked for it explicitly (04.09.2026).
+  // Too cheap for any client we take. A deterministic number, not a judgement,
+  // so it closes without the second opinion the format check needs.
+  const quoted = clientFacingMonthlyIdr(f);
+  if (quoted !== null && quoted < MIN_LISTING_MONTHLY_IDR) {
+    const ok = await closeLeadAsLost(leadId);
+    logger.info({ leadId, quotedIdr: quoted }, "listing closed: below the minimum we can place");
+    return {
+      moved: ok,
+      to: "Closed - lost",
+      reason: `below our floor: ${Math.round(quoted / 1_000_000)}M quoted`,
+    };
+  }
+
   if (f.stopKind === "not_our_format") {
     /**
      * Hard vetoes, decided in code, before any model is asked.
