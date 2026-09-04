@@ -27,6 +27,7 @@ import { logger } from "./logger";
 import { isListingAcquisition } from "./pipelines";
 import { villaFromLeadName, fetchLeadTitle, fetchOwnerName } from "./weekly-availability-check";
 import { closeLeadAsLost } from "./amo-client";
+import { qualificationVerdictForLead } from "./listing-card-fields";
 
 /**
  * Stages where the owner conversation is still open.
@@ -104,15 +105,50 @@ function isOpenStage(stage: string | null): boolean {
  * "That's everything we need" is a promise, not filler: it tells the owner this
  * is the last question, not the first of a form.
  */
-export function composeNudge(ownerName: string, villa: string): string {
+export function composeNudge(ownerName: string, villa: string, missing: string[] = []): string {
   const who = ownerName ? ` ${ownerName}` : "";
   const what = villa || "your villa";
+
+  /**
+   * Ask again for what is ACTUALLY still missing on this card.
+   *
+   * The text used to be one fixed paragraph asking for bedrooms, price and date
+   * whatever the conversation had already established. People answer part of a
+   * question and leave the rest, which is ordinary — the owner's point: "это не
+   * значит, что мы что-то сделали неправильно, нужно просто переспросить". A
+   * nudge repeating a question they already answered reads as not listening,
+   * and one that never re-asks the unanswered part never gets it: 22 cards sat
+   * on "who are you" with the question asked exactly once.
+   *
+   * The counterpart question comes FIRST when it is open, because it decides
+   * qualification on its own, and it is phrased in three options so "I manage
+   * it" cannot stand for both an employee and an agency.
+   */
+  const asks: string[] = [];
+  if (missing.some((m) => m.startsWith("not the owner"))) {
+    asks.push("whether you're the owner, part of the owner's team, or if there's a management company looking after it");
+  }
+  if (missing.includes("bedrooms")) asks.push("how many bedrooms it has");
+  if (missing.includes("price")) asks.push("the monthly and yearly rate including our 10% agency commission");
+  else if (missing.includes("commission position")) asks.push("whether that rate already includes our 10% agency commission");
+
+  if (asks.length === 0) {
+    return (
+      `Hi${who}, just following up on ${what}, are you still looking to rent it out? ` +
+      `We have clients searching in the area right now.\n\n` +
+      `If so, could you send me the number of bedrooms, the monthly and yearly rate ` +
+      `including our 10% agency commission, and the date it's available from, ` +
+      `that's everything we need to put it in front of them.`
+    );
+  }
+
+  const list =
+    asks.length === 1
+      ? asks[0]
+      : `${asks.slice(0, -1).join(", ")} and ${asks[asks.length - 1]}`;
   return (
-    `Hi${who}, just following up on ${what} — are you still looking to rent it out? ` +
-    `We have clients searching in the area right now.\n\n` +
-    `If so, could you send me the number of bedrooms, the monthly and yearly rate ` +
-    `including our 10% agency commission, and the date it's available from — ` +
-    `that's everything we need to put it in front of them.`
+    `Hi${who}, following up on ${what}, we have clients searching in the area right now. ` +
+    `Could you let me know ${list}? That's everything we need to put it in front of them.`
   );
 }
 
@@ -211,7 +247,7 @@ export async function processListingOwnerFollowup(): Promise<number> {
         // tab is selected by stage name (REACH_STAGE_KEYWORDS) and none of the
         // open acquisition stages are in it.
         kind: "push",
-        suggestionText: composeNudge(owner, villa),
+        suggestionText: composeNudge(owner, villa, (await qualificationVerdictForLead(lead.leadId))?.missing ?? []),
         status: "pending",
       });
 
