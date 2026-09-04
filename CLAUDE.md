@@ -330,6 +330,20 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   in the ranking (`matchProperties`, `candidatesForLead`) and in
   `enforceBudgetFloor`, or the composer's candidate order and the code-level
   swap disagree about what "in range" means.
+- **A budget FLOOR above the CEILING is a parse error, never a range — drop it.**
+  "Rp 200-400 million/year (up to ~33 jt/month)" carries both a yearly range
+  and a monthly figure. `extractBudgetIdr` read 33M a month; `extractBudgetFloorIdr`
+  decided yearly-vs-monthly per MESSAGE, "per month" won, and the yearly range
+  became a 200M MONTHLY floor — above every villa on the island. Nine villas
+  passed area and bedrooms; the floor removed all nine; the composer, handed an
+  empty candidate list and an instruction to "attach the links", invented three
+  ids that resolved to nothing, so Amelia got a text describing villas with no
+  links six edits in a row (23474281, 2026-09-04). Now: the floor parser reads
+  the period written NEXT TO the range; both `candidatesForLead` and
+  `matchProperties` ignore a floor that exceeds the ceiling; and a composer whose
+  `new_selection` ids resolve to nothing hands the edit to the split path
+  instead of shipping the text. `candidatesForLead` logs "pool is EMPTY after
+  filters" with every filter's numbers — read that before touching the prompt.
 - **`areaMatches` compared a listing's area as one whole string.** Two catalog
   listings carry the sub-area AND its parent combined in one field
   ("Tumbak Bayuh, Pererenan"), which matched neither name in it — a lead
@@ -565,9 +579,19 @@ then the broker's first message. The owner decided the shape (2026-08-19) and
 the naming (2026-08-21) — see "the numbering is not cosmetic" below.
 `lib/ad-lead-autoreply.ts`:
 
-- **The auto-welcome — outside the count, automatic.** Greeting + the villa they
-  clicked + their own request read back + one question, sent the moment the lead
-  is seeded, with no broker tap. This is the
+- **The auto-welcome — outside the count, automatic, and it sends NO link
+  (2026-09-04).** "Hi {name}, this is {broker} from Unicorn Property. Got your
+  request: {form, verbatim}. Did I get that right?" — sent the moment the lead
+  is seeded, no broker tap. It used to send the clicked villa's link too, and 33
+  leads of data said the link earns nothing: when it matched the form 7 of 9
+  stayed silent (nothing to answer), when it did not they wrote back to correct
+  us. Its job is speed and proof the form was read; the cheapest reply ("yes")
+  is the goal, and a "no, actually…" arrives before anything was sent. The
+  clicked villa now rides LAST on the broker's first shortlist, fit or not —
+  "the one you were looking at, for comparison" — appended in code in
+  generate-suggestion for both the 15-minute opening and an early reply, so the
+  two paths cannot drift. The old "anchor returned ALONE" exception is retired
+  with it: the first shortlist is built from the FORM. This is the
   ONLY message in the system that reaches a client unattended, which is why it
   is a template and not a model call: nothing that sends itself may be capable
   of inventing a price or a date. Kill switch: `broker_settings.ad_auto_welcome`

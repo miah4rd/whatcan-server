@@ -37,7 +37,7 @@ import { brokerDisplayName } from "./broker-identity";
 import { correctionsPromptBlock, deriveSituation } from "./broker-corrections";
 import { generateSuggestion } from "./generate-suggestion";
 import { notifyBrokerForLead } from "./push-notifications";
-import { resolveSendChannel, deliverText, sendAttachmentLinks } from "./outbound-send";
+import { resolveSendChannel, deliverText } from "./outbound-send";
 import { parseDialogContent } from "./dialog-parser";
 import { getLeadCardCriteria, type LeadCardAnswers } from "./lead-card-fields";
 import { leadPhone, phoneAlreadyMessaged } from "./phone-dedupe";
@@ -87,13 +87,13 @@ Task: Write the broker's FIRST real message. It always has the same four parts, 
 2. SAY THEIR REQUEST BACK TO THEM in one short line, so they can see they were heard. The request is what the Meta form asked them — budget, area, bedrooms, timing — and it is in the enquiry and the lead card above.
    If the form answers are missing, THE VILLA THEY CLICKED IS THE REQUEST: take its bedrooms, its area and its monthly price and state those as what you understand they are looking for. ("Looks like you're after a 2-bedroom in Pererenan around Rp 50 million a month.")
 3. ${hasOptions
-    ? `OFFER OPTIONS THAT FIT THAT REQUEST. Other places — the one they clicked is already theirs. The links are attached to this very message, so present them ("here are two more that fit"); never ask permission to send them and never promise them for later.
+    ? `OFFER OPTIONS THAT FIT THAT REQUEST. The links are attached to this very message, so present them ("here are two that fit"); never ask permission to send them and never promise them for later. The LAST link is the villa they clicked in the ad — it is attached whether or not it fits, because they chose it with their own eyes; present it as "and the one you were looking at, for comparison", one short clause, not as one of the fits.
    NAME THE AREA OF EACH OPTION, and if an option is NOT in the area they asked for, say so in the same breath — "this one's in Kerobokan rather than Pererenan". Bali areas are half an hour apart and a client who opens a link expecting their neighbourhood and finds another one stops trusting the next message. Never imply an option is in their area when it is not, and never quietly drop the area to avoid the point.`
     : `NOTHING IS ATTACHED TO THIS MESSAGE. Do not say "here are", do not describe other villas, do not promise to send anything. Instead ask the ONE thing that would let you put a shortlist together — which area, what budget, or what matters most to them — and say why you are asking.`}
 4. End with ONE open question.
 
 Absolutes:
-- Do not re-sell the villa they clicked: not its features, not its price, not its link. Naming it as the reference point for their request is exactly right; describing it again is not.
+- Do not re-sell the villa they clicked: no features, no price. Name it once as "the one you were looking at" beside its link, and nothing more.
 - Do not ask when they are moving in or for how long, anywhere in this message. The message above already asked an open question and got silence.
 
 Under 80 words.`;
@@ -177,18 +177,25 @@ function welcomeText(opts: {
   listingLabel: string;
   answers: LeadCardAnswers;
 }): string {
-  const hi = opts.clientName ? `Hi ${opts.clientName}!` : "Hi!";
-  const who = opts.brokerName ? `${opts.brokerName} here from Unicorn Property.` : "Unicorn Property here.";
-  const opening =
-    `${hi} ${who} Thanks for your enquiry about ${opts.listingLabel}. ` +
-    `Sending you the full listing now — photos, price and location.`;
+  // The owner's wording (2026-09-04), and the reasoning behind it: the first
+  // message exists to show speed and to prove the form was READ. It sends no
+  // link — the villa they clicked went out first for weeks, and the data said
+  // it earns nothing: when it matched the request 7 of 9 stayed silent, when it
+  // did not they wrote back to correct us. The links belong to the broker's
+  // approved shortlist. What this message asks for is the cheapest possible
+  // reply — "yes" — and if the answer is "no, actually…", that correction
+  // arrives BEFORE anything was sent, which is the best outcome there is.
+  const hi = opts.clientName ? `Hi ${opts.clientName},` : "Hi,";
+  const who = opts.brokerName
+    ? `this is ${opts.brokerName} from Unicorn Property.`
+    : "this is Unicorn Property.";
 
   const request = requestLine(opts.answers);
-  const closing = request
-    ? `I can also see your request: ${request}. Want me to send over a few more matching options too?`
-    : `Is this the villa you had in mind, or would you like me to look for something different — another area, size or budget?`;
-
-  return `${opening}\n\n${closing}`;
+  if (request) {
+    return `${hi} ${who} Got your request: ${request}. Did I get that right?`;
+  }
+  // Nothing on the card to read back: the old open question is the honest one.
+  return `${hi} ${who} Got your enquiry about ${opts.listingLabel}. What are you looking for — area, size, budget?`;
 }
 
 /**
@@ -309,22 +316,18 @@ export async function sendAdLeadWelcome(opts: {
       messageText: delivery.deliveryText,
       responsibleUser,
       webhookStatus: delivery.hookStatus,
-      webhookResponse: `${delivery.hookBody} | links 0/1`,
+      webhookResponse: `${delivery.hookBody} | links 0/0`,
     })
     .returning({ id: sentMessagesTable.id });
+  void deliveryRow;
 
-  await sendAttachmentLinks(
-    leadId,
-    [{ url: listing.url }],
-    0,
-    deliveryRow?.id ?? null,
-    delivery.hookBody,
-    log,
-    delivery.deliveryText,
-  );
-
+  // No link follows the welcome any more. The clicked villa reaches the client
+  // as the LAST link of the broker's first shortlist ("the one you were looking
+  // at, for comparison") — see generate-suggestion's anchor append. Not sending
+  // it here is also what keeps the "never re-offer a seen listing" exclusion
+  // from treating it as already offered.
   const now = new Date();
-  const ourLine = formatAsOurMessage(now, `${delivery.deliveryText} ${listing.url}`);
+  const ourLine = formatAsOurMessage(now, delivery.deliveryText);
   await db
     .update(leadsSyncTable)
     .set({

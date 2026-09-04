@@ -216,11 +216,13 @@ export async function pickPropertyAttachments(opts: {
         return hit.priceIdr <= Math.round(cardBudget * 1.15);
       })());
 
-    const isFirstContactAdLead =
-      !opts.openingAfterWelcome &&
-      /Ad enquiry:/i.test(opts.leadNotes ?? "") &&
-      opts.dialogMessages.filter((m) => m.from === "lead").length <= 1 &&
-      adAffordable;
+    // Retired 2026-09-04: the welcome no longer sends the clicked villa, so the
+    // first shortlist is built from the FORM and the clicked villa is appended
+    // LAST by code (below) — "the one you were looking at, for comparison" —
+    // whether or not it fits. Capping the shortlist to that one villa is the
+    // opposite of that. Kept as a named false so the affordability read above
+    // stays where the next reader expects it.
+    const isFirstContactAdLead = false && adAffordable;
 
     // The card's answers first. When the Meta form left them blank, the villa
     // they clicked IS the request — its size, its area, its price are the only
@@ -275,6 +277,23 @@ export async function pickPropertyAttachments(opts: {
       ].filter(Boolean),
     });
     const out = toAttachments(picks);
+
+    // The villa they clicked in the ad rides LAST on the first message to an ad
+    // lead, fit or not — the owner's call (2026-09-04): "может, человек
+    // действительно просто понравился визуально". One place for both paths
+    // (the 15-minute opening and a client who answers the welcome early), so
+    // it cannot drift between them. Only while the conversation is still the
+    // opening (at most one message from the lead), never twice, and never if
+    // the matcher already picked it.
+    const adId = /Ad enquiry:\s*([A-Z0-9-]+)/i.exec(opts.leadNotes ?? "")?.[1]?.toUpperCase();
+    const stillOpening = opts.dialogMessages.filter((m) => m.from === "lead").length <= 1;
+    if (adId && stillOpening && !excludeIds.includes(adId) && !out.some((a) => a.url.toUpperCase().includes(`/PROPERTY/${adId}`))) {
+      const hit = (await describePropertiesByIds([adId]).catch(() => new Map())).get(adId);
+      if (hit && typeof hit.url === "string") {
+        out.push({ type: "link" as const, label: (hit as { clientLabel?: string; label?: string }).clientLabel ?? hit.label ?? adId, url: hit.url });
+        logger.info({ leadId: opts.leadId, adId }, "ad lead: the villa they clicked attached last, for comparison");
+      }
+    }
     // Silence here cost a client-facing lie: the opening on 23300773 said "here
     // are two more" with nothing attached, because an empty match and a thrown
     // match looked identical from outside (2026-08-21).
