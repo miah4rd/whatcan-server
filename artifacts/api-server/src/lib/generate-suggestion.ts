@@ -539,6 +539,73 @@ export function textMentionsEveryAttachment(
   return attachments.every((a) => textMentionsAnyAttachment(text, [a]));
 }
 
+/**
+ * Text and links are ONE message. The client receives the words and, seconds
+ * later, the links — as a single thought. Every path that produces or changes
+ * either half goes through these two helpers, so "does the text name this
+ * villa" has exactly one definition in the codebase.
+ */
+function titleTokens(label: string): string[] {
+  const title = (label ?? "").split(" (")[0] ?? "";
+  return title
+    .toLowerCase()
+    .split(/[^a-zа-яё0-9]+/)
+    .filter((w) => w.length > 3 && !GENERIC_TITLE_WORDS.has(w));
+}
+
+function labelArea(label: string): string {
+  const inParens = /\(([^,)]+)/.exec(label ?? "")?.[1]?.trim().toLowerCase() ?? "";
+  return inParens.split(/\s*,\s*/)[0] ?? "";
+}
+
+/** Does the text name THIS villa — its area plus at least one distinctive title word. */
+export function textNamesVilla(text: string, label: string): boolean {
+  const t = (text ?? "").toLowerCase();
+  const area = labelArea(label);
+  const areaOk = !area || area.length <= 3 || t.includes(area);
+  const words = titleTokens(label);
+  const wordOk = words.length === 0 || words.some((w) => t.includes(w));
+  return areaOk && wordOk;
+}
+
+/** Every attached villa is named in the text. The deterministic gate — not a heuristic. */
+export function allAttachmentsNamed(
+  text: string,
+  attachments: Array<{ label?: string }>,
+): boolean {
+  return attachments.every((a) => textNamesVilla(text, a.label ?? ""));
+}
+
+/** The block the writer is given: the exact villas riding with this message. */
+export function attachedVillasBlock(attachments: Array<{ label?: string; url?: string }>): string {
+  if (attachments.length === 0) return "";
+  const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");
+  return `\n\nTHE VILLAS ATTACHED TO THIS EXACT MESSAGE — these ${attachments.length}, and no others:\n${list}\nName each of them by its title and area as written here. Do not describe, recommend or allude to any villa that is not on this list — the client will open exactly these links under your words.`;
+}
+
+/**
+ * The reverse direction: which catalog villas does this text name? Used when a
+ * broker rewrites the words — the links follow what they wrote.
+ */
+export function villasNamedInText(
+  text: string,
+  catalog: Array<{ id: string; title: string; area: string | null }>,
+): string[] {
+  const t = (text ?? "").toLowerCase();
+  const byUrl = Array.from(t.matchAll(/\/property\/([a-z0-9-]+)/gi)).map((m) => m[1]!.toUpperCase());
+  const named = catalog
+    .filter((p) => {
+      const title = (p.title ?? "").toLowerCase().trim();
+      if (title.length >= 12 && t.includes(title)) return true;
+      const words = titleTokens(p.title ?? "");
+      const area = (p.area ?? "").toLowerCase();
+      // Strict on purpose: area present AND at least two distinctive title words.
+      return !!area && area.length > 3 && t.includes(area) && words.filter((w) => t.includes(w)).length >= 2;
+    })
+    .map((p) => p.id.toUpperCase());
+  return Array.from(new Set([...byUrl, ...named]));
+}
+
 export function textMentionsAnyAttachment(
   text: string,
   attachments: Array<{ label?: string }>,
@@ -1043,30 +1110,39 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   // push notification could fire.
   // Exclusion reads the RAW content too — formatDialogForAI truncates, and a
   // link sent long ago still counts as "already shown to this lead".
-  const [completion, attachments] = await Promise.all([
-    chatCompletion({
-      model: WRITER_MODEL,
-      label: "draft",
-      system: systemPrompt,
-      ...(cachePrefix ? { cachePrefix } : {}),
-      messages: [{ role: "user", content: prompt + promptAdditions }],
-      max_tokens: 400,
-    }),
-    pickPropertyAttachments({
-      leadId: opts.leadId,
-      brokerId: opts.responsibleUser,
-      isRental,
-      contentSnippet: opts.contentSnippet,
-      dialogMessages: dialog.messages,
-      formattedDialog,
-      lastLeadText,
-      leadStage: opts.leadStage,
-      leadNotes: opts.leadNotes ?? null,
-      openingAfterWelcome: Boolean(opts.taskBrief),
-    }),
-  ]);
+  // Links FIRST, then words. These ran concurrently for speed, which meant the
+  // writer never knew which villas the matcher would choose and described the
+  // candidates it had seen instead — then a heuristic guessed whether the two
+  // had drifted. The guess missed (Ekaterina, Rori; 5 of 10 retouch drafts).
+  // The owner's rule is that text and links are one message; the only way to
+  // make that true is for the writer to be told the exact villas before it
+  // writes a word, and for the check afterwards to be a check, not a hope.
+  const attachments = await pickPropertyAttachments({
+    leadId: opts.leadId,
+    brokerId: opts.responsibleUser,
+    isRental,
+    contentSnippet: opts.contentSnippet,
+    dialogMessages: dialog.messages,
+    formattedDialog,
+    lastLeadText,
+    leadStage: opts.leadStage,
+    leadNotes: opts.leadNotes ?? null,
+    openingAfterWelcome: Boolean(opts.taskBrief),
+  });
 
-  const text = await reconcileTextWithAttachments(sanitizeSuggestion(completion.content), attachments);
+  const completion = await chatCompletion({
+    model: WRITER_MODEL,
+    label: "draft",
+    system: systemPrompt,
+    ...(cachePrefix ? { cachePrefix } : {}),
+    messages: [{ role: "user", content: prompt + promptAdditions + attachedVillasBlock(attachments) }],
+    max_tokens: 400,
+  });
+
+  const written = sanitizeSuggestion(completion.content);
+  const named = allAttachmentsNamed(written, attachments);
+  if (!named) logger.warn({ leadId: opts.leadId, attached: attachments.map((a) => a.label) }, "draft did not name every attached villa — forcing rewrite");
+  const text = await reconcileTextWithAttachments(written, attachments, !named);
 
   return { text, attachments };
 }

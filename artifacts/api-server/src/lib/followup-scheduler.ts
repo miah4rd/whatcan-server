@@ -11,7 +11,7 @@ import { shouldSuppressPush, isStageWhitelisted } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whitelist";
 import { getMergedConversation, getMergedDialog } from "./merged-conversation";
 import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
-import { generateSuggestion, pickPropertyAttachments, reconcileTextWithAttachments, type GeneratedSuggestion } from "./generate-suggestion";
+import { generateSuggestion, pickPropertyAttachments, reconcileTextWithAttachments, type GeneratedSuggestion, allAttachmentsNamed } from "./generate-suggestion";
 import { isAdaptiveBroker, isHosTrackedPipeline } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
@@ -282,9 +282,11 @@ Write the follow-up message.`,
 
   // Same safety net the LIVE path has: the words must match the links that
   // will actually arrive, not the ones the writer imagined.
+  const written1 = sanitizeSuggestion(completion.content);
   const text = await reconcileTextWithAttachments(
-    sanitizeSuggestion(completion.content),
+    written1,
     listings.attachments,
+    !allAttachmentsNamed(written1, listings.attachments),
   );
 
   const rationale = `Follow-up #${opts.followupLevel} — context-aware. Situation tactic: ${entry.label}.`;
@@ -385,9 +387,11 @@ STYLE:
     max_tokens: 250,
   });
 
+  const written2 = sanitizeSuggestion(completion.content);
   const text = await reconcileTextWithAttachments(
-    sanitizeSuggestion(completion.content),
+    written2,
     listings.attachments,
+    !allAttachmentsNamed(written2, listings.attachments),
   );
   const rationale = isCold
     ? `PUSH — re-engagement (${opts.trailingUnanswered} unanswered touches), stage "${opts.leadStage}".`

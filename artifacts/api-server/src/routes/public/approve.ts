@@ -16,6 +16,8 @@ import {
 } from "../../lib/outbound-send.js";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL, followupClockAfterReply } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
+import { reconcileTextWithAttachments, allAttachmentsNamed, villasNamedInText } from "../../lib/generate-suggestion";
+import { fetchAllPropertiesForPriceLookup, describePropertiesByIds } from "../../lib/property-catalog";
 import { recordCommitment } from "../../lib/commitment-scheduler.js";
 
 // amoCRM status IDs for the Unicorn Property pipeline (PIPELINE 8347534)
@@ -291,11 +293,73 @@ router.post("/approve", async (req, res) => {
   // suggestion's own correctly-generated links. Uncurated → trust what was
   // generated; curated → trust the broker's edits, empty list included.
   const clientCurated = body.attachmentsCurated === true;
-  const effectiveAttachments = clientCurated && Array.isArray(body.attachments)
+  let effectiveAttachments: Array<{ type: "link"; label: string; url: string }> = clientCurated && Array.isArray(body.attachments)
     ? body.attachments
         .filter((a) => a?.type === "link" && typeof a.url === "string" && a.url)
         .map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url! }))
-    : (sug.attachments ?? []).filter((a) => a.type === "link" && a.url);
+    : (sug.attachments ?? []).filter((a) => a.type === "link" && a.url).map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url! }));
+
+  // ── Text and links are ONE message — reconciled here, at the last gate. ──
+  //
+  // A broker can change either half in the approve window. Until now nothing
+  // checked the other half: a rewritten text went out over the old links, and
+  // swapped links went out under words about other villas. The owner's rule:
+  // if the links change, the words follow; if the words change, the links
+  // follow. This is the only place both halves are final, so this is where it
+  // is enforced.
+  let finalMessage: string = body.message;
+  if (!skipMessage) {
+    const norm = (t: string) => (t ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+    const textEdited = norm(finalMessage) !== norm(sug.suggestionText ?? "");
+    const urlSet = (arr: Array<{ url?: string }>) => new Set(arr.map((a) => (a.url ?? "").toLowerCase()));
+    const before = urlSet((sug.attachments ?? []).filter((a) => a.type === "link" && a.url));
+    const after = urlSet(effectiveAttachments);
+    const linksChanged = before.size !== after.size || [...after].some((u) => !before.has(u));
+    try {
+      if (textEdited) {
+        // Words changed → links follow the words. Which catalog villas does the
+        // broker's text actually name?
+        const catalog = await fetchAllPropertiesForPriceLookup();
+        const namedIds = villasNamedInText(finalMessage, catalog);
+        const currentIds = new Set(
+          effectiveAttachments
+            .map((a) => a.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1]?.toUpperCase())
+            .filter(Boolean) as string[],
+        );
+        const namedSet = new Set(namedIds);
+        const differs = namedIds.length > 0 && (namedSet.size !== currentIds.size || [...namedSet].some((id) => !currentIds.has(id)));
+        if (differs) {
+          const known = await describePropertiesByIds(namedIds);
+          const rebuilt = namedIds
+            .map((id) => known.get(id))
+            .filter(Boolean)
+            .map((k) => ({ type: "link" as const, label: k!.label, url: k!.url }));
+          if (rebuilt.length > 0) {
+            req.log.info({ leadId: sug.leadId, from: [...currentIds], to: namedIds }, "approve: text was edited — links now follow the villas the text names");
+            effectiveAttachments = rebuilt;
+          }
+        } else if (namedIds.length === 0 && effectiveAttachments.length > 0 && !allAttachmentsNamed(finalMessage, effectiveAttachments)) {
+          // The broker's words name no villa at all while links are attached.
+          // Their words stand — but this is exactly the mismatch the client
+          // would see, so say so loudly rather than silently ship it.
+          req.log.warn({ leadId: sug.leadId, attached: effectiveAttachments.map((a) => a.label) }, "approve: edited text names none of the attached villas — sending as the broker wrote it");
+        }
+      } else if (linksChanged) {
+        // Links changed, words did not → words follow the links. Forced: the
+        // text was written for the old set.
+        req.log.info({ leadId: sug.leadId, before: [...before], after: [...after] }, "approve: links were changed — rewriting the text to name them");
+        finalMessage = await reconcileTextWithAttachments(finalMessage, effectiveAttachments, true);
+      } else if (effectiveAttachments.length > 0 && !allAttachmentsNamed(finalMessage, effectiveAttachments)) {
+        // Neither half changed, yet they disagree: a draft generated before the
+        // fix. Make them agree before it leaves.
+        req.log.warn({ leadId: sug.leadId }, "approve: text does not name every attached villa — rewriting before send");
+        finalMessage = await reconcileTextWithAttachments(finalMessage, effectiveAttachments, true);
+      }
+    } catch (err) {
+      // A failed check must not block a send the broker asked for.
+      req.log.warn({ err, leadId: sug.leadId }, "approve: text/links reconciliation failed — sending as-is");
+    }
+  }
 
   if (sug.status !== "pending") {
     // The status is claimed BEFORE the send, so an interruption between the two
@@ -382,7 +446,7 @@ router.post("/approve", async (req, res) => {
   const claimedStatus = skipMessage ? "skipped" : (body.edited ? "edited" : "approved");
   const [claimed] = await db
     .update(pendingSuggestionsTable)
-    .set({ status: claimedStatus, finalText: body.message })
+    .set({ status: claimedStatus, finalText: finalMessage })
     .where(and(eq(pendingSuggestionsTable.id, body.suggestionId as any), eq(pendingSuggestionsTable.status, "pending")))
     .returning({ id: pendingSuggestionsTable.id });
   if (!claimed) {
@@ -397,9 +461,9 @@ router.post("/approve", async (req, res) => {
       leadId: sug.leadId,
       kind: sug.kind,
       edited: body.edited ?? false,
-      msgLen: body.message.length,
-      msgLines: body.message.split("\n").length,
-      msgPreview: body.message.slice(0, 120).replace(/\n/g, "↵"),
+      msgLen: finalMessage.length,
+      msgLines: finalMessage.split("\n").length,
+      msgPreview: finalMessage.slice(0, 120).replace(/\n/g, "↵"),
     }, "approve: message received");
 
     // ── Resolve the outbound channel BEFORE sending ───────────────────────────
@@ -500,7 +564,7 @@ router.post("/approve", async (req, res) => {
     }
 
     // ── Send via Salesbot ─────────────────────────────────────────────────────
-    const delivery = await deliverText(sug.leadId, body.message, req.log);
+    const delivery = await deliverText(sug.leadId, finalMessage, req.log);
     const deliveryText = delivery.deliveryText;
     hookStatus = delivery.hookStatus;
     hookBody = delivery.hookBody;
@@ -534,7 +598,7 @@ router.post("/approve", async (req, res) => {
     if (chatSent) {
       const OWNER_PROMISE =
         /(check|confirm|double.?check|ask|уточн|провер|спрошу|узнаю|запрошу)[^.!?\n]{0,50}(owner|собственник|владел)|(owner|собственник|владел)[^.!?\n]{0,40}(get back|come back|confirm|вернусь|отвечу)|вернусь (к вам|к тебе|с ответом)|get back to you (with|once|after)/i;
-      if (OWNER_PROMISE.test(body.message)) {
+      if (OWNER_PROMISE.test(finalMessage)) {
         const due = new Date(Date.now() + 4 * 60 * 60 * 1000);
         void createAmoTask(
           sug.leadId,
