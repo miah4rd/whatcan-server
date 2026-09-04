@@ -33,7 +33,10 @@ const router = Router();
  * know. The classifier fix stops new cards landing there unearned; what is
  * already there stays the broker's.
  */
-const CLAIMING_STAGES = ["qualified (pre-listed)"];
+// A single value, compared with `=`. Passing a JS array to `= ANY(...)` makes
+// drizzle inline it as a bare parameter Postgres rejects — the same 500 this
+// project has already produced once, on the inbox query.
+const CLAIMING_STAGE = "qualified (pre-listed)";
 const BACK_TO = "TAKEN TO WORK";
 
 router.post("/admin/demote-unqualified", async (req, res) => {
@@ -42,7 +45,7 @@ router.post("/admin/demote-unqualified", async (req, res) => {
   const rows = await db.execute(sql`
     SELECT lead_id, lead_stage FROM leads_sync
      WHERE pipeline = 'Rental Listings'
-       AND lower(coalesce(lead_stage,'')) = ANY(${CLAIMING_STAGES})
+       AND lower(coalesce(lead_stage,'')) = ${CLAIMING_STAGE}
        AND bot_excluded IS NOT TRUE
   `);
   const cards = (rows.rows ?? []) as unknown as Array<{ lead_id: string; lead_stage: string }>;
