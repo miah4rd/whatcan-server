@@ -174,3 +174,35 @@ export function parentAreaOf(subArea: string | null | undefined): string | null 
   }
   return subArea!.trim();
 }
+
+/**
+ * Really adjacent districts — what a broker would honestly call "nearby".
+ * Used only when the client's own area holds nothing: the reply may OFFER
+ * these in words. It never attaches villas from them unasked — the owner's
+ * rule (2026-09-04): «человек говорит направо, ты ему даёшь налево — так не
+ * надо». Nusa Dua is not "near" Pererenan, whatever a model thinks.
+ */
+const NEIGHBOUR_AREAS: Record<string, string[]> = {
+  Canggu: ["Pererenan", "Umalas", "Kerobokan", "Seseh"],
+  Pererenan: ["Canggu", "Seseh", "Cemagi"],
+  Seseh: ["Pererenan", "Cemagi", "Canggu"],
+  Cemagi: ["Seseh", "Pererenan", "Tabanan"],
+  Tabanan: ["Cemagi", "Seseh"],
+  Umalas: ["Kerobokan", "Canggu", "Seminyak"],
+  Kerobokan: ["Umalas", "Seminyak", "Canggu"],
+  Seminyak: ["Kerobokan", "Umalas"],
+  Jimbaran: ["Nusa Dua", "Uluwatu"],
+  "Nusa Dua": ["Jimbaran", "Uluwatu"],
+  Uluwatu: ["Jimbaran", "Nusa Dua"],
+  Sanur: [],
+  Ubud: [],
+  Lovina: [],
+};
+
+/** Adjacent districts of what the lead said (a sub-area resolves to its district first). */
+export function neighbourAreas(spoken: string): string[] {
+  const parent = parentAreaOf(spoken);
+  if (!parent) return [];
+  const key = Object.keys(NEIGHBOUR_AREAS).find((k) => k.toLowerCase() === parent.toLowerCase());
+  return key ? [...NEIGHBOUR_AREAS[key]!] : [];
+}

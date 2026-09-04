@@ -941,7 +941,7 @@ export async function buildPromptAdditions(opts: {
   const stockLine = stock
     ? stock.matching > 0
       ? `\n\nINVENTORY CHECK (true right now): ${stock.matching} listing(s) match what they asked for${stock.areas.length ? ` in ${stock.areas.join("/")}` : ""}.`
-      : `\n\nINVENTORY CHECK (true right now): NOTHING in the catalog is${stock.areas.length ? ` in ${stock.areas.join("/")}` : " a match for their criteria"}${stock.bedrooms ? ` at ${stock.bedrooms} bedrooms` : ""}. Say that plainly — do not imply we have what they asked for.${stock.nearbyAreas.length ? ` The same size IS available in ${stock.nearbyAreas.join(", ")}, and those are the listings attached here: name the area each one is actually in, and let them decide. Being straight about it is what keeps their trust.` : ""}`
+      : `\n\nINVENTORY CHECK (true right now): NOTHING in the catalog is${stock.areas.length ? ` in ${stock.areas.join("/")}` : " a match for their criteria"}${stock.bedrooms ? ` at ${stock.bedrooms} bedrooms` : ""}. Say that plainly — do not imply we have what they asked for. No villa from another area, size or price is attached to make up for it.${stock.nearbyAreas.length ? ` The same size IS available nearby in ${stock.nearbyAreas.join(", ")}: OFFER those areas in words and ask whether they would consider one of them — do not describe specific villas, none are attached.` : ` Ask what else could work for them — another area, or a different budget — so the next message can bring real options.`}`
     : "";
 
   // Bali rents in rupiah — the catalog now carries the rupiah figure itself, so
