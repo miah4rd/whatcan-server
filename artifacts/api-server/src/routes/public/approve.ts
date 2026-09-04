@@ -311,7 +311,7 @@ router.post("/approve", async (req, res) => {
   if (!skipMessage) {
     const norm = (t: string) => (t ?? "").replace(/\s+/g, " ").trim().toLowerCase();
     const textEdited = norm(finalMessage) !== norm(sug.suggestionText ?? "");
-    const urlSet = (arr: Array<{ url?: string }>) => new Set(arr.map((a) => (a.url ?? "").toLowerCase()));
+    const urlSet = (arr: Array<{ url?: string | null }>) => new Set(arr.map((a) => (a.url ?? "").toLowerCase()));
     const before = urlSet((sug.attachments ?? []).filter((a) => a.type === "link" && a.url));
     const after = urlSet(effectiveAttachments);
     const linksChanged = before.size !== after.size || [...after].some((u) => !before.has(u));
