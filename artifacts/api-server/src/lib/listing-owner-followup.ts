@@ -26,6 +26,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { isListingAcquisition } from "./pipelines";
 import { villaFromLeadName, fetchLeadTitle, fetchOwnerName } from "./weekly-availability-check";
+import { closeLeadAsLost } from "./amo-client";
 
 /**
  * Stages where the owner conversation is still open.
@@ -55,6 +56,13 @@ const OPEN_STAGES = [
  * instead of firing back to back the moment the draft leaves the queue.
  */
 const NUDGE_AFTER_HOURS = [24, 72, 120];
+/**
+ * How long the last nudge is given to land before the card is closed.
+ *
+ * Five days, the same as the gap the third nudge itself waited: if that much
+ * silence was not worth another message, it is not worth an open card either.
+ */
+const CLOSE_AFTER_LAST_NUDGE_HOURS = 120;
 /**
  * Three rounds, then stop.
  *
@@ -152,7 +160,28 @@ export async function processListingOwnerFollowup(): Promise<number> {
       // followupLevel is free to use here: the buyer scheduler clears
       // nextFollowupAt for this funnel and never advances the level on it.
       const round = (lead.followupLevel ?? 0) + 1;
-      if (round > MAX_NUDGES) continue;
+      if (round > MAX_NUDGES) {
+        // The ladder is spent and the owner never came back. Leaving the card in
+        // TAKEN TO WORK forever is the worst of the options: it is not worked by
+        // the bot, which is done with it, and not by the broker, who has no
+        // reason to open a card nothing points at. The owner's rule (04.09.2026):
+        // after the third nudge with nothing back, close it.
+        const silentHours = (Date.now() - lead.lastOurMessageAt!.getTime()) / 3_600_000;
+        if (silentHours >= CLOSE_AFTER_LAST_NUDGE_HOURS) {
+          const ok = await closeLeadAsLost(lead.leadId);
+          logger.info(
+            { leadId: lead.leadId, silentHours: Math.round(silentHours), nudges: lead.followupLevel },
+            "listing closed: three nudges, no reply",
+          );
+          if (ok) {
+            await db
+              .update(leadsSyncTable)
+              .set({ nextFollowupAt: null, updatedAt: new Date() })
+              .where(eq(leadsSyncTable.leadId, lead.leadId));
+          }
+        }
+        continue;
+      }
 
       const silentHours = (Date.now() - lead.lastOurMessageAt!.getTime()) / 3_600_000;
       if (silentHours < NUDGE_AFTER_HOURS[round - 1]!) continue;
