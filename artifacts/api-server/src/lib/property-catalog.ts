@@ -2,7 +2,7 @@ import { logger } from "./logger";
 import { conversationWindow } from "./dialog-parser";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { getTopPicksForBroker } from "./broker-picks-tracker";
-import { allAreaNames, areaMatches, areaNamesInText, parentAreaOf } from "./bali-areas";
+import { allAreaNames, areaMatches, areaNamesInText, parentAreaOf, neighbourAreas } from "./bali-areas";
 import { publicBaseUrl } from "./public-url";
 
 const SUPABASE_URL = process.env["SUPABASE_URL"] ?? "";
@@ -629,10 +629,19 @@ export async function availabilityForCriteria(opts: {
         : matching.filter((p) => p.bedrooms === bedrooms);
   }
 
-  // What we could honestly offer instead when their area comes up empty.
+  // What we could honestly OFFER instead when their area comes up empty: the
+  // same size in a genuinely adjacent district. Offered in words only — the
+  // shortlist stays empty, nothing from another area rides along unasked.
+  const sizeFits = (p: SupabaseProperty) =>
+    bedrooms === null ||
+    (bedroomsMax !== null
+      ? p.bedrooms !== null && p.bedrooms >= bedrooms && p.bedrooms <= bedroomsMax
+      : p.bedrooms === bedrooms);
   const nearby =
-    matching.length === 0 && bedrooms !== null
-      ? [...new Set(pool.filter((p) => p.bedrooms === bedrooms).map((p) => p.area ?? "").filter(Boolean))]
+    matching.length === 0 && areas.length > 0
+      ? [...new Set(areas.flatMap((a) => neighbourAreas(a)))].filter((n) =>
+          pool.some((p) => areaMatches(p.area, [n]) && sizeFits(p)),
+        )
       : [];
 
   return { areas, bedrooms, matching: matching.length, nearbyAreas: nearby.slice(0, 6) };
@@ -1022,10 +1031,6 @@ function inheritCriteriaFromAnchor(
 /** A shortlist of one is a take-it-or-leave-it, not a choice. Never send fewer. */
 const MIN_SHORTLIST = 2;
 
-function bedroomDistance(p: SupabaseProperty, wanted: number | null): number {
-  if (wanted === null || p.bedrooms === null) return 99;
-  return Math.abs(p.bedrooms - wanted);
-}
 
 /**
  * The candidate list and the money facts, without any AI in the loop.
@@ -1085,28 +1090,22 @@ export async function candidatesForLead(opts: {
   inheritCriteriaFromAnchor(criteria, opts.recentLeadMessages ?? [], pool);
 
   let candidates = pool;
-  if (criteria.areas.length > 0) {
-    const byArea = candidates.filter((p) => areaMatches(p.area, criteria.areas));
-    if (byArea.length > 0) candidates = byArea;
+  // STRICT, same as matchProperties (owner, 2026-09-04): the request's area and
+  // bedroom count are filters, not preferences. The one exception is the
+  // broker's own instruction to look beyond the area — theirs to give.
+  const releaseArea = /elsewhere|other areas?|another area|different area|widen|beyond|whole island|anywhere|другой район|других районах|не только|шире|по всему острову/i.test(
+    opts.brokerInstruction ?? "",
+  );
+  if (criteria.areas.length > 0 && !releaseArea) {
+    candidates = candidates.filter((p) => areaMatches(p.area, criteria.areas));
   }
   if (criteria.bedrooms !== null) {
     const min = criteria.bedrooms;
     const max = criteria.bedroomsMax ?? null;
-    if (max !== null) {
-      // A stated range filters to the range — no widening games needed.
-      const within = candidates.filter((p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= max);
-      if (within.length > 0) candidates = within;
-    } else {
-      const exact = candidates.filter((p) => p.bedrooms === min);
-      if (exact.length >= MIN_SHORTLIST) candidates = exact;
-      else {
-        const bigger = candidates.filter(
-          (p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= min + 1,
-        );
-        if (bigger.length >= MIN_SHORTLIST) candidates = bigger;
-        else if (exact.length > 0) candidates = exact;
-      }
-    }
+    candidates =
+      max !== null
+        ? candidates.filter((p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= max)
+        : candidates.filter((p) => p.bedrooms === min);
   }
 
   const priced = candidates.filter(hasPrice);
@@ -1125,17 +1124,21 @@ export async function candidatesForLead(opts: {
   // Same 15% headroom as the ceiling, mirrored downward — see matchProperties.
   const budgetFloorFloor = budgetFloorIdr ? Math.round(budgetFloorIdr * 0.85) : null;
   if (budgetCeiling) {
-    const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
-    const abovePriced = candidates.filter((p) => priceOf(p) > budgetCeiling).sort((a, b) => priceOf(a) - priceOf(b));
-    const unpriced = candidates.filter((p) => priceOf(p) === 0);
-    const sortedWithin = budgetFloorFloor
+    // Strict: inside the ceiling and not below the floor (both with the 15%
+    // headroom); no "closest above", no price-less villas.
+    const within = candidates.filter(
+      (p) =>
+        priceOf(p) > 0 &&
+        priceOf(p) <= budgetCeiling &&
+        (!budgetFloorFloor || priceOf(p) >= budgetFloorFloor),
+    );
+    candidates = budgetFloorIdr
       ? [...within].sort((a, b) => {
-          const aIn = priceOf(a) >= budgetFloorFloor ? 0 : 1;
-          const bIn = priceOf(b) >= budgetFloorFloor ? 0 : 1;
+          const aIn = priceOf(a) >= budgetFloorIdr ? 0 : 1;
+          const bIn = priceOf(b) >= budgetFloorIdr ? 0 : 1;
           return aIn !== bIn ? aIn - bIn : rankForShortlist(a, b);
         })
       : within.sort(rankForShortlist);
-    candidates = [...sortedWithin, ...abovePriced, ...unpriced];
   } else {
     candidates = [...candidates].sort(rankForShortlist);
   }
@@ -1404,40 +1407,41 @@ export async function matchProperties(opts: {
     criteria.bedroomsMax = brokerIntent.bedroomsMax;
   }
   let candidates = pool;
+  // STRICT — the owner's rule (2026-09-04): bedrooms, area and budget must match
+  // the request. Nothing from another district, another size or another price
+  // rides along because the right one was missing. An empty shortlist is a real
+  // answer: the reply says so and offers what is honestly nearby, in words.
+  // «Человек говорит направо, ты ему даёшь налево — так не надо.»
+  // (Before: an empty area silently fell back to the whole island, bedrooms
+  // widened ±1, and a 1BR-in-Nusa-Dua request went out with a 2BR in Pererenan.)
   if (criteria.areas.length > 0) {
     const byArea = candidates.filter((p) => areaMatches(p.area, criteria.areas));
-    if (byArea.length > 0) candidates = byArea;
+    if (byArea.length === 0) {
+      logger.info(
+        { areas: criteria.areas, poolSize: pool.length },
+        "matchProperties: nothing in the client's area — attaching nothing from elsewhere",
+      );
+      return [];
+    }
+    candidates = byArea;
   }
   if (criteria.bedrooms !== null) {
     const min = criteria.bedrooms;
     const max = criteria.bedroomsMax ?? null;
-    if (max !== null) {
-      // A stated range ("3 or 4 bedrooms") filters to the range as given.
-      const within = candidates.filter((p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= max);
-      if (within.length > 0) candidates = within;
-    } else {
-      const exact = candidates.filter((p) => p.bedrooms === min);
-      // A filter that leaves a single survivor makes a shortlist impossible — and
-      // the broker asked for two or three options every time. Widen by one bedroom
-      // (a 3BR seeker will happily look at a 4BR) before accepting a pool of one.
-      if (exact.length >= MIN_SHORTLIST) {
-        candidates = exact;
-      } else {
-        // Widen UPWARDS first: a 3BR seeker will look at a 4BR, never at a 2BR.
-        const bigger = candidates.filter(
-          (p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= min + 1,
-        );
-        if (bigger.length >= MIN_SHORTLIST) {
-          candidates = bigger;
-        } else {
-          const near = candidates.filter(
-            (p) => p.bedrooms !== null && Math.abs(p.bedrooms - min) <= 1,
-          );
-          if (near.length >= MIN_SHORTLIST) candidates = near;
-          else if (exact.length > 0) candidates = exact;
-        }
-      }
+    // A stated range ("3 or 4 bedrooms") filters to the range as given; a single
+    // count is exact. No ±1.
+    const fit =
+      max !== null
+        ? candidates.filter((p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= max)
+        : candidates.filter((p) => p.bedrooms === min);
+    if (fit.length === 0) {
+      logger.info(
+        { areas: criteria.areas, bedrooms: min, bedroomsMax: max, inArea: candidates.length },
+        "matchProperties: nothing at the client's bedroom count — attaching nothing of another size",
+      );
+      return [];
     }
+    candidates = fit;
   }
   // Priced stock first — see hasPrice. Dropped only while a real choice remains.
   const priced = candidates.filter(hasPrice);
@@ -1475,40 +1479,37 @@ export async function matchProperties(opts: {
   // the actual complaint. Without this, only a floor-exact catalog ever
   // satisfies a range, which one thin area rarely has.
   const budgetFloorFloor = budgetFloorIdr ? Math.round(budgetFloorIdr * 0.85) : null;
-  let withinBudgetCount = 0;
   if (budgetCeiling) {
-    const within = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
-    // Price-less listings sort LAST, never first. priceOf() returns 0 for them, so
-    // an ascending sort put them at the very top the moment nothing fit the
-    // budget — which is how a client who asked for "up to 40 million" was shown
-    // three villas whose price nobody has filled in, and the reply then invented
-    // "38,000,000 IDR/month" for one of them.
-    const abovePriced = candidates
-      .filter((p) => priceOf(p) > budgetCeiling)
-      .sort((a, b) => priceOf(a) - priceOf(b));
-    const unpriced = candidates.filter((p) => priceOf(p) === 0);
-    const above = [...abovePriced, ...unpriced];
-    withinBudgetCount = within.length;
+    // Strict: inside the ceiling (15% headroom) and, when they named a range,
+    // not below its floor (the same 15%, mirrored). A villa with no price
+    // cannot be judged against a budget, so it is not "inside" it. Nothing
+    // above the budget is offered as "the closest" any more — the reply says
+    // the budget holds nothing here and asks what else could work.
+    const within = candidates.filter(
+      (p) =>
+        priceOf(p) > 0 &&
+        priceOf(p) <= budgetCeiling &&
+        (!budgetFloorFloor || priceOf(p) >= budgetFloorFloor),
+    );
+    if (within.length === 0) {
+      logger.info(
+        { budgetIdr, budgetFloorIdr, of: candidates.length },
+        "matchProperties: nothing inside the client's budget — attaching nothing above it",
+      );
+      return [];
+    }
     // In-range first when a floor is known, THEN the general ranking — a villa
-    // below the stated floor is not "closer to what they asked for" just
-    // because it's cheap, so it no longer competes on views/recency against
-    // one that actually sits in the window they named.
-    const sortedWithin = budgetFloorFloor
+    // just under the stated floor is still a real answer, but not a better one.
+    candidates = budgetFloorIdr
       ? [...within].sort((a, b) => {
-          const aIn = priceOf(a) >= budgetFloorFloor ? 0 : 1;
-          const bIn = priceOf(b) >= budgetFloorFloor ? 0 : 1;
+          const aIn = priceOf(a) >= budgetFloorIdr ? 0 : 1;
+          const bIn = priceOf(b) >= budgetFloorIdr ? 0 : 1;
           return aIn !== bIn ? aIn - bIn : rankForShortlist(a, b);
         })
       : within.sort(rankForShortlist);
-    // Affordable first, then the closest above. Requiring TWO within budget
-    // before honouring it at all threw the budget away whenever exactly one
-    // fitted — and the model then freely picked villas at double the number.
-    candidates = [...sortedWithin, ...above];
     logger.info(
-      { budgetIdr, budgetFloorIdr, within: within.length, of: candidates.length },
-      within.length > 0
-        ? "matchProperties: ordered the shortlist by the lead's budget"
-        : "matchProperties: nothing inside the budget, offering the closest",
+      { budgetIdr, budgetFloorIdr, within: within.length },
+      "matchProperties: shortlist held to the lead's budget",
     );
   }
 
@@ -1544,13 +1545,9 @@ export async function matchProperties(opts: {
     const brokerBlock = brokerTop.length > 0 ? `\n\nFYI, this broker has used these before: ${brokerTop.join(", ")}. Only pick one if it fits the lead's CURRENT criteria as well as any other candidate — never as a tie-breaker against a better fit.` : "";
 
     const budgetBlock = budgetCeiling
-      ? `\n\nTHEIR BUDGET IS ${Math.round(budgetIdr! / 1_000_000)} MILLION RUPIAH PER MONTH. The catalog below is ordered affordable-first. ${
-          withinBudgetCount >= MIN_SHORTLIST
-            ? "Pick only listings at or under that figure — there are enough of them, so going over it is never necessary."
-            : withinBudgetCount > 0
-              ? "Only a few fit it: take those first, then the closest above so there is still a choice."
-              : "Nothing fits it, so pick the CHEAPEST available — the reply says openly that they are above the budget."
-        }`
+      ? `\n\nTHEIR BUDGET IS ${Math.round(budgetIdr! / 1_000_000)} MILLION RUPIAH PER MONTH${
+          budgetFloorIdr ? ` (they named a range starting at ${Math.round(budgetFloorIdr / 1_000_000)})` : ""
+        }. Every listing below is already inside it, ordered affordable-first — pick from these only.`
       : "";
 
     const areaReleaseNote = releaseArea
@@ -1579,7 +1576,7 @@ STYLE COUNTS AS A CRITERION. Each catalog line carries a "style:" part — the v
 
 CRITERIA CAN CHANGE MID-CONVERSATION. When the lead revises what they want ("actually", "I wanna change my request", a new area, a different bedroom count), their NEWEST statement is the only one that counts — match against that and treat the earlier criteria as void, however much of the conversation was spent on them.
 
-Otherwise pick ${limit} listing IDs that fit what the lead described — ${MIN_SHORTLIST} is the absolute minimum. A single link is not a shortlist: it reads as take-it-or-leave-it and gives the lead nothing to compare, so only ever return one ID if the catalog below genuinely contains only one plausible fit. If their exact area has no stock, pick the closest areas instead of returning nothing — the reply text says honestly where these actually are. You do NOT need every detail (area, budget, bedrooms, purpose, style) — one or two known criteria are enough to make a reasonable first pass. This is a shortlist for the lead to react to and refine, so approximate is fine.${
+Otherwise pick up to ${limit} listing IDs. EVERY listing in the catalog below already satisfies the client's stated bedrooms, area and budget — the code filtered it — so choose among them on style, features and fit, and prefer ${MIN_SHORTLIST}-${limit} so the lead has something to compare. Never pad: if only one genuinely fits, return one. The code never adds a villa of another size, district or price to make up numbers, and neither do you. A missing detail (style, purpose, move-in date) is no reason to hold back — one or two known criteria are enough.${
         (opts.seenCount ?? 0) > 0
           ? `\n\nThis lead has already been shown ${opts.seenCount} listing(s) and those are excluded from the catalog below. Anything you pick is new to them — favour genuine variety (different areas, price points, layouts) over near-duplicates of what they already saw.`
           : ""
@@ -1616,26 +1613,23 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
     // options at all, one is never enough: top the shortlist up to the floor
     // from the same filtered candidates, closest bedroom count first.
     if (picked.length > 0 && picked.length < MIN_SHORTLIST) {
-      // Their exact area may simply not hold two priced villas of that size.
-      // Widening the map beats both alternatives: a listing with no price can't
-      // be judged, and a shortlist of one isn't a shortlist. The reply names the
-      // area each villa is actually in, so nothing is passed off as local.
+      // Top up ONLY from the filtered candidates — every one of them fits the
+      // request. The old fill reached into the whole island's priced stock,
+      // which is how a 1BR-in-Nusa-Dua request went out with a 2BR in
+      // Pererenan. If the fitting stock is one villa, one villa goes out.
       const chosenTitles = new Set(picked.map((p) => (p.title ?? p.id).trim().toLowerCase()));
-      const rest = dedupeByTitle([...candidates, ...pool.filter(hasPrice).sort(rankForShortlist)])
+      const rest = dedupeByTitle(candidates)
         .filter(
           (p) => !ids.has(p.id.toUpperCase()) && !chosenTitles.has((p.title ?? p.id).trim().toLowerCase()),
         )
-        .sort((a, b) => {
-          const byArea =
-            (areaMatches(a.area, criteria.areas) ? 0 : 1) - (areaMatches(b.area, criteria.areas) ? 0 : 1);
-          if (criteria.areas.length > 0 && byArea !== 0) return byArea;
-          const byBeds = bedroomDistance(a, criteria.bedrooms) - bedroomDistance(b, criteria.bedrooms);
-          return byBeds !== 0 ? byBeds : rankForShortlist(a, b);
-        });
+        .sort(rankForShortlist);
+      const before = picked.length;
       picked.push(...rest.slice(0, MIN_SHORTLIST - picked.length));
       logger.info(
-        { requested: ids.size, final: picked.length },
-        "matchProperties: topped the shortlist up to the minimum — one link is not a choice",
+        { requested: ids.size, final: picked.length, fittingStock: candidates.length },
+        picked.length > before
+          ? "matchProperties: topped the shortlist up from the fitting candidates"
+          : "matchProperties: only this many fit — sending fewer than the usual minimum rather than padding",
       );
     }
     // Enforced, not requested. Two separate failures made this necessary: the

@@ -117,9 +117,17 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   path: first the attachment picker, then the client's name, then the inventory
   check. Anything that shapes the prompt goes in **`buildPromptAdditions`**, which
   both call.
-- **Always a real choice: 2-3 listings, never one.** A hard filter that leaves a
-  single survivor is widened (bedrooms ±1) before it's accepted, and the shortlist
-  is topped up in code — the model's "at most 3" was read as permission to send one.
+- **A shortlist is 2-3 listings when 2-3 FIT — never padded (owner, 2026-09-04).**
+  Bedrooms, area and budget are filters, not preferences: nothing of another
+  size, district or price rides along because the right one was missing. One
+  fitting villa goes out alone; none means an EMPTY shortlist, and the reply
+  says so and OFFERS adjacent districts (`neighbourAreas` in bali-areas.ts) in
+  words — no links. Before this the empty area silently fell back to the whole
+  island, bedrooms widened ±1, the model was told to "pick the closest areas",
+  and the top-up drew from all priced stock — a 1BR-in-Nusa-Dua request went
+  out with a 2BR in Pererenan. The owner's words: «человек говорит направо, ты
+  ему даёшь налево — так не надо». The broker's own "look elsewhere" still
+  releases the area (brokerIntent.release_area / the regex in candidatesForLead).
 - **Text and links are ONE message (owner, 2026-09-04: "текст и ссылки это одно
   и то же").** The writer used to run concurrently with the matcher and could
   not know what got attached; prompt wording alone never fixed it. Now every
@@ -183,8 +191,9 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   The site already renders rupiah by default, so property links carry no
   `?currency` parameter (verified on a bare URL: "Rp 88M / month").
 - **The lead's stated budget filters the shortlist** (`extractBudgetIdr`, +15%
-  headroom). When nothing fits, the closest are offered and the reply says so
-  rather than pretending the budget was met.
+  headroom; a range's floor with the same headroom mirrored down). When nothing
+  fits, NOTHING is attached (since 2026-09-04) — the reply says the budget holds
+  nothing here and asks what else could work; it never pretends the budget was met.
 - **Each property link is sent as its own WhatsApp message** — glued together,
   WhatsApp only unfurls a preview banner for the first one.
 - **We serve the property link's preview ourselves** (`routes/property-share.ts`).
