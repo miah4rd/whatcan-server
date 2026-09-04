@@ -119,13 +119,35 @@ const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = 
     meaning: "The owner is willing in principle and the conversation is now about TERMS: commission, exclusivity, contract length, who handles what, signing." },
   { match: /details|детал|информац/i,
     meaning: "The owner is on board enough to be handing over what we need to publish the villa: photos, exact address or pin, available dates, prices, size, documents." },
-  { match: /qualified|квалифиц/i,
-    meaning: "The contact has CONFIRMED they are the owner (or can genuinely decide for the property). Choose this the moment that is confirmed, even if NOTHING else has been collected yet — do not wait for photos, prices, dates or documents, that is the next stage. Merely replying is not enough; the owner question must actually be answered." },
+  // NOTE: "qualified" is deliberately ABSENT from this table, and so are the
+  // stages beyond it — see RULE_OWNED_ACQUISITION_STAGES below. The meaning that
+  // used to sit here said to choose it "the moment [ownership] is confirmed,
+  // even if NOTHING else has been collected". meetsQualified() in
+  // listing-card-fields.ts says bedrooms AND a price with its commission
+  // position AND the owner. Two definitions of one stage, in two files, and the
+  // looser one won on every send: two cards reached QUALIFIED on an owner
+  // offering a phone call, no price named, one of them renting daily only.
   { match: /taken to work|взят.? в работу/i,
     meaning: "Outreach HAS been sent and we are in conversation, but it is still NOT established whether they are the owner or an agent acting for someone else. This is right as soon as the first message goes out. The moment they say who they are — owner or not — this stage stops being correct." },
   { match: /initial contact|первичн|контакт/i,
     meaning: "A brand new listing card that we have NOT contacted yet — no message has gone out to this person at all. Only for leads where the conversation has not started." },
 ];
+
+/**
+ * Acquisition stages the classifier may NOT set, because something else owns
+ * them.
+ *
+ * This is the general answer to "clear rules, and the system still gets it
+ * wrong": a stage with a rule attached must have exactly ONE mechanism able to
+ * set it. `QUALIFIED` belongs to promoteIfQualified, which checks the rule.
+ * Everything past it is the broker's judgement — that is the whole point of the
+ * autopilot handover, and a classifier that can jump a card to `Details` walks
+ * around the bar just as effectively as one that sets QUALIFIED directly.
+ *
+ * A human moving a card by hand is unaffected: this only constrains what the
+ * model may choose on our behalf.
+ */
+const RULE_OWNED_ACQUISITION_STAGES = /qualified|квалифиц|details|детал|информац|agreement|договор|соглашен/i;
 
 function meaningFor(stageName: string, pipelineKey?: string): string | null {
   const table = isListingAcquisition(pipelineKey) ? LISTING_ACQUISITION_MEANINGS : STAGE_MEANINGS;
@@ -199,6 +221,8 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
       // "RENTED" — see LISTING_ACQUISITION_MEANINGS). The generic
       // "Funnel step N of M" fallback below would hand them to the model.
       .filter((s) => !isListingAcquisition(key) || meaningFor(s.name, key) !== null)
+      // Rule-owned stages: one mechanism per stage, see above.
+      .filter((s) => !isListingAcquisition(key) || !RULE_OWNED_ACQUISITION_STAGES.test(s.name))
       .map((s) => {
         // The owner's Rental funnel uses "Need Assessed" as "the first outreach
         // was made" — not the generic "requirements are known". Wrong meaning

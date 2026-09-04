@@ -445,6 +445,35 @@ export async function promoteIfQualified(
   return { moved: true, reason: "qualified" };
 }
 
+/**
+ * Does this card's own conversation earn QUALIFIED right now?
+ *
+ * Exists because TWO mechanisms could put a card on that stage and only one of
+ * them knew the rule. `promoteIfQualified` checks bedrooms, a price with its
+ * commission position, and that we are talking to the owner. The general stage
+ * classifier, applied on every send, reads the thread and picks whatever stage
+ * the conversation "feels" like — and it moved two cards to QUALIFIED on the
+ * strength of an owner offering to jump on a call, with no price named at all
+ * and one of them renting daily only. The owner found both by opening them.
+ *
+ * So the funnel's own bar is enforced wherever the stage is set, not only on
+ * the path that happens to know about it.
+ */
+export async function qualificationVerdictForLead(
+  leadId: string,
+): Promise<{ ok: boolean; missing: string[] } | null> {
+  const res = await db.execute(sql`
+    SELECT string_agg(m.sender_type || ': ' || m.text, E'\n' ORDER BY m.sent_at) AS convo
+      FROM lead_messages m
+     WHERE m.lead_id = ${leadId} AND m.text IS NOT NULL
+  `);
+  const convo = (res.rows?.[0] as { convo?: string } | undefined)?.convo ?? "";
+  if (!convo.trim()) return null;
+  const facts = await extractListingFacts(convo);
+  if (!facts) return null;
+  return meetsQualified(facts);
+}
+
 // ── Where a card belongs when it is NOT going to QUALIFIED ──────────────────
 
 const CO_BROKE_STAGE = "co-broke Agents";
