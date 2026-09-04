@@ -606,6 +606,38 @@ export async function routeUnqualified(
   // A deliberate exception to "Closed - lost is never automatic": that rule
   // protects a JUDGEMENT about a live negotiation. This is the counterpart
   // stating the format, and the owner asked for it explicitly (04.09.2026).
+  if (f.stopKind === "not_our_format") {
+    /**
+     * Hard vetoes, decided in code, before any model is asked.
+     *
+     * The second opinion below makes a wrong close rare. These make the three
+     * kinds of wrong close that actually happened impossible, without anyone
+     * watching:
+     *
+     *   a price on the table  — a villa side that named a monthly or yearly
+     *                           figure is negotiating, whatever else was said;
+     *   a date on the table   — "available from" is an offer, not a refusal;
+     *   not built yet         — "still in progress", "two units left" is a
+     *                           villa that is not ready, not one being refused.
+     *
+     * Each of these binned a live owner on the first run of the close. A card
+     * held back costs a card sitting where it already sat; a card closed wrongly
+     * costs the listing.
+     */
+    const hasOffer = !!(f.monthlyIdr || f.yearlyIdr);
+    const hasDate = !!(f.availableFrom || f.freeFromIso);
+    const notReadyYet =
+      /still in progress|in progress|under construction|being built|not (yet )?(finished|ready)|renovat|finishing|belum selesai|masih dibangun|sedang dibangun|proses pembangunan/i.test(
+        f.stopSignal ?? "",
+      );
+    if (hasOffer || hasDate || notReadyYet) {
+      logger.warn(
+        { leadId, stopSignal: f.stopSignal, hasOffer, hasDate, notReadyYet },
+        "not-our-format overruled in code: this card carries a live offer, a date, or a villa still being finished",
+      );
+      return { moved: false, reason: "not_our_format overruled: the card is still live" };
+    }
+  }
   if (f.stopKind === "not_our_format" && (await confirmsNotOurFormat(leadId))) {
     const ok = await closeLeadAsLost(leadId);
     logger.info({ leadId, stopSignal: f.stopSignal }, "listing closed: not a format we can list");
