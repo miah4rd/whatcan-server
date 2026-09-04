@@ -961,8 +961,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
               was: currentIds.length,
               now: chosen.length,
               curated: curatedDetected,
-              revision: revision.slice(0, 80),
-            },
+              revision: revision.slice(0, 80), decision: composed.decision, idsReturned: composed.listingIds.length, poolSize: pool.lines.length, curatedDetected},
             "suggest: one-pass compose decided the message and the links together",
           );
           res.json({
