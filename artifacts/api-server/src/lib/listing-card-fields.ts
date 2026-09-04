@@ -477,6 +477,55 @@ export async function qualificationVerdictForLead(
   return meetsQualified(facts);
 }
 
+/**
+ * A second opinion before a card is binned, asked as ONE question.
+ *
+ * `stop_kind` is one field among twelve in the extraction, and on that job the
+ * model is unreliable in the direction that costs most: it read "still in
+ * progress" (an owner whose last two units are being finished) and "disewakan
+ * daily dan monthly" (monthly is our format) as formats we can never list, and
+ * both were closed. Tightening the wording inside the big prompt did not move
+ * it — re-run, same verdict.
+ *
+ * So the close is gated on a call that asks nothing else. A focused yes/no with
+ * its counterexamples in front of it is a different, much easier task than the
+ * same judgement buried in a twelve-field extraction, and it fails CLOSED: any
+ * error, any unparseable answer, and the card simply stays open.
+ */
+async function confirmsNotOurFormat(leadId: string): Promise<boolean> {
+  const res = await db.execute(sql`
+    SELECT string_agg(m.sender_type || ': ' || m.text, E'\n' ORDER BY m.sent_at) AS convo
+      FROM lead_messages m
+     WHERE m.lead_id = ${leadId} AND m.text IS NOT NULL
+  `);
+  const convo = (res.rows?.[0] as { convo?: string } | undefined)?.convo ?? "";
+  if (!convo.trim()) return false;
+
+  const out = await chatCompletionJSON<{ rules_out: boolean; why: string }>({
+    model: HELPER_MODEL,
+    label: "listing:not-our-format-check",
+    max_tokens: 200,
+    temperature: 0,
+    system: `We rent whole villas monthly or yearly. Answer ONE question about the conversation: has the villa side ruled out BOTH monthly AND yearly letting of the WHOLE villa, permanently?
+
+true ONLY for a permanent, stated refusal: daily/short-stay only with no monthly offered, let by the room rather than as a whole villa, they no longer look after the property, they will not work with agencies at all.
+
+false for everything else, including these, each of which was wrongly answered true before:
+- any answer that includes monthly ("daily dan monthly", "monthly and long term") — monthly IS what we do
+- a villa still being built or renovated ("still in progress", "two units left") — nothing is refused, it is not ready yet
+- a period blocked by bookings or events — that passes
+- "we can't do yearly" alone, when monthly was never ruled out
+- anything you are unsure about
+
+Reply with JSON only: {"rules_out": true|false, "why": "<8 words>"}`,
+    messages: [{ role: "user", content: convo.slice(-6000) }],
+  }).catch(() => null);
+
+  if (!out || typeof out.rules_out !== "boolean") return false;
+  logger.info({ leadId, rulesOut: out.rules_out, why: out.why }, "not-our-format second opinion");
+  return out.rules_out;
+}
+
 // ── Where a card belongs when it is NOT going to QUALIFIED ──────────────────
 
 const CO_BROKE_STAGE = "co-broke Agents";
@@ -557,7 +606,7 @@ export async function routeUnqualified(
   // A deliberate exception to "Closed - lost is never automatic": that rule
   // protects a JUDGEMENT about a live negotiation. This is the counterpart
   // stating the format, and the owner asked for it explicitly (04.09.2026).
-  if (f.stopKind === "not_our_format") {
+  if (f.stopKind === "not_our_format" && (await confirmsNotOurFormat(leadId))) {
     const ok = await closeLeadAsLost(leadId);
     logger.info({ leadId, stopSignal: f.stopSignal }, "listing closed: not a format we can list");
     return { moved: ok, to: "Closed - lost", reason: `not our format: ${f.stopSignal ?? "stated by the counterpart"}` };
