@@ -668,13 +668,13 @@ export async function routeUnqualified(
       // be true: the extractor once returned 2024 for a villa "free from
       // September" — a past year, or one absurdly far out, would have produced
       // a draft telling the owner his villa frees up two years ago.
-      const free = new Date(`${f.freeFromIso}T09:00:00+08:00`);
+      const freeAt = new Date(`${f.freeFromIso}T09:00:00+08:00`);
       const plausible =
-        free.getTime() > Date.now() && free.getTime() < Date.now() + 548 * 86_400_000;
+        freeAt.getTime() > Date.now() && freeAt.getTime() < Date.now() + 548 * 86_400_000;
       if (plausible) {
         await db
           .update(leadsSyncTable)
-          .set({ listingFreeFrom: free })
+          .set({ listingFreeFrom: freeAt })
           .where(eq(leadsSyncTable.leadId, leadId))
           .catch(() => undefined);
       } else {
