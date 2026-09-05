@@ -56,6 +56,9 @@ export async function processLongTermAvailabilityChecks(): Promise<number> {
           sql`lower(coalesce(${leadsSyncTable.leadStage},'')) LIKE '%long term%'`,
           sql`${leadsSyncTable.botExcluded} IS NOT TRUE`,
           sql`${leadsSyncTable.listingFreeFrom} IS NOT NULL`,
+          // Belt and braces with the store-side guard: never draft about a date
+          // that has already passed.
+          sql`${leadsSyncTable.listingFreeFrom} > now()`,
           sql`${leadsSyncTable.listingFreeFrom} - make_interval(days => ${LEAD_DAYS}) <= now()`,
           // Not already written for this date, and nothing else pending.
           sql`NOT EXISTS (SELECT 1 FROM pending_suggestions p WHERE p.lead_id = ${leadsSyncTable.leadId}
