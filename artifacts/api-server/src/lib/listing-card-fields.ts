@@ -664,12 +664,22 @@ export async function routeUnqualified(
     const ok = await move(LONG_TERM_STAGE);
     if (ok && f.freeFromIso) {
       // Remembered on the card so the availability-check pass can time its
-      // draft from it without re-reading the whole thread.
-      await db
-        .update(leadsSyncTable)
-        .set({ listingFreeFrom: new Date(`${f.freeFromIso}T09:00:00+08:00`) })
-        .where(eq(leadsSyncTable.leadId, leadId))
-        .catch(() => undefined);
+      // draft from it without re-reading the whole thread. Only a date that can
+      // be true: the extractor once returned 2024 for a villa "free from
+      // September" — a past year, or one absurdly far out, would have produced
+      // a draft telling the owner his villa frees up two years ago.
+      const free = new Date(`${f.freeFromIso}T09:00:00+08:00`);
+      const plausible =
+        free.getTime() > Date.now() && free.getTime() < Date.now() + 548 * 86_400_000;
+      if (plausible) {
+        await db
+          .update(leadsSyncTable)
+          .set({ listingFreeFrom: free })
+          .where(eq(leadsSyncTable.leadId, leadId))
+          .catch(() => undefined);
+      } else {
+        logger.warn({ leadId, freeFromIso: f.freeFromIso }, "long term: free date implausible — not stored, no dated check");
+      }
       const free = new Date(`${f.freeFromIso}T09:00:00+08:00`);
       const due = new Date(free.getTime() - REMIND_BEFORE_DAYS * 86_400_000);
       const soonest = new Date(Date.now() + 7 * 86_400_000);

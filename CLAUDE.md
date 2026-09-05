@@ -330,6 +330,18 @@ ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no
   in the ranking (`matchProperties`, `candidatesForLead`) and in
   `enforceBudgetFloor`, or the composer's candidate order and the code-level
   swap disagree about what "in range" means.
+- **A parked "long term" villa gets a dated availability check as a READY
+  DRAFT, and leaves the stage when it frees up (2026-09-05).** Parking used to
+  leave only an amoCRM task 14 days before the free date; the broker saw a task
+  and an empty Copilot. Now `routeUnqualified` stores the free date on the card
+  (`leads_sync.listing_free_from`, only if it lies in the future and within 18
+  months — the extractor once returned 2024 for "free from September"),
+  `long-term-check.ts` writes the check two weeks before it, stamped
+  "availability check due" so the inbox shows it on the suppressed stage, and
+  `releaseFromLongTerm` moves the card the moment the owner says it is free:
+  to Details when bedrooms, price with commission and the owner are all known,
+  back to TAKEN TO WORK when not. Nothing else touches a card that is still
+  occupied.
 - **Every draft the bot might send passes through autopilot when it is born,
   and a PROACTIVE send waits for daytime.** The owner-nudge pass wrote its
   drafts straight into `pending_suggestions`, so `maybeAutopilot` never judged
