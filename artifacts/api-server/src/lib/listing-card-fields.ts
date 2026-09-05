@@ -19,7 +19,7 @@ import { amoFetch, amoPatch, amoPost, getAmoLead, updateLeadStatus, createAmoTas
 import { safeStageIdForLead } from "./stage-classifier";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { logger } from "./logger";
-import { db } from "@workspace/db";
+import { db, leadsSyncTable } from "@workspace/db";
 import { sql } from "drizzle-orm";
 
 /**
@@ -566,6 +566,45 @@ Reply with JSON only: {"rules_out": true|false, "why": "<8 words>"}`,
   return out.rules_out;
 }
 
+/**
+ * A parked "long term" card whose owner now says the villa is free (or free
+ * within the ~3 months we treat as offerable) leaves the parking stage.
+ *
+ * The owner's rule (2026-09-05): "мы перешли от лонг терм к сбору деталей".
+ * Everything known → Details, the stage where photos and the map pin are
+ * collected. Free but still missing a fact (price, commission position) →
+ * back to TAKEN TO WORK, where the bot asks for it. Nothing here moves a card
+ * that is still occupied: that is what the parking stage is for.
+ */
+export async function releaseFromLongTerm(
+  leadId: string,
+  f: ListingFacts,
+): Promise<{ moved: boolean; to?: string; reason: string }> {
+  const res = await db.execute(
+    sql`SELECT lead_stage FROM leads_sync WHERE lead_id = ${leadId}`,
+  );
+  const stage = String((res.rows?.[0] as { lead_stage?: string } | undefined)?.lead_stage ?? "").toLowerCase();
+  if (!stage.includes("long term")) return { moved: false, reason: "not parked" };
+  if (f.stopKind === "occupied") return { moved: false, reason: "still occupied" };
+
+  const lead = await getAmoLead(leadId);
+  if (!lead?.pipeline_id) return { moved: false, reason: "amoCRM did not return the lead's funnel" };
+  const verdict = meetsQualified(f);
+  const target = verdict.ok ? "Details" : "TAKEN TO WORK";
+  const id = await stageIdByName(lead.pipeline_id, target);
+  if (!id) return { moved: false, reason: `no "${target}" stage in this funnel` };
+  const ok = await updateLeadStatus(leadId, Number(id));
+  if (ok) {
+    await db
+      .update(leadsSyncTable)
+      .set({ leadStage: target, leadStageId: id, listingFreeFrom: null, updatedAt: new Date() })
+      .where(eq(leadsSyncTable.leadId, leadId))
+      .catch(() => undefined);
+    logger.info({ leadId, to: target, missing: verdict.missing }, "long term released: villa is free again");
+  }
+  return { moved: ok, to: target, reason: verdict.ok ? "free and qualified" : `free, still missing: ${verdict.missing.join(", ")}` };
+}
+
 // ── Where a card belongs when it is NOT going to QUALIFIED ──────────────────
 
 const CO_BROKE_STAGE = "co-broke Agents";
@@ -624,6 +663,13 @@ export async function routeUnqualified(
   if (f.stopKind === "occupied") {
     const ok = await move(LONG_TERM_STAGE);
     if (ok && f.freeFromIso) {
+      // Remembered on the card so the availability-check pass can time its
+      // draft from it without re-reading the whole thread.
+      await db
+        .update(leadsSyncTable)
+        .set({ listingFreeFrom: new Date(`${f.freeFromIso}T09:00:00+08:00`) })
+        .where(eq(leadsSyncTable.leadId, leadId))
+        .catch(() => undefined);
       const free = new Date(`${f.freeFromIso}T09:00:00+08:00`);
       const due = new Date(free.getTime() - REMIND_BEFORE_DAYS * 86_400_000);
       const soonest = new Date(Date.now() + 7 * 86_400_000);

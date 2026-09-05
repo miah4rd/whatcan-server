@@ -211,7 +211,13 @@ export function isPendingVisible(
     // proactive chasing, but they are actively moving in and their questions
     // must not vanish from the inbox.
     const liveExempt = isClosedWonStage(stage) || isPostSigningStage(stage);
-    if (!(r.kind === "live" && liveExempt)) return false;
+    // A draft the system explicitly handed to the broker surfaces even here:
+    // the dated availability check on a "long term" card is written FOR a
+    // person to send, on a stage that otherwise suppresses everything. A
+    // "waiting" verdict is not that — the bot still owns those.
+    const explicit = (r.autopilotSkippedReason ?? "").trim();
+    const handedOver = !!explicit && !explicit.startsWith("waiting");
+    if (!(r.kind === "live" && liveExempt) && !handedOver) return false;
   }
 
   if (autopilotOwnsThisDraft(r, stage, sync?.pipeline, delegatedStages)) return false;

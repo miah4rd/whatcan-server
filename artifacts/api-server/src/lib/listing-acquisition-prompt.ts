@@ -29,6 +29,7 @@ import {
   syncListingFactsToCard,
   promoteIfQualified,
   routeUnqualified,
+  releaseFromLongTerm,
   meetsQualified,
   type ListingFacts,
 } from "./listing-card-fields";
@@ -296,6 +297,10 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
       // columns still empty is an agent opening a "ready" listing that tells
       // them nothing — the exact state this whole change exists to end.
       await syncListingFactsToCard(opts.leadId, facts);
+      // A parked card whose owner just said "free again" leaves long term first
+      // — to Details when everything is known, back to work when not.
+      const released = await releaseFromLongTerm(opts.leadId, facts);
+      if (released.moved) logger.info({ leadId: opts.leadId, ...released }, "listing card released from long term");
       const outcome = await promoteIfQualified(opts.leadId, facts);
       logger.info({ leadId: opts.leadId, ...outcome }, "listing-acquisition: qualification checked");
       // Only when it did NOT qualify: a management company we have agreed terms
