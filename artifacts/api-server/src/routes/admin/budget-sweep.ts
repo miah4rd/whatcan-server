@@ -13,14 +13,14 @@ import { db, leadsSyncTable, leadMessagesTable } from "@workspace/db";
 import { and, eq, sql } from "drizzle-orm";
 import { logger } from "../../lib/logger";
 import { extractBudgetIdr } from "../../lib/property-catalog";
-import { getBudgetFilterSetting, enforceBudgetFilter } from "../../lib/budget-filter";
+import { getBudgetFilter, enforceBudgetFilter } from "../../lib/budget-filter";
 import { getLeadCardCriteria } from "../../lib/lead-card-fields";
 
 const router = Router();
 
 router.post("/admin/budget-sweep", async (req, res) => {
   const apply = String(req.query["apply"] ?? "") === "1";
-  const setting = await getBudgetFilterSetting("rental");
+  const setting = await getBudgetFilter("rental");
   if (!setting.enabled || !setting.minMonthlyIdr) {
     res.json({ skipped: "budget filter is off for rental" });
     return;
