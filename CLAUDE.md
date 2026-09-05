@@ -98,6 +98,21 @@ API down for ~15 minutes, 202 restarts, webhooks refused. Never write
 5. **`routes/public/approve.ts`** sends via amoCRM Salesbot (bot 22127, writes
    the text into custom field 965907), applies the stage, creates the CRM task.
 
+## Video-tour compressor (2026-09-05)
+
+`lib/video-compress.ts`, started from `app.ts`. Every 60 s it reads the
+site's `properties.video_url`, and for any file still sitting raw in the
+`property-videos` bucket it downloads, re-encodes with ffmpeg (H.264, long
+side <=1920, <=6 Mbit/s, about a third of a phone clip), uploads
+`<name>-web.mp4` next to it, repoints `video_url` and deletes the original.
+Decisions live in the local table `video_compress_jobs` (`done`, `skipped`,
+`failed`, `done_unlinked`) so nothing is encoded twice and failures are
+visible: `SELECT * FROM video_compress_jobs ORDER BY updated_at DESC`.
+Needs `ffmpeg`/`ffprobe` on PATH (apt, installed 2026-09-05) and the same
+Supabase service credentials listing-publish uses; `VIDEO_COMPRESS_DISABLED=1`
+pauses it. One file per tick, `nice -n 10`, two threads, so the bot stays
+responsive.
+
 ## Rules that exist because of a production bug
 
 - **amoCRM `content` timestamps are Moscow time (UTC+3), not UTC.** Parsing them

@@ -14,6 +14,7 @@ import { startTimelineSyncScheduler } from "./lib/amo-timeline-sync";
 import { startCommitmentScheduler } from "./lib/commitment-scheduler";
 import { startAiWatchdog } from "./lib/ai-watchdog";
 import { startReportScheduler } from "./lib/report-scheduler";
+import { startVideoCompressScheduler } from "./lib/video-compress";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
 
@@ -71,6 +72,9 @@ startTimelineSyncScheduler();
 startCommitmentScheduler();
 startReportScheduler();
 startAiWatchdog();
+// Re-encodes phone walkthroughs uploaded to the site's property-videos bucket
+// (a third of the size, H.264 everywhere); see lib/video-compress.ts.
+startVideoCompressScheduler();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
 // When a rental is free from — asked in the intake chat, written to Supabase's
