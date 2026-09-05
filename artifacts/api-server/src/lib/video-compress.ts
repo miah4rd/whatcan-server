@@ -46,8 +46,9 @@ type Probe = { width: number; height: number; codec: string; durationS: number; 
 type JobStatus = "done" | "skipped" | "failed" | "done_unlinked";
 
 let running = false;
-/** Poster backfill is attempted once per process per video — a broken file must not be re-downloaded every minute. */
-const posterTried = new Set<string>();
+/** Poster backfill is retried at most hourly per video — a broken file must not be re-downloaded every minute. */
+const posterTried = new Map<string, number>();
+const POSTER_RETRY_MS = 60 * 60_000;
 
 function supabaseEnv(): { url: string; key: string } | null {
   const url = (process.env["SUPABASE_URL"] ?? "").trim().replace(/\/+$/, "");
@@ -128,8 +129,9 @@ async function posterExists(env: { url: string; key: string }, videoUrl: string,
 
 /** Videos handled before posters existed (or whose poster failed) get one now. */
 async function backfillPoster(env: { url: string; key: string }, job: { id: string; videoUrl: string; objectPath: string }): Promise<void> {
-  if (posterTried.has(job.videoUrl)) return;
-  posterTried.add(job.videoUrl);
+  const last = posterTried.get(job.videoUrl) ?? 0;
+  if (Date.now() - last < POSTER_RETRY_MS) return;
+  posterTried.set(job.videoUrl, Date.now());
   if (await posterExists(env, job.videoUrl, job.objectPath)) return;
   const log = logger.child({ propertyId: job.id, object: job.objectPath });
   const tmp = await fs.mkdtemp(path.join(process.env["VIDEO_TMP_DIR"] ?? os.tmpdir(), "video-poster-"));
