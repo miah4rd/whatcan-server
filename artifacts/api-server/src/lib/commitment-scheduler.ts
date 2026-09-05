@@ -100,7 +100,9 @@ export async function processCommitmentReminders(): Promise<void> {
         row.responsibleUser,
         row.leadId,
         "reminder",
-        `Ты обещал: ${row.promiseText} — вернись с ответом`,
+        // Everything the broker reads is English (owner's rule, 2026-08-19); this
+        // one line had stayed Russian — and in the masculine, to Amelia.
+        `You promised: ${row.promiseText} — get back to them today`,
       );
 
       if (delivered > 0) {
