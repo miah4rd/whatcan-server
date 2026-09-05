@@ -46,6 +46,8 @@ type Probe = { width: number; height: number; codec: string; durationS: number; 
 type JobStatus = "done" | "skipped" | "failed" | "done_unlinked";
 
 let running = false;
+/** Poster backfill is attempted once per process per video — a broken file must not be re-downloaded every minute. */
+const posterTried = new Set<string>();
 
 function supabaseEnv(): { url: string; key: string } | null {
   const url = (process.env["SUPABASE_URL"] ?? "").trim().replace(/\/+$/, "");
@@ -117,6 +119,31 @@ async function alreadyHandled(sourceUrl: string): Promise<boolean> {
   return (r.rowCount ?? 0) > 0;
 }
 
+async function posterExists(env: { url: string; key: string }, videoUrl: string, objectPath: string): Promise<boolean> {
+  const posterUrl = videoUrl.slice(0, videoUrl.indexOf(OBJECT_PUBLIC_PREFIX) + OBJECT_PUBLIC_PREFIX.length)
+    + posterPathFor(objectPath).split("/").map(encodeURIComponent).join("/");
+  const res = await fetch(posterUrl, { method: "HEAD", headers: authHeaders(env.key) });
+  return res.ok;
+}
+
+/** Videos handled before posters existed (or whose poster failed) get one now. */
+async function backfillPoster(env: { url: string; key: string }, job: { id: string; videoUrl: string; objectPath: string }): Promise<void> {
+  if (posterTried.has(job.videoUrl)) return;
+  posterTried.add(job.videoUrl);
+  if (await posterExists(env, job.videoUrl, job.objectPath)) return;
+  const log = logger.child({ propertyId: job.id, object: job.objectPath });
+  const tmp = await fs.mkdtemp(path.join(process.env["VIDEO_TMP_DIR"] ?? os.tmpdir(), "video-poster-"));
+  try {
+    const input = path.join(tmp, "input");
+    await download(job.videoUrl, input);
+    await uploadPoster(env, job.objectPath, input, tmp, log);
+  } catch (err) {
+    log.warn({ err }, "video: poster backfill failed");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 function run(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -179,14 +206,47 @@ async function transcode(input: string, output: string): Promise<void> {
   if (code !== 0) throw new Error(`ffmpeg failed (${code}): ${stderr.trim().slice(-800)}`);
 }
 
-async function uploadObject(env: { url: string; key: string }, objectPath: string, file: string): Promise<void> {
+async function uploadObject(env: { url: string; key: string }, objectPath: string, file: string, contentType = "video/mp4"): Promise<void> {
   const body = await fs.readFile(file);
   const res = await fetch(`${env.url}/storage/v1/object/${BUCKET}/${objectPath.split("/").map(encodeURIComponent).join("/")}`, {
     method: "POST",
-    headers: { ...authHeaders(env.key), "Content-Type": "video/mp4", "x-upsert": "true", "cache-control": "31536000" },
+    headers: { ...authHeaders(env.key), "Content-Type": contentType, "x-upsert": "true", "cache-control": "31536000" },
     body,
   });
   if (!res.ok) throw new Error(`upload ${res.status}: ${(await res.text()).slice(0, 300)}`);
+}
+
+/** `R-YUD-071/reels16-web.mp4` → `R-YUD-071/reels16-web-poster.jpg` — the site derives the same name. */
+export function posterPathFor(objectPath: string): string {
+  return objectPath.replace(/\.[^.]+$/, "") + "-poster.jpg";
+}
+
+/**
+ * One frame, half a second in, as a JPEG no wider than 1080. This is what
+ * WhatsApp shows as the link preview of /property/<ID>/video and what the
+ * gallery shows behind the play button. A video with no poster of its own
+ * falls back to the listing's cover photo on the site, so a failure here is
+ * logged and not fatal.
+ */
+async function makePoster(input: string, output: string): Promise<void> {
+  const args = [
+    "-n", "10", "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+    "-ss", "0.5", "-i", input, "-frames:v", "1",
+    "-vf", "scale='min(1080,iw)':-2", "-q:v", "3", output,
+  ];
+  const { code, stderr } = await run("nice", args, 60_000);
+  if (code !== 0) throw new Error(`poster failed (${code}): ${stderr.trim().slice(-300)}`);
+}
+
+async function uploadPoster(env: { url: string; key: string }, videoObjectPath: string, sourceFile: string, tmp: string, log: typeof logger): Promise<void> {
+  try {
+    const poster = path.join(tmp, "poster.jpg");
+    await makePoster(sourceFile, poster);
+    await uploadObject(env, posterPathFor(videoObjectPath), poster, "image/jpeg");
+    log.info({ poster: posterPathFor(videoObjectPath) }, "video: poster uploaded");
+  } catch (err) {
+    log.warn({ err }, "video: poster not generated, site falls back to the cover photo");
+  }
 }
 
 async function deleteObject(env: { url: string; key: string }, objectPath: string): Promise<void> {
@@ -220,7 +280,7 @@ async function listCandidates(env: { url: string; key: string }): Promise<Array<
   for (const r of rows) {
     if (!r.video_url) continue;
     const objectPath = objectPathOf(r.video_url);
-    if (!objectPath || isCompressedOutput(objectPath)) continue;
+    if (!objectPath) continue;
     out.push({ id: r.id, videoUrl: r.video_url, objectPath });
   }
   return out;
@@ -238,6 +298,7 @@ async function compressOne(env: { url: string; key: string }, job: { id: string;
 
     const lean = before.codec === "h264" && before.bitrateBps > 0 && before.bitrateBps <= SKIP_BELOW_BPS && Math.max(before.width, before.height) <= 1920;
     if (lean) {
+      await uploadPoster(env, job.objectPath, input, tmp, log);
       await recordJob(job.videoUrl, job.id, "skipped", { inputBytes, error: "already H.264 at a lean bitrate" });
       log.info("video: already lean, left as is");
       return;
@@ -257,6 +318,7 @@ async function compressOne(env: { url: string; key: string }, job: { id: string;
 
     const outPath = outputPathFor(job.objectPath);
     await uploadObject(env, outPath, output);
+    await uploadPoster(env, outPath, output, tmp, log);
     const outputUrl = job.videoUrl.slice(0, job.videoUrl.indexOf(OBJECT_PUBLIC_PREFIX) + OBJECT_PUBLIC_PREFIX.length) + outPath.split("/").map(encodeURIComponent).join("/");
 
     const swapped = await swapVideoUrl(env, job.id, job.videoUrl, outputUrl);
@@ -288,7 +350,12 @@ export async function runVideoCompressOnce(): Promise<void> {
   try {
     const candidates = await listCandidates(env);
     for (const c of candidates) {
-      if (await alreadyHandled(c.videoUrl)) continue;
+      if (isCompressedOutput(c.objectPath) || (await alreadyHandled(c.videoUrl))) {
+        // Nothing to encode, but every video the site links to should have a
+        // poster frame for the WhatsApp preview of /property/<ID>/video.
+        await backfillPoster(env, c);
+        continue;
+      }
       // One file per tick: the VPS has two cores and the bot must stay responsive.
       await compressOne(env, c);
       break;
