@@ -2500,7 +2500,13 @@ const PAGE_HTML = `<!doctype html>
       } else {
         html += '<div class="skip-row">';
         html += '<span class="skip-lbl">Skip:</span>';
-        html += '<button class="mini" id="skip-trash-btn">\\u2715 Skip (trash)</button>';
+        // Honest labels. "Skip (trash)" called /no-reply-needed, which books the
+        // next touch in a few days unless the classifier had already marked the
+        // conversation over — so a lead a broker "trashed" came back in PUSH
+        // (Michael, 2026-09-05). What it does is "not now"; a real close is the
+        // stage move next to it, the same path Change stage uses.
+        html += '<button class="mini" id="skip-trash-btn">Not now (follow up later)</button>';
+        html += '<button class="mini" id="skip-close-lost-btn" title="Move the lead to Closed - lost. No message is sent.">Close lead (lost)</button>';
         html += '</div>';
         html += '<div class="skip-row" style="margin-top:8px">';
         html += '<span class="skip-lbl">Reschedule follow-up:</span>';
@@ -2786,6 +2792,30 @@ const PAGE_HTML = `<!doctype html>
         // advance logic only runs for kind === "push".
         $("#skip-trash-btn").onclick = function () {
           if (it.kind === "live") { brokerReplied(it); } else { skipServer(it); }
+        };
+        // A close is a stage move with no message — exactly what "Change stage"
+        // does when the picker lands on Closed - lost; the server closes via the
+        // dedicated lost path regardless of the id sent.
+        $("#skip-close-lost-btn").onclick = async function () {
+          if (it.busy) return;
+          if (!confirm("Close this lead as lost? No message will be sent.")) return;
+          var lostName = "Closed - lost";
+          it.busy = true; render();
+          try {
+            await fetch(API + "/approve", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                suggestionId: it.id, message: String(it.suggestion_text || it.text || ""), brokerId: activeBroker(),
+                newStage: lostName, stageId: stageIdForName(lostName) || undefined, skipMessage: true,
+              }),
+            });
+            openItem = null;
+            await fetchInbox();
+          } catch (e) {
+            it.error = String((e && e.message) || e);
+          } finally {
+            it.busy = false; render();
+          }
         };
         [1, 3, 5, 7].forEach(function (n) {
           var btn = $("#skip-resched-" + n);
