@@ -57,10 +57,16 @@ anything edited directly there must be reconciled by hand.
 
 ```bash
 git push origin master
-ssh whatcan "cd /opt/whatcan && git fetch github && git merge github/master --no-edit \
-  && cd artifacts/api-server && pnpm run build \
-  && cd /opt/whatcan && pm2 restart ecosystem.config.cjs --update-env && pm2 save"
+ssh whatcan /opt/whatcan/deploy.sh
 ```
+
+`deploy.sh` merges, builds, checks that `dist/index.mjs` exists, restarts PM2
+**only if the build succeeded**, and prints `deployed: api HTTP 200, pm2 online`.
+Anything else is not a deploy. It exists because a hand-typed chain with the
+build piped through `tail` masked a build failure on 2026-09-05; a failed esbuild
+leaves NO bundle, so the PM2 restart that followed was a crash loop — the whole
+API down for ~15 minutes, 202 restarts, webhooks refused. Never write
+`pnpm run build | tail` in a `&&` chain; never restart PM2 without a green build.
 
 - `pm2 restart whatcan` does **not** reload env vars. You must reference the
   **file** (`ecosystem.config.cjs`) — it reads `.env` via a custom loader
