@@ -20,7 +20,7 @@ import { safeStageIdForLead } from "./stage-classifier";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { logger } from "./logger";
 import { db, leadsSyncTable } from "@workspace/db";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 /**
  * Field ids are resolved BY NAME at runtime rather than hardcoded.
