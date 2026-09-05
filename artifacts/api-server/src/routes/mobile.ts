@@ -1575,6 +1575,12 @@ const PAGE_HTML = `<!doctype html>
           image: item._contextImage || undefined,
           outputLanguage: embeddedOutputLanguage || "English",
           attachments: (item.attachments || []).filter(function (a) { return a.type === "link" && a.url; }),
+          // The approve request has always said whether the broker curated the
+          // links by hand; this one never did, so the server had to guess from
+          // a diff — and with a draft that had NO links to begin with, "added
+          // three by hand" looked like nothing to compare against and the
+          // composer dropped all three (owner's test lead, 2026-09-05).
+          attachmentsCurated: !!item._attachmentsCurated,
         }),
       });
       // Show what the server actually said. "API 502" told the broker nothing —
