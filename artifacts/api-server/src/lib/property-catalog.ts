@@ -731,7 +731,7 @@ export function extractBudgetIdr(messages: string[]): number | null {
     // from the beach" stays a distance.
     const moneyContext = /idr|rp\b|rupiah|budget|бюджет|price|цен/i.test(m);
     const short =
-      m.match(/(\d[\d.,]*)\s*(jt\b|juta|mio\b|mln\b|mill(?:ion)?s?\b|млн|миллион)/) ??
+      m.match(/(\d[\d.,]*)\s*(jt\b|juta|mio\b|mln\b|mill(?:ion)?s?\b|mil\b|млн|миллион)/) ??
       (moneyContext ? m.match(/(\d[\d.,]*)\s*(m)\b/) : null);
     if (short?.[1]) {
       const n = parseFloat(short[1].replace(/[.,](?=\d{3}\b)/g, "").replace(",", "."));
@@ -797,7 +797,7 @@ export function extractBudgetFloorIdr(messages: string[]): number | null {
 
     const moneyContext = /idr|rp\b|rupiah|budget|бюджет|price|цен/i.test(m);
     const range = new RegExp(
-      String.raw`(\d[\d.,]*)${RANGE_SEP.source}(\d[\d.,]*)\s*(jt\b|juta|mio\b|mln\b|mill(?:ion)?s?\b|млн|миллион)`,
+      String.raw`(\d[\d.,]*)${RANGE_SEP.source}(\d[\d.,]*)\s*(jt\b|juta|mio\b|mln\b|mill(?:ion)?s?\b|mil\b|млн|миллион)`,
     ).exec(m) ??
       (moneyContext
         ? new RegExp(String.raw`(\d[\d.,]*)${RANGE_SEP.source}(\d[\d.,]*)\s*(m)\b`).exec(m)
