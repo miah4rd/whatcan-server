@@ -2500,7 +2500,7 @@ const PAGE_HTML = `<!doctype html>
       } else {
         html += '<div class="skip-row">';
         html += '<span class="skip-lbl">Skip:</span>';
-        // Honest labels. "Skip (trash)" called /no-reply-needed, which books the
+        // Honest labels. "Not now (follow up later)" called /no-reply-needed, which books the
         // next touch in a few days unless the classifier had already marked the
         // conversation over — so a lead a broker "trashed" came back in PUSH
         // (Michael, 2026-09-05). What it does is "not now"; a real close is the
