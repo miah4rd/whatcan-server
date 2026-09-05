@@ -22,6 +22,7 @@ import { processListingAcquisitionOutreach } from "./listing-acquisition-outreac
 import { processWeeklyAvailabilityCheck } from "./weekly-availability-check";
 import { processListingOwnerFollowup } from "./listing-owner-followup";
 import { processHandoverDrafts, HANDOVER_VERDICT } from "./handover-draft";
+import { processLongTermAvailabilityChecks } from "./long-term-check";
 import { isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { logStuckLeads } from "./stuck-leads";
 import { logUnknownPipelines, isReachStageName } from "./pipelines";
@@ -1613,6 +1614,9 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
     // handover draft is LIVE with us speaking last, by design); both cleanup
     // sites now exempt the handover verdict.
     processHandoverDrafts().catch((err) => logger.error({ err }, "handover draft error"));
+    // Two weeks before a parked villa frees up, the broker gets a ready
+    // availability check instead of a bare amoCRM task.
+    processLongTermAvailabilityChecks().catch((err) => logger.error({ err }, "long-term check error"));
   }, intervalMs);
 
   // A paid ad lead sat unnoticed for up to ten minutes: one 5-min pass to seed

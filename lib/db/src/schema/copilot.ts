@@ -141,6 +141,10 @@ export const leadsSyncTable = pgTable("leads_sync", {
   // is about "now", and one that never expires is one nobody trusts. Reads as
   // unpinned once PRIORITY_WINDOW_DAYS have passed; nothing has to clear it.
   priorityAt: timestamp("priority_at", { withTimezone: true }),
+  /** Rental Listings: the date the owner said the villa frees up, set when a
+   * card is parked in "long term". The availability-check draft is timed from
+   * it (free date minus 14 days); cleared when the card leaves the stage. */
+  listingFreeFrom: timestamp("listing_free_from", { withTimezone: true }),
   // ── The client's request, in the five things a broker needs to recognise them
   // at a glance: who, how many people, how many bedrooms, when, where. Asked for
   // by the brokers ("I just want to scan the request and remember the clients").
