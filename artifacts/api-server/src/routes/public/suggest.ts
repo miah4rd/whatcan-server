@@ -8,7 +8,7 @@ import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing"
 import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
-import { pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment } from "../../lib/generate-suggestion";
+import { allAttachmentsNamed, pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment } from "../../lib/generate-suggestion";
 import { brokerDisplayName } from "../../lib/broker-identity";
 import { getLeadCardCriteria } from "../../lib/lead-card-fields";
 import { learnFromRevision, correctionsPromptBlock, deriveSituation } from "../../lib/broker-corrections";
@@ -654,11 +654,17 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             .map((a) => idOf(a.url))
             .filter(Boolean) as string[],
         );
-        // With no stored draft there is nothing to compare against — that is not
-        // evidence the broker curated anything, and treating it as such quietly
-        // froze the links on every revision where the row was missing.
+        // With no stored draft ROW there is nothing to compare against — that is
+        // not evidence the broker curated anything, and treating it as such
+        // quietly froze the links on every revision where the row was missing.
+        // A row that exists with ZERO links is a different thing: the bot
+        // attached nothing, and links arriving now were added by a human. The
+        // old `stored.size > 0` guard lumped the two together, so a broker who
+        // added three villas to a link-less draft got them all thrown away by
+        // the composer's "none_this_message" (owner's test lead, 2026-09-05).
+        const rowExists = !!pendingRow;
         const differs =
-          stored.size > 0 && (stored.size !== sent.size || [...sent].some((id) => !stored.has(id)));
+          rowExists && (stored.size !== sent.size || [...sent].some((id) => !stored.has(id)));
         if (differs) {
           curatedDetected = true;
           req.log.info(
@@ -850,7 +856,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           // A hand-curated list means the text MUST mirror it — "если ссылки
           // поменял руками, то и текст должен подстроиться" — but only when the
           // text actually fails to mention what is attached.
-          if (curatedDetected && chosen.length > 0 && !textMentionsEveryAttachment(composed.text, chosen)) {
+          if (curatedDetected && chosen.length > 0 && !allAttachmentsNamed(composed.text, chosen)) {
             mustReconcile = true;
           }
 
