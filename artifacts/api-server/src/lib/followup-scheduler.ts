@@ -1344,6 +1344,10 @@ export async function processUnansweredLive(): Promise<void> {
           isNull(leadsSyncTable.lastMessageAt),
           sql`${leadsSyncTable.lastOurMessageAt} < ${leadsSyncTable.lastMessageAt}`,
         ),
+        // A co-broke listing card is a silent archive (owner, 07.09.2026): no
+        // draft is written for it — autopilot would only retire it, and this
+        // pass would write it again next tick.
+        sql`NOT (lower(coalesce(${leadsSyncTable.pipeline},'')) = 'rental listings' AND lower(coalesce(${leadsSyncTable.leadStage},'')) LIKE '%co-broke%')`,
       ),
     );
 

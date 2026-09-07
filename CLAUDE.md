@@ -861,6 +861,16 @@ out of a viewing stage by regex; the owner rejected that ("лид по кано�
 - A correlated subquery inside `db.select({...})` rendered `lead_id = lead_id`
   and greeted Liu as "Fengshui": read per-lead values in their own query.
 
+### co-broke Agents is a silent archive (2026-09-07)
+
+Owner: the stage exists so an intermediary's contact is not binned — a plan B
+"при необходимости человек сам свяжется". Nothing is sent from it, no draft is
+written for it (unanswered-live pass skips it, autopilot retires anything that
+still lands there), the broker is not prompted. The only exit is the stage
+engine deciding the counterpart is the owner. long term differs: replies to
+the owner go out (a "free now" is answered and the card released); proactive
+drafts there are retired, except the dated availability check.
+
 ### Listing stage engine (2026-09-07, evening)
 
 `lib/listing-stage-engine.ts` is the ONLY code that moves a listing card
