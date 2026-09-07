@@ -262,7 +262,11 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
     .select({
       ours: sql<number>`count(*) FILTER (WHERE ${leadMessagesTable.senderType} <> 'lead')::int`,
       theirs: sql<number>`count(*) FILTER (WHERE ${leadMessagesTable.senderType} = 'lead')::int`,
-      newest: sql<Date | null>`max(${leadMessagesTable.sentAt})`,
+      // Epoch ms, not a timestamp: pg hands `max(timestamptz)` back as
+      // "2026-09-07 07:16:45+02", which `new Date()` cannot parse, and an
+      // Invalid Date compares false — every card was re-read on every run
+      // (88 model calls on the first cached pass instead of 0).
+      newestMs: sql<number | null>`(extract(epoch from max(${leadMessagesTable.sentAt})) * 1000)::float8`,
     })
     .from(leadMessagesTable)
     .where(and(eq(leadMessagesTable.leadId, leadId), sql`${leadMessagesTable.text} IS NOT NULL`));
@@ -271,7 +275,7 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
 
   let facts: ListingFacts;
   let extractedHere = false;
-  const newestAt = sig?.newest ? new Date(sig.newest) : null;
+  const newestAt = sig?.newestMs ? new Date(Number(sig.newestMs)) : null;
   const cached =
     row.listingFacts && row.listingFactsAt && newestAt && newestAt.getTime() <= row.listingFactsAt.getTime()
       ? (row.listingFacts as unknown as ListingFacts)
