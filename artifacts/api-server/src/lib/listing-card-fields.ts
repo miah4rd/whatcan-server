@@ -602,15 +602,23 @@ export async function confirmsNotOurFormat(leadId: string): Promise<boolean> {
     label: "listing:not-our-format-check",
     max_tokens: 200,
     temperature: 0,
-    system: `We rent whole villas monthly or yearly. Answer ONE question about the conversation: has the villa side ruled out BOTH monthly AND yearly letting of the WHOLE villa, permanently?
+    system: `We are a rental agency that lists WHOLE villas for MONTHLY or YEARLY rent, on a 10% commission, through the person we are talking to. Answer ONE question: is this card DEAD — can this villa never be listed by us through this contact, whatever we say next?
 
-true ONLY for a permanent, stated refusal: daily/short-stay only with no monthly offered, let by the room rather than as a whole villa, they no longer look after the property, they will not work with agencies at all.
+true when the villa side STATED one of these:
+- the villa is rented by the ROOM or as shared accommodation, not as a whole villa
+- DAILY / short-stay ONLY, and monthly was not offered ("available daily on Airbnb only")
+- SOLD, not for rent, for sale only ("property already sold", "leasehold only, not for rent")
+- this contact NO LONGER handles the villa and cannot point us to who does
+- the villa is under contract with ANOTHER management company or agency and they will not work through us
+- they REFUSE to work with agencies at all (an in-house team does all marketing, no external collaboration)
 
-false for everything else, including these, each of which was wrongly answered true before:
-- any answer that includes monthly ("daily dan monthly", "monthly and long term") — monthly IS what we do
-- a villa still being built or renovated ("still in progress", "two units left") — nothing is refused, it is not ready yet
-- a period blocked by bookings or events — that passes
+false — the card stays alive — for all of these, each of which was closed wrongly before:
+- any answer that includes MONTHLY ("daily and monthly", "monthly and long term") — monthly IS our format
+- a villa still being BUILT or renovated — not ready is not refused
+- OCCUPIED for a period, booked out with events, weddings, guests until a date — that passes; it is availability, not a refusal
 - "we can't do yearly" alone, when monthly was never ruled out
+- "daily rental" mentioned as their current model while they are still talking with us and monthly was not ruled out
+- a price named, a date named, an offer to discuss, a call proposed — a conversation that is still going
 - anything you are unsure about
 
 Reply with JSON only: {"rules_out": true|false, "why": "<8 words>"}`,
