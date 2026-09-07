@@ -471,7 +471,7 @@ export async function syncListingFactsToCard(
  */
 // Owner, 05.09.2026: "всё, что ниже тридцати трёх миллионов в корзину" —
 // compared against the CLIENT-FACING price (net + our 10%).
-const MIN_LISTING_MONTHLY_IDR = 33_000_000;
+export const MIN_LISTING_MONTHLY_IDR = 33_000_000;
 
 /** What a client would be quoted, from whatever we know about the price. */
 export function clientFacingMonthlyIdr(f: ListingFacts): number | null {
@@ -491,11 +491,18 @@ export function clientFacingMonthlyIdr(f: ListingFacts): number | null {
   return f.commission === "included" ? monthly : Math.round(monthly * 1.1);
 }
 
-export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[] } {
-  const missing: string[] = [];
-  const quoted = clientFacingMonthlyIdr(
+/** The client-facing price the FLOOR is judged on: the most expensive unit
+ *  when several are offered — a portfolio is binned only if all of it is
+ *  under the floor. The card's own price line stays the smallest unit's. */
+export function floorQuoteIdr(f: ListingFacts): number | null {
+  return clientFacingMonthlyIdr(
     f.maxMonthlyIdr && f.maxMonthlyIdr > (f.monthlyIdr ?? 0) ? { ...f, monthlyIdr: f.maxMonthlyIdr } : f,
   );
+}
+
+export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[] } {
+  const missing: string[] = [];
+  const quoted = floorQuoteIdr(f);
   if (quoted !== null && quoted < MIN_LISTING_MONTHLY_IDR) {
     missing.push(
       `below our floor: ${Math.round(quoted / 1_000_000)}M quoted, minimum ${MIN_LISTING_MONTHLY_IDR / 1_000_000}M`,
@@ -528,66 +535,10 @@ export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[
 }
 
 /**
- * Stages a card may be promoted FROM.
- *
- * Deliberately a whitelist. Everything past QUALIFIED is a person's judgement
- * about a listing already in flight, and a bot that moved a card back from
- * `agreement` because this round's extraction came out thinner would undo work
- * nobody asked it to touch. Promotion only moves forward, and never touches a
- * closed card.
- */
-const PROMOTABLE_FROM = ["incoming leads", "initial contact", "taken to work"];
-const QUALIFIED_STAGE = "QUALIFIED (Pre-listed)";
-
-async function stageIdByName(pipelineId: number, name: string): Promise<string | null> {
-  const { id } = await safeStageIdForLead({ pipelineId, stageId: null, stageName: name });
-  return id;
-}
-
-/**
- * Move a card to QUALIFIED once the conversation has earned it.
- *
- * Never closes anything: a stop signal withholds promotion, it does not bin the
- * card. Deciding a villa is dead stays a person's tap, like every other terminal
- * stage in this system.
- */
-export async function promoteIfQualified(
-  leadId: string,
-  f: ListingFacts,
-): Promise<{ moved: boolean; reason: string }> {
-  const verdict = meetsQualified(f);
-  if (!verdict.ok) return { moved: false, reason: `not yet: ${verdict.missing.join(", ")}` };
-
-  const lead = await getAmoLead(leadId);
-  if (!lead?.pipeline_id) return { moved: false, reason: "amoCRM did not return the lead's funnel" };
-
-  // Resolved against the funnel amoCRM says the lead is in, never our own
-  // `pipeline` column — that column is exactly what lags when a human moves a
-  // card, and a status id from the wrong funnel RELOCATES the lead.
-  const target = await stageIdByName(lead.pipeline_id, QUALIFIED_STAGE);
-  if (!target) return { moved: false, reason: `no "${QUALIFIED_STAGE}" stage in this funnel` };
-  if (String(lead.status_id ?? "") === target) return { moved: false, reason: "already qualified" };
-
-  const promotable: string[] = [];
-  for (const name of PROMOTABLE_FROM) {
-    const id = await stageIdByName(lead.pipeline_id, name);
-    if (id) promotable.push(id);
-  }
-  if (!promotable.includes(String(lead.status_id ?? ""))) {
-    return { moved: false, reason: `stage ${lead.status_id} is at or past QUALIFIED — left alone` };
-  }
-
-  const ok = await updateLeadStatus(leadId, Number(target));
-  if (!ok) return { moved: false, reason: "amoCRM refused the stage change" };
-  logger.info({ leadId, from: lead.status_id, to: target }, "listing card auto-qualified");
-  return { moved: true, reason: "qualified" };
-}
-
-/**
  * Does this card's own conversation earn QUALIFIED right now?
  *
  * Exists because TWO mechanisms could put a card on that stage and only one of
- * them knew the rule. `promoteIfQualified` checks bedrooms, a price with its
+ * them knew the rule. The stage engine (listing-stage-engine.ts) checks bedrooms, a price with its
  * commission position, and that we are talking to the owner. The general stage
  * classifier, applied on every send, reads the thread and picks whatever stage
  * the conversation "feels" like — and it moved two cards to QUALIFIED on the
@@ -627,7 +578,7 @@ export async function qualificationVerdictForLead(
  * same judgement buried in a twelve-field extraction, and it fails CLOSED: any
  * error, any unparseable answer, and the card simply stays open.
  */
-async function confirmsNotOurFormat(leadId: string): Promise<boolean> {
+export async function confirmsNotOurFormat(leadId: string): Promise<boolean> {
   const res = await db.execute(sql`
     SELECT string_agg(m.sender_type || ': ' || m.text, E'\n' ORDER BY m.sent_at) AS convo
       FROM lead_messages m
@@ -661,81 +612,13 @@ Reply with JSON only: {"rules_out": true|false, "why": "<8 words>"}`,
   return out.rules_out;
 }
 
-/**
- * A parked "long term" card whose owner now says the villa is free (or free
- * within the ~3 months we treat as offerable) leaves the parking stage.
- *
- * The owner's rule (2026-09-05): "мы перешли от лонг терм к сбору деталей".
- * Everything known → Details, the stage where photos and the map pin are
- * collected. Free but still missing a fact (price, commission position) →
- * back to TAKEN TO WORK, where the bot asks for it. Nothing here moves a card
- * that is still occupied: that is what the parking stage is for.
- */
-export async function releaseFromLongTerm(
-  leadId: string,
-  f: ListingFacts,
-): Promise<{ moved: boolean; to?: string; reason: string }> {
-  const res = await db.execute(
-    sql`SELECT lead_stage FROM leads_sync WHERE lead_id = ${leadId}`,
-  );
-  const stage = String((res.rows?.[0] as { lead_stage?: string } | undefined)?.lead_stage ?? "").toLowerCase();
-  if (!stage.includes("long term")) return { moved: false, reason: "not parked" };
-  if (f.stopKind === "occupied" && !freeSoon(f)) return { moved: false, reason: "still occupied" };
-
-  const lead = await getAmoLead(leadId);
-  if (!lead?.pipeline_id) return { moved: false, reason: "amoCRM did not return the lead's funnel" };
-  const verdict = meetsQualified(f);
-  const target = verdict.ok ? "Details" : "TAKEN TO WORK";
-  const id = await stageIdByName(lead.pipeline_id, target);
-  if (!id) return { moved: false, reason: `no "${target}" stage in this funnel` };
-  const ok = await updateLeadStatus(leadId, Number(id));
-  if (ok) {
-    await db
-      .update(leadsSyncTable)
-      .set({ leadStage: target, leadStageId: id, listingFreeFrom: null, updatedAt: new Date() })
-      .where(eq(leadsSyncTable.leadId, leadId))
-      .catch(() => undefined);
-    logger.info({ leadId, to: target, missing: verdict.missing }, "long term released: villa is free again");
-  }
-  return { moved: ok, to: target, reason: verdict.ok ? "free and qualified" : `free, still missing: ${verdict.missing.join(", ")}` };
-}
-
-// ── Where a card belongs when it is NOT going to QUALIFIED ──────────────────
-
-const CO_BROKE_STAGE = "co-broke Agents";
-const LONG_TERM_STAGE = "long term";
-
-/** How far ahead of the free date we want to be talking again. A villa is
- *  re-let before it empties, so landing on the day itself is landing late.
- *  Two weeks is the owner's call: close enough that the conversation is about
- *  the actual handover, early enough to be first. */
-const REMIND_BEFORE_DAYS = 14;
-
-/**
- * Route a card the qualification rule turned down.
- *
- * The owner's two parking stages, and the reasoning behind each:
- *
- *   co-broke Agents — a management company or another agency holds this villa.
- *   Not thrown away, because the contact may matter later, but not worked
- *   either: the stage suppresses drafts and no task is set. Nothing to say
- *   until something changes on their side.
- *
- *   long term — the villa IS ours to take, it is simply let for six or twelve
- *   months. This is the opposite of a dead card: we thank them, we say when we
- *   will be back, and we set the task that makes that true. The stage suppresses
- *   routine chasing precisely so the ONLY thing that happens is that task.
- *
- * A card that still qualifies is never parked — a management company we have
- * agreed terms with is a listing, not a filing cabinet.
- */
 /** Within this many days, "occupied" is availability, not a parking reason:
  *  a villa free in November is stock we offer in September. */
 const FREE_SOON_DAYS = 90;
 
 /** The free date as the extractor gave it, when it can be true: today or later
  *  (a villa that freed up yesterday is simply free), within 18 months. */
-function plausibleFreeDate(f: ListingFacts): Date | null {
+export function plausibleFreeDate(f: ListingFacts): Date | null {
   if (!f.freeFromIso) return null;
   const at = new Date(`${f.freeFromIso}T09:00:00+08:00`);
   if (Number.isNaN(at.getTime())) return null;
@@ -751,163 +634,21 @@ export function freeSoon(f: ListingFacts): boolean {
 }
 
 /**
- * An owner filed under co-broke is not a co-broke. The counterpart rule was
- * tightened (in-house team = owner) after 15 cards had been parked there; this
- * brings them back to work so the qualification path decides again. Only on
- * "owner" — "unclear" would let two extractions ping-pong a card.
+ * Hard vetoes on a "not our format" close, decided in code before any model is
+ * asked. Each of these binned a live owner on the first run of the close:
+ *   a price on the table  — a villa side that named a monthly or yearly
+ *                           figure is negotiating, whatever else was said;
+ *   a date on the table   — "available from" is an offer, not a refusal;
+ *   not built yet         — "still in progress", "two units left" is a villa
+ *                           that is not ready, not one being refused.
  */
-export async function releaseFromCoBroke(
-  leadId: string,
-  f: ListingFacts,
-): Promise<{ moved: boolean; to?: string; reason: string }> {
-  const res = await db.execute(sql`SELECT lead_stage FROM leads_sync WHERE lead_id = ${leadId}`);
-  const stage = String((res.rows?.[0] as { lead_stage?: string } | undefined)?.lead_stage ?? "").toLowerCase();
-  if (!stage.includes("co-broke")) return { moved: false, reason: "not parked" };
-  if (f.counterpart !== "owner") return { moved: false, reason: `counterpart is ${f.counterpart}` };
-  const lead = await getAmoLead(leadId);
-  if (!lead?.pipeline_id) return { moved: false, reason: "amoCRM did not return the lead's funnel" };
-  const id = await stageIdByName(lead.pipeline_id, "TAKEN TO WORK");
-  if (!id) return { moved: false, reason: "no TAKEN TO WORK stage in this funnel" };
-  const ok = await updateLeadStatus(leadId, Number(id));
-  if (ok) {
-    await db
-      .update(leadsSyncTable)
-      .set({ leadStage: "TAKEN TO WORK", leadStageId: id, updatedAt: new Date() })
-      .where(eq(leadsSyncTable.leadId, leadId))
-      .catch(() => undefined);
-    logger.info({ leadId }, "co-broke released: the counterpart is the owner");
-  }
-  return { moved: ok, to: "TAKEN TO WORK", reason: "owner, not a co-broke" };
+export function notOurFormatVetoed(f: ListingFacts): boolean {
+  const hasOffer = !!(f.monthlyIdr || f.yearlyIdr);
+  const hasDate = !!(f.availableFrom || f.freeFromIso);
+  const notReadyYet =
+    /still in progress|in progress|under construction|being built|not (yet )?(finished|ready)|renovat|finishing|belum selesai|masih dibangun|sedang dibangun|proses pembangunan/i.test(
+      f.stopSignal ?? "",
+    );
+  return hasOffer || hasDate || notReadyYet;
 }
 
-export async function routeUnqualified(
-  leadId: string,
-  f: ListingFacts,
-): Promise<{ moved: boolean; to?: string; reason: string }> {
-  const lead = await getAmoLead(leadId);
-  if (!lead?.pipeline_id) return { moved: false, reason: "amoCRM did not return the lead's funnel" };
-
-  const move = async (stageName: string): Promise<boolean> => {
-    const { id } = await safeStageIdForLead({ pipelineId: lead.pipeline_id!, stageId: null, stageName });
-    if (!id) {
-      logger.warn({ leadId, stageName }, "listing routing: stage not found in this funnel");
-      return false;
-    }
-    if (String(lead.status_id ?? "") === id) return false;
-    return updateLeadStatus(leadId, Number(id));
-  };
-
-  // PRICE first — a deterministic number, the owner's rule (05.09: below 33M
-  // client-facing goes to the bin), and it beats parking: an occupied 18M villa
-  // was parked in long term and a manager's 26M one filed under co-broke.
-  // The bin is for a portfolio where EVERY unit is under the floor: judge the
-  // most expensive one. The card's own price stays the smallest unit's.
-  const quoted = clientFacingMonthlyIdr(
-    f.maxMonthlyIdr && f.maxMonthlyIdr > (f.monthlyIdr ?? 0) ? { ...f, monthlyIdr: f.maxMonthlyIdr } : f,
-  );
-  if (quoted !== null && quoted < MIN_LISTING_MONTHLY_IDR) {
-    const ok = await closeLeadAsLost(leadId);
-    logger.info({ leadId, quotedIdr: quoted }, "listing closed: below the minimum we can place");
-    return {
-      moved: ok,
-      to: "Closed - lost",
-      reason: `below our floor: ${Math.round(quoted / 1_000_000)}M quoted`,
-    };
-  }
-
-  // WHO first. A management company or another agency holds the villa, so the
-  // listing details do not change the answer: we are not taking it on our terms.
-  if (f.counterpart === "manager" || f.counterpart === "agent") {
-    const ok = await move(CO_BROKE_STAGE);
-    return { moved: ok, to: CO_BROKE_STAGE, reason: `counterpart is ${f.counterpart}` };
-  }
-
-  // Ours, just let for a long stretch: keep it warm, and make "we'll come back"
-  // a real thing rather than a polite sentence.
-  if (f.stopKind === "occupied" && freeSoon(f)) {
-    return { moved: false, reason: `occupied but free from ${f.freeFromIso} — offerable now, not parked` };
-  }
-  if (f.stopKind === "occupied") {
-    const ok = await move(LONG_TERM_STAGE);
-    if (ok && f.freeFromIso) {
-      // Remembered on the card so the availability-check pass can time its
-      // draft from it without re-reading the whole thread. Only a date that can
-      // be true: the extractor once returned 2024 for a villa "free from
-      // September" — a past year, or one absurdly far out, would have produced
-      // a draft telling the owner his villa frees up two years ago.
-      const freeAt = new Date(`${f.freeFromIso}T09:00:00+08:00`);
-      const plausible =
-        freeAt.getTime() > Date.now() && freeAt.getTime() < Date.now() + 548 * 86_400_000;
-      if (plausible) {
-        await db
-          .update(leadsSyncTable)
-          .set({ listingFreeFrom: freeAt })
-          .where(eq(leadsSyncTable.leadId, leadId))
-          .catch(() => undefined);
-      } else {
-        logger.warn({ leadId, freeFromIso: f.freeFromIso }, "long term: free date implausible — not stored, no dated check");
-      }
-      const free = new Date(`${f.freeFromIso}T09:00:00+08:00`);
-      const due = new Date(free.getTime() - REMIND_BEFORE_DAYS * 86_400_000);
-      const soonest = new Date(Date.now() + 7 * 86_400_000);
-      await createAmoTask(
-        leadId,
-        `Villa frees up around ${f.freeFromIso}. Get back in touch now, before it is re-let.`,
-        due > soonest ? due : soonest,
-      );
-    }
-    return { moved: ok, to: LONG_TERM_STAGE, reason: f.freeFromIso ? `free from ${f.freeFromIso}` : "occupied, date unknown" };
-  }
-
-  // Not a villa we can ever list on our terms, said by the owner in plain words:
-  // leasehold only, daily only, three months maximum, rooms rather than the
-  // whole villa, booked out with events, "we don't look after that property
-  // anymore". Nothing here changes with time, so there is nothing to park and
-  // nothing to chase — the ladder would spend three more messages asking for a
-  // monthly rate that does not exist.
-  //
-  // A deliberate exception to "Closed - lost is never automatic": that rule
-  // protects a JUDGEMENT about a live negotiation. This is the counterpart
-  // stating the format, and the owner asked for it explicitly (04.09.2026).
-  // Too cheap for any client we take. A deterministic number, not a judgement,
-  // so it closes without the second opinion the format check needs.
-  if (f.stopKind === "not_our_format") {
-    /**
-     * Hard vetoes, decided in code, before any model is asked.
-     *
-     * The second opinion below makes a wrong close rare. These make the three
-     * kinds of wrong close that actually happened impossible, without anyone
-     * watching:
-     *
-     *   a price on the table  — a villa side that named a monthly or yearly
-     *                           figure is negotiating, whatever else was said;
-     *   a date on the table   — "available from" is an offer, not a refusal;
-     *   not built yet         — "still in progress", "two units left" is a
-     *                           villa that is not ready, not one being refused.
-     *
-     * Each of these binned a live owner on the first run of the close. A card
-     * held back costs a card sitting where it already sat; a card closed wrongly
-     * costs the listing.
-     */
-    const hasOffer = !!(f.monthlyIdr || f.yearlyIdr);
-    const hasDate = !!(f.availableFrom || f.freeFromIso);
-    const notReadyYet =
-      /still in progress|in progress|under construction|being built|not (yet )?(finished|ready)|renovat|finishing|belum selesai|masih dibangun|sedang dibangun|proses pembangunan/i.test(
-        f.stopSignal ?? "",
-      );
-    if (hasOffer || hasDate || notReadyYet) {
-      logger.warn(
-        { leadId, stopSignal: f.stopSignal, hasOffer, hasDate, notReadyYet },
-        "not-our-format overruled in code: this card carries a live offer, a date, or a villa still being finished",
-      );
-      return { moved: false, reason: "not_our_format overruled: the card is still live" };
-    }
-  }
-  if (f.stopKind === "not_our_format" && (await confirmsNotOurFormat(leadId))) {
-    const ok = await closeLeadAsLost(leadId);
-    logger.info({ leadId, stopSignal: f.stopSignal }, "listing closed: not a format we can list");
-    return { moved: ok, to: "Closed - lost", reason: `not our format: ${f.stopSignal ?? "stated by the counterpart"}` };
-  }
-
-  return { moved: false, reason: "nothing to route on yet" };
-}

@@ -27,13 +27,10 @@ import { correctionsPromptBlock } from "./broker-corrections";
 import {
   extractListingFacts,
   syncListingFactsToCard,
-  promoteIfQualified,
-  routeUnqualified,
-  releaseFromLongTerm,
-  releaseFromCoBroke,
   meetsQualified,
   type ListingFacts,
 } from "./listing-card-fields";
+import { reconcileListingStage } from "./listing-stage-engine";
 import { formatDialogForAI } from "./dialog-parser";
 import { getMergedConversation } from "./merged-conversation";
 import { sanitizeSuggestion } from "./sanitize-suggestion";
@@ -302,20 +299,10 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
       // columns still empty is an agent opening a "ready" listing that tells
       // them nothing — the exact state this whole change exists to end.
       await syncListingFactsToCard(opts.leadId, facts);
-      // A parked card whose owner just said "free again" leaves long term first
-      // — to Details when everything is known, back to work when not.
-      const released = await releaseFromLongTerm(opts.leadId, facts);
-      if (released.moved) logger.info({ leadId: opts.leadId, ...released }, "listing card released from long term");
-      const unparked = await releaseFromCoBroke(opts.leadId, facts);
-      if (unparked.moved) logger.info({ leadId: opts.leadId, ...unparked }, "listing card released from co-broke");
-      const outcome = await promoteIfQualified(opts.leadId, facts);
-      logger.info({ leadId: opts.leadId, ...outcome }, "listing-acquisition: qualification checked");
-      // Only when it did NOT qualify: a management company we have agreed terms
-      // with is a listing, not something to file away.
-      if (!outcome.moved && outcome.reason.startsWith("not yet")) {
-        const routed = await routeUnqualified(opts.leadId, facts);
-        if (routed.moved) logger.info({ leadId: opts.leadId, ...routed }, "listing card parked");
-      }
+      // One owner for the stage: the engine computes it from the accumulated
+      // facts and moves the card if, and only if, the facts earn it.
+      const r = await reconcileListingStage(opts.leadId, { facts, apply: true, source: "reply" });
+      logger.info({ leadId: opts.leadId, ...r }, "listing-acquisition: stage reconciled");
     })().catch((err) =>
       logger.warn({ err, leadId: opts.leadId }, "listing-acquisition: card fill failed (non-fatal)"),
     );

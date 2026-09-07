@@ -394,6 +394,11 @@ export async function classifyStage(opts: {
 }): Promise<StageClassification | null> {
   const pipelineKey = (opts.pipeline ?? "").trim().toLowerCase();
   if (!isConversationalPipeline(pipelineKey)) return null;
+  // The listing funnel has ONE owner for its stages: lib/listing-stage-engine.ts
+  // computes the stage from facts. A classification of prose moved five cards
+  // to Details on "will be happy to discuss" (03.09) and flapped QUALIFIED
+  // cards back to TAKEN TO WORK (04-06.09). No classification here at all.
+  if (isListingAcquisition(pipelineKey)) return null;
 
   const stages = (await loadPipelines()).get(pipelineKey);
   if (!stages || stages.selectable.length === 0) return null;

@@ -23,6 +23,7 @@ import { processWeeklyAvailabilityCheck } from "./weekly-availability-check";
 import { processListingOwnerFollowup } from "./listing-owner-followup";
 import { processHandoverDrafts, HANDOVER_VERDICT } from "./handover-draft";
 import { processLongTermAvailabilityChecks } from "./long-term-check";
+import { maybeRunDailyListingAudit } from "./listing-stage-engine";
 import { isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { logStuckLeads } from "./stuck-leads";
 import { logUnknownPipelines, isReachStageName } from "./pipelines";
@@ -1617,6 +1618,10 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
     // Two weeks before a parked villa frees up, the broker gets a ready
     // availability check instead of a bare amoCRM task.
     processLongTermAvailabilityChecks().catch((err) => logger.error({ err }, "long-term check error"));
+    // Once a day: every listing card brought to the stage its facts earn, and
+    // the broker told which of HIS cards the facts disagree with. Drift is
+    // seen by a report, not by the owner opening cards.
+    maybeRunDailyListingAudit().catch((err) => logger.error({ err }, "listing stage audit error"));
   }, intervalMs);
 
   // A paid ad lead sat unnoticed for up to ten minutes: one 5-min pass to seed
