@@ -302,7 +302,7 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
       // One owner for the stage: the engine computes it from the accumulated
       // facts and moves the card if, and only if, the facts earn it.
       const r = await reconcileListingStage(opts.leadId, { facts, apply: true, source: "reply" });
-      logger.info({ leadId: opts.leadId, ...r }, "listing-acquisition: stage reconciled");
+      logger.info({ ...r, source: "reply" }, "listing-acquisition: stage reconciled");
     })().catch((err) =>
       logger.warn({ err, leadId: opts.leadId }, "listing-acquisition: card fill failed (non-fatal)"),
     );
