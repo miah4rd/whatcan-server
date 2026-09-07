@@ -813,9 +813,12 @@ router.post("/approve", async (req, res) => {
   // Listing funnel: QUALIFIED / Details / agreement are earned by data (the
   // qualification rule) or chosen by a person — never applied from a
   // classification, however old the draft that carries it.
-  if (!explicitNewStage && autoStage && isRuleOwnedAcquisitionStage(prevSyncRow?.pipeline, autoStage.name)) {
+  const [stageCtx] = autoStage && !explicitNewStage
+    ? await db.select({ pipeline: leadsSyncTable.pipeline }).from(leadsSyncTable).where(eq(leadsSyncTable.leadId, sug.leadId)).limit(1)
+    : [];
+  if (!explicitNewStage && autoStage && isRuleOwnedAcquisitionStage(stageCtx?.pipeline, autoStage.name)) {
     req.log.info(
-      { leadId: sug.leadId, refused: autoStage.name, pipeline: prevSyncRow?.pipeline },
+      { leadId: sug.leadId, refused: autoStage.name, pipeline: stageCtx?.pipeline },
       "auto stage refused: rule-owned acquisition stage, the qualification rule decides",
     );
     autoStage = null;
