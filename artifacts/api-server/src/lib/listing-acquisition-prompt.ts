@@ -87,13 +87,15 @@ NO DASHES. Not the long one, not the short one, not a hyphen standing in for one
 
 WHAT TO DO:
 1. FIRST CONTACT (they have not replied to us yet): open on their listing, not on us. Reference the specific villa and ask the single most useful thing the ACTION BRIEF says to clarify, usually whether it's still available, plus the exact location or the dates. If the owner-or-manager question fits naturally in one line, ask it the way rule 2b puts it, with THREE options, never two: "are you the owner, part of the owner's own team, or is there a management company looking after it?" Two options force the owner's own assistant to answer "managing on behalf", which files a salaried employee as a middleman. If it does not fit, it waits for the next message. No pitch, no value proposition, no commission talk in this first message.
-2. If they have confirmed they ARE the owner (or the villa's own manager, developer or reception, anyone entitled to let it): move to QUALIFY. A card can be listed once we know the bedrooms and a price we may put on the site, so ask for both plus the date it frees up, IN ONE SENTENCE, and only for what this conversation has not already given you:
+2. If they have confirmed they ARE the owner (or the villa's own manager, developer or reception, anyone entitled to let it): move to QUALIFY. A card can be listed once we know the bedrooms, a price we may put on the site, when it frees up, the minimum stay they accept and the earliest day we could show it to a client. Ask IN ONE SENTENCE, and only for what this conversation has not already given you:
 
-   "Could you send me the number of bedrooms, the monthly and yearly rate including our 10% agency commission, and the date it's available from? That's everything we need to put it in front of our clients."
+   "Could you send me the number of bedrooms, the monthly and yearly rate including our 10% agency commission, the date it's available from, the minimum stay you accept, and the earliest day we could bring a client to view it? That's everything we need to put it in front of our clients."
+
+   THE VIEWING DAY IS NOT OPTIONAL. Last week clients asked to see seven of our listings and one could be shown; the rest were occupied, mid-renovation or the manager did not answer. A villa we cannot show is not stock. If everything else is known and only the viewing day is missing, ask for that alone.
 
    PRICE AND COMMISSION ARE ONE QUESTION, ALWAYS. If your message asks about money at all, the words "including our 10% agency commission" go with it, in that same sentence. Never "what's the monthly rate?", never "could you share pricing details", never "berapa harganya" on its own: a bare price question gets a bare number, and then we need a second message days later to learn whether our fee sits inside it or on top. Half our drafts were doing exactly that. One question, one answer, one round trip.
 
-   Ask for the price in THAT shape, "including our 10% agency commission". Never ask "does your price include commission?": the meta-question gets skipped or answered ambiguously, and a price we cannot quote to a client is not a price. If the villa is a complex of several units, add whether the rate is for one villa or the whole complex. Close on "that's everything we need", it tells the owner this is the last question, not the first of a form. Everything else (land and build size, what's included, minimum term, agreement, inspection) comes AFTER the villa is on the site; do not spend a round trip on it now.
+   Ask for the price in THAT shape, "including our 10% agency commission". Never ask "does your price include commission?": the meta-question gets skipped or answered ambiguously, and a price we cannot quote to a client is not a price. If the villa is a complex of several units, add whether the rate is for one villa or the whole complex. Close on "that's everything we need", it tells the owner this is the last question, not the first of a form. Everything else (land and build size, what's included, agreement, inspection) comes AFTER the villa is on the site; do not spend a round trip on it now.
 2a. FOLLOW-UP (you will be told when this is one): a day or more has passed since
    anyone wrote. That is not the same conversation continued, it is a new one
    opened on an old thread, and the person has slept, worked and forgotten us
@@ -201,6 +203,8 @@ export async function generateListingAcquisitionReply(
     if (facts.yearlyIdr) settled.push(`yearly rate: ${Math.round(facts.yearlyIdr / 1_000_000)} juta`);
     if (facts.commission !== "unknown") settled.push(`commission position: ${facts.commission}`);
     if (facts.availableFrom) settled.push(`available from: ${facts.availableFrom}`);
+    if (facts.minStayMonths !== null) settled.push(`minimum stay: ${facts.minStayMonths} months`);
+    if (facts.viewableFrom) settled.push(`viewable from: ${facts.viewableFrom}`);
     if (facts.area) settled.push(`area: ${facts.area}`);
     if (facts.counterpart !== "unclear") settled.push(`who we are speaking to: ${facts.counterpart}`);
     const missing = meetsQualified(facts).missing;

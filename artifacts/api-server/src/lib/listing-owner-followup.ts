@@ -132,13 +132,16 @@ export function composeNudge(ownerName: string, villa: string, missing: string[]
   if (missing.includes("bedrooms")) asks.push("how many bedrooms it has");
   if (missing.includes("price")) asks.push("the monthly and yearly rate including our 10% agency commission");
   else if (missing.includes("commission position")) asks.push("whether that rate already includes our 10% agency commission");
+  if (missing.includes("minimum stay")) asks.push("the minimum stay you accept");
+  if (missing.includes("earliest viewing")) asks.push("the earliest day we could bring a client to view it");
 
   if (asks.length === 0) {
     return (
       `Hi${who}, just following up on ${what}, are you still looking to rent it out? ` +
       `We have clients searching in the area right now.\n\n` +
       `If so, could you send me the number of bedrooms, the monthly and yearly rate ` +
-      `including our 10% agency commission, and the date it's available from, ` +
+      `including our 10% agency commission, the date it's available from, the minimum stay ` +
+      `you accept, and the earliest day we could bring a client to view it, ` +
       `that's everything we need to put it in front of them.`
     );
   }
