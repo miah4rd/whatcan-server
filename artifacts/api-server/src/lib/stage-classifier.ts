@@ -147,7 +147,7 @@ const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = 
  * A human moving a card by hand is unaffected: this only constrains what the
  * model may choose on our behalf.
  */
-const RULE_OWNED_ACQUISITION_STAGES = /qualified|квалифиц|details|детал|информац|agreement|договор|соглашен/i;
+const RULE_OWNED_ACQUISITION_STAGES = /qualified|квалифиц|details|детал|информац|agreement|договор|соглашен|long term|co-broke/i;
 
 /**
  * True when a stage on a listing-acquisition funnel may only be set by the
@@ -410,6 +410,15 @@ export async function classifyStage(opts: {
   const current = findStage(stages.all, opts.currentStage);
   if (current && TERMINAL_STAGE_IDS.has(current.def.id)) return null;
   if (opts.currentStage && shouldSuppressPush(opts.currentStage)) return null;
+  // Listing funnel: the classifier only works the two conversational stages
+  // (Initial Contact, TAKEN TO WORK). A card the qualification rule promoted
+  // was being pulled back to TAKEN TO WORK minutes later — Casa Ola four
+  // times, Menuai three, Bumbak three (04–06.09) — because the classifier
+  // could not pick QUALIFIED but could still pick the stage below it. Beyond
+  // TAKEN TO WORK the card is the rule's, the router's or a person's.
+  if (isListingAcquisition(pipelineKey) && current && !stages.selectable.some((s) => s.id === current.def.id)) {
+    return null;
+  }
 
   const optionsSent = stages.selectable.find((s) => /option|опци|вариант|подборк/i.test(s.name));
 
