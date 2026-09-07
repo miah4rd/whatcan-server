@@ -35,7 +35,7 @@
  * longer being occupied; the owner being the counterpart. An extraction that
  * merely came back thinner moves nothing.
  */
-import { db, leadsSyncTable, leadMessagesTable, stageEventsTable } from "@workspace/db";
+import { db, leadsSyncTable, leadMessagesTable, stageEventsTable, brokerSettingsTable } from "@workspace/db";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { getAmoLead, updateLeadStatus, closeLeadAsLost, createAmoTask } from "./amo-client";
@@ -446,17 +446,29 @@ export async function auditListingStages(opts: { apply: boolean; limit?: number 
   return { scanned: ids.length, moved, held, forBroker, notJudged, inPlace };
 }
 
+const AUDIT_DAY_KEY = "listing_audit_last_day";
 let lastAuditDay = "";
 /**
  * Once a day, after 09:00 Bali and before the outreach window opens: bring
  * the bot's cards into place and tell the broker which of his cards the facts
- * disagree with. Called from the scheduler tick.
+ * disagree with. Called from the scheduler tick. The day is persisted, so a
+ * restart (every deploy) does not run it — and push the broker — again.
  */
 export async function maybeRunDailyListingAudit(): Promise<void> {
   const bali = new Date(Date.now() + 8 * 3_600_000);
   const day = bali.toISOString().slice(0, 10);
   if (bali.getUTCHours() < 9 || lastAuditDay === day) return;
+  if (!lastAuditDay) {
+    const [row] = await db.select({ value: brokerSettingsTable.value }).from(brokerSettingsTable).where(eq(brokerSettingsTable.key, AUDIT_DAY_KEY)).limit(1);
+    lastAuditDay = row?.value ?? "";
+    if (lastAuditDay === day) return;
+  }
   lastAuditDay = day;
+  await db
+    .insert(brokerSettingsTable)
+    .values({ key: AUDIT_DAY_KEY, value: day })
+    .onConflictDoUpdate({ target: brokerSettingsTable.key, set: { value: day } })
+    .catch(() => undefined);
   const r = await auditListingStages({ apply: true });
   const lines = r.forBroker.slice(0, 6).map((x) => `#${x.leadId}: ${x.current} → facts say ${x.desired}`);
   const body = `Bot moved ${r.moved.length}, held ${r.held.length}${r.notJudged.length ? `, could not read ${r.notJudged.length}` : ""}. ${r.forBroker.length} of your cards disagree with their facts.${lines.length ? "\n" + lines.join("\n") : ""}`;
