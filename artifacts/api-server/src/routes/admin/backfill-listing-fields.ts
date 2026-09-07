@@ -74,7 +74,7 @@ router.post("/admin/backfill-listing-fields", async (req, res) => {
   let withBedrooms = 0;
 
   for (const r of rows) {
-    const facts = await extractListingFacts(r.convo ?? "");
+    const facts = await extractListingFacts(r.convo ?? "", r.lead_id);
     if (!facts) continue;
     if (facts.bedrooms) withBedrooms++;
     if (facts.monthlyIdr || facts.yearlyIdr) withPrice++;

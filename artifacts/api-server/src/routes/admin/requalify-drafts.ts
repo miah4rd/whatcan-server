@@ -70,7 +70,7 @@ router.post("/admin/requalify-drafts", async (req, res) => {
 
     // What the thread already gave us — reported so the caller can see WHY a
     // message came out short, without reading the conversation.
-    const facts = await extractListingFacts(conversation);
+    const facts = await extractListingFacts(conversation, lead.leadId);
     const known = facts
       ? {
           bedrooms: facts.bedrooms,
