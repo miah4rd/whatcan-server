@@ -242,6 +242,8 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
       leadStage: leadsSyncTable.leadStage,
       botExcluded: leadsSyncTable.botExcluded,
       listingFreeFrom: leadsSyncTable.listingFreeFrom,
+      listingFacts: leadsSyncTable.listingFacts,
+      listingFactsAt: leadsSyncTable.listingFactsAt,
     })
     .from(leadsSyncTable)
     .where(eq(leadsSyncTable.leadId, leadId))
@@ -257,6 +259,7 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
     .select({
       ours: sql<number>`count(*) FILTER (WHERE ${leadMessagesTable.senderType} <> 'lead')::int`,
       theirs: sql<number>`count(*) FILTER (WHERE ${leadMessagesTable.senderType} = 'lead')::int`,
+      newest: sql<Date | null>`max(${leadMessagesTable.sentAt})`,
     })
     .from(leadMessagesTable)
     .where(and(eq(leadMessagesTable.leadId, leadId), sql`${leadMessagesTable.text} IS NOT NULL`));
@@ -265,9 +268,17 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
 
   let facts: ListingFacts;
   let extractedHere = false;
+  const newestAt = sig?.newest ? new Date(sig.newest) : null;
+  const cached =
+    row.listingFacts && row.listingFactsAt && newestAt && newestAt.getTime() <= row.listingFactsAt.getTime()
+      ? (row.listingFacts as unknown as ListingFacts)
+      : null;
   if (opts.facts) facts = opts.facts;
   else if (opts.facts === null || !ownerReplied) facts = emptyFacts();
-  else {
+  else if (cached && typeof cached.counterpart === "string") {
+    // Nothing new in the thread since the last read: the facts stand.
+    facts = cached;
+  } else {
     const res = await db.execute(sql`
       SELECT string_agg(m.sender_type || ': ' || m.text, E'\n' ORDER BY m.sent_at) AS convo
         FROM lead_messages m
@@ -377,6 +388,9 @@ export async function auditListingStages(opts: { apply: boolean; limit?: number 
   moved: ReconcileResult[];
   held: ReconcileResult[];
   forBroker: ReconcileResult[];
+  /** Cards whose facts could not be read this run (a failed model call).
+   *  Listed, never counted as "in place": an outage must not look like order. */
+  notJudged: string[];
   inPlace: number;
 }> {
   const rows = await db.execute(sql`
@@ -393,10 +407,12 @@ export async function auditListingStages(opts: { apply: boolean; limit?: number 
   const moved: ReconcileResult[] = [];
   const held: ReconcileResult[] = [];
   const forBroker: ReconcileResult[] = [];
+  const notJudged: string[] = [];
   let inPlace = 0;
   for (const leadId of ids) {
     try {
       const r = await reconcileListingStage(leadId, { apply: opts.apply, source: "audit" });
+      if (r.reason.startsWith("facts unavailable")) { notJudged.push(leadId); continue; }
       if (r.applied) moved.push(r);
       else if (
         r.owner === "human" &&
@@ -413,8 +429,8 @@ export async function auditListingStages(opts: { apply: boolean; limit?: number 
       logger.error({ err, leadId }, "listing stage audit: card failed");
     }
   }
-  logger.info({ scanned: ids.length, moved: moved.length, held: held.length, forBroker: forBroker.length, inPlace, apply: opts.apply }, "listing stage audit complete");
-  return { scanned: ids.length, moved, held, forBroker, inPlace };
+  logger.info({ scanned: ids.length, moved: moved.length, held: held.length, forBroker: forBroker.length, notJudged: notJudged.length, inPlace, apply: opts.apply }, "listing stage audit complete");
+  return { scanned: ids.length, moved, held, forBroker, notJudged, inPlace };
 }
 
 let lastAuditDay = "";
@@ -430,6 +446,6 @@ export async function maybeRunDailyListingAudit(): Promise<void> {
   lastAuditDay = day;
   const r = await auditListingStages({ apply: true });
   const lines = r.forBroker.slice(0, 6).map((x) => `#${x.leadId}: ${x.current} → facts say ${x.desired}`);
-  const body = `Bot moved ${r.moved.length}, held ${r.held.length}. ${r.forBroker.length} of your cards disagree with their facts.${lines.length ? "\n" + lines.join("\n") : ""}`;
+  const body = `Bot moved ${r.moved.length}, held ${r.held.length}${r.notJudged.length ? `, could not read ${r.notJudged.length}` : ""}. ${r.forBroker.length} of your cards disagree with their facts.${lines.length ? "\n" + lines.join("\n") : ""}`;
   await notifyBroker("yudi", "Listing stage audit", body, "/m").catch(() => 0);
 }

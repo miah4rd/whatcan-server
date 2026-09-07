@@ -275,6 +275,9 @@ export async function withCardFacts(leadId: string, f: ListingFacts): Promise<Li
 export async function extractListingFacts(conversation: string, leadId?: string): Promise<ListingFacts | null> {
   const text = stripQuotedText(conversation).trim();
   if (!text) return null;
+  // Captured BEFORE the model call: a message arriving during extraction is
+  // newer than this stamp and forces a fresh read next time.
+  const readAt = new Date();
   try {
     const raw = await chatCompletionJSON<Record<string, unknown>>({
       model: HELPER_MODEL,
@@ -319,7 +322,14 @@ export async function extractListingFacts(conversation: string, leadId?: string)
         : null,
       freeFromIso: /^\d{4}-\d{2}-\d{2}$/.test(String(raw["free_from_iso"] ?? "")) ? String(raw["free_from_iso"]) : null,
     };
-    return leadId ? await withCardFacts(leadId, facts) : facts;
+    if (!leadId) return facts;
+    const merged = await withCardFacts(leadId, facts);
+    await db
+      .update(leadsSyncTable)
+      .set({ listingFacts: merged as unknown as Record<string, unknown>, listingFactsAt: readAt })
+      .where(eq(leadsSyncTable.leadId, leadId))
+      .catch(() => undefined);
+    return merged;
   } catch (err) {
     logger.warn({ err }, "listing fields: extraction failed (non-fatal)");
     return null;
