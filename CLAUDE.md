@@ -861,6 +861,25 @@ out of a viewing stage by regex; the owner rejected that ("лид по кано�
 - A correlated subquery inside `db.select({...})` rendered `lead_id = lead_id`
   and greeted Liu as "Fengshui": read per-lead values in their own query.
 
+### Parked listing cards are answered and re-judged (2026-09-07)
+
+"long term" and "co-broke Agents" are parking stages: no proactive chasing.
+They were also inbox-suppressed AND past the autopilot threshold, so an owner
+who wrote to a parked card was answered by nobody: 12 on long term, 17 on
+co-broke, some for three weeks. Canon now:
+- an inbound on a parked card gets a reply — autopilot sends `live` drafts
+  there (`autopilotStageNames` = delegated + parked; pushes still refused; a
+  standing non-"waiting" verdict such as the dated availability check is never
+  overwritten), and the inbox shows the draft when the bot could not send it;
+- every reply re-judges the card: `releaseFromLongTerm` (not occupied, or free
+  within `FREE_SOON_DAYS`=90) and `releaseFromCoBroke` (counterpart is the
+  owner — never on "unclear", two extractions would ping-pong the card);
+- `routeUnqualified` no longer parks "occupied but free within 90 days";
+- the extractor is told today's date — "free from October" used to come back
+  as 2024 and the plausibility guard then hid the villa forever.
+Repair/audit: `POST /api/admin/backfill-listing-fields?stage=<name>&route=1`
+(dry without `route`), which runs both releases before qualification.
+
 ### Listing qualification asks for viewability (2026-09-07)
 
 `meetsQualified` needs `min_stay_months` and `viewable_from` besides bedrooms,
