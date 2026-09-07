@@ -1,7 +1,7 @@
 import { db, leadMessagesTable, sentMessagesTable } from "@workspace/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { parseDialogContent } from "./dialog-parser";
-import { shouldSuppressPush, isClosedWonStage, isPostSigningStage } from "./stage-routing";
+import { shouldSuppressPush, isClosedWonStage, isPostSigningStage, isParkedListingStage } from "./stage-routing";
 import { isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whitelist";
 import { isReachStageName } from "./pipelines";
 import { isRentalScopedBroker, isHosTrackedPipeline } from "./adaptive-followup";
@@ -210,7 +210,10 @@ export function isPendingVisible(
     // Same exception for a client mid-handover (CHECK IN / inventory): no
     // proactive chasing, but they are actively moving in and their questions
     // must not vanish from the inbox.
-    const liveExempt = isClosedWonStage(stage) || isPostSigningStage(stage);
+    // A parked listing card (long term / co-broke) is not chased, but an owner
+    // who writes to it is answered — the reply surfaces here, and is hidden
+    // again below only while autopilot owns it.
+    const liveExempt = isClosedWonStage(stage) || isPostSigningStage(stage) || isParkedListingStage(stage);
     // A draft the system explicitly handed to the broker surfaces even here:
     // the dated availability check on a "long term" card is written FOR a
     // person to send, on a stage that otherwise suppresses everything. A

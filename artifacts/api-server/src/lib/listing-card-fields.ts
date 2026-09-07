@@ -185,7 +185,7 @@ Fields:
   REQUIRE EVIDENCE. "I manage this villa" / "saya manage villa uma" on its own decides nothing — it is precisely the sentence both a salaried assistant and a management company say. Without a company name, a "we" that means an organisation, or an office/admin/contract behind it, report "unclear" and let the draft ask. This field decides whether we split a commission; a guess here is worse than a question. "agent" for anyone standing between us and the villa's side: a third-party broker, a catalogue, or a management company that wants a cut of its own — "we work with agents through a rate contract", "we don't work on a commission basis", "our published rate less 10% for agents", "the owner is our client too". They are commercially the same thing whatever they call themselves: a second commission on the same villa, and terms we cannot agree with them. "unclear" otherwise.
 - their_commission_pct: if THEY proposed a commission rate for the agent ("we could offer 5% commission for agent", "we give agents 10% off the published rate", "our agent rate is 7"), report that number. null if they never named a rate, and null if they simply accepted ours.
 - stop_kind: "occupied" when the villa IS lettable long term and is simply taken for MORE THAN ABOUT THREE MONTHS (rented for a year, booked out for six months, tenant in place until a date well ahead). A villa free within roughly three months is NOT a stop signal at all: that is a real option we can offer now, so leave stop_kind null and just report free_from_iso. "not_our_format" ONLY when monthly AND yearly letting of the WHOLE villa are both ruled out for good: daily only with no monthly offered, rented by the room rather than whole, they no longer look after the property, they refuse to work with agencies at all. It now CLOSES the card, so the bar is a plain refusal, not a difficulty. Three things are NOT "not_our_format", and each was closed wrongly before this line existed: (1) "daily AND monthly" or any answer that includes monthly — monthly is exactly our format, report null; (2) a villa still being BUILT or renovated ("still in progress", "two units left, finishing soon") — nothing is refused, it is simply not ready, report null and let free_from_iso carry the date if one was given; (3) a period they cannot do right now for a reason that passes, such as events or bookings already in the calendar — that is "occupied", not a refusal. When in doubt report null: a wrong "occupied" costs a wait, a wrong "not_our_format" bins a live owner. null when there is no stop signal. These go opposite ways: the first is a contact worth keeping warm until a date, the second is not.
-- free_from_iso: if the thread lets you work out WHEN it frees up, give it as YYYY-MM-DD, resolving relative wording against the newest message's date ("available in 3 months", "rented for a year from June"). null when nobody said, or when it cannot be pinned to a month.
+- free_from_iso: if the thread lets you work out WHEN it frees up, give it as YYYY-MM-DD, resolving relative wording against TODAY's date given at the top of the thread ("available in 3 months", "rented for a year from June"). A month named without a year is its NEXT occurrence from today — never a past year: with today 2026-09-07, "free from October" is 2026-10-01 and "from August" is 2027-08-01. null when nobody said, or when it cannot be pinned to a month.
 - stop_signal: quote the phrase that means this villa CANNOT be offered for long-term rental now — fully booked, already rented out for the year, daily rental only, short term only. null if there is none. Being occupied until a stated date is NOT a stop signal on its own; that is availability.
 
 Respond with JSON only:
@@ -217,7 +217,10 @@ export async function extractListingFacts(conversation: string): Promise<Listing
     const raw = await chatCompletionJSON<Record<string, unknown>>({
       model: HELPER_MODEL,
       system: EXTRACT_SYSTEM,
-      messages: [{ role: "user", content: text.slice(0, 14000) }],
+      // The thread carries no timestamps, so "free from October" had no year
+      // to resolve against and came back as 2024 — ten parked cards carried a
+      // free date in the past and could never be released.
+      messages: [{ role: "user", content: `Today is ${new Date().toISOString().slice(0, 10)}.\n\n${text.slice(0, 14000)}` }],
       max_tokens: 500,
       temperature: 0,
       label: "listing-card-fields",
@@ -608,7 +611,7 @@ export async function releaseFromLongTerm(
   );
   const stage = String((res.rows?.[0] as { lead_stage?: string } | undefined)?.lead_stage ?? "").toLowerCase();
   if (!stage.includes("long term")) return { moved: false, reason: "not parked" };
-  if (f.stopKind === "occupied") return { moved: false, reason: "still occupied" };
+  if (f.stopKind === "occupied" && !freeSoon(f)) return { moved: false, reason: "still occupied" };
 
   const lead = await getAmoLead(leadId);
   if (!lead?.pipeline_id) return { moved: false, reason: "amoCRM did not return the lead's funnel" };
@@ -657,6 +660,57 @@ const REMIND_BEFORE_DAYS = 14;
  * A card that still qualifies is never parked — a management company we have
  * agreed terms with is a listing, not a filing cabinet.
  */
+/** Within this many days, "occupied" is availability, not a parking reason:
+ *  a villa free in November is stock we offer in September. */
+const FREE_SOON_DAYS = 90;
+
+/** The free date as the extractor gave it, when it can be true: today or later
+ *  (a villa that freed up yesterday is simply free), within 18 months. */
+function plausibleFreeDate(f: ListingFacts): Date | null {
+  if (!f.freeFromIso) return null;
+  const at = new Date(`${f.freeFromIso}T09:00:00+08:00`);
+  if (Number.isNaN(at.getTime())) return null;
+  const now = Date.now();
+  if (at.getTime() < now - 30 * 86_400_000 || at.getTime() > now + 548 * 86_400_000) return null;
+  return at;
+}
+
+/** Occupied, but free within FREE_SOON_DAYS (or already): not a stop signal. */
+export function freeSoon(f: ListingFacts): boolean {
+  const at = plausibleFreeDate(f);
+  return !!at && at.getTime() <= Date.now() + FREE_SOON_DAYS * 86_400_000;
+}
+
+/**
+ * An owner filed under co-broke is not a co-broke. The counterpart rule was
+ * tightened (in-house team = owner) after 15 cards had been parked there; this
+ * brings them back to work so the qualification path decides again. Only on
+ * "owner" — "unclear" would let two extractions ping-pong a card.
+ */
+export async function releaseFromCoBroke(
+  leadId: string,
+  f: ListingFacts,
+): Promise<{ moved: boolean; to?: string; reason: string }> {
+  const res = await db.execute(sql`SELECT lead_stage FROM leads_sync WHERE lead_id = ${leadId}`);
+  const stage = String((res.rows?.[0] as { lead_stage?: string } | undefined)?.lead_stage ?? "").toLowerCase();
+  if (!stage.includes("co-broke")) return { moved: false, reason: "not parked" };
+  if (f.counterpart !== "owner") return { moved: false, reason: `counterpart is ${f.counterpart}` };
+  const lead = await getAmoLead(leadId);
+  if (!lead?.pipeline_id) return { moved: false, reason: "amoCRM did not return the lead's funnel" };
+  const id = await stageIdByName(lead.pipeline_id, "TAKEN TO WORK");
+  if (!id) return { moved: false, reason: "no TAKEN TO WORK stage in this funnel" };
+  const ok = await updateLeadStatus(leadId, Number(id));
+  if (ok) {
+    await db
+      .update(leadsSyncTable)
+      .set({ leadStage: "TAKEN TO WORK", leadStageId: id, updatedAt: new Date() })
+      .where(eq(leadsSyncTable.leadId, leadId))
+      .catch(() => undefined);
+    logger.info({ leadId }, "co-broke released: the counterpart is the owner");
+  }
+  return { moved: ok, to: "TAKEN TO WORK", reason: "owner, not a co-broke" };
+}
+
 export async function routeUnqualified(
   leadId: string,
   f: ListingFacts,
@@ -683,6 +737,9 @@ export async function routeUnqualified(
 
   // Ours, just let for a long stretch: keep it warm, and make "we'll come back"
   // a real thing rather than a polite sentence.
+  if (f.stopKind === "occupied" && freeSoon(f)) {
+    return { moved: false, reason: `occupied but free from ${f.freeFromIso} — offerable now, not parked` };
+  }
   if (f.stopKind === "occupied") {
     const ok = await move(LONG_TERM_STAGE);
     if (ok && f.freeFromIso) {

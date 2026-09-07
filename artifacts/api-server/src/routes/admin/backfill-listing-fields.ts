@@ -22,6 +22,8 @@ import {
   promoteIfQualified,
   meetsQualified,
   routeUnqualified,
+  releaseFromLongTerm,
+  releaseFromCoBroke,
   priceLine,
 } from "../../lib/listing-card-fields";
 
@@ -79,12 +81,20 @@ router.post("/admin/backfill-listing-fields", async (req, res) => {
 
     const verdict = meetsQualified(facts);
     let routed: string | null = null;
+    let routeNote: string | null = null;
     if (route) {
+      // Parked cards first: a villa free soon leaves long term, an owner leaves
+      // co-broke — then the same qualification path as every other card.
+      const rl = await releaseFromLongTerm(r.lead_id, facts);
+      if (rl.moved) routed = rl.to ?? null;
+      const rc = await releaseFromCoBroke(r.lead_id, facts);
+      if (rc.moved) routed = rc.to ?? null;
       const promoted = await promoteIfQualified(r.lead_id, facts);
       if (promoted.moved) routed = "QUALIFIED";
       else if (promoted.reason.startsWith("not yet")) {
         const parked = await routeUnqualified(r.lead_id, facts);
         if (parked.moved) routed = parked.to ?? null;
+        else if (!routed) routeNote = parked.reason;
       }
     }
 
@@ -115,6 +125,7 @@ router.post("/admin/backfill-listing-fields", async (req, res) => {
       photos: facts.photosLink ? "yes" : null,
       ...(apply ? { written, fields: names } : {}),
       ...(routed ? { movedTo: routed } : {}),
+      ...(routeNote ? { routeNote } : {}),
     });
   }
 
