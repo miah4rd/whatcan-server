@@ -285,8 +285,26 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
       // "viewing follow-up due"). Re-judging would overwrite that verdict.
       return { sent: false, reason: standing };
     }
+    // co-broke Agents is a plan B, not a conversation (owner, 07.09.2026):
+    // an intermediary's contact kept in case it is ever needed, "больше там
+    // пока контактировать не надо". Nothing goes out and nothing is offered
+    // to the broker — the draft is retired, whichever pass wrote it. The way
+    // out of co-broke is the stage engine deciding the counterpart is the
+    // owner, never a message. long term keeps replies (an owner who writes
+    // "free now" is answered and released) but no proactive sends.
+    const retire = async (reason: string): Promise<AutopilotOutcome> => {
+      await db
+        .update(pendingSuggestionsTable)
+        .set({ status: "skipped", autopilotSkippedReason: reason, autopilotSkippedAt: new Date() })
+        .where(eq(pendingSuggestionsTable.id, sug.id))
+        .catch(() => undefined);
+      return { sent: false, reason };
+    };
+    if (parked && /co-broke/i.test(lead.leadStage ?? "")) {
+      return retire("co-broke: plan B, no contact — draft retired");
+    }
     if (parked && sug.kind !== "live") {
-      return { sent: false, reason: `parked stage (${lead.leadStage}): replies only, no proactive sends` };
+      return retire(`parked stage (${lead.leadStage}): replies only — proactive draft retired`);
     }
 
     /**
