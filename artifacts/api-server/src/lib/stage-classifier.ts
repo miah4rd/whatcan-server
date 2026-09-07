@@ -371,6 +371,13 @@ export async function classifyStage(opts: {
   replyText: string;
   /** Property links attached to that reply, if any. */
   attachmentsCount: number;
+  /**
+   * Facts the code knows for certain and the thread may not spell out — e.g.
+   * "a viewing is booked for 09/09 13:00, still ahead". Written into the
+   * prompt verbatim so the model judges against them rather than re-deriving
+   * them from prose.
+   */
+  facts?: string[];
 }): Promise<StageClassification | null> {
   const pipelineKey = (opts.pipeline ?? "").trim().toLowerCase();
   if (!isConversationalPipeline(pipelineKey)) return null;
@@ -419,6 +426,8 @@ ${opts.replyText.trim()
 - Pick the single stage that best describes the conversation's real state right now.
 - Moving BACKWARD is allowed, but only when the conversation genuinely regressed — the client restarted their search, withdrew a decision, or went back to basic requirements. A passing clarifying question inside a later-stage conversation is NOT a regression.
 - Never pick a closing stage unless the client stated it unambiguously. Silence, vagueness or mild hesitation are never closing signals.
+- A booked viewing is a fact: a card stays in "Viewing scheduled" until the slot has passed, or the thread says the viewing was cancelled, missed, or the client withdrew. A client asking about OTHER villas after booking has NOT cancelled.
+- "Viewing done" only once the booked time has passed AND the thread shows the client actually saw the property (they went, they share impressions). Never before the booked time.
 - If you cannot tell, return an empty stage rather than guessing.
 
 Respond with JSON only, using a stage name EXACTLY as written above: {"stage": "<stage name or empty string>", "reason": "<max 12 words>"}`,
@@ -427,7 +436,7 @@ Respond with JSON only, using a stage name EXACTLY as written above: {"stage": "
           role: "user",
           content: `Lead's CRM stage right now: ${opts.currentStage || "unknown"}
 Property links attached to the pending reply: ${opts.attachmentsCount}
-
+${(opts.facts ?? []).length ? `Known facts (from the CRM, not the chat):\n${(opts.facts ?? []).map((f) => `- ${f}`).join("\n")}\n` : ""}
 Conversation (oldest → newest):
 ${conversationWindow(opts.conversationText, 1500, 4000)}
 

@@ -18,7 +18,7 @@
 import { db, leadsSyncTable, leadMessagesTable, stageEventsTable } from "@workspace/db";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { classifyStage, safeStageIdForLead } from "./stage-classifier";
+import { classifyStage, getPipelineStages, safeStageIdForLead } from "./stage-classifier";
 import { getAmoLead, updateLeadStatus } from "./amo-client";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 
@@ -72,6 +72,36 @@ JSON only: {"viewing_at": "2026-09-07T15:00:00+08:00" | null}`,
   return d;
 }
 
+/**
+ * Second opinion before a card leaves a viewing stage backward. One question,
+ * counter-examples in view, fail-closed — the same shape as the not-our-format
+ * check, for the same reason: a field inside a broad classification is not
+ * enough to undo a booked viewing.
+ */
+async function viewingRegressionEvidence(leadId: string, threadText: string, stage: string): Promise<{ confirmed: boolean; why: string }> {
+  const out = await chatCompletionJSON<{ regressed: boolean; why: string }>({
+    model: HELPER_MODEL,
+    label: "viewing:regression-check",
+    max_tokens: 120,
+    temperature: 0,
+    system: `The CRM card is in "${stage}". Answer ONE question about the thread: did the viewing stop being the current state — was it CANCELLED, MISSED (no-show), or did the client REJECT the property they saw / RESTART their search after it?
+
+true ONLY when the thread states it: "let's cancel", "I can't make it" with no new slot, "didn't like it, show me others", "we chose another place", the broker confirming the viewing fell through.
+
+false for everything else, including:
+- the client asking about OTHER villas while the viewing is still booked
+- rescheduling to another slot (that is still a booked viewing)
+- silence, or a slot that simply passed with no word
+- anything you are unsure about
+
+JSON only: {"regressed": true|false, "why": "<8 words>"}`,
+    messages: [{ role: "user", content: threadText.slice(-6000) }],
+  }).catch(() => null);
+  if (!out || typeof out.regressed !== "boolean") return { confirmed: false, why: "check failed — staying put" };
+  logger.info({ leadId, regressed: out.regressed, why: out.why }, "viewing regression second opinion");
+  return { confirmed: out.regressed, why: out.why ?? "" };
+}
+
 export type StageApplyResult = { moved: boolean; from?: string | null; to?: string; reason: string; viewingAt?: Date | null };
 
 /**
@@ -89,6 +119,7 @@ export async function classifyAndApplyStage(
       leadStage: leadsSyncTable.leadStage,
       responsibleUser: leadsSyncTable.responsibleUser,
       botExcluded: leadsSyncTable.botExcluded,
+      viewingAt: leadsSyncTable.viewingAt,
     })
     .from(leadsSyncTable)
     .where(eq(leadsSyncTable.leadId, leadId))
@@ -103,28 +134,59 @@ export async function classifyAndApplyStage(
   const { text, lastOurs } = await transcript(leadId);
   if (!text.trim()) return { moved: false, reason: "no thread" };
 
+  // What the code knows for certain goes into the prompt as facts, so the
+  // model judges the thread against them instead of re-deriving them.
+  const facts: string[] = [];
+  if (row.viewingAt) {
+    const hrs = (Date.now() - row.viewingAt.getTime()) / 3_600_000;
+    facts.push(
+      hrs < 0
+        ? `A viewing is booked for ${fmt(row.viewingAt)} Bali — still ahead (${Math.round(-hrs)}h from now).`
+        : `A viewing was booked for ${fmt(row.viewingAt)} Bali — that time passed ${Math.round(hrs)}h ago.`,
+    );
+  }
+
   const cls = await classifyStage({
     pipeline: row.pipeline,
     currentStage: row.leadStage,
     conversationText: text,
     replyText: opts.replyText ?? lastOurs ?? "",
     attachmentsCount: 0,
+    facts,
   });
   if (!cls) return { moved: false, reason: "classifier: nothing to change" };
   if (cls.terminal) return { moved: false, reason: `terminal stage "${cls.stage.name}" is the broker's tap`, to: cls.stage.name };
   const toLower = (cls.stage.name ?? "").toLowerCase();
   if (toLower === stageLower) return { moved: false, reason: "already there" };
-  // A viewing is a fact, not a mood. This path never pulls a card back out of
-  // a viewing stage: "Viewing done" is history, and "Viewing scheduled" only
-  // moves forward (to done) — a client reviewing other options after booking
-  // a slot has not un-booked it. The dry run proposed exactly that regression
-  // on three cards; approve.ts keeps its own judgement for the broker's sends.
+
+  // Viewing canons. Not "never leave a viewing stage" — that hid real
+  // cancellations behind a regex. Each canon names the evidence it needs:
+  //   1. "Viewing done" needs the booked slot to have passed. A card with a
+  //      future viewing_at cannot be done, whatever the prose says.
+  //   2. Leaving a viewing stage BACKWARD (scheduled → options, done →
+  //      options) needs a stated event: cancelled, no-show, the client
+  //      rejected what they saw or restarted the search. Asked as one
+  //      focused yes/no with the thread in front of it, fail-closed: no
+  //      evidence, no move. Forward moves (→ negotiation, reservation) are
+  //      free — a viewing that led somewhere is exactly the point.
   const isViewingStage = (s: string) => /viewing/.test(s);
-  if (isViewingStage(stageLower) && !isViewingStage(toLower)) {
-    return { moved: false, reason: `would leave a viewing stage (${row.leadStage} -> ${cls.stage.name}) — not by this path`, to: cls.stage.name };
+  const isViewingDone = (s: string) => /viewing\s*done/.test(s);
+  if (isViewingDone(toLower) && row.viewingAt && row.viewingAt.getTime() > Date.now()) {
+    return { moved: false, reason: `canon: booked slot ${fmt(row.viewingAt)} has not come yet — cannot be "Viewing done"`, to: cls.stage.name };
   }
-  if (/viewing\s*done/.test(stageLower)) {
-    return { moved: false, reason: "Viewing done is history — never moved from here automatically", to: cls.stage.name };
+  let clearViewingAt = false;
+  if (isViewingStage(stageLower)) {
+    const order = await getPipelineStages(row.pipeline ?? "");
+    const idx = (name: string) => order?.all.findIndex((s) => s.name.trim().toLowerCase() === name) ?? -1;
+    const backward = idx(toLower) >= 0 && idx(stageLower) >= 0 && idx(toLower) < idx(stageLower);
+    if (backward) {
+      const ev = await viewingRegressionEvidence(leadId, text, row.leadStage ?? "");
+      if (!ev.confirmed) {
+        return { moved: false, reason: `canon: leaving ${row.leadStage} backward needs a stated cancellation/no-show/rejection — none found (${ev.why})`, to: cls.stage.name };
+      }
+      clearViewingAt = true;
+      logger.info({ leadId, from: row.leadStage, to: cls.stage.name, why: ev.why }, "viewing regression confirmed by evidence");
+    }
   }
 
   const isViewingScheduled = /viewing\s*(scheduled|booked|arranged)/i.test(cls.stage.name);
@@ -145,7 +207,7 @@ export async function classifyAndApplyStage(
     .set({
       leadStage: cls.stage.name,
       leadStageId: id,
-      ...(isViewingScheduled ? { viewingAt } : {}),
+      ...(isViewingScheduled ? { viewingAt } : clearViewingAt ? { viewingAt: null } : {}),
       updatedAt: new Date(),
     })
     .where(eq(leadsSyncTable.leadId, leadId));
