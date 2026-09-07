@@ -39,6 +39,8 @@ const FIELD_NAMES = {
   ownerVerified: "Owner contact verified",
   availableFrom: "Listing: available from",
   photos: "Listing: photos",
+  minStay: "Listing: minimum stay",
+  viewableFrom: "Listing: viewable from",
 } as const;
 
 /** Fields this module may create when they are missing. The three above them
@@ -46,6 +48,8 @@ const FIELD_NAMES = {
 const CREATABLE: Partial<Record<keyof typeof FIELD_NAMES, "text" | "url">> = {
   availableFrom: "text",
   photos: "url",
+  minStay: "text",
+  viewableFrom: "text",
 };
 
 type FieldMap = Partial<Record<keyof typeof FIELD_NAMES, number>>;
@@ -113,6 +117,12 @@ export type ListingFacts = {
   commission: "included" | "net" | "unknown";
   /** Free text, exactly as the owner put it: "20 September", "now", "from November". */
   availableFrom: string | null;
+  /** Shortest tenancy the owner accepts, in months. Liu lost R-YUD-072 to a
+   *  6-month minimum nobody had asked about. */
+  minStayMonths: number | null;
+  /** The owner's own words on the first day a client could be shown round.
+   *  A villa we cannot show is stock we cannot sell — 7 asked, 1 viewable. */
+  viewableFrom: string | null;
   area: string | null;
   mapsLink: string | null;
   photosLink: string | null;
@@ -156,6 +166,8 @@ Fields:
 - monthly_idr / yearly_idr: full rupiah integers (45 juta -> 45000000). null when not stated.
 - commission: "included" if someone said the price already contains the agency's commission; "net" if the owner said the price is net / the fee is added on top; "unknown" otherwise. This is the field the agency cares about most — do not guess it.
 - available_from: the owner's own words about when it frees up — a date or a clear period ("20 September", "now", "from November", "1 October", "after Nov 2026"). A fragment that is not an answer about timing ("Masih", "yes", "August" with no year or context) is null, not a guess.
+- min_stay_months: the shortest rental period the villa side accepts, in months ("minimum 6 months" -> 6, "yearly only" -> 12, "monthly is fine" -> 1). null when never stated.
+- viewable_from: the owner's own words on WHEN a client could come and see the villa ("anytime", "from the 9th", "after the current guests leave on 15 Oct", "weekdays after 2pm"). Only an answer about SHOWING the villa; availability to rent is available_from, not this. null when never stated.
 - area: the district or village the villa is in (Pererenan, Umalas, Seseh...). Not the whole address.
 - maps_link: a Google Maps / goo.gl / maps.app link if one was shared, else null.
 - photos_link: a Google Drive, Dropbox, WeTransfer or photo-gallery link if one was shared, else null.
@@ -177,7 +189,7 @@ Fields:
 - stop_signal: quote the phrase that means this villa CANNOT be offered for long-term rental now — fully booked, already rented out for the year, daily rental only, short term only. null if there is none. Being occupied until a stated date is NOT a stop signal on its own; that is availability.
 
 Respond with JSON only:
-{"bedrooms":n|null,"monthly_idr":n|null,"yearly_idr":n|null,"commission":"included"|"net"|"unknown","available_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","their_commission_pct":n|null,"stop_kind":"occupied"|"not_our_format"|null,"free_from_iso":s|null,"stop_signal":s|null}`;
+{"bedrooms":n|null,"monthly_idr":n|null,"yearly_idr":n|null,"commission":"included"|"net"|"unknown","available_from":s|null,"min_stay_months":n|null,"viewable_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","their_commission_pct":n|null,"stop_kind":"occupied"|"not_our_format"|null,"free_from_iso":s|null,"stop_signal":s|null}`;
 
 /**
  * Remove quoted text before the model ever sees it.
@@ -227,6 +239,8 @@ export async function extractListingFacts(conversation: string): Promise<Listing
       yearlyIdr: int(raw["yearly_idr"]),
       commission: oneOf(raw["commission"], ["included", "net", "unknown"] as const, "unknown"),
       availableFrom: str(raw["available_from"]),
+      minStayMonths: int(raw["min_stay_months"]),
+      viewableFrom: str(raw["viewable_from"]),
       area: str(raw["area"]),
       mapsLink: str(raw["maps_link"]),
       photosLink: str(raw["photos_link"]),
@@ -338,6 +352,8 @@ export async function syncListingFactsToCard(
   put("maps", f.mapsLink);
   put("photos", f.photosLink);
   put("availableFrom", f.availableFrom);
+  put("minStay", f.minStayMonths !== null ? `${f.minStayMonths} months` : null);
+  put("viewableFrom", f.viewableFrom);
   put("ownerVerified", verifiedLabel(f.counterpart));
 
   if (values.length === 0) return { written: 0, fields: [] };
@@ -385,7 +401,9 @@ export async function syncListingFactsToCard(
  * at 25M net quotes at 27.5M and goes. A villa whose commission position is
  * still unknown is read as net, the reading that bins the fewest.
  */
-const MIN_LISTING_MONTHLY_IDR = 30_000_000;
+// Owner, 05.09.2026: "всё, что ниже тридцати трёх миллионов в корзину" —
+// compared against the CLIENT-FACING price (net + our 10%).
+const MIN_LISTING_MONTHLY_IDR = 33_000_000;
 
 /** What a client would be quoted, from whatever we know about the price. */
 export function clientFacingMonthlyIdr(f: ListingFacts): number | null {
@@ -416,6 +434,11 @@ export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[
   if (!f.bedrooms) missing.push("bedrooms");
   if (!f.monthlyIdr && !f.yearlyIdr) missing.push("price");
   else if (f.commission === "unknown") missing.push("commission position");
+  // Viewability is part of qualification (owner, 07.09.2026): a listing that
+  // cannot be shown when a client asks is not a listing. Both are asked in the
+  // same qualifying sentence; neither may be inferred.
+  if (f.minStayMonths === null) missing.push("minimum stay");
+  if (!f.viewableFrom) missing.push("earliest viewing");
   // WHO we are talking to is the BASIS of qualification, not one field among
   // several. A management company or another agency means not qualified however
   // complete the listing details are: we would be sharing the fee with a
