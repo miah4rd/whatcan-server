@@ -7,7 +7,7 @@ import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "
 import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-followup";
 import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
-import { classifyStage, safeStageIdForLead } from "../../lib/stage-classifier";
+import { classifyStage, safeStageIdForLead, isRuleOwnedAcquisitionStage } from "../../lib/stage-classifier";
 import {
   resolveSendChannel,
   deliverText,
@@ -810,6 +810,16 @@ router.post("/approve", async (req, res) => {
   // paths above). If a false "Options sent" jump shows up again, the fix is in
   // the classifier's judgement (lib/stage-classifier.ts) or its guards here —
   // not disabling auto-apply again, which just leaves leads stuck in New LEAD.
+  // Listing funnel: QUALIFIED / Details / agreement are earned by data (the
+  // qualification rule) or chosen by a person — never applied from a
+  // classification, however old the draft that carries it.
+  if (!explicitNewStage && autoStage && isRuleOwnedAcquisitionStage(prevSyncRow?.pipeline, autoStage.name)) {
+    req.log.info(
+      { leadId: sug.leadId, refused: autoStage.name, pipeline: prevSyncRow?.pipeline },
+      "auto stage refused: rule-owned acquisition stage, the qualification rule decides",
+    );
+    autoStage = null;
+  }
   const effectiveNewStage = explicitNewStage ?? (autoStage ? autoStage.name : null);
   if (effectiveNewStage) {
     const prevSync = await db

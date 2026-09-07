@@ -149,6 +149,19 @@ const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = 
  */
 const RULE_OWNED_ACQUISITION_STAGES = /qualified|квалифиц|details|детал|информац|agreement|договор|соглашен/i;
 
+/**
+ * True when a stage on a listing-acquisition funnel may only be set by the
+ * qualification rule or a person — never by a classification. Checked again
+ * at SEND time: a draft classified before 04.09 still carried "Details" in
+ * suggested_stage, and approve applied it on 04.09 10:50 (Villa Gloria, on
+ * "will be happy to discuss") — a friendly reply moved a card past
+ * qualification with no price on it.
+ */
+export function isRuleOwnedAcquisitionStage(pipeline: string | null | undefined, stageName: string | null | undefined): boolean {
+  const key = (pipeline ?? "").trim().toLowerCase();
+  return isListingAcquisition(key) && RULE_OWNED_ACQUISITION_STAGES.test(stageName ?? "");
+}
+
 function meaningFor(stageName: string, pipelineKey?: string): string | null {
   const table = isListingAcquisition(pipelineKey) ? LISTING_ACQUISITION_MEANINGS : STAGE_MEANINGS;
   for (const { match, meaning } of table) {

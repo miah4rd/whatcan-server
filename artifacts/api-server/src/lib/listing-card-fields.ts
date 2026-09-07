@@ -108,8 +108,13 @@ export async function ensureListingFields(): Promise<{ created: string[]; ids: F
 
 export type ListingFacts = {
   bedrooms: number | null;
-  /** Monthly rate in rupiah, as the owner stated it. */
+  /** Monthly rate in rupiah, as the owner stated it (the smallest unit when
+   *  several are offered — the agency lists units separately). */
   monthlyIdr: number | null;
+  /** The HIGHEST monthly rate among the whole-villa units offered, when the
+   *  thread offers more than one. An owner with Soft Nest at 31M and Well Nest
+   *  at 45M was closed "below the floor" on the cheaper one (07.09.2026). */
+  maxMonthlyIdr: number | null;
   /** Yearly rate in rupiah, as the owner stated it. */
   yearlyIdr: number | null;
   /** Whether the stated price already contains our 10% — the whole reason a
@@ -163,7 +168,8 @@ Report ONLY what was actually said. Never infer a price from another villa, neve
 
 Fields:
 - bedrooms: integer, the villa's own bedroom count. If the thread offers several unit types (a 2BR and a 3BR), report the SMALLEST, and put the rest in nothing — the agency lists units separately.
-- monthly_idr / yearly_idr: full rupiah integers (45 juta -> 45000000). null when not stated.
+- monthly_idr / yearly_idr: full rupiah integers (45 juta -> 45000000). null when not stated. When several whole-villa units are offered at different rates, these are the SMALLEST unit's.
+- max_monthly_idr: when the thread offers MORE THAN ONE whole villa or unit type at different monthly rates, the highest monthly rate among them; null when only one rate was given. Per-night or per-day rates are never a monthly rate.
 - commission: "included" if someone said the price already contains the agency's commission; "net" if the owner said the price is net / the fee is added on top; "unknown" otherwise. This is the field the agency cares about most — do not guess it.
 - available_from: the owner's own words about when it frees up — a date or a clear period ("20 September", "now", "from November", "1 October", "after Nov 2026"). A fragment that is not an answer about timing ("Masih", "yes", "August" with no year or context) is null, not a guess.
 - min_stay_months: the shortest rental period the villa side accepts, in months ("minimum 6 months" -> 6, "yearly only" -> 12, "monthly is fine" -> 1). null when never stated.
@@ -189,7 +195,7 @@ Fields:
 - stop_signal: quote the phrase that means this villa CANNOT be offered for long-term rental now — fully booked, already rented out for the year, daily rental only, short term only. null if there is none. Being occupied until a stated date is NOT a stop signal on its own; that is availability.
 
 Respond with JSON only:
-{"bedrooms":n|null,"monthly_idr":n|null,"yearly_idr":n|null,"commission":"included"|"net"|"unknown","available_from":s|null,"min_stay_months":n|null,"viewable_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","their_commission_pct":n|null,"stop_kind":"occupied"|"not_our_format"|null,"free_from_iso":s|null,"stop_signal":s|null}`;
+{"bedrooms":n|null,"monthly_idr":n|null,"max_monthly_idr":n|null,"yearly_idr":n|null,"commission":"included"|"net"|"unknown","available_from":s|null,"min_stay_months":n|null,"viewable_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","their_commission_pct":n|null,"stop_kind":"occupied"|"not_our_format"|null,"free_from_iso":s|null,"stop_signal":s|null}`;
 
 /**
  * Remove quoted text before the model ever sees it.
@@ -239,6 +245,7 @@ export async function extractListingFacts(conversation: string): Promise<Listing
     return {
       bedrooms: int(raw["bedrooms"]),
       monthlyIdr: int(raw["monthly_idr"]),
+      maxMonthlyIdr: int(raw["max_monthly_idr"]),
       yearlyIdr: int(raw["yearly_idr"]),
       commission: oneOf(raw["commission"], ["included", "net", "unknown"] as const, "unknown"),
       availableFrom: str(raw["available_from"]),
@@ -428,7 +435,9 @@ export function clientFacingMonthlyIdr(f: ListingFacts): number | null {
 
 export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[] } {
   const missing: string[] = [];
-  const quoted = clientFacingMonthlyIdr(f);
+  const quoted = clientFacingMonthlyIdr(
+    f.maxMonthlyIdr && f.maxMonthlyIdr > (f.monthlyIdr ?? 0) ? { ...f, monthlyIdr: f.maxMonthlyIdr } : f,
+  );
   if (quoted !== null && quoted < MIN_LISTING_MONTHLY_IDR) {
     missing.push(
       `below our floor: ${Math.round(quoted / 1_000_000)}M quoted, minimum ${MIN_LISTING_MONTHLY_IDR / 1_000_000}M`,
@@ -728,6 +737,24 @@ export async function routeUnqualified(
     return updateLeadStatus(leadId, Number(id));
   };
 
+  // PRICE first — a deterministic number, the owner's rule (05.09: below 33M
+  // client-facing goes to the bin), and it beats parking: an occupied 18M villa
+  // was parked in long term and a manager's 26M one filed under co-broke.
+  // The bin is for a portfolio where EVERY unit is under the floor: judge the
+  // most expensive one. The card's own price stays the smallest unit's.
+  const quoted = clientFacingMonthlyIdr(
+    f.maxMonthlyIdr && f.maxMonthlyIdr > (f.monthlyIdr ?? 0) ? { ...f, monthlyIdr: f.maxMonthlyIdr } : f,
+  );
+  if (quoted !== null && quoted < MIN_LISTING_MONTHLY_IDR) {
+    const ok = await closeLeadAsLost(leadId);
+    logger.info({ leadId, quotedIdr: quoted }, "listing closed: below the minimum we can place");
+    return {
+      moved: ok,
+      to: "Closed - lost",
+      reason: `below our floor: ${Math.round(quoted / 1_000_000)}M quoted`,
+    };
+  }
+
   // WHO first. A management company or another agency holds the villa, so the
   // listing details do not change the answer: we are not taking it on our terms.
   if (f.counterpart === "manager" || f.counterpart === "agent") {
@@ -784,17 +811,6 @@ export async function routeUnqualified(
   // stating the format, and the owner asked for it explicitly (04.09.2026).
   // Too cheap for any client we take. A deterministic number, not a judgement,
   // so it closes without the second opinion the format check needs.
-  const quoted = clientFacingMonthlyIdr(f);
-  if (quoted !== null && quoted < MIN_LISTING_MONTHLY_IDR) {
-    const ok = await closeLeadAsLost(leadId);
-    logger.info({ leadId, quotedIdr: quoted }, "listing closed: below the minimum we can place");
-    return {
-      moved: ok,
-      to: "Closed - lost",
-      reason: `below our floor: ${Math.round(quoted / 1_000_000)}M quoted`,
-    };
-  }
-
   if (f.stopKind === "not_our_format") {
     /**
      * Hard vetoes, decided in code, before any model is asked.
