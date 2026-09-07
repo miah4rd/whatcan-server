@@ -274,7 +274,14 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
        WHERE m.lead_id = ${leadId} AND m.text IS NOT NULL
     `);
     const convo = (res.rows?.[0] as { convo?: string } | undefined)?.convo ?? "";
-    facts = (await extractListingFacts(convo, leadId)) ?? emptyFacts();
+    const extracted = await extractListingFacts(convo, leadId);
+    if (!extracted) {
+      // No facts is not "no data": the model call failed (the API ran out of
+      // credit during the first audit, 07.09, and 183 cards came back as
+      // "missing everything"). Nothing is judged on a failed read.
+      return { leadId, owner, current, reason: "facts unavailable (extraction failed) — not judged", applied: false };
+    }
+    facts = extracted;
     extractedHere = true;
   }
   // The free date we stored when parking is a fact too.
@@ -293,6 +300,11 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
     if (facts.counterpart !== "owner") desired = { stage: STAGE.CO_BROKE, reason: "parked; the counterpart is still not established as the owner" };
   }
 
+  // Outbound is monotonic: a card past Initial Contact whose thread shows no
+  // message of ours (old cards synced before message logging) never goes back.
+  if (desired.stage === STAGE.INITIAL && norm(current) !== norm(STAGE.INITIAL)) {
+    desired = { stage: current as EngineStage, reason: "outbound not in the log, stage itself is the evidence" };
+  }
   if (norm(desired.stage) === norm(current)) {
     return { leadId, owner, current, desired: desired.stage, reason: `in place: ${desired.reason}`, applied: false };
   }
@@ -386,7 +398,15 @@ export async function auditListingStages(opts: { apply: boolean; limit?: number 
     try {
       const r = await reconcileListingStage(leadId, { apply: opts.apply, source: "audit" });
       if (r.applied) moved.push(r);
-      else if (r.owner === "human" && r.desired && norm(r.desired) !== norm(r.current)) forBroker.push(r);
+      else if (
+        r.owner === "human" &&
+        r.desired &&
+        norm(r.desired) !== norm(r.current) &&
+        // Material only: a manager, a price under the floor, an occupied villa,
+        // a format we do not list. "Still missing the viewing day" on a card
+        // the broker is filling in is not a disagreement worth a push.
+        (r.desired === STAGE.CLOSED_LOST || r.desired === STAGE.CO_BROKE || r.desired === STAGE.LONG_TERM)
+      ) forBroker.push(r);
       else if (r.owner === "engine" && r.desired && norm(r.desired) !== norm(r.current)) held.push(r);
       else inPlace++;
     } catch (err) {
