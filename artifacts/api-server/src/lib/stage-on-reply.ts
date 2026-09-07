@@ -112,7 +112,20 @@ export async function classifyAndApplyStage(
   });
   if (!cls) return { moved: false, reason: "classifier: nothing to change" };
   if (cls.terminal) return { moved: false, reason: `terminal stage "${cls.stage.name}" is the broker's tap`, to: cls.stage.name };
-  if ((cls.stage.name ?? "").toLowerCase() === stageLower) return { moved: false, reason: "already there" };
+  const toLower = (cls.stage.name ?? "").toLowerCase();
+  if (toLower === stageLower) return { moved: false, reason: "already there" };
+  // A viewing is a fact, not a mood. This path never pulls a card back out of
+  // a viewing stage: "Viewing done" is history, and "Viewing scheduled" only
+  // moves forward (to done) — a client reviewing other options after booking
+  // a slot has not un-booked it. The dry run proposed exactly that regression
+  // on three cards; approve.ts keeps its own judgement for the broker's sends.
+  const isViewingStage = (s: string) => /viewing/.test(s);
+  if (isViewingStage(stageLower) && !isViewingStage(toLower)) {
+    return { moved: false, reason: `would leave a viewing stage (${row.leadStage} -> ${cls.stage.name}) — not by this path`, to: cls.stage.name };
+  }
+  if (/viewing\s*done/.test(stageLower)) {
+    return { moved: false, reason: "Viewing done is history — never moved from here automatically", to: cls.stage.name };
+  }
 
   const isViewingScheduled = /viewing\s*(scheduled|booked|arranged)/i.test(cls.stage.name);
   const viewingAt = isViewingScheduled ? await extractViewingAt(text) : null;
