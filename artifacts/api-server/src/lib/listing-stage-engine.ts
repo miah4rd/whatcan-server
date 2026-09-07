@@ -205,6 +205,9 @@ export type ReconcileResult = {
   desired?: EngineStage;
   reason: string;
   applied: boolean;
+  /** The second opinion a move would need — carried out to the audit so a
+   *  report about a person's card is checked the same way a move would be. */
+  confirm?: Desired["confirm"];
 };
 
 type ReconcileOpts = {
@@ -320,7 +323,7 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
     return { leadId, owner, current, desired: desired.stage, reason: `in place: ${desired.reason}`, applied: false };
   }
   if (owner !== "engine") {
-    return { leadId, owner, current, desired: desired.stage, reason: `facts say ${desired.stage} (${desired.reason}) — a person's stage, not moved`, applied: false };
+    return { leadId, owner, current, desired: desired.stage, reason: `facts say ${desired.stage} (${desired.reason}) — a person's stage, not moved`, applied: false, confirm: desired.confirm };
   }
   if (!apply) return { leadId, owner, current, desired: desired.stage, reason: `would move: ${desired.reason}`, applied: false };
 
@@ -422,7 +425,13 @@ export async function auditListingStages(opts: { apply: boolean; limit?: number 
         // a format we do not list. "Still missing the viewing day" on a card
         // the broker is filling in is not a disagreement worth a push.
         (r.desired === STAGE.CLOSED_LOST || r.desired === STAGE.CO_BROKE || r.desired === STAGE.LONG_TERM)
-      ) forBroker.push(r);
+      ) {
+        // The same second opinion a move would get, so the broker is not sent
+        // a "this is a manager" on one word of a fourteen-field extraction.
+        if (r.confirm === "not_our_format" && !(await confirmsNotOurFormat(leadId))) { inPlace++; continue; }
+        if (r.confirm === "third_party" && !(await confirmsThirdParty(leadId))) { inPlace++; continue; }
+        forBroker.push(r);
+      }
       else if (r.owner === "engine" && r.desired && norm(r.desired) !== norm(r.current)) held.push(r);
       else inPlace++;
     } catch (err) {
