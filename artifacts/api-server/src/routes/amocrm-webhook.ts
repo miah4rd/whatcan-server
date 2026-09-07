@@ -22,6 +22,7 @@ import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachm
 import { getMergedDialog } from "../lib/merged-conversation";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
+import { classifyAndApplyStage } from "../lib/stage-on-reply";
 import { enforceBudgetFilter } from "../lib/budget-filter";
 import { recordCommitment } from "../lib/commitment-scheduler";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
@@ -643,6 +644,10 @@ router.post("/amocrm/webhook", async (req, res) => {
             ),
           );
       } else if (brokerRepliedFresh) {
+        // Same as the timeline sweep: a manual reply moves the stage too.
+        classifyAndApplyStage(leadId, { source: "manual-reply" }).catch((err) =>
+          logger.warn({ err, leadId }, "webhook: stage classification after manual reply failed"),
+        );
         // Broker manually replied → clear stale LIVE suggestion.
         // Do NOT set nextFollowupAt — task-driven scheduling via amo-sync
         // will pick up the amoCRM task due date when it's time.
