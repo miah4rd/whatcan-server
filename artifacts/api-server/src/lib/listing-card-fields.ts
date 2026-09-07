@@ -219,7 +219,60 @@ export function stripQuotedText(conversation: string): string {
     .join("\n");
 }
 
-export async function extractListingFacts(conversation: string): Promise<ListingFacts | null> {
+/**
+ * Facts already on the card fill the gaps in a fresh extraction.
+ *
+ * Villa Yoshi (07.09): the card carried "Owner confirmed", "1 months",
+ * "before 13tg" — written by earlier extractions — and the next extraction
+ * came back "unclear", min stay null. The verdict was computed from the fresh
+ * read alone, so a fact established at 12:03 was gone at 12:05 and the card
+ * sat in TAKEN TO WORK with everything known. A card field is a fact a
+ * previous run (or a person) settled; it is never downgraded to unknown.
+ * A fresh, explicit manager/agent reading still wins over an old "owner".
+ */
+export async function withCardFacts(leadId: string, f: ListingFacts): Promise<ListingFacts> {
+  let onCard: Record<number, string>;
+  let ids: FieldMap;
+  try {
+    ids = await listingFieldIds();
+    onCard = await readCard(leadId, ids);
+  } catch (err) {
+    logger.warn({ err, leadId }, "listing facts: card unreadable — judging from the thread alone");
+    return f;
+  }
+  const at = (k: keyof typeof FIELD_NAMES): string | null => (ids[k] ? onCard[ids[k]!] ?? null : null);
+  const out: ListingFacts = { ...f };
+
+  if (!out.bedrooms) {
+    const n = parseInt(at("bedrooms") ?? "", 10);
+    if (n > 0) out.bedrooms = n;
+  }
+  const price = at("price") ?? "";
+  if (!out.monthlyIdr && !out.yearlyIdr && price) {
+    const mo = price.match(/(\d+)\s*jt\/mo/i);
+    const yr = price.match(/(\d+)\s*jt\/yr/i);
+    if (mo) out.monthlyIdr = Number(mo[1]) * 1_000_000;
+    if (yr) out.yearlyIdr = Number(yr[1]) * 1_000_000;
+  }
+  if (out.commission === "unknown" && (out.monthlyIdr || out.yearlyIdr) && price) {
+    if (/incl\. our 10%/i.test(price)) out.commission = "included";
+    else if (/NET/.test(price)) out.commission = "net";
+  }
+  if (out.counterpart === "unclear") {
+    const v = (at("ownerVerified") ?? "").toLowerCase();
+    if (v.startsWith("owner")) out.counterpart = "owner";
+    else if (v.startsWith("manager")) out.counterpart = "manager";
+  }
+  if (!out.availableFrom) out.availableFrom = at("availableFrom");
+  if (out.minStayMonths === null) {
+    const n = parseInt(at("minStay") ?? "", 10);
+    if (n > 0) out.minStayMonths = n;
+  }
+  if (!out.viewableFrom) out.viewableFrom = at("viewableFrom");
+  return out;
+}
+
+export async function extractListingFacts(conversation: string, leadId?: string): Promise<ListingFacts | null> {
   const text = stripQuotedText(conversation).trim();
   if (!text) return null;
   try {
@@ -245,7 +298,7 @@ export async function extractListingFacts(conversation: string): Promise<Listing
     const oneOf = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T =>
       allowed.includes(String(v) as T) ? (String(v) as T) : fallback;
 
-    return {
+    const facts: ListingFacts = {
       bedrooms: int(raw["bedrooms"]),
       monthlyIdr: int(raw["monthly_idr"]),
       maxMonthlyIdr: int(raw["max_monthly_idr"]),
@@ -266,6 +319,7 @@ export async function extractListingFacts(conversation: string): Promise<Listing
         : null,
       freeFromIso: /^\d{4}-\d{2}-\d{2}$/.test(String(raw["free_from_iso"] ?? "")) ? String(raw["free_from_iso"]) : null,
     };
+    return leadId ? await withCardFacts(leadId, facts) : facts;
   } catch (err) {
     logger.warn({ err }, "listing fields: extraction failed (non-fatal)");
     return null;
@@ -467,7 +521,9 @@ export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[
   if (f.theirCommissionPct !== null && f.theirCommissionPct !== 10) {
     missing.push(`commission terms to agree (they offer ${f.theirCommissionPct}%)`);
   }
-  if (f.stopSignal) missing.push(`stop signal: ${f.stopSignal}`);
+  // Only a CLASSIFIED stop blocks. The free-text signal alone flagged "We can
+  // accept daily too" — an owner adding an option, not withdrawing one.
+  if (f.stopKind && f.stopSignal) missing.push(`stop signal: ${f.stopSignal}`);
   return { ok: missing.length === 0, missing };
 }
 
@@ -551,7 +607,7 @@ export async function qualificationVerdictForLead(
   `);
   const convo = (res.rows?.[0] as { convo?: string } | undefined)?.convo ?? "";
   if (!convo.trim()) return null;
-  const facts = await extractListingFacts(convo);
+  const facts = await extractListingFacts(convo, leadId);
   if (!facts) return null;
   return meetsQualified(facts);
 }

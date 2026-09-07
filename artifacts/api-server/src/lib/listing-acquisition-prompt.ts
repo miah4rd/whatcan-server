@@ -194,7 +194,7 @@ export async function generateListingAcquisitionReply(
   // this is one model call, not two.
   const facts: ListingFacts | null = isFirstContact
     ? null
-    : await extractListingFacts(formattedDialog || lastLeadText).catch(() => null);
+    : await extractListingFacts(formattedDialog || lastLeadText, opts.leadId).catch(() => null);
 
   let knownBlock = "";
   if (facts) {
