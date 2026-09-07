@@ -861,6 +861,31 @@ out of a viewing stage by regex; the owner rejected that ("лид по кано�
 - A correlated subquery inside `db.select({...})` rendered `lead_id = lead_id`
   and greeted Liu as "Fengshui": read per-lead values in their own query.
 
+### Listing funnel: one owner per stage, stages move on data (2026-09-07)
+
+The owner's audit of stage history: five cards reached Details on a friendly
+reply ("will be happy to discuss"), with no price on the card; three of them
+passed QUALIFIED in under five minutes. Then QUALIFIED cards flapped back to
+TAKEN TO WORK minutes after promotion (Casa Ola x4, Menuai x3, Bumbak x3):
+the classifier was barred from SETTING rule-owned stages (04.09) but could
+still LEAVE them, and a draft classified before the bar still carried "Details"
+in `suggested_stage` and approve applied it at send time. Canon now:
+
+| Move | Only owner |
+|---|---|
+| Initial Contact → TAKEN TO WORK | first message out (outreach / classifier) |
+| TAKEN TO WORK → QUALIFIED | `promoteIfQualified` (`meetsQualified`: owner, bedrooms, price with commission position, min stay, earliest viewing, ≥33M client-facing) |
+| TAKEN TO WORK → co-broke / long term / Closed-lost | `routeUnqualified` (floor first, then counterpart, then occupied, then not-our-format with second opinion) |
+| long term / co-broke → TAKEN TO WORK / Details | `releaseFromLongTerm`, `releaseFromCoBroke` |
+| QUALIFIED → Details → agreement → live | a person |
+
+The classifier on this funnel may only pick Initial Contact / TAKEN TO WORK and
+returns null when the card is already beyond them (`classifyStage`); approve
+refuses a classified rule-owned stage even from an old draft
+(`isRuleOwnedAcquisitionStage`); a person's explicit choice always wins. amoCRM
+`/api/v4/events?filter[type]=lead_status_changed` is the audit trail — our
+`stage_events` misses the bot's own closes.
+
 ### Parked listing cards are answered and re-judged (2026-09-07)
 
 "long term" and "co-broke Agents" are parking stages: no proactive chasing.

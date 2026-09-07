@@ -115,6 +115,8 @@ export type ListingFacts = {
    *  thread offers more than one. An owner with Soft Nest at 31M and Well Nest
    *  at 45M was closed "below the floor" on the cheaper one (07.09.2026). */
   maxMonthlyIdr: number | null;
+  /** The owner's own words when the price was not in rupiah. */
+  priceNote: string | null;
   /** Yearly rate in rupiah, as the owner stated it. */
   yearlyIdr: number | null;
   /** Whether the stated price already contains our 10% — the whole reason a
@@ -156,7 +158,7 @@ export type ListingFacts = {
 
 const EXTRACT_SYSTEM = `You read a WhatsApp thread between a Bali rental agency and a villa owner (or the villa's manager), and pull out what the agency needs to put the villa on its website.
 
-The thread may be in English, Indonesian, or both. Prices are Indonesian rupiah and appear as "45 juta", "45jt", "IDR 45.000.000", "45 million", "45 mio". "juta"/"jt"/"mio"/"million" all mean million.
+The thread may be in English, Indonesian, or both. Prices are usually Indonesian rupiah and appear as "45 juta", "45jt", "IDR 45.000.000", "45 million", "45 mio". "juta"/"jt"/"mio"/"million" all mean million. A price given in another currency is still a price: convert it to rupiah for the _idr fields using 1 USD = 16,500 IDR, 1 AUD = 10,800 IDR, 1 EUR = 18,000 IDR, 1 SGD = 12,800 IDR, and put the original figure in price_note ("$65,000 AUD per year"). An owner who named AUD 65,000 a year was recorded as "no price" for two weeks because only rupiah was read.
 
 WHO SAID IT MATTERS. Every line is prefixed with its speaker: "lead:" is the owner or their manager, "broker:" and "bot:" are US, the agency.
 
@@ -169,6 +171,7 @@ Report ONLY what was actually said. Never infer a price from another villa, neve
 Fields:
 - bedrooms: integer, the villa's own bedroom count. If the thread offers several unit types (a 2BR and a 3BR), report the SMALLEST, and put the rest in nothing — the agency lists units separately.
 - monthly_idr / yearly_idr: full rupiah integers (45 juta -> 45000000). null when not stated. When several whole-villa units are offered at different rates, these are the SMALLEST unit's.
+- price_note: the price exactly as the owner wrote it when it was NOT in rupiah ("$65,000 AUD per year", "USD 3,000/month"); null when the owner quoted rupiah or no price.
 - max_monthly_idr: when the thread offers MORE THAN ONE whole villa or unit type at different monthly rates, the highest monthly rate among them; null when only one rate was given. Per-night or per-day rates are never a monthly rate.
 - commission: "included" if someone said the price already contains the agency's commission; "net" if the owner said the price is net / the fee is added on top; "unknown" otherwise. This is the field the agency cares about most — do not guess it.
 - available_from: the owner's own words about when it frees up — a date or a clear period ("20 September", "now", "from November", "1 October", "after Nov 2026"). A fragment that is not an answer about timing ("Masih", "yes", "August" with no year or context) is null, not a guess.
@@ -195,7 +198,7 @@ Fields:
 - stop_signal: quote the phrase that means this villa CANNOT be offered for long-term rental now — fully booked, already rented out for the year, daily rental only, short term only. null if there is none. Being occupied until a stated date is NOT a stop signal on its own; that is availability.
 
 Respond with JSON only:
-{"bedrooms":n|null,"monthly_idr":n|null,"max_monthly_idr":n|null,"yearly_idr":n|null,"commission":"included"|"net"|"unknown","available_from":s|null,"min_stay_months":n|null,"viewable_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","their_commission_pct":n|null,"stop_kind":"occupied"|"not_our_format"|null,"free_from_iso":s|null,"stop_signal":s|null}`;
+{"bedrooms":n|null,"monthly_idr":n|null,"max_monthly_idr":n|null,"yearly_idr":n|null,"price_note":s|null,"commission":"included"|"net"|"unknown","available_from":s|null,"min_stay_months":n|null,"viewable_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","their_commission_pct":n|null,"stop_kind":"occupied"|"not_our_format"|null,"free_from_iso":s|null,"stop_signal":s|null}`;
 
 /**
  * Remove quoted text before the model ever sees it.
@@ -246,6 +249,7 @@ export async function extractListingFacts(conversation: string): Promise<Listing
       bedrooms: int(raw["bedrooms"]),
       monthlyIdr: int(raw["monthly_idr"]),
       maxMonthlyIdr: int(raw["max_monthly_idr"]),
+      priceNote: str(raw["price_note"]),
       yearlyIdr: int(raw["yearly_idr"]),
       commission: oneOf(raw["commission"], ["included", "net", "unknown"] as const, "unknown"),
       availableFrom: str(raw["available_from"]),
@@ -289,7 +293,7 @@ export function priceLine(f: ListingFacts): string | null {
     f.commission === "included" ? "incl. our 10%"
     : f.commission === "net" ? "NET — add our 10%"
     : "commission position NOT confirmed";
-  return `${money} — ${note}`;
+  return `${money} — ${note}${f.priceNote ? ` (${f.priceNote})` : ""}`;
 }
 
 /**
