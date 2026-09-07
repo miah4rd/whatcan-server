@@ -13,7 +13,7 @@
  * autopilot leaves it alone. One draft per viewing.
  */
 import { db, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { classifyAndApplyStage } from "./stage-on-reply";
 
@@ -34,7 +34,6 @@ export async function processViewingOutcomes(): Promise<{ moved: number; drafted
         leadId: leadsSyncTable.leadId,
         responsibleUser: leadsSyncTable.responsibleUser,
         viewingAt: leadsSyncTable.viewingAt,
-        leadName: sql<string | null>`(SELECT sender_name FROM lead_messages m WHERE m.lead_id = ${leadsSyncTable.leadId} AND m.sender_type = 'lead' ORDER BY m.sent_at DESC LIMIT 1)`,
       })
       .from(leadsSyncTable)
       .where(
@@ -62,7 +61,16 @@ export async function processViewingOutcomes(): Promise<{ moved: number; drafted
           if (r.moved) { moved++; continue; }
         }
         // Silence, or the thread did not settle it: ask the broker to ask.
-        const name = firstName(lead.leadName);
+        // The client's name is read in its own query: a correlated subquery
+        // in the select above rendered `lead_id = lead_id` and greeted Liu as
+        // "Fengshui" — the newest client in the whole table.
+        const [nameRow] = await db
+          .select({ name: leadMessagesTable.senderName })
+          .from(leadMessagesTable)
+          .where(and(eq(leadMessagesTable.leadId, lead.leadId), eq(leadMessagesTable.senderType, "lead")))
+          .orderBy(desc(leadMessagesTable.sentAt))
+          .limit(1);
+        const name = firstName(nameRow?.name);
         const text =
           `Hi${name ? ` ${name}` : ""}, how did the viewing go? ` +
           `If it felt right, I can check the next steps with the owner, and if not, tell me what was missing and I'll find closer matches.`;
@@ -75,6 +83,20 @@ export async function processViewingOutcomes(): Promise<{ moved: number; drafted
           autopilotSkippedReason: VIEWING_FOLLOWUP_VERDICT,
           autopilotSkippedAt: new Date(),
         });
+        // One open push per card: an older follow-up written before the slot
+        // ("we still have the 5PM visit set up") is now wrong, and two drafts
+        // for one client is the clutter the broker asked us to stop.
+        await db
+          .update(pendingSuggestionsTable)
+          .set({ status: "skipped" })
+          .where(
+            and(
+              eq(pendingSuggestionsTable.leadId, lead.leadId),
+              eq(pendingSuggestionsTable.kind, "push"),
+              eq(pendingSuggestionsTable.status, "pending"),
+              sql`${pendingSuggestionsTable.autopilotSkippedReason} IS DISTINCT FROM ${VIEWING_FOLLOWUP_VERDICT}`,
+            ),
+          );
         drafted++;
         logger.info({ leadId: lead.leadId, viewingAt: lead.viewingAt }, "viewing outcome: no word since the slot — 'how did it go?' draft written for the broker");
       } catch (err) {
