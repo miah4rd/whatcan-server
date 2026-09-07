@@ -149,6 +149,11 @@ export const leadsSyncTable = pgTable("leads_sync", {
    * "Viewing scheduled"; the outcome pass reads it to move the card on to
    * "Viewing done" or to hand the broker a "how did it go?" draft. */
   viewingAt: timestamp("viewing_at", { withTimezone: true }),
+  /** The last extracted-and-merged listing facts, and the moment they were
+   *  read. A thread with no message newer than this is not read again:
+   *  the daily audit costs one model call per CHANGED card, not per card. */
+  listingFacts: jsonb("listing_facts").$type<Record<string, unknown>>(),
+  listingFactsAt: timestamp("listing_facts_at", { withTimezone: true }),
   // ── The client's request, in the five things a broker needs to recognise them
   // at a glance: who, how many people, how many bedrooms, when, where. Asked for
   // by the brokers ("I just want to scan the request and remember the clients").
