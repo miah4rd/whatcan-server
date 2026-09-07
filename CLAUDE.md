@@ -837,6 +837,39 @@ owner made explicitly — do not change without asking:
 Verified with 11 synthetic cases including the dangerous ones (silence and mild
 hesitation must NOT close a deal; an explicit "we booked elsewhere" must).
 
+### Stages also follow replies sent from the broker's phone (2026-09-07)
+
+Both manual-reply detectors (webhook `brokerRepliedFresh`, timeline sweep) call
+`classifyAndApplyStage` in `lib/stage-on-reply.ts`. Three viewings agreed in one
+week, the CRM showed one — everything the broker confirmed outside Copilot moved
+nothing. `viewing_at` is read from the thread when a card lands on Viewing
+scheduled; `lib/viewing-outcome.ts` turns a passed slot into Viewing done (if the
+thread says so) or a "how did it go?" push draft stamped `viewing follow-up due`.
+
+**Viewing canons, not a "no backward" guard.** The first version refused any move
+out of a viewing stage by regex; the owner rejected that ("лид по канонам не
+подходит на эту стадию, ты его насильно запрещаешь"). Now:
+- the classifier is told the CRM facts (booked slot, ahead/passed) and the two
+  canons in its rules: scheduled stays until the slot passes or a cancellation
+  is stated; done only after the slot passed AND the thread shows it happened;
+- code enforces only what code can: "Viewing done" with a future `viewing_at` is
+  refused; a BACKWARD move out of a viewing stage needs a focused yes/no
+  evidence check (cancelled / no-show / rejected what they saw / restarted),
+  fail-closed, and clears `viewing_at` when confirmed. Forward moves are free.
+- `/api/admin/reclassify-manual` (POST, `?days&pipeline&apply=1`) is the repair
+  and audit tool; run it dry first, it prints every canon that held.
+- A correlated subquery inside `db.select({...})` rendered `lead_id = lead_id`
+  and greeted Liu as "Fengshui": read per-lead values in their own query.
+
+### Listing qualification asks for viewability (2026-09-07)
+
+`meetsQualified` needs `min_stay_months` and `viewable_from` besides bedrooms,
+price with commission position and the owner. Clients asked to see 7 of our
+villas in one week, 1 had a slot. The qualifying sentence, the adaptive nudge
+and the prompt's settled/missing lists all carry both; the card gets
+`Listing: minimum stay` / `Listing: viewable from` (auto-created). Listing
+floor is 33M client-facing (net + 10%), owner's words 05.09.
+
 ## Rental conversation rules (`lib/rental-prompt.ts`)
 
 - Offer a shortlist once **~2 criteria** are roughly known. Don't interrogate.
