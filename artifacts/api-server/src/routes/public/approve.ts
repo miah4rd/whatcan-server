@@ -8,6 +8,7 @@ import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-fo
 import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
 import { classifyStage, safeStageIdForLead, isRuleOwnedAcquisitionStage } from "../../lib/stage-classifier";
+import { reconcileListingStage } from "../../lib/listing-stage-engine";
 import {
   resolveSendChannel,
   deliverText,
@@ -707,6 +708,11 @@ router.post("/approve", async (req, res) => {
     // ── Detect "I'll check and get back to you" promises — the client is
     // waiting on US here, so the normal wait-for-reply clock never fires.
     recordCommitment(sug.leadId, currentResponsibleUser, body.message).catch(() => {});
+
+    // Listing funnel: a message going out is a fact the stage depends on
+    // (Initial Contact → TAKEN TO WORK). Signals only, no model call; the
+    // engine returns at once for every other funnel.
+    reconcileListingStage(sug.leadId, { facts: null, apply: true, source: "send" }).catch(() => undefined);
 
     // ── Track property picks — personalizes future matching for this broker ──
     if (currentResponsibleUser && effectiveAttachments.length > 0) {

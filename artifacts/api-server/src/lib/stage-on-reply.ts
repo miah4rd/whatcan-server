@@ -18,6 +18,7 @@
 import { db, leadsSyncTable, leadMessagesTable, stageEventsTable } from "@workspace/db";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
+import { isListingAcquisition } from "./pipelines";
 import { classifyStage, getPipelineStages, safeStageIdForLead } from "./stage-classifier";
 import { getAmoLead, updateLeadStatus } from "./amo-client";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
@@ -125,6 +126,11 @@ export async function classifyAndApplyStage(
     .where(eq(leadsSyncTable.leadId, leadId))
     .limit(1);
   if (!row || row.botExcluded) return { moved: false, reason: "no row or bot excluded" };
+  if (isListingAcquisition(row.pipeline)) {
+    // One owner: the stage engine reconciles listing cards from facts on
+    // every generated reply and every send. Nothing to classify here.
+    return { moved: false, reason: "listing funnel — the stage engine owns stages" };
+  }
 
   const stageLower = (row.leadStage ?? "").toLowerCase();
   if (/1st follow up|2nd follow up|final follow up/.test(stageLower)) {

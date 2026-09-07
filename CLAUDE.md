@@ -861,6 +861,22 @@ out of a viewing stage by regex; the owner rejected that ("лид по кано�
 - A correlated subquery inside `db.select({...})` rendered `lead_id = lead_id`
   and greeted Liu as "Fengshui": read per-lead values in their own query.
 
+### Listing stage engine (2026-09-07, evening)
+
+`lib/listing-stage-engine.ts` is the ONLY code that moves a listing card
+between Initial Contact, TAKEN TO WORK, long term, co-broke Agents,
+Closed-lost (by facts) and QUALIFIED (arrival). `desiredStage(facts,
+signals)` is pure; `reconcileListingStage(leadId)` applies it, idempotently,
+from three triggers: a reply generated (with the facts just extracted), a
+message sent (signals only, no model call), and the daily audit
+(`maybeRunDailyListingAudit`, after 09:00 Bali; broker gets a push with his
+cards whose facts disagree). Closes and co-broke parking pass a focused
+second opinion first (`confirmsNotOurFormat`, `confirmsThirdParty`), a parked
+card leaves only on positive evidence. The classifier returns null for this
+funnel; `promoteIfQualified` / `routeUnqualified` / `releaseFrom*` are gone.
+Audit by hand: `POST /api/admin/listing-audit` (dry), `?apply=1`, `?lead=<id>`.
+Two time-driven closers stay outside: three unanswered nudges, no WhatsApp.
+
 ### Listing funnel: one owner per stage, stages move on data (2026-09-07)
 
 The owner's audit of stage history: five cards reached Details on a friendly
