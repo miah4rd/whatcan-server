@@ -145,6 +145,10 @@ export const leadsSyncTable = pgTable("leads_sync", {
    * card is parked in "long term". The availability-check draft is timed from
    * it (free date minus 14 days); cleared when the card leaves the stage. */
   listingFreeFrom: timestamp("listing_free_from", { withTimezone: true }),
+  /** Rental: when the agreed viewing takes place. Set when the stage becomes
+   * "Viewing scheduled"; the outcome pass reads it to move the card on to
+   * "Viewing done" or to hand the broker a "how did it go?" draft. */
+  viewingAt: timestamp("viewing_at", { withTimezone: true }),
   // ── The client's request, in the five things a broker needs to recognise them
   // at a glance: who, how many people, how many bedrooms, when, where. Asked for
   // by the brokers ("I just want to scan the request and remember the clients").

@@ -23,6 +23,7 @@ import { scheduleLiveReply } from "./live-reply-debounce.js";
 import { shouldSuppressPush } from "./stage-routing";
 import { followupClockAfterReply } from "./rental-followup";
 import { reconcileTasksAfterManualReply } from "./manual-reply-followup";
+import { classifyAndApplyStage } from "./stage-on-reply";
 import { enforceBudgetFilter } from "./budget-filter";
 import { recordCommitment } from "./commitment-scheduler";
 import { getAccessToken } from "./amo-client";
@@ -381,6 +382,12 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
         } catch (err) {
           logger.warn({ err, leadId }, "timeline: manual-reply task reconcile failed");
         }
+        // The stage must follow a reply written from the phone exactly as it
+        // follows one approved in Copilot — a viewing confirmed by hand moved
+        // nothing for a week.
+        classifyAndApplyStage(leadId, { source: "manual-reply", replyText: newest.text ?? undefined }).catch((err) =>
+          logger.warn({ err, leadId }, "timeline: stage classification after manual reply failed"),
+        );
       }
 
       logger.info(
