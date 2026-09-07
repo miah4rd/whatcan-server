@@ -18,7 +18,7 @@ import { Router } from "express";
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { logger } from "../../lib/logger";
-import { delegatedStageNames, getAutopilotSetting, maybeAutopilot } from "../../lib/autopilot";
+import { autopilotStageNames, getAutopilotSetting, maybeAutopilot } from "../../lib/autopilot";
 
 const router = Router();
 
@@ -77,7 +77,7 @@ router.post("/admin/autopilot-drain", async (req, res) => {
   // Only the stages the broker delegated. Without this the drain picked the
   // oldest drafts in the whole funnel — which live in `live` and `Weekly Check
   // Sent`, past the threshold — and every one of them was declined in silence.
-  const eligibleStages = await delegatedStageNames(pipeline);
+  const eligibleStages = await autopilotStageNames(pipeline);
   if (!eligibleStages || eligibleStages.length === 0) {
     res.json({ sent: 0, skipped: `no delegated stages resolved for ${pipeline}` });
     return;

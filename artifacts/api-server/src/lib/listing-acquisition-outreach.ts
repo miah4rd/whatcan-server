@@ -197,7 +197,10 @@ export async function processListingAcquisitionOutreach(): Promise<number> {
         // this the first pass after a deploy reaches back through every old
         // card ever parked in this pipeline.
         isNotNull(leadsSyncTable.amoCreatedAt),
-        sql`${leadsSyncTable.amoCreatedAt} > now() - interval '30 days'`,
+        // 45, not 30: six scout cards from early August lost their outreach
+        // draft to the stale-LIVE cleaner and then aged out of this window with
+        // zero messages ever sent — on Initial Contact, owned by nobody.
+        sql`${leadsSyncTable.amoCreatedAt} > now() - interval '45 days'`,
       ),
     );
 

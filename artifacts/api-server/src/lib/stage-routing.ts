@@ -193,6 +193,17 @@ export function resolveStageGroup(rawStage: string): StageGroup {
 /**
  * Returns true when the Push scheduler should skip this lead entirely.
  */
+/**
+ * The listing funnel's two parking stages. No proactive chasing here — that is
+ * what parking means — but an owner who WRITES to a parked card is answered,
+ * and the card is re-judged: "free from November" is not long term, and an
+ * owner filed under co-broke is not a co-broke.
+ */
+export function isParkedListingStage(rawStage: string | null | undefined): boolean {
+  const s = (rawStage ?? "").toLowerCase();
+  return s.includes("long term") || s.includes("co-broke");
+}
+
 export function shouldSuppressPush(rawStage: string): boolean {
   const group = resolveStageGroup(rawStage);
   if (PUSH_SUPPRESSED_GROUPS.includes(group)) return true;

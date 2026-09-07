@@ -26,6 +26,7 @@ import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { logger } from "./logger";
 import { getPipelineStages } from "./stage-classifier";
+import { isParkedListingStage } from "./stage-routing";
 import {
   mayOpenNewConversation,
   isFirstOutbound,
@@ -123,6 +124,21 @@ export async function delegatedStageNames(pipeline: string): Promise<string[] | 
 }
 
 /**
+ * Delegated stages PLUS the parking stages, for the two callers that must
+ * treat a stuck reply on "long term" or "co-broke" as the bot's: the backlog
+ * drain and the inbox. A parked card is not chased, but 12 owners on long term
+ * and 17 on co-broke were waiting for an answer nobody could see — the stage
+ * suppressed the draft from the inbox and sat past the autopilot threshold.
+ */
+export async function autopilotStageNames(pipeline: string): Promise<string[] | null> {
+  const delegated = await delegatedStageNames(pipeline);
+  if (!delegated) return null;
+  const stages = await getPipelineStages(pipeline);
+  const parked = (stages?.all ?? []).map((st) => st.name).filter((n) => isParkedListingStage(n));
+  return [...delegated, ...parked.filter((n) => !delegated.includes(n))];
+}
+
+/**
  * The stage where this funnel hands its cards from the bot to the broker.
  *
  * Exactly the stage named in the setting — the bot works everything before it.
@@ -152,7 +168,7 @@ export async function delegatedStagesByPipeline(): Promise<Map<string, Set<strin
     const res = await db.execute(sql`SELECT pipeline FROM autopilot_settings WHERE mode = 'on'`);
     const rows = (res as { rows?: Array<{ pipeline: string }> }).rows ?? [];
     for (const r of rows) {
-      const names = await delegatedStageNames(r.pipeline);
+      const names = await autopilotStageNames(r.pipeline);
       if (names) out.set(r.pipeline.trim().toLowerCase(), new Set(names.map((n) => n.trim().toLowerCase())));
     }
   } catch (err) {
@@ -235,7 +251,12 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
      * always be a handover point from autopilot to the human, wherever the dial
      * is set, "иначе он просто теряется в системе".
      */
-    if (leadIdx >= capIdx) {
+    // Parking stages sit past the threshold but are not a handover: nobody
+    // works them by hand. A REPLY to an owner who wrote to a parked card is
+    // the bot's; a push there is not (the dated availability check is written
+    // for a person and carries its own verdict, which must survive this pass).
+    const parked = isParkedListingStage(lead.leadStage);
+    if (leadIdx >= capIdx && !parked) {
       return { sent: false, reason: `handed over to the broker at ${lead.leadStage}` };
     }
 
@@ -246,6 +267,7 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
         text: pendingSuggestionsTable.suggestionText,
         attachments: pendingSuggestionsTable.attachments,
         responsibleUser: pendingSuggestionsTable.responsibleUser,
+        skippedReason: pendingSuggestionsTable.autopilotSkippedReason,
       })
       .from(pendingSuggestionsTable)
       .where(
@@ -257,6 +279,15 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
       .orderBy(desc(pendingSuggestionsTable.createdAt))
       .limit(1);
     if (!sug || !sug.text?.trim()) return { sent: false, reason: "no pending draft" };
+    const standing = (sug.skippedReason ?? "").trim();
+    if (standing && !standing.startsWith("waiting")) {
+      // Already judged for a person ("handed over", "availability check due",
+      // "viewing follow-up due"). Re-judging would overwrite that verdict.
+      return { sent: false, reason: standing };
+    }
+    if (parked && sug.kind !== "live") {
+      return { sent: false, reason: `parked stage (${lead.leadStage}): replies only, no proactive sends` };
+    }
 
     /**
      * Record on the draft itself why it was not sent.

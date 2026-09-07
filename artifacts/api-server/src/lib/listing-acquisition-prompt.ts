@@ -30,6 +30,7 @@ import {
   promoteIfQualified,
   routeUnqualified,
   releaseFromLongTerm,
+  releaseFromCoBroke,
   meetsQualified,
   type ListingFacts,
 } from "./listing-card-fields";
@@ -305,6 +306,8 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
       // — to Details when everything is known, back to work when not.
       const released = await releaseFromLongTerm(opts.leadId, facts);
       if (released.moved) logger.info({ leadId: opts.leadId, ...released }, "listing card released from long term");
+      const unparked = await releaseFromCoBroke(opts.leadId, facts);
+      if (unparked.moved) logger.info({ leadId: opts.leadId, ...unparked }, "listing card released from co-broke");
       const outcome = await promoteIfQualified(opts.leadId, facts);
       logger.info({ leadId: opts.leadId, ...outcome }, "listing-acquisition: qualification checked");
       // Only when it did NOT qualify: a management company we have agreed terms
