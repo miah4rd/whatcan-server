@@ -618,6 +618,18 @@ responsive.
   broker a nudge" feature gets the same two halves: a delivery that knows
   whether it landed, and a surface that works when it didn't.
 
+- **Autopilot: one reply per message, one proactive touch per cadence — in code.**
+  Audit 2026-09-08: 673 unattended sends in 7 days, and dozens of pairs where
+  two DIFFERENT answers to the same inbound left in the same second. Cause:
+  the webhook and the timeline poll each birthed a LIVE draft 15–25 s apart, a
+  Salesbot send takes 10–15 s, so the second draft was judged and sent while
+  the first was in flight. `maybeAutopilot` now serialises judges per lead
+  (`judgeInFlight`) and, before any send, retires a LIVE draft when anything
+  of ours (sent_messages or an outbound lead_messages row) is newer than the
+  lead's last inbound, and declines a proactive draft when anything left in
+  the last 20 h. The owner's frame: autopilot inherits the regulation the
+  brokers trained by hand; it never gets to invent a cadence of its own.
+
 ## The paid ad lead is answered in seconds, and its silence is read in 15 minutes
 
 The opening on a Meta ad lead is an auto-welcome that sits OUTSIDE the count,
