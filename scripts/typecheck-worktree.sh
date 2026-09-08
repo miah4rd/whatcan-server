@@ -12,8 +12,10 @@ set -u
 TSC=/opt/whatcan/node_modules/.bin/tsc
 cd /opt/whatcan || exit 1
 git fetch github -q || { echo "FETCH FAILED"; exit 1; }
-git worktree prune
+# Remove the directory FIRST, then prune — prune only forgets a worktree
+# whose directory is already gone.
 rm -rf /tmp/tc
+git worktree prune
 git worktree add --detach /tmp/tc github/master -q || { echo "WORKTREE FAILED"; exit 1; }
 
 # node_modules: a REAL directory with every prod entry linked, except
