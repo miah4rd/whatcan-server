@@ -354,3 +354,24 @@ export type ContactEvent = typeof contactEventsTable.$inferSelect;
 export type LeadCrmTask = typeof leadCrmTasksTable.$inferSelect;
 export type LeadMessage = typeof leadMessagesTable.$inferSelect;
 export type UserSetting = typeof userSettingsTable.$inferSelect;
+
+/**
+ * What the broker saw at a viewing — the part of the funnel the system cannot
+ * observe. One row per viewing slot; "due" from three hours after the slot,
+ * "filed" once the broker answered. See lib/viewing-report.ts.
+ */
+export const viewingReportsTable = pgTable("viewing_reports", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  leadId: text("lead_id").notNull(),
+  propertyCode: text("property_code"),
+  viewingAt: timestamp("viewing_at", { withTimezone: true }).notNull(),
+  status: text("status").notNull().default("due"),
+  outcome: text("outcome"),
+  feedback: text("feedback"),
+  nextSteps: jsonb("next_steps").$type<string[]>(),
+  nextBy: text("next_by"),
+  rescheduledTo: timestamp("rescheduled_to", { withTimezone: true }),
+  filedBy: text("filed_by"),
+  filedAt: timestamp("filed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

@@ -16,6 +16,7 @@ import { db, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable } from "
 import { and, desc, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { classifyAndApplyStage } from "./stage-on-reply";
+import { ensureDueReport } from "./viewing-report";
 
 export const VIEWING_FOLLOWUP_VERDICT = "viewing follow-up due";
 const GRACE_HOURS = 3;
@@ -56,6 +57,12 @@ export async function processViewingOutcomes(): Promise<{ moved: number; drafted
           .select({ n: sql<number>`count(*)::int` })
           .from(leadMessagesTable)
           .where(and(eq(leadMessagesTable.leadId, lead.leadId), sql`${leadMessagesTable.sentAt} > ${lead.viewingAt}`));
+        // Whatever the thread says, the broker is asked what happened: the
+        // report is the only source for the verdict, the objections and the
+        // next step. The task and the push come with it.
+        await ensureDueReport(lead.leadId, lead.viewingAt!).catch((err) =>
+          logger.warn({ err, leadId: lead.leadId }, "viewing outcome: report not created (non-fatal)"),
+        );
         if ((after?.n ?? 0) > 0) {
           const r = await classifyAndApplyStage(lead.leadId, { source: "viewing-outcome" });
           if (r.moved) { moved++; continue; }
