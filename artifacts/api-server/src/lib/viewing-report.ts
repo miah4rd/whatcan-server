@@ -25,6 +25,8 @@ import { chatCompletion, WRITER_MODEL } from "./ai-client";
 
 export const REPORT_TASK_PREFIX = "Fill the viewing report";
 export const REPORT_FILED_VERDICT = "viewing report filed";
+/** The verdict on the placeholder push draft that carries the form in PUSH. */
+export const VIEWING_FOLLOWUP_VERDICT = "viewing follow-up due";
 
 export type ViewingOutcome = "go" | "think" | "no" | "no_show" | "cancelled" | "rescheduled";
 export const NEXT_STEPS = [
@@ -93,6 +95,28 @@ export async function ensureDueReport(leadId: string, viewingAt: Date): Promise<
     .insert(viewingReportsTable)
     .values({ leadId, propertyCode: property, viewingAt, status: "due" })
     .returning({ id: viewingReportsTable.id });
+
+  // The form lives inside a card, and the inbox lists drafts: without a
+  // pending push for this lead there is nothing to open. The placeholder
+  // "how did it go?" is that card; it is rewritten once the report is filed.
+  const [pendingPush] = await db
+    .select({ id: pendingSuggestionsTable.id })
+    .from(pendingSuggestionsTable)
+    .where(and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending"), eq(pendingSuggestionsTable.kind, "push")))
+    .limit(1);
+  if (!pendingPush) {
+    await db.insert(pendingSuggestionsTable).values({
+      leadId,
+      responsibleUser: sync?.responsibleUser ?? null,
+      kind: "push",
+      suggestionText:
+        `Hi${name ? ` ${name}` : ""}, how did the viewing go? ` +
+        `If it felt right, I can check the next steps with the owner, and if not, tell me what was missing and I'll find closer matches.`,
+      status: "pending",
+      autopilotSkippedReason: VIEWING_FOLLOWUP_VERDICT,
+      autopilotSkippedAt: new Date(),
+    });
+  }
 
   const label = `${name || "the client"}${property ? ` · ${property}` : ""}`;
   // The task is what the broker already works from: it is the "today" /
