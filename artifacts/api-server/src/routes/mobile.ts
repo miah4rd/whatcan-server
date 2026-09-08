@@ -78,6 +78,27 @@ const PAGE_HTML = `<!doctype html>
   .badge.overdue { background: #4a1f24; color: #f87171; }
   .badge.today { background: #1f3a2e; color: #4ade80; }
   .badge.notask { background: #23293b; color: #6b7488; }
+  .badge.vreport { background: rgba(251,191,36,.14); color: #fbbf24; }
+  /* Viewing report — lives inside the card, above the draft. Three parts:
+     outcome (one tap), the client's feedback (the one field worth words),
+     next steps (taps + a date). */
+  .vr { background: #181d2e; border: 1px solid rgba(251,191,36,.35); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
+  .vr-head { font-size: 12.5px; color: #fbbf24; font-weight: 700; margin-bottom: 8px; }
+  .vr-head b { color: #fde68a; }
+  .vr .section { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #8a93a8; margin: 10px 0 6px; }
+  .vr-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .vr-opt { border: 1px solid #2a3146; background: #0f1320; color: #b6bccd; border-radius: 20px; padding: 7px 12px; font-size: 13px; cursor: pointer; user-select: none; }
+  .vr-opt.on { background: rgba(45,212,191,.16); border-color: #2dd4bf; color: #5eead4; }
+  .vr-opt.on.warn { background: rgba(251,191,36,.14); border-color: #fbbf24; color: #fde68a; }
+  .vr-opt.on.bad { background: rgba(248,113,113,.14); border-color: #f87171; color: #fca5a5; }
+  .vr textarea { width: 100%; min-height: 84px; background: #0f1320; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 9px 10px; font-size: 14px; font-family: inherit; resize: vertical; }
+  .vr input[type=date], .vr input[type=datetime-local] { background: #0f1320; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 7px 10px; font-size: 13.5px; font-family: inherit; }
+  .vr-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  .vr-send { background: #2dd4bf; color: #06121a; border: none; border-radius: 10px; padding: 11px 18px; font-weight: 800; font-size: 14px; cursor: pointer; }
+  .vr-send[disabled] { opacity: .38; cursor: default; }
+  .vr-link { font-size: 12px; color: #7dd3fc; text-decoration: none; }
+  .vr-status { font-size: 12px; color: #8a93a8; }
+  .vr-done { background: rgba(74,222,128,.08); border: 1px solid rgba(74,222,128,.3); color: #c8f5e0; border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; line-height: 1.5; }
   .badge.temp-hot { background: rgba(239,68,68,.16); color: #fca5a5; }
   .badge.temp-warm { background: rgba(251,146,60,.16); color: #fdba74; }
   .badge.temp-cold { background: rgba(96,165,250,.14); color: #93c5fd; }
@@ -832,6 +853,7 @@ const PAGE_HTML = `<!doctype html>
   }
   function cardBadges(item) {
     var html = taskStatusBadge(item.next_followup_at);
+    if (item.viewing_report) html += '<span class="badge vreport">&#x1F4CB; viewing report</span>';
     if (item.profile_temperature) html += tempBadge(item.profile_temperature);
     // Which funnel this lead lives in. Only while viewing ALL pipelines — once
     // the broker has narrowed to one, every card would repeat the same word.
@@ -2369,6 +2391,106 @@ const PAGE_HTML = `<!doctype html>
     });
   }
 
+  // ── Viewing report ────────────────────────────────────────────────────────
+  // The part of the funnel the system cannot see: what happened at the viewing.
+  // Appears inside the card three hours after the slot (the same card that
+  // carries the "how did it go?" draft) and disappears once filed. Outcome is
+  // one tap, the feedback is the one field worth words (dictation works),
+  // next steps are taps and a date.
+  var VR_STEPS = ["Send price & terms", "Deposit to hold it", "Second visit", "Contract", "Counter-offer to owner", "New shortlist", "Wait for client's decision", "Close"];
+  function vrFmt(iso) {
+    try { return new Date(iso).toLocaleString("en-GB", { timeZone: "Asia/Makassar", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; }
+  }
+  function renderViewingReport(it) {
+    if (it._vrFiled) {
+      return '<div class="vr-done">&#x2705; Viewing report filed' + (it._vrFiled.stage ? ' &middot; stage &rarr; <b>' + esc(it._vrFiled.stage) + '</b>' : '') + '. The draft below is being rewritten from it &mdash; pull to refresh in a moment.</div>';
+    }
+    var vr = it.viewing_report;
+    if (!vr) return "";
+    var h = '<div class="vr" id="vr">';
+    h += '<div class="vr-head">&#x1F4CB; Viewing report' + (vr.property_code ? ' &middot; <b>' + esc(vr.property_code) + '</b>' : '') + ' &middot; ' + esc(vrFmt(vr.viewing_at)) + '</div>';
+    h += '<label class="section">1 &middot; Outcome</label>';
+    h += '<div class="vr-opts" id="vr-outcome">';
+    h += '<span class="vr-opt" data-v="go">&#x1F7E2; Going ahead</span>';
+    h += '<span class="vr-opt warn" data-v="think">&#x1F7E1; Liked it, needs time</span>';
+    h += '<span class="vr-opt bad" data-v="no">&#x1F534; Not this one</span>';
+    h += '</div>';
+    h += '<div class="vr-row"><a href="#" class="vr-link" id="vr-noshow-link">Viewing didn\'t happen &rsaquo;</a></div>';
+    h += '<div class="vr-opts" id="vr-noshow" hidden style="margin-top:6px">';
+    h += '<span class="vr-opt bad" data-v="no_show">Client didn\'t show</span>';
+    h += '<span class="vr-opt warn" data-v="cancelled">Cancelled by the villa</span>';
+    h += '<span class="vr-opt warn" data-v="rescheduled">Rescheduled</span>';
+    h += '</div>';
+    h += '<div class="vr-row" id="vr-resched-row" hidden><input type="datetime-local" id="vr-resched"><span class="vr-status">new slot</span></div>';
+    h += '<label class="section">2 &middot; Client\'s feedback <span style="text-transform:none;letter-spacing:0;color:#6b7488">(objections, if any &middot; in your words)</span></label>';
+    h += '<textarea id="vr-feedback" placeholder="What they liked, what is not right, what they said about price, dates, condition\u2026"></textarea>';
+    h += '<div class="vr-row"><button class="ai-mic-btn" id="vr-voice" title="Voice input">\ud83c\udfa4 Dictate</button></div>';
+    h += '<label class="section">3 &middot; Next steps <span style="text-transform:none;letter-spacing:0;color:#6b7488">(tap what you\'ll do)</span></label>';
+    h += '<div class="vr-opts" id="vr-steps">';
+    for (var i = 0; i < VR_STEPS.length; i++) h += '<span class="vr-opt' + (VR_STEPS[i] === "Close" ? " bad" : "") + '" data-v="' + esc(VR_STEPS[i]) + '">' + esc(VR_STEPS[i]) + '</span>';
+    h += '</div>';
+    h += '<div class="vr-row"><span class="vr-status">By when</span><input type="date" id="vr-by"></div>';
+    h += '<div class="vr-row"><button class="vr-send" id="vr-send" disabled>Send report</button><span class="vr-status" id="vr-status">pick an outcome</span></div>';
+    h += '</div>';
+    return h;
+  }
+  function bindViewingReport(it) {
+    var box = $("#vr");
+    if (!box || !it.viewing_report) return;
+    var outcome = null;
+    function pick(groupId, single, onPick) {
+      document.querySelectorAll("#" + groupId + " .vr-opt").forEach(function (o) {
+        o.onclick = function () {
+          if (single) document.querySelectorAll("#" + groupId + " .vr-opt").forEach(function (x) { x.classList.remove("on"); });
+          if (single) o.classList.add("on"); else o.classList.toggle("on");
+          if (onPick) onPick(o.getAttribute("data-v"));
+        };
+      });
+    }
+    function setOutcome(v, from) {
+      outcome = v;
+      var other = from === "vr-outcome" ? "vr-noshow" : "vr-outcome";
+      document.querySelectorAll("#" + other + " .vr-opt").forEach(function (x) { x.classList.remove("on"); });
+      $("#vr-resched-row").hidden = v !== "rescheduled";
+      $("#vr-send").disabled = false;
+      $("#vr-status").textContent = "";
+    }
+    pick("vr-outcome", true, function (v) { setOutcome(v, "vr-outcome"); });
+    pick("vr-noshow", true, function (v) { setOutcome(v, "vr-noshow"); });
+    pick("vr-steps", false, null);
+    $("#vr-noshow-link").onclick = function (e) { e.preventDefault(); $("#vr-noshow").hidden = !$("#vr-noshow").hidden; };
+    $("#vr-voice").onclick = function () { startVoiceDictation($("#vr-feedback"), $("#vr-voice")); };
+    $("#vr-send").onclick = async function () {
+      if (!outcome) return;
+      var steps = [];
+      document.querySelectorAll("#vr-steps .vr-opt.on").forEach(function (o) { steps.push(o.getAttribute("data-v")); });
+      var btn = $("#vr-send"); btn.disabled = true; $("#vr-status").textContent = "Sending\u2026";
+      try {
+        var r = await fetch(API + "/viewing-report", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            reportId: it.viewing_report.id, outcome: outcome,
+            feedback: ($("#vr-feedback").value || ""), nextSteps: steps,
+            nextBy: ($("#vr-by").value || null),
+            rescheduledTo: (outcome === "rescheduled" && $("#vr-resched").value) ? new Date($("#vr-resched").value).toISOString() : null,
+            brokerId: activeBroker(),
+          }),
+        });
+        var j = await r.json().catch(function () { return {}; });
+        if (!r.ok || !j.ok) throw new Error(j.error || ("HTTP " + r.status));
+        it._vrFiled = { stage: j.stage || null };
+        it.viewing_report = null;
+        showToast("Viewing report filed");
+        renderDetail();
+        // The draft underneath is rewritten from the report on the server;
+        // pull the inbox again so the card shows the new one.
+        setTimeout(function () { try { fetchInbox(); } catch (e) {} }, 2500);
+      } catch (e) {
+        btn.disabled = false; $("#vr-status").textContent = "Failed: " + (e && e.message ? e.message : "try again");
+      }
+    };
+  }
+
   function renderDetail() {
     var it = openItem;
     var leadUrl = "https://unicornproperty.amocrm.ru/leads/detail/" + encodeURIComponent(it.lead_id);
@@ -2414,6 +2536,8 @@ const PAGE_HTML = `<!doctype html>
     }
     html += '</div>';
     html += '<div class="conv-resize" id="conv-resize" title="Drag to resize"></div>';
+
+    html += renderViewingReport(it);
 
     html += '<div class="body-block">';
     if (editing) {
@@ -2537,6 +2661,8 @@ const PAGE_HTML = `<!doctype html>
     // broker needs to see is the lead's latest one, the one being replied to.
     var convEl = document.querySelector(".conv");
     if (convEl) convEl.scrollTop = convEl.scrollHeight;
+
+    bindViewingReport(it);
 
     $("#back-btn").onclick = function () { openItem = null; editing = false; render(); };
 

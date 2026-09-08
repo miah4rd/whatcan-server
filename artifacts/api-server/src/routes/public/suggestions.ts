@@ -6,6 +6,7 @@ import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-p
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
 import { computePushPriority, computeNextFollowupDays, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
 import { delegatedStagesByPipeline } from "../../lib/autopilot";
+import { dueReportsForLeads } from "../../lib/viewing-report";
 import { isPendingVisible, dedupePushPerLead, repliedSignalFromTimeline, loadReplySignals } from "../../lib/pending-visibility";
 import { findStuckLeads } from "../../lib/stuck-leads";
 
@@ -177,6 +178,9 @@ router.get("/suggestions", async (req, res) => {
 
     items = dedupePushPerLead(items);
 
+    // A viewing whose report is still due: the card carries the form.
+    const dueReports = await dueReportsForLeads([...new Set(items.map((i) => i.leadId))]).catch(() => new Map());
+
     const enrichedRaw = items.map((i) => {
       const sync = syncByLeadId.get(i.leadId);
       const content = sync?.content ?? "";
@@ -266,6 +270,10 @@ router.get("/suggestions", async (req, res) => {
         lead_notes: sync?.leadNotes ?? null,
         lead_stage: sync?.leadStage ?? null,
         lead_stage_id: sync?.leadStageId ?? null,
+        viewing_report: (() => {
+          const r = dueReports.get(i.leadId);
+          return r ? { id: r.id, viewing_at: r.viewingAt.toISOString(), property_code: r.propertyCode, due_since: r.createdAt.toISOString() } : null;
+        })(),
         pipeline: sync?.pipeline ?? null,
         last_message_at: sync?.lastMessageAt?.toISOString() ?? null,
         next_followup_at: sync?.nextFollowupAt?.toISOString() ?? null,
