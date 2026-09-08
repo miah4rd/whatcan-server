@@ -18,7 +18,8 @@ import { logger } from "./logger";
 import { classifyAndApplyStage } from "./stage-on-reply";
 import { ensureDueReport } from "./viewing-report";
 
-export const VIEWING_FOLLOWUP_VERDICT = "viewing follow-up due";
+export { VIEWING_FOLLOWUP_VERDICT } from "./viewing-report";
+import { VIEWING_FOLLOWUP_VERDICT } from "./viewing-report";
 const GRACE_HOURS = 3;
 
 function firstName(raw: string | null | undefined): string {
