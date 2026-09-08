@@ -109,6 +109,16 @@ type Body = {
    * appended the broker's own on top, so a curated shortlist of two came back as
    * five. Nothing overrules a person who has just chosen. */
   attachmentsCurated?: boolean;
+  /**
+   * The pending_suggestions row the broker is revising. Every revision is
+   * written back onto it, so the row is what the broker sees. Without this the
+   * revised text and links lived only in the browser: approve read the ROW's
+   * links (three villas the broker had just removed), kept one that a
+   * generic mention "matched", and once rewrote the broker's "we have nothing
+   * to offer" into a three-villa list — Karen, 08.09.2026 — while another
+   * revision that ADDED three links went out with none (Louis, same day).
+   */
+  pendingId?: string;
 };
 
 /**
@@ -172,6 +182,22 @@ router.options("/suggest", (_req, res) => {
 
 router.post("/suggest", async (req, res) => {
   const body = req.body as Body;
+  // The row is the single source of truth for what the broker approves: the
+  // revised text and links are persisted before the response leaves. A null
+  // attachments payload means "links untouched" and leaves the row's links.
+  const respond = async (payload: Record<string, unknown>): Promise<void> => {
+    const pendingId = typeof body.pendingId === "string" ? body.pendingId.trim() : "";
+    if (pendingId && typeof payload["text"] === "string" && (payload["text"] as string).trim()) {
+      try {
+        const set: Record<string, unknown> = { suggestionText: payload["text"] };
+        if (Array.isArray(payload["attachments"])) set["attachments"] = payload["attachments"];
+        await db.update(pendingSuggestionsTable).set(set).where(and(eq(pendingSuggestionsTable.id, pendingId), eq(pendingSuggestionsTable.status, "pending")));
+      } catch (err) {
+        req.log.warn({ err, pendingId }, "suggest: could not persist the revision on the row (non-fatal)");
+      }
+    }
+    res.json(payload);
+  };
 
   if (
     !body?.guide ||
@@ -474,7 +500,7 @@ ${transcript || "(no messages yet)"}`;
         });
         if (matchedStep?.message?.trim()) {
           req.log.info({ leadId: body.leadId, stage: leadStage, step: matchedStep.label }, "suggest: returning push template (no OpenAI)");
-          res.json({
+          await respond({
             text: matchedStep.message.trim(),
             rationale: `Script template for ${matchedStep.label}`,
             suggestionId: randomUUID(),
@@ -984,7 +1010,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
               revision: revision.slice(0, 80), decision: composed.decision, idsReturned: composed.listingIds.length, poolSize: pool.lines.length, curatedDetected},
             "suggest: one-pass compose decided the message and the links together",
           );
-          res.json({
+          await respond({
             text: finalText,
             rationale,
             suggestionId: randomUUID(),
@@ -1007,7 +1033,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           body.attachmentsCurated === true ||
           /\/property\/|\b(R-[A-Z]{2,6}-[A-Z0-9]+|UP-\d+)\b/i.test(revision)
         ) {
-          res.json({
+          await respond({
             text,
             rationale,
             suggestionId: randomUUID(),
@@ -1096,7 +1122,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         outputLang === "auto" ? null : outputLang,
       );
       if (outputLang !== "auto") finalText = await enforceLanguage(finalText, outputLang);
-      res.json({
+      await respond({
         text: finalText,
         rationale,
         suggestionId: randomUUID(),
@@ -1163,7 +1189,7 @@ Rewrite it so it contains NO property names, NO listing links and NO list of vil
           req.log.warn({ err }, "suggest: could not strip listings from the text");
         }
       }
-      res.json({
+      await respond({
         text: finalText,
         rationale,
         suggestionId: randomUUID(),
@@ -1297,7 +1323,7 @@ Rewrite it so it contains NO property names, NO listing links and NO list of vil
     // CLIENT reads, whatever language the broker dictated the edit in.
     if (outputLang !== "auto") finalText = await enforceLanguage(finalText, outputLang);
 
-    res.json({ text: finalText, rationale, suggestionId: randomUUID(), task_hint: taskHint ?? null, stage_hint: stageHint, kind: "live", recent_messages: recentMessages, reassessed_temperature: reassessedTemp ?? null, attachments: newAttachments });
+    await respond({ text: finalText, rationale, suggestionId: randomUUID(), task_hint: taskHint ?? null, stage_hint: stageHint, kind: "live", recent_messages: recentMessages, reassessed_temperature: reassessedTemp ?? null, attachments: newAttachments });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Say what actually went wrong. A bare "API 502" in the broker's panel tells

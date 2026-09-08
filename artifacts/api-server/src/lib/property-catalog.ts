@@ -705,7 +705,10 @@ function rankForShortlist(a: SupabaseProperty, b: SupabaseProperty): number {
 export function extractBudgetIdr(messages: string[]): number | null {
   // "750mill / year" is a yearly figure — read as monthly it became a 750M/month
   // ceiling, which let anything through. Bali quotes both, so the period matters.
-  const PER_YEAR = /\/\s*year|per\s*year|a\s*year|\/\s*yr\b|yearly|annual|в\s*год|годов/i;
+  // "no more than 100 million for the year" (Karen, 08.09.2026) carried none
+  // of the markers below, read as 100M a MONTH, and cleared three villas at
+  // 270-290M a year through the budget filter.
+  const PER_YEAR = /\/\s*year|per\s*year|a\s*year|for\s*(?:the|a|one|1)?\s*year|the\s*year|per\s*annum|\bp\.?a\.?\b|for\s*12\s*months|\/\s*yr\b|yearly|annual|в\s*год|годов/i;
   // "15-18mln per month. Yearly contract" — PER_YEAR alone matched "Yearly"
   // and divided an already-monthly rate by 12 (18M -> 1.5M), because "yearly"
   // described the CONTRACT LENGTH, not the price's period; the same message
