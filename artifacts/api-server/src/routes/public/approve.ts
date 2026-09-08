@@ -42,6 +42,12 @@ const router = Router();
  * "see the options attached". On the edit path such a text keeps its links. */
 const REFERS_TO_ATTACHED_LINKS = /\blinks?\b|\bbelow\b|\battach(?:ed|ments?)?\b|ссылк|ниже|во вложени|tautan|di bawah/i;
 
+/** The text PROMISES links under it — "link below", "options attached". With
+ * nothing attached that message must not leave: the client would scroll for
+ * links that never come (Githaa, 08.09.2026 — "Link below" twice, nothing
+ * below). Narrow on purpose: it blocks a send, so only an explicit promise. */
+const PROMISES_LINKS_BELOW = /\b(?:links?|options?|villas?|listings?|properties)\s+(?:are\s+|is\s+)?(?:below|attached)\b|ссылк[аи]?\s+ниже|ссылки?\s+во\s+вложени|tautan(?:nya)?\s+di\s+bawah|link(?:nya)?\s+di\s+bawah/i;
+
 /**
  * Close any open CRM tasks for this lead (in DB + amoCRM directly via API),
  * then create a new task scheduled for the NEXT follow-up interval.
@@ -313,6 +319,15 @@ router.post("/approve", async (req, res) => {
   // follow. This is the only place both halves are final, so this is where it
   // is enforced.
   let finalMessage: string = body.message;
+  if (!skipMessage && effectiveAttachments.length === 0 && PROMISES_LINKS_BELOW.test(body.message)) {
+    req.log.warn({ leadId: sug.leadId, msgPreview: body.message.slice(0, 120) }, "approve: text promises links below and nothing is attached — send refused");
+    res.status(409).json({
+      ok: false,
+      error: "no_links_attached",
+      message: "The text says the links are below, but no listing is attached. Attach the links or edit the text.",
+    });
+    return;
+  }
   if (!skipMessage) {
     const norm = (t: string) => (t ?? "").replace(/\s+/g, " ").trim().toLowerCase();
     const textEdited = norm(finalMessage) !== norm(sug.suggestionText ?? "");

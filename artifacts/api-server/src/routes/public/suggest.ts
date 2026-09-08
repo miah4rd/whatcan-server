@@ -752,6 +752,15 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             : null,
         });
 
+        // A curated panel is law only while there is something on it. A panel
+        // the broker CLEARED and then "send 2BR options in Berawa or Umalas"
+        // is not a choice of zero villas — it is the old links thrown out and
+        // new ones asked for. Locking the empty list in made the composer keep
+        // "(none)" while its text described two villas, and the code then
+        // forced the empty list anyway (Githaa, 08.09.2026: "Link below" twice,
+        // nothing below). An empty curated panel leaves the decision to the
+        // instruction; a curated panel WITH links stays exactly as chosen.
+        const curatedLocked = curatedDetected && currentIds.length > 0;
         const composed = await composeReplyWithListings({
           systemPrompt: system,
           conversation: transcript,
@@ -762,7 +771,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             id,
             label: known.get(id.toUpperCase())?.label ?? id,
           })),
-          attachmentsCurated: curatedDetected,
+          attachmentsCurated: curatedLocked,
           candidates: pool.lines,
           language: outputLang === "auto" ? null : outputLang,
         });
@@ -783,7 +792,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
                 ),
               ),
           );
-          if (curatedDetected) {
+          if (curatedLocked) {
             // The broker hand-curated the panel — that IS the answer, no matter
             // what "decision" the model landed on. Letting "new_selection" through
             // here was the gap: attachmentsCurated was fed to the prompt as a
@@ -980,7 +989,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           // topping it up "helpfully" re-added two villas over an explicit one.
           if (
             composed.decision === "new_selection" &&
-            !curatedDetected &&
+            !curatedLocked &&
             namedIds.size === 0 &&
             chosen.length > 0 &&
             chosen.length < 3 &&
@@ -1013,7 +1022,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           // comes from the pool and the text is re-synced to it; with nothing
           // to attach, the offer is taken out of the text rather than promised.
           if (composed.decision === "new_selection" && chosen.length === 0) {
-            if (!curatedDetected && pool.affordableIds.length > 0) {
+            if (!curatedLocked && pool.affordableIds.length > 0) {
               for (const id of pool.affordableIds) {
                 if (chosen.length >= 3) break;
                 const cand = byId.get(id.toUpperCase());
@@ -1028,7 +1037,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
               );
             } else {
               req.log.warn(
-                { leadId: body.leadId, idsReturned: composed.listingIds, poolSize: pool.lines.length, curated: curatedDetected },
+                { leadId: body.leadId, idsReturned: composed.listingIds, poolSize: pool.lines.length, curated: curatedDetected, curatedLocked },
                 "suggest: composer chose new_selection with nothing to attach — any offer in the text is removed",
               );
               finalText = await reconcileTextWithAttachments(
@@ -1058,6 +1067,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
               was: currentIds.length,
               now: chosen.length,
               curated: curatedDetected,
+              curatedLocked,
               revision: revision.slice(0, 80), decision: composed.decision, idsReturned: composed.listingIds.length, poolSize: pool.lines.length, curatedDetected},
             "suggest: one-pass compose decided the message and the links together",
           );
