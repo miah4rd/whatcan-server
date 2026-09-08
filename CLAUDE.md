@@ -882,7 +882,11 @@ the listing card found by property code, report task closed, next-step task
 created, placeholder retired and a Sonnet draft to the client written from the
 report (`REPORT_FILED_VERDICT`). Backdate a report by hand:
 `POST /api/admin/viewing-report-due?lead=&at=`. Viewings are counted from
-reports. mobile.ts trap, again: strings inside the page literal are written by
+reports. Verified end to end on a throwaway card 08.09: task created → report
+filed → stage Negotiation done, report task completed, next-step task due
+next morning, note on the lead, placeholder retired, Sonnet draft written.
+The two task texts are deliberately NOT in `OUR_TASK_TEXT`: a client's reply
+must not close "Fill the viewing report" — only the filed report does. mobile.ts trap, again: strings inside the page literal are written by
 hand — a Python heredoc collapsed `\\'` to `\'` and the bare quote took the
 whole page down for a minute; use `&rsquo;` in HTML strings.
 
