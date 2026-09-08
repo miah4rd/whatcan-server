@@ -1692,6 +1692,8 @@ const PAGE_HTML = `<!doctype html>
       suggested_stage: item.suggested_stage || null,
       suggested_stage_reason: item.suggested_stage_reason || null,
       suggested_stage_terminal: !!item.suggested_stage_terminal,
+      // The viewing report the card carries (see renderViewingReport).
+      viewing_report: item.viewing_report || null,
       _skipExpanded: false,
       _skipTaskMode: false,
       _skipTaskVoice: "",
