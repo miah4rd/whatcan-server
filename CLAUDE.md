@@ -861,6 +861,31 @@ out of a viewing stage by regex; the owner rejected that ("лид по кано�
 - A correlated subquery inside `db.select({...})` rendered `lead_id = lead_id`
   and greeted Liu as "Fengshui": read per-lead values in their own query.
 
+### The viewing report (2026-09-08)
+
+A viewing happens in person, so the card learned nothing from it: four held in
+one week, none with a verdict, objections or a next step on the card, the next
+draft written blind. `lib/viewing-report.ts`: three hours after `viewing_at`
+(the `viewing-outcome` pass) a `viewing_reports` row goes "due", an amoCRM task
+"Fill the viewing report: …" is created (it IS the today/overdue badge), the
+broker gets a push, and a placeholder "how did the viewing go?" push draft
+(verdict `viewing follow-up due`) guarantees the card exists in PUSH — the
+inbox lists drafts, not cards. The card carries the form
+(`renderViewingReport` in mobile.ts; `openDetail` must copy `viewing_report`,
+it copies fields by name): outcome (one tap: go / think / no, or didn't happen
+/ cancelled / rescheduled), the client's feedback in the broker's words
+(dictation via the existing `startVoiceDictation`), next steps as taps plus a
+date. `POST /api/public/viewing-report` files it: stage from the outcome
+(go → Negotiation done, think → Viewing done, no → Options sent, didn't happen
+→ Viewing scheduled with the slot cleared/replaced), note on the lead, note on
+the listing card found by property code, report task closed, next-step task
+created, placeholder retired and a Sonnet draft to the client written from the
+report (`REPORT_FILED_VERDICT`). Backdate a report by hand:
+`POST /api/admin/viewing-report-due?lead=&at=`. Viewings are counted from
+reports. mobile.ts trap, again: strings inside the page literal are written by
+hand — a Python heredoc collapsed `\\'` to `\'` and the bare quote took the
+whole page down for a minute; use `&rsquo;` in HTML strings.
+
 ### co-broke Agents is a silent archive (2026-09-07)
 
 Owner: the stage exists so an intermediary's contact is not binned — a plan B
