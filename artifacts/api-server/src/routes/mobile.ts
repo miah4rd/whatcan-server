@@ -98,6 +98,7 @@ const PAGE_HTML = `<!doctype html>
   .vr-send[disabled] { opacity: .38; cursor: default; }
   .vr-link { font-size: 12px; color: #7dd3fc; text-decoration: none; }
   .vr-status { font-size: 12px; color: #8a93a8; }
+  .vr [hidden] { display: none !important; }
   .vr-done { background: rgba(74,222,128,.08); border: 1px solid rgba(74,222,128,.3); color: #c8f5e0; border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; line-height: 1.5; }
   .badge.temp-hot { background: rgba(239,68,68,.16); color: #fca5a5; }
   .badge.temp-warm { background: rgba(251,146,60,.16); color: #fdba74; }
