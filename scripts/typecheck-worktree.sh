@@ -51,13 +51,19 @@ for p in ../../lib/db ../../lib/api-zod ../../lib/api-spec; do
 done
 "$TSC" --noEmit -p tsconfig.json > /tmp/tc-errors.txt 2>&1
 total=$(grep -c "error TS" /tmp/tc-errors.txt)
-changed=$(cd /opt/whatcan && git diff --name-only HEAD github/master -- artifacts/api-server/src lib | sed 's#^artifacts/api-server/##')
-: > /tmp/tc-touched.txt
-for f in $changed; do grep -F "$f" /tmp/tc-errors.txt >> /tmp/tc-touched.txt; done
-echo "tsc: $total errors total; touched files: $(echo "$changed" | tr '\n' ' ')"
-if [ -s /tmp/tc-touched.txt ]; then
-  echo "TYPE ERRORS IN TOUCHED FILES:"; cat /tmp/tc-touched.txt; exit 1
+# The gate: an error is NEW when its file + code + message (line numbers
+# stripped — they drift with every edit above them) is not in the recorded
+# baseline. /root/bin/tsc-baseline.txt holds the ~10 errors in files nobody
+# touches; refresh it deliberately with --save-baseline after fixing one.
+BASE=/root/bin/tsc-baseline.txt
+strip() { grep "error TS" "$1" | sed -E 's/\([0-9]+,[0-9]+\)//' | sort -u; }
+if [ "${1:-}" = "--save-baseline" ]; then strip /tmp/tc-errors.txt > "$BASE"; echo "baseline saved: $(wc -l < "$BASE") errors"; exit 0; fi
+[ -f "$BASE" ] || { echo "no baseline at $BASE — run with --save-baseline on a known-good tree first"; exit 1; }
+strip /tmp/tc-errors.txt > /tmp/tc-now.txt
+comm -23 /tmp/tc-now.txt "$BASE" > /tmp/tc-new.txt
+echo "tsc: $total errors total, $(wc -l < "$BASE") in baseline, $(wc -l < /tmp/tc-new.txt) new"
+if [ -s /tmp/tc-new.txt ]; then
+  echo "NEW TYPE ERRORS (not in baseline):"; cat /tmp/tc-new.txt; exit 1
 fi
-echo "touched files clean. baseline errors by file:"
-grep "error TS" /tmp/tc-errors.txt | sed 's/(.*//' | sort | uniq -c
+echo "no new type errors."
 exit 0
