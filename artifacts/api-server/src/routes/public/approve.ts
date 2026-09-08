@@ -361,8 +361,12 @@ router.post("/approve", async (req, res) => {
           }
         }
         if (effectiveAttachments.length > 0 && kept.length === 0 && added.length === 0) {
-          req.log.info({ leadId: sug.leadId, attached: labels }, "approve: edited text mentions none of the attached villas — rewriting the words under the links");
-          finalMessage = await reconcileTextWithAttachments(finalMessage, effectiveAttachments, true);
+          // The broker's words are LAW on the edit path. Rewriting them "under
+          // the links" turned Karen's "we have nothing to offer for this
+          // request" into a three-villa list (08.09.2026). A text that names
+          // none of the attached villas is a text without links.
+          req.log.info({ leadId: sug.leadId, dropped: labels }, "approve: edited text mentions none of the attached villas — the links are dropped, the words stand");
+          effectiveAttachments = [];
         } else if (kept.length !== effectiveAttachments.length || added.length > 0) {
           req.log.info(
             {

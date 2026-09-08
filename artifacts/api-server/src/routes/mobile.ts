@@ -99,6 +99,8 @@ const PAGE_HTML = `<!doctype html>
   .vr-link { font-size: 12px; color: #7dd3fc; text-decoration: none; }
   .vr-status { font-size: 12px; color: #8a93a8; }
   .vr [hidden] { display: none !important; }
+  .tquote { border-left: 3px solid #3b4a63; background: rgba(255,255,255,.05); color: #8a93a8; font-size: 12px; line-height: 1.4; padding: 5px 8px; margin: 0 0 6px; border-radius: 4px; white-space: pre-wrap; }
+  .tquote-lbl { display: block; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #6b7488; margin-bottom: 2px; }
   .vr-done { background: rgba(74,222,128,.08); border: 1px solid rgba(74,222,128,.3); color: #c8f5e0; border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; line-height: 1.5; }
   .badge.temp-hot { background: rgba(239,68,68,.16); color: #fca5a5; }
   .badge.temp-warm { background: rgba(251,146,60,.16); color: #fdba74; }
@@ -1594,6 +1596,7 @@ const PAGE_HTML = `<!doctype html>
           brokerName: activeBroker(),
           brokerId: activeBroker(),
           leadId: item.lead_id,
+          pendingId: item.id,
           revisionChain: item.revisionChain,
           image: item._contextImage || undefined,
           outputLanguage: embeddedOutputLanguage || "English",
@@ -1642,6 +1645,10 @@ const PAGE_HTML = `<!doctype html>
           deduped.push(item.attachments[di]);
         }
         item.attachments = deduped;
+        // The links now on screen are the outcome of the broker's own
+        // instruction: approve sends exactly this list (curated), never the
+        // row's older one.
+        item._attachmentsCurated = true;
         showToast("Options updated: " + item.attachments.length + " link(s)");
       }
       // The bot re-read the temperature from the pasted screenshot — apply it so
@@ -2505,6 +2512,27 @@ const PAGE_HTML = `<!doctype html>
     };
   }
 
+  // A WhatsApp reply arrives with the message it answers pasted in front,
+  // marked ">>" by the sync. Rendered as a quote block above the client's own
+  // words, so "their reply" and "our message they replied to" never read as
+  // one text (Amelia, 08.09).
+  function bubbleHtml(text) {
+    var t = String(text || "");
+    if (t.indexOf(">>") !== 0) return linkify(esc(t));
+    var lines = t.split("\n");
+    var quote = [], rest = [], inQuote = true;
+    for (var i = 0; i < lines.length; i++) {
+      var ln = lines[i];
+      if (inQuote && ln.indexOf(">>") === 0) { quote.push(ln.replace(/^>>\s?/, "")); continue; }
+      if (inQuote && ln.trim() === "" && rest.length === 0) { inQuote = false; continue; }
+      inQuote = false; rest.push(ln);
+    }
+    var q = quote.join(" ").trim();
+    var body = rest.join("\n").trim();
+    var h = q ? '<div class="tquote"><span class="tquote-lbl">replying to</span>' + linkify(esc(q)) + '</div>' : "";
+    return h + (body ? linkify(esc(body)) : "");
+  }
+
   function renderDetail() {
     var it = openItem;
     var leadUrl = "https://unicornproperty.amocrm.ru/leads/detail/" + encodeURIComponent(it.lead_id);
@@ -2544,7 +2572,7 @@ const PAGE_HTML = `<!doctype html>
         html += '<div class="tmsg ' + (isUs ? "us" : "lead") + '">';
         var _at = fmtAt(m.at);
         html += '<div class="tmsg-hdr"><span class="tsender">' + (isUs ? "You" : "Lead") + '</span>' + (_at ? '<span class="tat">' + esc(_at) + '</span>' : '') + '</div>';
-        html += '<div class="tbubble">' + linkify(esc(m.text)) + '</div>';
+        html += '<div class="tbubble">' + bubbleHtml(m.text) + '</div>';
         html += '</div>';
       }
     }
