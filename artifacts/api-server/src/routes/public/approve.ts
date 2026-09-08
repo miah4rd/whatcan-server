@@ -38,6 +38,10 @@ const FINAL_FOLLOWUP_LEVEL = 3;
 
 const router = Router();
 
+/** The words point at the attachments without naming a villa — "links below",
+ * "see the options attached". On the edit path such a text keeps its links. */
+const REFERS_TO_ATTACHED_LINKS = /\blinks?\b|\bbelow\b|\battach(?:ed|ments?)?\b|ссылк|ниже|во вложени|tautan|di bawah/i;
+
 /**
  * Close any open CRM tasks for this lead (in DB + amoCRM directly via API),
  * then create a new task scheduled for the NEXT follow-up interval.
@@ -364,9 +368,17 @@ router.post("/approve", async (req, res) => {
           // The broker's words are LAW on the edit path. Rewriting them "under
           // the links" turned Karen's "we have nothing to offer for this
           // request" into a three-villa list (08.09.2026). A text that names
-          // none of the attached villas is a text without links.
-          req.log.info({ leadId: sug.leadId, dropped: labels }, "approve: edited text mentions none of the attached villas — the links are dropped, the words stand");
-          effectiveAttachments = [];
+          // none of the attached villas is a text without links — UNLESS the
+          // words point at the links themselves: "here are all the options,
+          // links below" names no villa, and went out with its four links
+          // dropped the same afternoon (Mike). Words that refer to the
+          // attachments keep them, exactly as attached.
+          if (REFERS_TO_ATTACHED_LINKS.test(finalMessage)) {
+            req.log.info({ leadId: sug.leadId, kept: labels }, "approve: edited text names no villa but refers to the links — kept as attached");
+          } else {
+            req.log.info({ leadId: sug.leadId, dropped: labels }, "approve: edited text mentions none of the attached villas — the links are dropped, the words stand");
+            effectiveAttachments = [];
+          }
         } else if (kept.length !== effectiveAttachments.length || added.length > 0) {
           req.log.info(
             {

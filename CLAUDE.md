@@ -73,7 +73,12 @@ API down for ~15 minutes, 202 restarts, webhooks refused. Never write
   because PM2's native `env_file` didn't work.
 - `pnpm run build` is esbuild and does **not** type-check. `pnpm run typecheck`
   has pre-existing failures in files nobody touched — check only the files you
-  changed.
+  changed. The honest gate is `scripts/typecheck-worktree.sh`, run ON THE
+  SERVER between the push and `deploy.sh`: it checks out `github/master` into
+  `/tmp/tc`, links prod's `node_modules` (with `@workspace/*` pointing at the
+  worktree's own `lib/*`), builds `lib/db` first, and exits 1 only for errors
+  in files the push changes — the ~10 baseline errors elsewhere are listed, not
+  counted.
 - **`mobile.ts` gotcha:** the page is one template literal. A backtick anywhere
   in it — including inside a code comment — terminates the string and breaks the
   build. Verify with a balanced-backtick count before deploying.

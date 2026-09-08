@@ -2516,19 +2516,51 @@ const PAGE_HTML = `<!doctype html>
   // marked ">>" by the sync. Rendered as a quote block above the client's own
   // words, so "their reply" and "our message they replied to" never read as
   // one text (Amelia, 08.09).
-  function bubbleHtml(text) {
+  // The sync flattens the line break between the quote and the reply, so the
+  // first cut put "…Did I get that right? Yes" whole into the quote and the
+  // reply vanished. The split is found against the thread instead: the quoted
+  // text is one of the earlier messages, whatever follows it is the reply. A
+  // line break decides only when no earlier message matches; with neither,
+  // the bubble is shown whole — a reply hidden inside a quote is worse than
+  // no quote at all.
+  function bubbleHtml(text, earlier) {
     var t = String(text || "");
     if (t.indexOf(">>") !== 0) return linkify(esc(t));
-    var lines = t.split("\\n");
-    var quote = [], rest = [], inQuote = true;
-    for (var i = 0; i < lines.length; i++) {
-      var ln = lines[i];
-      if (inQuote && ln.indexOf(">>") === 0) { quote.push(ln.replace(/^>>\\s?/, "")); continue; }
-      if (inQuote && ln.trim() === "" && rest.length === 0) { inQuote = false; continue; }
-      inQuote = false; rest.push(ln);
+    var words = function (s) {
+      var out = [], re = /\\S+/g, m;
+      while ((m = re.exec(String(s || ""))) !== null) out.push({ w: m[0].toLowerCase(), end: m.index + m[0].length });
+      return out;
+    };
+    var rest = t.replace(/^>>\\s?/, "");
+    var rw = words(rest);
+    var q = "", body = "", found = false, bestLen = 0;
+    var list = earlier || [];
+    for (var k = list.length - 1; k >= 0; k--) {
+      var prevText = String((list[k] && list[k].text) || "").trim();
+      var pw = words(prevText);
+      if (pw.length === 0 || pw.length > rw.length || pw.length <= bestLen) continue;
+      if (pw.length < 2 && prevText.length < 8) continue;
+      var ok = true;
+      for (var j = 0; j < pw.length; j++) { if (rw[j].w !== pw[j].w) { ok = false; break; } }
+      if (!ok) continue;
+      bestLen = pw.length;
+      q = prevText;
+      body = rest.slice(rw[pw.length - 1].end).trim();
+      found = true;
     }
-    var q = quote.join(" ").trim();
-    var body = rest.join("\\n").trim();
+    if (!found) {
+      var lines = t.split("\\n");
+      var quote = [], restLines = [], inQuote = true;
+      for (var i = 0; i < lines.length; i++) {
+        var ln = lines[i];
+        if (inQuote && ln.indexOf(">>") === 0) { quote.push(ln.replace(/^>>\\s?/, "")); continue; }
+        if (inQuote && ln.trim() === "" && restLines.length === 0) { inQuote = false; continue; }
+        inQuote = false; restLines.push(ln);
+      }
+      q = quote.join(" ").trim();
+      body = restLines.join("\\n").trim();
+      if (!body) return linkify(esc(t));
+    }
     var h = q ? '<div class="tquote"><span class="tquote-lbl">replying to</span>' + linkify(esc(q)) + '</div>' : "";
     return h + (body ? linkify(esc(body)) : "");
   }
@@ -2572,7 +2604,7 @@ const PAGE_HTML = `<!doctype html>
         html += '<div class="tmsg ' + (isUs ? "us" : "lead") + '">';
         var _at = fmtAt(m.at);
         html += '<div class="tmsg-hdr"><span class="tsender">' + (isUs ? "You" : "Lead") + '</span>' + (_at ? '<span class="tat">' + esc(_at) + '</span>' : '') + '</div>';
-        html += '<div class="tbubble">' + bubbleHtml(m.text) + '</div>';
+        html += '<div class="tbubble">' + bubbleHtml(m.text, msgs.slice(0, i)) + '</div>';
         html += '</div>';
       }
     }

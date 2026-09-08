@@ -735,19 +735,22 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         invalidatePropertyCache();
         const known = await describePropertiesByIds(currentIds).catch(() => new Map());
         const cardCrit = await getLeadCardCriteria(body.leadId).catch(() => null);
-        const pool = await candidatesForLead({
-          listingType: dbPipeline.toLowerCase() === "rental" ? "rent" : "sale",
-          recentLeadMessages: [...leadOwn].reverse(),
-          brokerInstruction: revision,
-          cardCriteria: cardCrit
-            ? { bedrooms: cardCrit.bedrooms, areas: cardCrit.areas, budgetIdrMonthly: cardCrit.budgetIdrMonthly }
-            : null,
-        });
-
         const priorInstructions = (body.revisionChain ?? [])
           .slice(0, -1)
           .map((r) => (r.feedback ?? "").trim())
           .filter(Boolean);
+        const pool = await candidatesForLead({
+          listingType: dbPipeline.toLowerCase() === "rental" ? "rent" : "sale",
+          recentLeadMessages: [...leadOwn].reverse(),
+          brokerInstruction: revision,
+          // Every instruction of this editing session shapes the pool, newest
+          // first so the latest statement wins — "attach the options too" on its
+          // own says nothing about which options.
+          priorInstructions: [...priorInstructions].reverse(),
+          cardCriteria: cardCrit
+            ? { bedrooms: cardCrit.bedrooms, areas: cardCrit.areas, budgetIdrMonthly: cardCrit.budgetIdrMonthly }
+            : null,
+        });
 
         const composed = await composeReplyWithListings({
           systemPrompt: system,
@@ -803,10 +806,36 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           // already on the draft (they may sit outside the filtered pool — an
           // unpriced ad villa, another area), so obeying can never drop one.
           const byId = new Map(pool.candidates.map((p) => [p.id.toUpperCase(), p]));
+          // A villa the broker NAMED in the command (a link or a code). Enforced
+          // further down; computed here because it also decides which ids
+          // outside the pool may resolve at all.
+          const namedIds = new Set<string>();
+          for (const m of revision.matchAll(/\/property\/([A-Za-z0-9-]+)/gi)) namedIds.add(m[1]!.toUpperCase());
+          for (const m of revision.matchAll(/\b(R-[A-Z]{2,6}-[A-Z0-9]+|UP-\d+)\b/gi)) namedIds.add(m[1]!.toUpperCase());
+          // Outside the pool only what a person put in play may resolve: the
+          // links already on the draft, the villa the client came in on, the
+          // ones the broker named. Handed an EMPTY pool for "send all the 1BR
+          // options", the composer attached four villas it remembered from the
+          // conversation — three of them 2BR — under a text about 1-bedrooms
+          // (Mike, 08.09.2026). Selection is strict: nothing from another
+          // size, area or price is attached to make up numbers.
+          const allowedOutside = new Set<string>([
+            ...currentIds.map((i) => i.toUpperCase()),
+            ...leadOwnIds,
+            ...namedIds,
+          ]);
+          const invented = composed.listingIds.filter((id) => !byId.has(id) && !allowedOutside.has(id));
+          if (invented.length > 0) {
+            req.log.warn(
+              { leadId: body.leadId, invented, poolSize: pool.lines.length },
+              "suggest: composer picked ids outside the pool that nobody put in play — dropped",
+            );
+          }
           const extra = await describePropertiesByIds(
-            composed.listingIds.filter((id) => !byId.has(id)),
+            composed.listingIds.filter((id) => !byId.has(id) && allowedOutside.has(id)),
           ).catch(() => new Map());
           const chosen = composed.listingIds
+            .filter((id) => byId.has(id) || allowedOutside.has(id))
             .map((id) => {
               const cand = byId.get(id);
               if (cand) {
@@ -833,9 +862,6 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           // with three unrelated villas. Whatever the model returned, every
           // named listing is present; and when the broker had also hand-cleared
           // the panel, the named ones are ALL that goes out.
-          const namedIds = new Set<string>();
-          for (const m of revision.matchAll(/\/property\/([A-Za-z0-9-]+)/gi)) namedIds.add(m[1]!.toUpperCase());
-          for (const m of revision.matchAll(/\b(R-[A-Z]{2,6}-[A-Z0-9]+|UP-\d+)\b/gi)) namedIds.add(m[1]!.toUpperCase());
           if (namedIds.size > 0) {
             const namedResolved = await describePropertiesByIds([...namedIds]).catch((e) => {
               req.log.error({ err: e }, "named-listing resolve threw");
@@ -977,18 +1003,43 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             );
           }
 
-          // The model decided to attach and named ids, and none of them exist:
-          // that is a composer handed an EMPTY candidate list inventing codes to
-          // satisfy an instruction it was told to obey. Shipping its text would
-          // describe villas with no links under them — the exact bug Amelia
-          // reported six edits in a row. Hand the job to the split path, which
-          // picks from the real catalog and reconciles the text to what it found.
-          if (composed.decision === "new_selection" && composed.listingIds.length > 0 && chosen.length === 0) {
-            req.log.warn(
-              { leadId: body.leadId, idsReturned: composed.listingIds, poolSize: pool.lines.length },
-              "suggest: composer picked ids that resolve to nothing — falling back to the split path",
-            );
-            throw new Error("composer ids unresolvable with an empty pool");
+          // The model decided to attach and nothing resolved: an EMPTY
+          // listing_ids under a text that describes two villas ("the first is
+          // in the quiet lanes off Jalan Pemelisan Agung… link below" — Githaa,
+          // 08.09.2026, while the pool held five), or ids that exist nowhere.
+          // Neither check above caught a zero: the top-up wanted at least one
+          // link, the unresolvable-ids fallback wanted at least one id. Text
+          // and links are one message — with a pool to draw from, the shortlist
+          // comes from the pool and the text is re-synced to it; with nothing
+          // to attach, the offer is taken out of the text rather than promised.
+          if (composed.decision === "new_selection" && chosen.length === 0) {
+            if (!curatedDetected && pool.affordableIds.length > 0) {
+              for (const id of pool.affordableIds) {
+                if (chosen.length >= 3) break;
+                const cand = byId.get(id.toUpperCase());
+                if (!cand) continue;
+                const pick = toPickPublic(cand);
+                chosen.push({ type: "link", url: pick.url, label: pick.label });
+              }
+              mustReconcile = true;
+              req.log.warn(
+                { leadId: body.leadId, idsReturned: composed.listingIds, drawn: chosen.length, poolSize: pool.lines.length },
+                "suggest: composer chose new_selection but attached nothing — shortlist drawn from the pool",
+              );
+            } else {
+              req.log.warn(
+                { leadId: body.leadId, idsReturned: composed.listingIds, poolSize: pool.lines.length, curated: curatedDetected },
+                "suggest: composer chose new_selection with nothing to attach — any offer in the text is removed",
+              );
+              finalText = await reconcileTextWithAttachments(
+                composed.text,
+                [],
+                true,
+                pool.budgetIdr,
+                outputLang === "auto" ? null : outputLang,
+              );
+              mustReconcile = false;
+            }
           }
 
           if (mustReconcile) {

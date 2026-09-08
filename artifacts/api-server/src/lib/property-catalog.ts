@@ -1056,6 +1056,12 @@ export async function candidatesForLead(opts: {
   excludeIds?: string[];
   recentLeadMessages?: string[];
   brokerInstruction?: string | null;
+  /** Earlier instructions from the same editing session, NEWEST FIRST. The
+   * pool used to be built from the latest instruction alone: "attach the
+   * options too", given right after "2BR in Berawa or Umalas under 50M", fell
+   * back to the card's 1BR-in-Canggu and came back EMPTY under a text that
+   * described two villas (Githaa, 08.09.2026). */
+  priorInstructions?: string[];
   /** Core criteria from the lead CARD (the ad form filled them) — lowest
    * precedence, they only fill what the client never said themselves. */
   cardCriteria?: { bedrooms: number | null; areas: string[]; budgetIdrMonthly: number | null } | null;
@@ -1081,7 +1087,8 @@ export async function candidatesForLead(opts: {
     (p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()) && offerableNow(p),
   );
 
-  const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
+  const instructions = [opts.brokerInstruction ?? "", ...(opts.priorInstructions ?? [])].filter((t) => (t ?? "").trim());
+  const criteriaSource = [...instructions, ...(opts.recentLeadMessages ?? [])].filter(Boolean);
   const criteria = await extractLeadCriteria(criteriaSource, pool);
   // The owner's rule: the client's own words, then the FORM, then the villa
   // they clicked. The form used to come last, after inheritCriteriaFromAnchor,
@@ -1106,7 +1113,7 @@ export async function candidatesForLead(opts: {
   // bedroom count are filters, not preferences. The one exception is the
   // broker's own instruction to look beyond the area — theirs to give.
   const releaseArea = /elsewhere|other areas?|another area|different area|widen|beyond|whole island|anywhere|другой район|других районах|не только|шире|по всему острову/i.test(
-    opts.brokerInstruction ?? "",
+    instructions.join("\n"),
   );
   if (criteria.areas.length > 0 && !releaseArea) {
     candidates = candidates.filter((p) => areaMatches(p.area, criteria.areas));
