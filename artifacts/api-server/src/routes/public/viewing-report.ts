@@ -4,7 +4,7 @@ import { dueReportForLead, fileReport, NEXT_STEPS, type ViewingOutcome } from ".
 const router = Router();
 
 /** The due report for a lead, if any — the card shows the form when there is one. */
-router.get("/viewing-report", async (req, res) => {
+router.get("/public/viewing-report", async (req, res) => {
   const leadId = String(req.query["leadId"] ?? "").trim();
   if (!leadId) { res.status(400).json({ error: "leadId required" }); return; }
   const report = await dueReportForLead(leadId);
@@ -13,7 +13,7 @@ router.get("/viewing-report", async (req, res) => {
 
 const OUTCOMES: ViewingOutcome[] = ["go", "think", "no", "no_show", "cancelled", "rescheduled"];
 
-router.post("/viewing-report", async (req, res) => {
+router.post("/public/viewing-report", async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   const reportId = String(b["reportId"] ?? "").trim();
   const outcome = String(b["outcome"] ?? "") as ViewingOutcome;
