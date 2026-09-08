@@ -618,6 +618,18 @@ responsive.
   broker a nudge" feature gets the same two halves: a delivery that knows
   whether it landed, and a surface that works when it didn't.
 
+- **Autopilot: one reply per message, one proactive touch per cadence — in code.**
+  Audit 2026-09-08: 673 unattended sends in 7 days, and dozens of pairs where
+  two DIFFERENT answers to the same inbound left in the same second. Cause:
+  the webhook and the timeline poll each birthed a LIVE draft 15–25 s apart, a
+  Salesbot send takes 10–15 s, so the second draft was judged and sent while
+  the first was in flight. `maybeAutopilot` now serialises judges per lead
+  (`judgeInFlight`) and, before any send, retires a LIVE draft when anything
+  of ours (sent_messages or an outbound lead_messages row) is newer than the
+  lead's last inbound, and declines a proactive draft when anything left in
+  the last 20 h. The owner's frame: autopilot inherits the regulation the
+  brokers trained by hand; it never gets to invent a cadence of its own.
+
 ## The paid ad lead is answered in seconds, and its silence is read in 15 minutes
 
 The opening on a Meta ad lead is an auto-welcome that sits OUTSIDE the count,
@@ -860,6 +872,35 @@ out of a viewing stage by regex; the owner rejected that ("лид по кано�
   and audit tool; run it dry first, it prints every canon that held.
 - A correlated subquery inside `db.select({...})` rendered `lead_id = lead_id`
   and greeted Liu as "Fengshui": read per-lead values in their own query.
+
+### The viewing report (2026-09-08)
+
+A viewing happens in person, so the card learned nothing from it: four held in
+one week, none with a verdict, objections or a next step on the card, the next
+draft written blind. `lib/viewing-report.ts`: three hours after `viewing_at`
+(the `viewing-outcome` pass) a `viewing_reports` row goes "due", an amoCRM task
+"Fill the viewing report: …" is created (it IS the today/overdue badge), the
+broker gets a push, and a placeholder "how did the viewing go?" push draft
+(verdict `viewing follow-up due`) guarantees the card exists in PUSH — the
+inbox lists drafts, not cards. The card carries the form
+(`renderViewingReport` in mobile.ts; `openDetail` must copy `viewing_report`,
+it copies fields by name): outcome (one tap: go / think / no, or didn't happen
+/ cancelled / rescheduled), the client's feedback in the broker's words
+(dictation via the existing `startVoiceDictation`), next steps as taps plus a
+date. `POST /api/public/viewing-report` files it: stage from the outcome
+(go → Negotiation done, think → Viewing done, no → Options sent, didn't happen
+→ Viewing scheduled with the slot cleared/replaced), note on the lead, note on
+the listing card found by property code, report task closed, next-step task
+created, placeholder retired and a Sonnet draft to the client written from the
+report (`REPORT_FILED_VERDICT`). Backdate a report by hand:
+`POST /api/admin/viewing-report-due?lead=&at=`. Viewings are counted from
+reports. Verified end to end on a throwaway card 08.09: task created → report
+filed → stage Negotiation done, report task completed, next-step task due
+next morning, note on the lead, placeholder retired, Sonnet draft written.
+The two task texts are deliberately NOT in `OUR_TASK_TEXT`: a client's reply
+must not close "Fill the viewing report" — only the filed report does. mobile.ts trap, again: strings inside the page literal are written by
+hand — a Python heredoc collapsed `\\'` to `\'` and the bare quote took the
+whole page down for a minute; use `&rsquo;` in HTML strings.
 
 ### co-broke Agents is a silent archive (2026-09-07)
 

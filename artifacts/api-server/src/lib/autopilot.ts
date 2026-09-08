@@ -22,7 +22,7 @@
  * did the bot send by itself" is always one query. The dailyCap field stays in
  * the table/API but is not enforced.
  */
-import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
+import { db, leadsSyncTable, pendingSuggestionsTable, sentMessagesTable, leadMessagesTable } from "@workspace/db";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { logger } from "./logger";
 import { getPipelineStages } from "./stage-classifier";
@@ -182,7 +182,30 @@ export async function delegatedStagesByPipeline(): Promise<Map<string, Set<strin
  * Called after a suggestion lands in the inbox. Decides — by the broker's own
  * per-stage setting — whether the bot sends it itself.
  */
+/**
+ * One judge per lead at a time. Two detectors (webhook, timeline poll) can
+ * each birth a LIVE draft for the same inbound 15–25 s apart, and a Salesbot
+ * send takes 10–15 s — so the second draft used to be judged and sent while
+ * the first was still in flight: two different answers to one message,
+ * leaving in the same second (audit 08.09.2026: dozens per week). The second
+ * judge now waits for the first to finish, then sees the send and retires
+ * the duplicate below.
+ */
+const judgeInFlight = new Map<string, Promise<AutopilotOutcome>>();
+
 export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> {
+  const prev = judgeInFlight.get(leadId);
+  if (prev) await prev.catch(() => undefined);
+  const run = maybeAutopilotInner(leadId);
+  judgeInFlight.set(leadId, run);
+  try {
+    return await run;
+  } finally {
+    if (judgeInFlight.get(leadId) === run) judgeInFlight.delete(leadId);
+  }
+}
+
+async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
   try {
     const [lead] = await db
       .select({
@@ -324,6 +347,44 @@ export async function maybeAutopilot(leadId: string): Promise<AutopilotOutcome> 
       return { sent: false, reason };
     };
 
+    // The regulation is one reply per message and one proactive touch per
+    // cadence. Enforced here, not hoped for: if anything of ours left after the
+    // lead's last message, a LIVE draft is a duplicate; if anything left in the
+    // last 20 hours, a proactive draft is early (Rental chases daily, listing
+    // intake every three days — 20 h is inside both).
+    const [lastIn] = await db
+      .select({ at: leadMessagesTable.createdAt })
+      .from(leadMessagesTable)
+      .where(and(eq(leadMessagesTable.leadId, leadId), eq(leadMessagesTable.direction, "inbound")))
+      .orderBy(desc(leadMessagesTable.createdAt))
+      .limit(1);
+    const [lastAny] = await db
+      .select({ at: leadMessagesTable.createdAt, direction: leadMessagesTable.direction })
+      .from(leadMessagesTable)
+      .where(eq(leadMessagesTable.leadId, leadId))
+      .orderBy(desc(leadMessagesTable.createdAt))
+      .limit(1);
+    const [lastSent] = await db
+      .select({ at: sentMessagesTable.createdAt })
+      .from(sentMessagesTable)
+      .where(eq(sentMessagesTable.leadId, leadId))
+      .orderBy(desc(sentMessagesTable.createdAt))
+      .limit(1);
+    const ms = (d: Date | string | null | undefined) => (d ? new Date(d).getTime() : 0);
+    const inAt = ms(lastIn?.at);
+    const sentAt = ms(lastSent?.at);
+    const lastOursAt = Math.max(sentAt, lastAny && lastAny.direction !== "inbound" ? ms(lastAny.at) : 0);
+    const now = Date.now();
+    if (sug.kind === "live" && lastOursAt > inAt && now - lastOursAt < 6 * 3600_000) {
+      logger.warn(
+        { leadId, lastInbound: lastIn?.at ?? null, lastOurs: new Date(lastOursAt).toISOString() },
+        "autopilot: the lead's last message was already answered — duplicate reply retired",
+      );
+      return retire("already answered since the lead's last message — duplicate reply retired");
+    }
+    if (sug.kind !== "live" && lastOursAt > 0 && now - lastOursAt < 20 * 3600_000) {
+      return decline("cadence: something already went out in the last 20h — waiting");
+    }
     if (setting.mode === "dry") {
       logger.info(
         {
