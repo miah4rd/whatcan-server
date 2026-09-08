@@ -114,6 +114,27 @@ export async function processViewingOutcomes(): Promise<{ moved: number; drafted
   } catch (err) {
     logger.error({ err }, "viewing outcome pass failed");
   }
+  // Cards the classifier already moved to "Viewing done" (from the thread)
+  // still owe a report: the verdict, objections and next step live nowhere
+  // else. One per slot; ensureDueReport is idempotent.
+  try {
+    const done = await db.execute(sql`
+      SELECT l.lead_id, l.viewing_at FROM leads_sync l
+       WHERE lower(coalesce(l.lead_stage,'')) LIKE 'viewing done%'
+         AND l.viewing_at IS NOT NULL
+         AND l.viewing_at + make_interval(hours => ${GRACE_HOURS}) <= now()
+         AND l.viewing_at > now() - interval '14 days'
+         AND l.bot_excluded IS NOT TRUE
+         AND NOT EXISTS (SELECT 1 FROM viewing_reports r WHERE r.lead_id = l.lead_id AND r.viewing_at = l.viewing_at)
+       LIMIT 20`);
+    for (const r of (done.rows ?? []) as Array<{ lead_id: string; viewing_at: Date | string }>) {
+      await ensureDueReport(r.lead_id, new Date(r.viewing_at)).catch((err) =>
+        logger.warn({ err, leadId: r.lead_id }, "viewing outcome: report for a done viewing not created (non-fatal)"),
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, "viewing outcome: done-without-report sweep failed");
+  }
   if (moved + drafted > 0) logger.info({ moved, drafted }, "viewing outcome pass complete");
   return { moved, drafted };
 }
