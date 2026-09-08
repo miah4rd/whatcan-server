@@ -1695,6 +1695,7 @@ const PAGE_HTML = `<!doctype html>
       suggested_stage_terminal: !!item.suggested_stage_terminal,
       // The viewing report the card carries (see renderViewingReport).
       viewing_report: item.viewing_report || null,
+      pipeline: item.pipeline || null,
       _skipExpanded: false,
       _skipTaskMode: false,
       _skipTaskVoice: "",
@@ -1702,6 +1703,16 @@ const PAGE_HTML = `<!doctype html>
       _stageExpanded: false,
       _approving: false,
     };
+    // Stage ids are unique per funnel: the picker must hold THIS lead's funnel,
+    // not whichever one was loaded at boot (a Rental lead was offered Unicorn's
+    // "Feedback / Handling Objections", 08.09). Loaded per lead, re-rendered
+    // once it lands if the card is still open.
+    if (item.pipeline && String(item.pipeline).trim().toLowerCase() !== String(STAGE_PIPELINE || "").toLowerCase()) {
+      var _wantLead = item.lead_id;
+      fetchStageOptions(item.pipeline).then(function () {
+        if (openItem && openItem.lead_id === _wantLead && !editing) renderDetail();
+      });
+    }
     editing = false;
     render();
     window.scrollTo(0, 0);
