@@ -2519,16 +2519,16 @@ const PAGE_HTML = `<!doctype html>
   function bubbleHtml(text) {
     var t = String(text || "");
     if (t.indexOf(">>") !== 0) return linkify(esc(t));
-    var lines = t.split("\n");
+    var lines = t.split("\\n");
     var quote = [], rest = [], inQuote = true;
     for (var i = 0; i < lines.length; i++) {
       var ln = lines[i];
-      if (inQuote && ln.indexOf(">>") === 0) { quote.push(ln.replace(/^>>\s?/, "")); continue; }
+      if (inQuote && ln.indexOf(">>") === 0) { quote.push(ln.replace(/^>>\\s?/, "")); continue; }
       if (inQuote && ln.trim() === "" && rest.length === 0) { inQuote = false; continue; }
       inQuote = false; rest.push(ln);
     }
     var q = quote.join(" ").trim();
-    var body = rest.join("\n").trim();
+    var body = rest.join("\\n").trim();
     var h = q ? '<div class="tquote"><span class="tquote-lbl">replying to</span>' + linkify(esc(q)) + '</div>' : "";
     return h + (body ? linkify(esc(body)) : "");
   }
