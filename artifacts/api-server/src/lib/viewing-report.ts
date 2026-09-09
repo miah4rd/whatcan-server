@@ -14,11 +14,10 @@
  * Without a report for 24 hours the generic "how did the viewing go?" goes out
  * and the task turns overdue. Viewings are counted from reports only.
  */
-import { db, viewingReportsTable, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable, stageEventsTable } from "@workspace/db";
+import { db, viewingReportsTable, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { getAmoLead, getOpenAmoTasks, createAmoTask, amoPatch, amoPost, amoFetch, updateLeadStatus } from "./amo-client";
-import { safeStageIdForLead } from "./stage-classifier";
+import { getAmoLead, getOpenAmoTasks, createAmoTask, amoPatch, amoPost, amoFetch } from "./amo-client";
 import { notifyBroker } from "./push-notifications";
 import { brokerKey } from "./broker-identity";
 import { chatCompletion, WRITER_MODEL } from "./ai-client";
@@ -167,21 +166,9 @@ export async function dueReportForLead(leadId: string) {
   return (await dueReportsForLeads([leadId])).get(leadId) ?? null;
 }
 
-// A viewing that happened is a fact the board must keep showing: "Not this
-// one" does NOT send the card back to Options sent — the client has SEEN a
-// villa, and the owner reads the Viewing done column as "viewings held". The
-// card leaves Viewing done the ordinary way, when the next shortlist goes out
-// (links on send → Options sent). 09.09: three held viewings had been pushed
-// back to Options sent by the first version and the board showed one.
-const STAGE_AFTER: Record<ViewingOutcome, string | null> = {
-  go: "Negotiation done",
-  think: "Viewing done",
-  no: "Viewing done",
-  no_show: "Viewing scheduled",
-  cancelled: "Viewing scheduled",
-  rescheduled: "Viewing scheduled",
-};
-
+// The report never moves the card (owner, 09.09.2026: "анкета — это просто
+// обратная связь… зачем-то на основе неё начинаешь какие-то действия делать").
+// Stages follow the thread and the broker; the report is information.
 const OUTCOME_LABEL: Record<ViewingOutcome, string> = {
   go: "Going ahead",
   think: "Liked it, needs time",
@@ -230,37 +217,16 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
     .where(eq(viewingReportsTable.id, input.reportId));
 
   const [sync] = await db
-    .select({ pipeline: leadsSyncTable.pipeline, leadStage: leadsSyncTable.leadStage, responsibleUser: leadsSyncTable.responsibleUser })
+    .select({ responsibleUser: leadsSyncTable.responsibleUser })
     .from(leadsSyncTable)
     .where(eq(leadsSyncTable.leadId, leadId))
     .limit(1);
 
-  // 1. Stage — deterministic, from the outcome. Never a closing stage: "Close"
-  //    as a next step stays the broker's tap in amoCRM.
-  let stageApplied: string | null = null;
-  const target = STAGE_AFTER[input.outcome];
-  try {
-    const lead = await getAmoLead(leadId);
-    if (lead?.pipeline_id && target && (sync?.leadStage ?? "").trim().toLowerCase() !== target.toLowerCase()) {
-      const { id } = await safeStageIdForLead({ pipelineId: lead.pipeline_id, stageId: null, stageName: target });
-      if (id && (await updateLeadStatus(leadId, Number(id)))) {
-        stageApplied = target;
-        await db
-          .update(leadsSyncTable)
-          .set({ leadStage: target, leadStageId: id, updatedAt: new Date() })
-          .where(eq(leadsSyncTable.leadId, leadId));
-        await db
-          .insert(stageEventsTable)
-          .values({ leadId, fromStage: sync?.leadStage ?? null, toStage: target, pipeline: sync?.pipeline ?? null, responsibleUser: `viewing-report:${input.brokerId ?? "?"}` })
-          .catch(() => undefined);
-      }
-    }
-    // The slot: cleared when the viewing did not happen, replaced when rescheduled.
-    if (input.outcome === "no_show" || input.outcome === "cancelled" || input.outcome === "rescheduled") {
-      await db.update(leadsSyncTable).set({ viewingAt: rescheduledTo, updatedAt: new Date() }).where(eq(leadsSyncTable.leadId, leadId));
-    }
-  } catch (err) {
-    logger.warn({ err, leadId }, "viewing report: stage not applied (non-fatal)");
+  // 1. The slot only: a viewing that did not happen frees the slot, a
+  //    rescheduled one replaces it, so the next report is asked at the right
+  //    time. No stage is touched.
+  if (input.outcome === "no_show" || input.outcome === "cancelled" || input.outcome === "rescheduled") {
+    await db.update(leadsSyncTable).set({ viewingAt: rescheduledTo, updatedAt: new Date() }).where(eq(leadsSyncTable.leadId, leadId)).catch(() => undefined);
   }
 
   // 2. The report as a note on the lead, so amoCRM shows it too.
@@ -330,8 +296,8 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
     logger.warn({ err, leadId }, "viewing report: client draft not written (non-fatal)");
   }
 
-  logger.info({ leadId, reportId: input.reportId, outcome: input.outcome, stage: stageApplied, nextSteps }, "viewing report: filed");
-  return { ok: true, stage: stageApplied };
+  logger.info({ leadId, reportId: input.reportId, outcome: input.outcome, nextSteps }, "viewing report: filed");
+  return { ok: true, stage: null };
 }
 
 async function composeClientDraft(

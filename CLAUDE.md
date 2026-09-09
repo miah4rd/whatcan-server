@@ -871,12 +871,12 @@ report sent "Not this one" back to Options sent. Canons, enforced in
   past) → the card does not enter. A reschedule replaces the slot; a stated
   cancellation / no-show (second opinion) leaves the stage and clears it.
 - **Viewing done** — the client stood in the villa (or a video walkthrough
-  for an off-island client). Set by the viewing report (outcome yes /
-  needs time / not this one) or by the thread after the slot. **It stays
-  Viewing done whatever the verdict** until the next shortlist goes out —
-  links on send move it to Options sent the ordinary way. "Not this one"
-  records the objection; it does not erase the viewing.
-- **Negotiation done** — only from a report outcome "Going ahead".
+  for an off-island client). Set from the thread after the slot
+  (viewing-outcome pass, classifier canons) or by the broker. **It stays
+  Viewing done whatever the client's verdict** until the next shortlist goes
+  out — links on send move it to Options sent the ordinary way. The viewing
+  report never moves the card.
+- **Negotiation done** — from the thread (terms being discussed) or the broker.
 - Every held viewing has a report row; the weekly numbers count reports.
 Audit by hand: `POST /api/admin/reclassify-manual?pipeline=rental` (dry)
 prints each canon that held. Read the thread before overriding it.
@@ -924,9 +924,13 @@ date. `POST /api/public/viewing-report` files it: stage from the outcome
 → Viewing scheduled with the slot cleared/replaced), note on the lead, note on
 the listing card found by property code, report task closed, next-step task
 created, placeholder retired and a Sonnet draft to the client written from the
-report (`REPORT_FILED_VERDICT`). Outcome → stage: go → Negotiation done, think / no → Viewing done (a held
-viewing stays on the board; the next shortlist moves it on), didn't happen →
-Viewing scheduled with the slot cleared or replaced. Backdate a report by hand:
+report (`REPORT_FILED_VERDICT`). **The report moves nothing (owner, 09.09.2026).** It is information for
+analysis — the blind spot of what happened at the viewing. Filing it writes the
+notes, closes its own task, creates the next-step task and rewrites the draft
+to the client; the slot is cleared or replaced when the viewing did not
+happen. Stages follow the thread and the broker, never the form. (The first
+version moved cards by outcome and knocked three held viewings off the board.)
+Backdate a report by hand:
 `POST /api/admin/viewing-report-due?lead=&at=`. Viewings are counted from
 reports. Verified end to end on a throwaway card 08.09: task created → report
 filed → stage Negotiation done, report task completed, next-step task due

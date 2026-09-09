@@ -2427,7 +2427,7 @@ const PAGE_HTML = `<!doctype html>
   }
   function renderViewingReport(it) {
     if (it._vrFiled) {
-      return '<div class="vr-done">&#x2705; Viewing report filed' + (it._vrFiled.stage ? ' &middot; stage &rarr; <b>' + esc(it._vrFiled.stage) + '</b>' : '') + '. The draft below is being rewritten from it &mdash; pull to refresh in a moment.</div>';
+      return '<div class="vr-done">&#x2705; Viewing report filed. Saved as a note on the card; the draft below is being rewritten from it &mdash; pull to refresh in a moment.</div>';
     }
     var vr = it.viewing_report;
     if (!vr) return "";
