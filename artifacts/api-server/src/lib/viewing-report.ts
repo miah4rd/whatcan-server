@@ -21,6 +21,8 @@ import { getAmoLead, getOpenAmoTasks, createAmoTask, amoPatch, amoPost, amoFetch
 import { notifyBroker } from "./push-notifications";
 import { brokerKey } from "./broker-identity";
 import { chatCompletion, WRITER_MODEL } from "./ai-client";
+import { generateSuggestion } from "./generate-suggestion";
+import { correctionsPromptBlock, deriveSituation } from "./broker-corrections";
 
 export const REPORT_TASK_PREFIX = "Fill the viewing report";
 export const REPORT_FILED_VERDICT = "viewing report filed";
@@ -254,20 +256,36 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
     logger.warn({ err, leadId }, "viewing report: tasks not updated (non-fatal)");
   }
 
-  // 4. What the next client should know goes to the listing's own card.
-  if (rep.propertyCode && input.feedback.trim()) {
+  // 4. The listing's own card: what the next client should know, and — when
+  //    the next step is on the OWNER's side (a counter-offer, a deposit, the
+  //    contract) — a task for whoever holds that owner. Amelia's step used to
+  //    stop on her card; Yudi, who talks to the owner, never heard of it.
+  if (rep.propertyCode) {
     try {
-      const found = await amoFetch<{ _embedded?: { leads?: Array<{ id: number; name: string }> } }>(
+      const found = await amoFetch<{ _embedded?: { leads?: Array<{ id: number; name: string; responsible_user_id?: number }> } }>(
         `/api/v4/leads?query=${encodeURIComponent(rep.propertyCode)}&limit=5`,
       );
       const listing = (found?._embedded?.leads ?? []).find((l) => (l.name ?? "").toUpperCase().includes(rep.propertyCode!));
       if (listing) {
-        await amoPost(`/api/v4/leads/${listing.id}/notes`, [
-          { note_type: "common", params: { text: `Viewing feedback (${fmt(rep.viewingAt)}, lead #${leadId}): ${OUTCOME_LABEL[input.outcome]}. ${input.feedback.trim()}` } },
-        ]);
+        if (input.feedback.trim()) {
+          await amoPost(`/api/v4/leads/${listing.id}/notes`, [
+            { note_type: "common", params: { text: `Viewing feedback (${fmt(rep.viewingAt)}, lead #${leadId}): ${OUTCOME_LABEL[input.outcome]}. ${input.feedback.trim()}` } },
+          ]);
+        }
+        const ownerSide = nextSteps.filter((s) => s === "Counter-offer to owner" || s === "Deposit to hold it" || s === "Contract");
+        if (ownerSide.length) {
+          const due = nextBy ? new Date(`${nextBy}T10:00:00+08:00`) : new Date(Date.now() + 24 * 3_600_000);
+          await createAmoTask(
+            String(listing.id),
+            `Client after the viewing of ${rep.propertyCode} (lead #${leadId}): ${ownerSide.join(", ")}. ${input.feedback.trim() ? `Their feedback: ${input.feedback.trim().slice(0, 300)}` : ""}`.trim(),
+            due,
+            listing.responsible_user_id ?? undefined,
+          );
+          logger.info({ leadId, listingLead: listing.id, ownerSide }, "viewing report: owner-side step handed to the listing card");
+        }
       }
     } catch (err) {
-      logger.warn({ err, leadId, property: rep.propertyCode }, "viewing report: listing note not written (non-fatal)");
+      logger.warn({ err, leadId, property: rep.propertyCode }, "viewing report: listing card not updated (non-fatal)");
     }
   }
 
@@ -279,13 +297,24 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
       .set({ status: "skipped", autopilotSkippedReason: REPORT_FILED_VERDICT, autopilotSkippedAt: new Date() })
       .where(and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending"), eq(pendingSuggestionsTable.kind, "push")));
     if (!nextSteps.every((s) => s === "Close" || s === "Wait for client's decision") || input.outcome === "no_show" || input.outcome === "cancelled") {
-      const text = await composeClientDraft(leadId, rep.propertyCode, input.outcome, input.feedback, nextSteps, nextBy, rescheduledTo);
+      const wantsOptions = nextSteps.includes("New shortlist") || nextSteps.includes("Second visit");
+      let text: string | null = null;
+      let attachments: Array<{ type: "link"; label: string; url: string }> = [];
+      if (wantsOptions) {
+        // Real options, picked by the same matcher every shortlist uses —
+        // a text that promises "links below" with none attached is the bug
+        // this project has fixed three times; it does not get a fourth.
+        const gen = await shortlistAfterViewing(leadId, rep.propertyCode, input.outcome, input.feedback, nextSteps, nextBy);
+        if (gen && gen.attachments.length > 0) { text = gen.text; attachments = gen.attachments; }
+      }
+      if (!text) text = await composeClientDraft(leadId, rep.propertyCode, input.outcome, input.feedback, nextSteps, nextBy, rescheduledTo);
       if (text) {
         await db.insert(pendingSuggestionsTable).values({
           leadId,
           responsibleUser: sync?.responsibleUser ?? null,
           kind: "push",
           suggestionText: text,
+          attachments,
           status: "pending",
           autopilotSkippedReason: REPORT_FILED_VERDICT,
           autopilotSkippedAt: new Date(),
@@ -336,13 +365,79 @@ async function composeClientDraft(
       max_tokens: 300,
       temperature: 0.4,
       system: `You write ${broker}'s next WhatsApp message to a rental client in Bali, right after a villa viewing. You have the broker's viewing report; the client never sees the report. Write ONLY the message, in English, under 80 words, warm and concrete, no links, no bullet points, no subject line.
-Rules: acknowledge what the client said or felt (from the feedback); state the concrete next thing the broker is doing (from the next steps) and, if the report says so, when; if terms or a price are still being confirmed with the owner, say the broker is confirming them today rather than inventing numbers; if the client didn't show or the villa cancelled, propose a new slot politely; if the outcome is "Not this one", ask what would make the next option right and say new options are coming. Never mention "report", "system" or "Copilot". Sign as ${broker} only if the thread shows the broker signing.`,
+Rules: acknowledge what the client said or felt (from the feedback); state the concrete next thing the broker is doing (from the next steps) and, if the report says so, when; if terms or a price are still being confirmed with the owner, say the broker is confirming them today rather than inventing numbers; if the client didn't show or the villa cancelled, propose a new slot politely; if the outcome is "Not this one", ask what would make the next option right and say new options are coming. Never mention "report", "system" or "Copilot". You cannot attach anything: never write "link below", "here are options", "sending you villas" or promise a list — say what the broker will do and by when instead. Sign as ${broker} only if the thread shows the broker signing.`,
       messages: [{ role: "user", content: `Client: ${name || "the client"}${property ? ` · villa ${property}` : ""}\n\nRecent thread:\n${thread}\n\nViewing report:\n${report}` }],
     });
     const text = (out.content ?? "").trim();
     return text.length > 10 ? text : null;
   } catch (err) {
     logger.warn({ err, leadId }, "viewing report: draft composition failed");
+    return null;
+  }
+}
+
+/**
+ * A "New shortlist" / "Second visit" next step needs villas, not words about
+ * villas: run the ordinary generator with the report as the brief, so the
+ * matcher picks the links and the writer names exactly those.
+ */
+async function shortlistAfterViewing(
+  leadId: string,
+  property: string | null,
+  outcome: ViewingOutcome,
+  feedback: string,
+  nextSteps: string[],
+  nextBy: string | null,
+): Promise<{ text: string; attachments: Array<{ type: "link"; label: string; url: string }> } | null> {
+  const [lead] = await db
+    .select({
+      responsibleUser: leadsSyncTable.responsibleUser,
+      content: leadsSyncTable.content,
+      leadNotes: leadsSyncTable.leadNotes,
+      leadStage: leadsSyncTable.leadStage,
+      pipeline: leadsSyncTable.pipeline,
+    })
+    .from(leadsSyncTable)
+    .where(eq(leadsSyncTable.leadId, leadId))
+    .limit(1);
+  if (!lead) return null;
+  const [last] = await db
+    .select({ text: leadMessagesTable.text })
+    .from(leadMessagesTable)
+    .where(and(eq(leadMessagesTable.leadId, leadId), eq(leadMessagesTable.senderType, "lead"), sql`${leadMessagesTable.text} IS NOT NULL`))
+    .orderBy(desc(leadMessagesTable.sentAt))
+    .limit(1);
+  const lastLeadMessage = last?.text ?? "";
+  try {
+    const corrections = await correctionsPromptBlock(
+      lead.responsibleUser,
+      deriveSituation({ pipeline: lead.pipeline, kind: "push", leadStage: lead.leadStage, lastLeadText: lastLeadMessage, isFirstContact: false }),
+      20,
+    );
+    const brief =
+      `The client viewed ${property ?? "a villa"} in person; outcome: ${OUTCOME_LABEL[outcome]}. ` +
+      `The broker's notes from the viewing: ${feedback.trim() || "none"}. ` +
+      `Agreed next step: ${nextSteps.join(", ")}${nextBy ? ` by ${nextBy}` : ""}. ` +
+      `Write the follow-up that delivers that step: pick 2-3 villas that FIX what they disliked (the notes name it) and fit their bedrooms, area and budget; name each attached villa in the text; do not re-offer the villa they saw; if the step is a second visit, offer to line up the viewing dates for the ones they pick. Under 90 words before the list.`;
+    const gen = await generateSuggestion({
+      leadId,
+      responsibleUser: lead.responsibleUser,
+      kind: "push",
+      lastLeadMessage,
+      contentSnippet: lead.content ?? "",
+      leadNotes: lead.leadNotes,
+      leadStage: lead.leadStage,
+      correctionsBlock: corrections,
+      pipeline: lead.pipeline,
+      taskBrief: brief,
+    });
+    if (!gen.text) return null;
+    return {
+      text: gen.text,
+      attachments: (gen.attachments ?? []).filter((a) => a?.type === "link" && a.url).map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url! })),
+    };
+  } catch (err) {
+    logger.warn({ err, leadId }, "viewing report: shortlist generation failed — falling back to a plain draft");
     return null;
   }
 }

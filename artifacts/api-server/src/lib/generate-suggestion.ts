@@ -14,6 +14,7 @@ import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from ".
 import { matchProperties, availabilityForCriteria, describePropertiesByIds, type PropertyPick, type BrokerIntent } from "./property-catalog";
 import { getMergedDialog } from "./merged-conversation";
 import { db, pendingSuggestionsTable } from "@workspace/db";
+import { viewingReportPromptBlock } from "./viewing-report-context";
 import { eq, inArray, and } from "drizzle-orm";
 
 /**
@@ -1053,7 +1054,10 @@ export async function buildPromptAdditions(opts: {
     }),
   );
 
-  return buildLeadNameRule(opts.dialogMessages) + attachedRule + anchorLine + stockLine + currencyRule + adRule + identityRule + learned;
+  // What the broker saw at the viewing — the one thing the thread cannot show.
+  const viewingBlock = opts.isRental && opts.leadId ? await viewingReportPromptBlock(opts.leadId) : "";
+
+  return buildLeadNameRule(opts.dialogMessages) + attachedRule + anchorLine + stockLine + currencyRule + adRule + identityRule + viewingBlock + learned;
 }
 
 export async function generateSuggestion(opts: {
