@@ -197,6 +197,14 @@ export async function classifyAndApplyStage(
 
   const isViewingScheduled = /viewing\s*(scheduled|booked|arranged)/i.test(cls.stage.name);
   const viewingAt = isViewingScheduled ? await extractViewingAt(text) : null;
+  // Canon: "Viewing scheduled" is a slot, not a mood. No concrete date and
+  // time in the thread (ahead, or at most two days past) means nothing is
+  // scheduled — the card stays where it is (viewing Suggested at most). The
+  // classifier proposed re-scheduling Alena I. on 09.09 from a viewing another
+  // agent held on 31.08.
+  if (isViewingScheduled && !viewingAt) {
+    return { moved: false, reason: "canon: Viewing scheduled needs a concrete slot in the thread (ahead or ≤2 days past) — none found", to: cls.stage.name };
+  }
 
   if (!apply) return { moved: false, from: row.leadStage, to: cls.stage.name, reason: `would move: ${cls.reason}`, viewingAt };
 

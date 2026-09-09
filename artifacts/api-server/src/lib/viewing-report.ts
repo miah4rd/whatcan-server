@@ -167,10 +167,16 @@ export async function dueReportForLead(leadId: string) {
   return (await dueReportsForLeads([leadId])).get(leadId) ?? null;
 }
 
+// A viewing that happened is a fact the board must keep showing: "Not this
+// one" does NOT send the card back to Options sent — the client has SEEN a
+// villa, and the owner reads the Viewing done column as "viewings held". The
+// card leaves Viewing done the ordinary way, when the next shortlist goes out
+// (links on send → Options sent). 09.09: three held viewings had been pushed
+// back to Options sent by the first version and the board showed one.
 const STAGE_AFTER: Record<ViewingOutcome, string | null> = {
   go: "Negotiation done",
   think: "Viewing done",
-  no: "Options sent",
+  no: "Viewing done",
   no_show: "Viewing scheduled",
   cancelled: "Viewing scheduled",
   rescheduled: "Viewing scheduled",

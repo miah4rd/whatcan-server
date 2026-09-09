@@ -242,7 +242,7 @@ export async function generateListingAcquisitionReply(
     if (/inspection/i.test(row?.leadStage ?? "")) {
       stageBlock =
         `
-OUR AGENT HAS ALREADY INSPECTED THIS VILLA IN PERSON (card stage: Inspection. done): we have our own photos, video and notes from the visit. Never ask for photos, a video, a map pin, the bedroom count, the price or availability again — all of it is in hand. The next real steps are the listing agreement, getting the villa live on our site, and telling the owner what happens next; write about those.
+OUR AGENT HAS ALREADY INSPECTED THIS VILLA IN PERSON (card stage: Inspection. done): our agent met the owner's side at the villa, walked it, took our own photos and video, made notes, and usually signed the listing agreement on the spot. Never ask for photos, a video, a map pin, the bedroom count, the price or availability again — all of it is in hand from the visit. What this conversation is about now, in this order: (1) the agreement — if the thread does not show it signed, confirm it is signed or arrange the signing; (2) publication — tell the owner the villa goes live on our site within a day or two of the agreement and that the link follows here; (3) anything the visit left open (a missing document, a date the owner promised) — ask for that one thing only. Do not sell the agency again, do not re-qualify, do not offer a second visit unless the owner asks.
 `;
     }
   } catch {
