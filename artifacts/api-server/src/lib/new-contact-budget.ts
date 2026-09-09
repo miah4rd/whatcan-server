@@ -130,8 +130,18 @@ export async function mayOpenNewConversation(
 /** Have we ever sent this lead anything? Cheap, and the only thing that makes a send "new". */
 export async function isFirstOutbound(leadId: string): Promise<boolean> {
   try {
+    // A first contact is a message to someone NOBODY here has talked to: no
+    // send of ours (Copilot), no message of ours in the thread (the broker
+    // writing from the phone counts), and nothing from them either — a reply
+    // to a person who wrote to us is never budgeted (owner, 09.09.2026:
+    // "ограничение только на отправку первым, повторные кто ответил — лимита
+    // нет"). Reading sent_messages alone made three owner replies wait for
+    // "tomorrow's budget" because Yudi had opened those threads by hand.
     const res = await db.execute(
-      sql`SELECT 1 AS x FROM sent_messages WHERE lead_id = ${leadId} LIMIT 1`,
+      sql`SELECT 1 AS x
+            WHERE EXISTS (SELECT 1 FROM sent_messages WHERE lead_id = ${leadId})
+               OR EXISTS (SELECT 1 FROM lead_messages WHERE lead_id = ${leadId})
+            LIMIT 1`,
     );
     return !firstRow<{ x: number }>(res);
   } catch (err) {
