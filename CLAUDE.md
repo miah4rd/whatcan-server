@@ -854,6 +854,33 @@ owner made explicitly — do not change without asking:
 Verified with 11 synthetic cases including the dangerous ones (silence and mild
 hesitation must NOT close a deal; an explicit "we booked elsewhere" must).
 
+### Rental viewing stages: the canons (2026-09-09)
+
+The owner: "это ключевые метрики… очень важно, чтобы бот корректно ставил
+лиды на эти этапы; нужно читать переписки по контексту". The board showed
+ONE Viewing done on 09.09 after four held viewings, because the first viewing
+report sent "Not this one" back to Options sent. Canons, enforced in
+`stage-on-reply.ts`, `viewing-report.ts` and the audit:
+- **viewing Suggested** — a viewing was offered or asked for and no concrete
+  slot exists yet ("can we visit?", "I'll check availability", "tomorrow?"
+  without an answer). Silence after the offer keeps it here; a client who
+  went to view with ANOTHER agent (Alena I.) or rejected the villa from
+  photos (Samuel) is not here — that is Options sent / Objection Handled.
+- **Viewing scheduled** — a concrete date and time settled or accepted, and
+  `viewing_at` holds it. No slot readable in the thread (ahead, or ≤2 days
+  past) → the card does not enter. A reschedule replaces the slot; a stated
+  cancellation / no-show (second opinion) leaves the stage and clears it.
+- **Viewing done** — the client stood in the villa (or a video walkthrough
+  for an off-island client). Set by the viewing report (outcome yes /
+  needs time / not this one) or by the thread after the slot. **It stays
+  Viewing done whatever the verdict** until the next shortlist goes out —
+  links on send move it to Options sent the ordinary way. "Not this one"
+  records the objection; it does not erase the viewing.
+- **Negotiation done** — only from a report outcome "Going ahead".
+- Every held viewing has a report row; the weekly numbers count reports.
+Audit by hand: `POST /api/admin/reclassify-manual?pipeline=rental` (dry)
+prints each canon that held. Read the thread before overriding it.
+
 ### Stages also follow replies sent from the broker's phone (2026-09-07)
 
 Both manual-reply detectors (webhook `brokerRepliedFresh`, timeline sweep) call
@@ -897,7 +924,9 @@ date. `POST /api/public/viewing-report` files it: stage from the outcome
 → Viewing scheduled with the slot cleared/replaced), note on the lead, note on
 the listing card found by property code, report task closed, next-step task
 created, placeholder retired and a Sonnet draft to the client written from the
-report (`REPORT_FILED_VERDICT`). Backdate a report by hand:
+report (`REPORT_FILED_VERDICT`). Outcome → stage: go → Negotiation done, think / no → Viewing done (a held
+viewing stays on the board; the next shortlist moves it on), didn't happen →
+Viewing scheduled with the slot cleared or replaced. Backdate a report by hand:
 `POST /api/admin/viewing-report-due?lead=&at=`. Viewings are counted from
 reports. Verified end to end on a throwaway card 08.09: task created → report
 filed → stage Negotiation done, report task completed, next-step task due
@@ -963,7 +992,36 @@ refuses a classified rule-owned stage even from an old draft
 The owner renamed "agreement" to "Inspection. done" in amoCRM (same stage,
 id 87763170, between Details and live). It records a physical act: Yudi went
 to the villa, took our own photos, video and notes, possibly signed the
-agreement on the spot. Only a person can vouch for that, so:
+agreement on the spot. It is the listing funnel's counterpart of Rental's
+"Viewing done" — a visit that happened, not a plan.
+
+**Regulation (owner, 09.09.2026):**
+- *Who belongs here:* a card whose villa Yudi has physically inspected — met
+  the owner's side at the villa, walked it, produced OUR photos/video/notes
+  (handover-act style), usually with the listing agreement signed on the spot.
+  Set by Yudi after the visit, never before, never from the chat.
+- *Entry conditions:* the card came from Details with the bar met (owner,
+  bedrooms, price incl. our 10%, availability, minimum stay, viewable-from,
+  pin). An inspection is scheduled from Details; a card that skipped Details
+  is a mistake, not a shortcut.
+- *What the card must carry once here:* inspection date; where our media is
+  (Drive folder / video, which the video-tour pipeline picks up); agreement
+  status (signed on the spot, or the date it is due); notes on condition and
+  inventory; who represented the owner. Yudi fills these — the bot can only
+  read them back.
+- *What the bot does:* no proactive nudges to the owner; an owner's message
+  gets a LIVE draft for Yudi (never autopilot) written for this moment —
+  agreement if not yet signed, publication timing, the one open item from
+  the visit — and never re-asks photos, pin, price, availability or size.
+- *Exits:* → live when the villa is published (Yudi, or publishing); → long
+  term / Closed-lost only by Yudi. Nothing automatic leaves this stage.
+- *Metric:* arrival here is "Villas inspected" in the daily report; it is
+  counted from the stage event, so a card moved here and back still counts.
+- *Open follow-up:* an "inspection report" after the visit (did it happen,
+  agreement signed?, media uploaded?, notes for the listing) on the same
+  mechanism as the viewing report — not built yet.
+
+Only a person can vouch for the visit, so:
 - nothing sets it or leaves it automatically — not the classifier
   (`RULE_OWNED_ACQUISITION_STAGES` includes `inspection`, and it is absent from
   `LISTING_ACQUISITION_MEANINGS` like live/RENTED), not the stage engine
