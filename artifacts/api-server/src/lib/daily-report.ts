@@ -61,6 +61,8 @@ export interface ReportCard {
   lost: number;
   viewings: number;
   listingsTaken: number;
+  /** Rental Listings only: villas the agent inspected in person this period. */
+  inspections: number;
   previous?: {
     sent: number;
     skipped: number;
@@ -69,6 +71,7 @@ export interface ReportCard {
     lost: number;
     viewings: number;
     listingsTaken: number;
+    inspections: number;
     medianReplyMin: number | null;
   };
   /** One sentence: the single thing to do first. */
@@ -102,9 +105,13 @@ const STAGE_ORDER: Record<string, string[]> = {
     "signing of the contract", "contract signed",
     "check in (inventory)", "check out", "closed - won",
   ],
+  // "agreement" was renamed "Inspection. done" on 2026-09-09 (same amoCRM id,
+  // 87763170): the listing agent has been to the villa and taken our own
+  // photos, video and notes. The old name stays next to the new one so the
+  // moves recorded under it still score.
   "rental listings": [
     "incoming leads", "initial contact", "taken to work", "qualified",
-    "details", "agreement", "live", "rented", "closed - won",
+    "details", "inspection. done", "agreement", "live", "rented", "closed - won",
   ],
   unicorn: [
     "new lead", "in progress", "1st follow up (next day)", "2nd follow up (3 days after)",
@@ -133,7 +140,13 @@ function isViewing(stage: string | null): boolean {
 function isListingWon(pipeline: string | null, stage: string | null): boolean {
   if ((pipeline ?? "").trim().toLowerCase() !== "rental listings") return false;
   const s = (stage ?? "").toLowerCase();
-  return s.includes("taken to work") || s.includes("agreement") || s.includes("live") || s.includes("rented");
+  return s.includes("taken to work") || s.includes("inspection") || s.includes("agreement") || s.includes("live") || s.includes("rented");
+}
+
+/** Rental Listings: the agent has been to the villa — the card arrived at "Inspection. done". */
+function isInspected(pipeline: string | null, stage: string | null): boolean {
+  if ((pipeline ?? "").trim().toLowerCase() !== "rental listings") return false;
+  return (stage ?? "").toLowerCase().includes("inspection");
 }
 
 /** Same shape the inbox card uses: the lead's own name out of the transcript. */
@@ -230,7 +243,7 @@ async function activityFor(
 
 async function outcomesFor(
   broker: string, pipeline: string | null, from: string, to: string,
-): Promise<{ advanced: number; lost: number; viewings: number; listingsTaken: number; newLeads: number; medianReplyMin: number | null }> {
+): Promise<{ advanced: number; lost: number; viewings: number; listingsTaken: number; inspections: number; newLeads: number; medianReplyMin: number | null }> {
   const stageParams: unknown[] = [broker, BALI, from, to];
   if (pipeline) stageParams.push(pipeline);
   const [stageRes, newRes, replyRes] = await Promise.all([
@@ -269,7 +282,7 @@ async function outcomesFor(
     ),
   ]);
 
-  let advanced = 0, lost = 0, viewings = 0, listingsTaken = 0;
+  let advanced = 0, lost = 0, viewings = 0, listingsTaken = 0, inspections = 0;
   for (const raw of stageRes.rows as Record<string, string | null>[]) {
     const pipe = raw["pipeline"] ?? null;
     const to_ = raw["to_stage"] ?? null;
@@ -277,6 +290,7 @@ async function outcomesFor(
     if (isLost(to_)) lost++;
     if (isViewing(to_) && !isViewing(from_)) viewings++;
     if (isListingWon(pipe, to_) && !isListingWon(pipe, from_)) listingsTaken++;
+    if (isInspected(pipe, to_) && !isInspected(pipe, from_)) inspections++;
     const fi = stageIndex(pipe, from_);
     const ti = stageIndex(pipe, to_);
     if (fi !== -1 && ti > fi) advanced++;
@@ -284,7 +298,7 @@ async function outcomesFor(
 
   const medianRaw = (replyRes.rows[0] ?? {})["median_min"];
   return {
-    advanced, lost, viewings, listingsTaken,
+    advanced, lost, viewings, listingsTaken, inspections,
     newLeads: Number((newRes.rows[0] ?? {})["n"] ?? 0),
     medianReplyMin: medianRaw == null ? null : Math.round(Number(medianRaw)),
   };
@@ -443,6 +457,7 @@ export async function buildReport(
     lost: outcomes.lost,
     viewings: outcomes.viewings,
     listingsTaken: outcomes.listingsTaken,
+    inspections: outcomes.inspections,
     ...(prevActivity && prevOutcomes
       ? {
           previous: {
@@ -453,6 +468,7 @@ export async function buildReport(
             lost: prevOutcomes.lost,
             viewings: prevOutcomes.viewings,
             listingsTaken: prevOutcomes.listingsTaken,
+            inspections: prevOutcomes.inspections,
             medianReplyMin: prevOutcomes.medianReplyMin,
           },
         }

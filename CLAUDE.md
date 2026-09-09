@@ -949,7 +949,7 @@ in `suggested_stage` and approve applied it at send time. Canon now:
 | TAKEN TO WORK → QUALIFIED | `promoteIfQualified` (`meetsQualified`: owner, bedrooms, price with commission position, min stay, earliest viewing, ≥33M client-facing) |
 | TAKEN TO WORK → co-broke / long term / Closed-lost | `routeUnqualified` (floor first, then counterpart, then occupied, then not-our-format with second opinion) |
 | long term / co-broke → TAKEN TO WORK / Details | `releaseFromLongTerm`, `releaseFromCoBroke` |
-| QUALIFIED → Details → agreement → live | a person |
+| QUALIFIED → Details → Inspection. done → live | a person |
 
 The classifier on this funnel may only pick Initial Contact / TAKEN TO WORK and
 returns null when the card is already beyond them (`classifyStage`); approve
@@ -957,6 +957,31 @@ refuses a classified rule-owned stage even from an old draft
 (`isRuleOwnedAcquisitionStage`); a person's explicit choice always wins. amoCRM
 `/api/v4/events?filter[type]=lead_status_changed` is the audit trail — our
 `stage_events` misses the bot's own closes.
+
+### Inspection. done: the agent has been to the villa (2026-09-09)
+
+The owner renamed "agreement" to "Inspection. done" in amoCRM (same stage,
+id 87763170, between Details and live). It records a physical act: Yudi went
+to the villa, took our own photos, video and notes, possibly signed the
+agreement on the spot. Only a person can vouch for that, so:
+- nothing sets it or leaves it automatically — not the classifier
+  (`RULE_OWNED_ACQUISITION_STAGES` includes `inspection`, and it is absent from
+  `LISTING_ACQUISITION_MEANINGS` like live/RENTED), not the stage engine
+  (`engineOwnsStage` is false there → audit reports only), not approve (a
+  classified stage is refused; the broker's own pick always applies);
+- the owner nudge pass skips it (`OPEN_STAGES` in listing-owner-followup):
+  no "how many bedrooms" after a visit, no three-nudge auto-close of a card
+  that cost a trip;
+- the reply generator reads the card's stage and, on Inspection. done, tells
+  the model we have everything from the visit — no asking for photos, pin,
+  price or availability again; the conversation is agreement → live;
+- the daily report orders it after Details (`STAGE_ORDER`, "agreement" kept
+  beside it for old events), counts arrival there as "Villas inspected" and
+  treats it as ours (`isListingWon`).
+No card had a confirmed inspection on 09.09.2026 — every visit in the threads
+was scheduled ahead (Aquamarine 25.09, Forest Bloom from 13.09, Uma Avaya
+09.09) or offered and not taken (Umbala, D kasih); the one visit that
+happened was Amelia's client viewing at Namaste Villa on 05.09.
 
 ### Parked listing cards are answered and re-judged (2026-09-07)
 

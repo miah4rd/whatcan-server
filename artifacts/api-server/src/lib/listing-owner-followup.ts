@@ -43,8 +43,12 @@ const OPEN_STAGES = [
   "taken to work",
   "qualified",
   "details",
-  "agreement",
 ];
+// NOT here: "Inspection. done" (the stage that replaced "agreement" on
+// 09.09.2026). The agent has been to that villa — a nudge asking the owner for
+// bedrooms and a price reads as amnesia, and closing the card after three
+// silent nudges would throw away a visit. Past the inspection the card is the
+// broker's conversation; the bot only answers what the owner writes.
 
 /**
  * How long a card must have been quiet before each round, counted from OUR last

@@ -228,7 +228,28 @@ export async function generateListingAcquisitionReply(
     ? `\nTHIS IS A FOLLOW-UP: nobody has written for ${quietDays === 0 ? "most of a day" : `${quietDays} day(s)`}. Follow rule 2a — open it like a new message, by name, and do not answer their last line as if it had just arrived.\n`
     : "";
 
-  const leadContext = leadContextBase + knownBlock + followUpBlock;
+  // The card's stage is a fact the thread cannot show: "Inspection. done"
+  // means our agent has BEEN to this villa (own photos, video, notes). The
+  // model would otherwise keep asking the owner for photos and the basics —
+  // the questions that make sense before a visit and read as amnesia after it.
+  let stageBlock = "";
+  try {
+    const [row] = await db
+      .select({ leadStage: leadsSyncTable.leadStage })
+      .from(leadsSyncTable)
+      .where(eq(leadsSyncTable.leadId, opts.leadId))
+      .limit(1);
+    if (/inspection/i.test(row?.leadStage ?? "")) {
+      stageBlock =
+        `
+OUR AGENT HAS ALREADY INSPECTED THIS VILLA IN PERSON (card stage: Inspection. done): we have our own photos, video and notes from the visit. Never ask for photos, a video, a map pin, the bedroom count, the price or availability again — all of it is in hand. The next real steps are the listing agreement, getting the villa live on our site, and telling the owner what happens next; write about those.
+`;
+    }
+  } catch {
+    // The stage is a refinement; a failed read must not cost the reply.
+  }
+
+  const leadContext = leadContextBase + knownBlock + stageBlock + followUpBlock;
 
   const prompt = isFirstContact
     ? `${leadContext}
