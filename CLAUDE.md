@@ -930,6 +930,25 @@ notes, closes its own task, creates the next-step task and rewrites the draft
 to the client; the slot is cleared or replaced when the viewing did not
 happen. Stages follow the thread and the broker, never the form. (The first
 version moved cards by outcome and knocked three held viewings off the board.)
+
+**The loop after the form (owner, 09.09: "чтобы не обрывалось").** The
+white spot was the viewing; after the form the chain continues by itself:
+- every later draft on that lead reads the filed report
+  (`viewingReportPromptBlock` in `buildPromptAdditions`) — the client who
+  rejected a villa for mould is never answered as if nothing happened;
+- a next step of "New shortlist" / "Second visit" runs the ordinary generator
+  with the report as the brief (`shortlistAfterViewing`), so the draft
+  carries real villas that fix what they disliked; the plain composer is the
+  fallback and may never promise links;
+- an owner-side step ("Counter-offer to owner", "Deposit to hold it",
+  "Contract") becomes a task on the LISTING card, for whoever holds that
+  owner (Yudi), with the client's feedback — Amelia's step used to stop on
+  her own card;
+- the draft lands in PUSH stamped `viewing report filed` for the broker's
+  approval; autopilot never sends it (Rental viewing stages are past the
+  threshold). The human link is the approve — Liu's shortlist waited a day.
+Verified 09.09 on a throwaway card with a seeded thread (lead_messages needs
+`amo_message_id` and `direction`): 2 villas attached, text names both.
 Backdate a report by hand:
 `POST /api/admin/viewing-report-due?lead=&at=`. Viewings are counted from
 reports. Verified end to end on a throwaway card 08.09: task created → report
