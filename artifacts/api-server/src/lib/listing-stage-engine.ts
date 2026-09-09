@@ -22,9 +22,12 @@
  *   Closed - lost       below the 33M floor, or not our format (confirmed)
  *   QUALIFIED           every fact on the bar is known — the handover point
  *
- * Beyond QUALIFIED (Details, agreement, live, weekly checks) a person works
- * the card; the engine computes where the facts say it should be, reports the
- * gap, and never moves it. Two closers stay outside the engine because they
+ * Beyond QUALIFIED (Details, Inspection. done, live, weekly checks) a person
+ * works the card; the engine computes where the facts say it should be,
+ * reports the gap, and never moves it. "Inspection. done" (09.09.2026, the
+ * renamed "agreement", same amoCRM id) records the agent having been to the
+ * villa with our own photos, video and notes — a physical act only a person
+ * can vouch for, so nothing here sets or leaves it. Two closers stay outside the engine because they
  * are driven by time, not facts: three unanswered nudges
  * (listing-owner-followup) and a number without WhatsApp (undeliverable).
  *

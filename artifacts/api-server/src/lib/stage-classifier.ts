@@ -104,19 +104,19 @@ const STAGE_MEANINGS: Array<{ match: RegExp; meaning: string }> = [
  * area)", when in this funnel it means "we have confirmed we are talking to the
  * real owner and they are open to working with us".
  *
- * Deliberately absent: "live" and "RENTED". Those describe OUR work and the
- * world — the listing is published on the site, a tenant has moved in — and
- * neither is knowable from a WhatsApp thread with the owner. Leaving them out
- * keeps them broker-set, the same principle that keeps Mailing and Long-Term
- * Cycle out of the classifier's hands.
+ * Deliberately absent: "Inspection. done", "live" and "RENTED". Those describe
+ * OUR work and the world — the agent has been to the villa and taken our own
+ * photos, video and notes (09.09.2026, the stage that replaced "agreement",
+ * same id 87763170), the listing is published on the site, a tenant has moved
+ * in — and none of it is knowable from a WhatsApp thread with the owner.
+ * Leaving them out keeps them broker-set, the same principle that keeps
+ * Mailing and Long-Term Cycle out of the classifier's hands.
  */
 const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = [
   { match: /closed[-\s]*won|выигран/i,
     meaning: "The owner has agreed to work with us and the listing is secured. Only on an unambiguous confirmation." },
   { match: /closed[-\s]*lost|проигран|отказ/i,
     meaning: "Dead: the contact turned out to be an agent or middleman we cannot work through, the owner refused, or the villa is already committed elsewhere. Only on an unambiguous statement, NEVER on mere silence." },
-  { match: /agreement|договор|соглашен/i,
-    meaning: "The owner is willing in principle and the conversation is now about TERMS: commission, exclusivity, contract length, who handles what, signing." },
   { match: /details|детал|информац/i,
     meaning: "The owner is on board enough to be handing over what we need to publish the villa: photos, exact address or pin, available dates, prices, size, documents." },
   // NOTE: "qualified" is deliberately ABSENT from this table, and so are the
@@ -147,7 +147,7 @@ const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = 
  * A human moving a card by hand is unaffected: this only constrains what the
  * model may choose on our behalf.
  */
-const RULE_OWNED_ACQUISITION_STAGES = /qualified|квалифиц|details|детал|информац|agreement|договор|соглашен|long term|co-broke/i;
+const RULE_OWNED_ACQUISITION_STAGES = /qualified|квалифиц|details|детал|информац|inspection|инспекц|agreement|договор|соглашен|long term|co-broke/i;
 
 /**
  * True when a stage on a listing-acquisition funnel may only be set by the

@@ -2020,6 +2020,9 @@ const PAGE_HTML = `<!doctype html>
     html += line("Moved forward in the funnel", c.advanced, prev ? delta(c.advanced, prev.advanced, true) : "");
     html += line("Viewings arranged", c.viewings, prev ? delta(c.viewings, prev.viewings, true) : "");
     html += line("Listings taken on", c.listingsTaken, prev ? delta(c.listingsTaken, prev.listingsTaken, true) : "");
+    if (c.inspections > 0 || (prev && prev.inspections > 0)) {
+      html += line("Villas inspected", c.inspections, prev ? delta(c.inspections, prev.inspections, true) : "");
+    }
     html += line("Lost", c.lost, prev ? delta(c.lost, prev.lost, false) : "");
     return html;
   }
