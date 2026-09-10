@@ -284,8 +284,24 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
       ? (row.listingFacts as unknown as ListingFacts)
       : null;
   if (opts.facts) facts = opts.facts;
-  else if (opts.facts === null || !ownerReplied) facts = emptyFacts();
-  else if (cached && typeof cached.counterpart === "string") {
+  else if (!ownerReplied) facts = emptyFacts();
+  else if (opts.facts === null) {
+    // `facts: null` means "signals only, no model call" — the send path. It
+    // used to be handed EMPTY facts, which is not the same thing: empty says
+    // "nothing about this villa is known", so every send re-judged a complete
+    // card as "not yet: bedrooms, price, minimum stay…" and dragged it back
+    // to TAKEN TO WORK. On 10.09 two cards flapped four times in ten minutes
+    // (23518851, 23519135: Initial Contact → long term → TAKEN TO WORK → long
+    // term → TAKEN TO WORK), and a card could never hold QUALIFIED past its
+    // next message. What we last read still stands, however old — a message
+    // WE send changes none of it; with nothing ever read, there is nothing to
+    // judge and the card stays where it is.
+    const known = (row.listingFacts as unknown as ListingFacts | null) ?? null;
+    if (!known || typeof known.counterpart !== "string") {
+      return { leadId, owner, current, reason: "no facts read yet — a send judges nothing", applied: false };
+    }
+    facts = known;
+  } else if (cached && typeof cached.counterpart === "string") {
     // Nothing new in the thread since the last read: the facts stand.
     facts = cached;
   } else {
