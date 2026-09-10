@@ -1008,6 +1008,9 @@ export async function brokerViewingExamples(responsibleUser: string | null | und
       const t = (r.text ?? "").replace(/\s+/g, " ").trim();
       if (!t || /https?:\/\//i.test(t) || t.startsWith(">>")) continue;
       if (!proposesViewingSlot(t)) continue;
+      // No video tours for now (owner, 10.09): a "virtual viewing" line would
+      // be imitated.
+      if (/video|virtual/i.test(t)) continue;
       // An invitation is short and asks something (or names when); a long
       // lead-specific update ("Evelyn the staff is cleaning the carpet today")
       // passes the detector but teaches nothing about the move.
@@ -1034,9 +1037,9 @@ export function viewingPushBlock(broker: string, examples: string[]): string {
 VIEWING PUSH. Options are out and the client is still talking; the next step is a viewing, not another link. This message moves them toward one — the way ${broker} does it, never as a template.${examplesBlock(broker, examples)}
 Today is ${baliToday()} (Bali). What the message has to do, in ${broker}'s own words:
 - name the villa(s) worth seeing — the ones they reacted to, else the best fit already sent;
-- if the thread does not say whether they are in Bali or when they arrive, ask — a visit or a virtual viewing depends on it;
+- if the thread does not say whether they are in Bali or when they arrive, ask — the viewing is planned around it;
 - on the island: ask which day suits, or offer to check the owner's availability for a day you name; a time the owner already confirmed in the thread is proposed as it stands;
-- not on the island: offer a virtual viewing / video walkthrough;
+- not on the island yet: ask when they arrive and offer to line up the viewings for those days; do not offer video tours or virtual viewings (owner, 10.09);
 - a time the owner has not confirmed is "I'll check with the owner", never a booking;
 - no new links unless they rejected everything sent; end on the viewing question, not on "let me know what you think".`;
 }
@@ -1076,7 +1079,7 @@ export async function enforceViewingProposal(
       max_tokens: 500,
       temperature: 0.3,
       system: `You are ${broker}, a rental broker in Bali, finishing your own WhatsApp message. The draft below is yours and stays as it is: every sentence, every villa name, the greeting and the sign-off, verbatim. It is missing one thing — a move toward a viewing. Insert ONE sentence (two at most) that makes that move, where it reads naturally (usually right before the sign-off), in your own voice.${examplesBlock(broker, examples)}
-The move: if the thread does not say whether the client is in Bali or when they arrive, ask that; on the island — ask which day suits, or offer to check the owner's availability for a day; not on the island — offer a virtual viewing; a time the owner has not confirmed is "I'll check with the owner", never a booking. Today is ${baliToday()} (Bali). No links.${lessons}
+The move: if the thread does not say whether the client is in Bali or when they arrive, ask that; on the island — ask which day suits, or offer to check the owner's availability for a day; not on the island yet — ask when they arrive and offer to line up the viewings for those days (no video tours, no virtual viewings); a time the owner has not confirmed is "I'll check with the owner", never a booking. Today is ${baliToday()} (Bali). No links.${lessons}
 Return the full message and nothing else.${attachments.length ? ` Villas attached under this message: ${attachments.map((a) => a.label).join("; ")}.` : ""}`,
       messages: [{ role: "user", content: `Client's last message: ${opts.lastLeadText.slice(0, 400)}\n\nYour draft:\n${text}` }],
     });
