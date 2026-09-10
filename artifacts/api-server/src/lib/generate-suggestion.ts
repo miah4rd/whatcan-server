@@ -939,7 +939,7 @@ Output only the corrected message.${missingNote}`;
 // answer to it.
 const HARD_NO = /(found (a|another|our|the) (place|villa|one|apartment)|already (booked|rented|signed|found)|no longer (looking|need|interested)|not interested|none of (these|them|those)|unsubscribe|stop (messaging|texting|writing|contacting)|don'?t (contact|message|text) me)/i;
 const SLOT_WORDS = /(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this (morning|afternoon|evening|weekend)|next (week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\b\d{1,2}(:\d{2})?\s?(am|pm)\b|\bat \d{1,2}(:\d{2})?\b|\b\d{1,2}(st|nd|rd|th)?\s+(of\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}(st|nd|rd|th)?\b|\bon the \d{1,2}(st|nd|rd|th)\b)/i;
-const VIEW_WORDS = /(viewing|visit|see (it|the villa|the villas|them|the place|both|either|one of)|show (you|it|them)|check (it|them) out|come (and|to) see|walk-?through|video (tour|call|walk)|meet (you )?(at|there)|take you (to|around|through))/i;
+const VIEW_WORDS = /(viewing|visit|\bsee (it|them|the|this|that|both|either|one|villa|you (there|at|on))|show (you|it|them)|check (it|them) out|come (and|to) see|walk-?through|video (tour|call|walk)|\btour\b|meet (you )?(at|there)|take you (to|around|through))/i;
 
 /** A message that proposes a viewing with an actual time in it. */
 export function proposesViewingSlot(text: string): boolean {
@@ -976,7 +976,7 @@ export function viewingPushBlock(): string {
   return `
 VIEWING PUSH — this message must move the client to a viewing. They have options and are talking; the next step is not more links, it is a date. Today is ${baliToday()} (Bali). Do ALL of this:
 - name the villa (or two) worth seeing — the one(s) they reacted to, else the best fit already sent;
-- propose TWO concrete windows within the next three days, e.g. "tomorrow at 11 or Friday at 15", and ask which suits (or ask "which day this week works for a viewing?" if their timing is unknown);
+- propose TWO concrete windows on two different days within the next three days, written with the real weekday names and times that fit a viewing (morning or afternoon, never a copied example), and ask which suits; if their timing is unknown, ask which day this week works;
 - if they are not on the island, offer a video walkthrough at a concrete time instead;
 - if a villa cannot be shown before a date (occupied, tenants), say when it can and propose that date;
 - it is a proposal you will confirm with the owner, not a booking — say so in a few words;
@@ -1001,7 +1001,7 @@ export async function enforceViewingProposal(
       label: "draft:viewing-push",
       max_tokens: 400,
       temperature: 0.3,
-      system: `Rewrite the broker's WhatsApp message so it proposes a viewing with concrete times. Keep the meaning, the tone, the language and EVERY villa name exactly as written; keep it under the original length plus 40 words; no links in the body. Today is ${baliToday()} (Bali). Add: which villa to see, two concrete windows within the next three days ("tomorrow at 11 or Friday at 15"), and a question which suits. Never end on "let me know what you think".${attachments.length ? ` Villas attached under this message: ${attachments.map((a) => a.label).join("; ")}.` : ""}`,
+      system: `Rewrite the broker's WhatsApp message so it proposes a viewing with concrete times. Keep the meaning, the tone, the language and EVERY villa name exactly as written; keep it under the original length plus 40 words; no links in the body. Today is ${baliToday()} (Bali). Add: which villa to see, two concrete windows on two different days within the next three days (real weekday names, morning or afternoon), and a question which suits. Never end on "let me know what you think".${attachments.length ? ` Villas attached under this message: ${attachments.map((a) => a.label).join("; ")}.` : ""}`,
       messages: [{ role: "user", content: `Client's last message: ${opts.lastLeadText.slice(0, 400)}\n\nBroker's draft:\n${text}` }],
     });
     const rewritten = sanitizeSuggestion(out.content ?? "").trim();
