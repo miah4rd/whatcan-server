@@ -894,7 +894,7 @@ owner's instruction, same day: "не перегнуть… чтобы тригг
 broker's. Amelia's own move is not "tomorrow at 11 or Friday at 15" (the
 first version made two drafts copy that literal example): she asks "are you
 currently in Bali to do some viewings?", "which day suits?", offers to check
-the owner's availability for a day, a virtual viewing before arrival, and
+the owner's availability for a day, and
 gives a concrete time only once the owner confirmed it. Her 09.09 lesson says
 exactly that ("replace 'tomorrow' with an open question about preference").
 Now (`generate-suggestion.ts`):
@@ -907,8 +907,13 @@ Now (`generate-suggestion.ts`):
   invitations (lead_messages `sender_type='broker'`, their Rental leads, 90
   days, cached 15 min) and puts them in the block as the style; the block
   lists the moves (ask if in Bali / which day / check the owner's
-  availability / virtual viewing / "I'll check with the owner", never a
+  availability / "I'll check with the owner", never a
   booking) and carries no example sentence of its own. The broker's lessons
+  **No video tours or virtual viewings (owner, 10.09: "не стоит пока про
+  видео тур")** — 7 villas in the whole catalog carry a video_url and the
+  generator does not read it. Off-island client: ask when they arrive, line
+  up the viewings for those days. The rental rulebook says the same, and
+  the broker's own "virtual viewing" lines are filtered out of the examples.
   come after it in the prompt and win.
 - `enforceViewingProposal` at the tail of BOTH `generateSuggestion` copies:
   `proposesViewingSlot` (a viewing word AND a time, a time-bound question or
@@ -1151,8 +1156,8 @@ floor is 33M client-facing (net + 10%), owner's words 05.09.
 - Offer a shortlist once **~2 criteria** are roughly known. Don't interrogate.
 - **When the lead likes a specific villa, stop sending options** — confirm
   availability and propose an **in-person viewing with a concrete time slot**.
-  Viewings on Bali are live; video walkthrough only if the lead says they're not
-  on the island. This is also enforced in code (`shouldSkipNewListings` in
+  Viewings on Bali are live; no video walkthroughs or virtual viewings (owner,
+  2026-09-10): a client not on the island yet is asked when they arrive. This is also enforced in code (`shouldSkipNewListings` in
   `generate-suggestion.ts`) because the model ignored the instruction.
 
 - **A rental is booked in time, not just in space.** The catalog query read
