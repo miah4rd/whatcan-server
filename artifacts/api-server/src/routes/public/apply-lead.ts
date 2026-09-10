@@ -14,6 +14,7 @@ import { Router } from "express";
 import crypto from "crypto";
 import { amoPost } from "../../lib/amo-client";
 import { logger } from "../../lib/logger";
+import { fetchAllPropertiesForPriceLookup } from "../../lib/property-catalog";
 
 const router = Router();
 
@@ -29,6 +30,37 @@ const FIELD_MOVE_IN = 968367; // "Move-in Timeline" (text)
 
 const PIPELINE_RENTAL = 11119150;
 const STATUS_NEW_LEAD = 87301078;
+// The sale funnel, for the forms on sale listings, the blog and the brochure
+// landings. Until 10.09.2026 those posted to a third-party hook that had
+// stopped delivering; now every site form comes here and names its funnel.
+const PIPELINE_SALE = 8347534;
+const STATUS_SALE_NEW_LEAD = 68024550;
+// Every website lead is Amelia's (owner, 10.09.2026).
+const RESPONSIBLE_AMELIA = 13372414;
+
+// amoCRM's own tracking fields on the lead card (GET /api/v4/leads/custom_fields).
+const FIELD_SOURCE = 956451; // "Source" (text)
+const TRACKING_FIELDS: Record<string, number> = {
+  utm_source: 372083,
+  utm_medium: 372079,
+  utm_campaign: 372081,
+  utm_content: 372077,
+  utm_term: 372085,
+  referrer: 372091,
+  gclid: 372109,
+  fbclid: 372113,
+  utm_geo: 964081,
+};
+
+/** Where the click came from, for the lead name, the Source field and the tags. */
+function trafficLabel(b: Record<string, unknown>): string {
+  const src = String(b.utm_source ?? "").toLowerCase();
+  if (isNonEmptyString(b.gclid) || src === "google") return "Google";
+  if (isNonEmptyString(b.fbclid) || src === "facebook" || src === "meta" || src === "instagram") return "Meta";
+  if (isNonEmptyString(b.ttclid) || src === "tiktok") return "TikTok";
+  if (src === "yandex" || isNonEmptyString(b.yclid)) return "Yandex";
+  return "Website";
+}
 
 // Label text must stay in sync with bali-villa-rentals'
 // src/lib/apply-form-options.ts — the LABEL (not the slug) is what lands on
@@ -60,7 +92,13 @@ function isNonEmptyString(v: unknown): v is string {
 router.post("/apply-lead", async (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
 
-  const listingCode = isNonEmptyString(body.listingCode) ? body.listingCode.trim().slice(0, 40) : "";
+  const source = isNonEmptyString(body.source) ? body.source.trim().slice(0, 40) : "website";
+  const sale = body.pipeline === "sale";
+  // A form with no listing behind it (blog, brochure, the area pages) still
+  // names where it stood: "WEB-BLOG", "WEB-RENT-CANGGU".
+  const listingCode = isNonEmptyString(body.listingCode)
+    ? body.listingCode.trim().slice(0, 40)
+    : `WEB-${source.toUpperCase().replace(/[^A-Z0-9]+/g, "-")}`;
   const listingTitle = isNonEmptyString(body.listingTitle) ? body.listingTitle.trim().slice(0, 200) : listingCode;
   const budget = isNonEmptyString(body.budget) ? body.budget.trim() : "";
   const moveIn = isNonEmptyString(body.moveIn) ? body.moveIn.trim() : "";
@@ -72,12 +110,11 @@ router.post("/apply-lead", async (req, res) => {
   const name = isNonEmptyString(body.name) ? body.name.trim().slice(0, 100) : "";
   const phone = isNonEmptyString(body.phone) ? body.phone.trim().slice(0, 20) : "";
 
-  // A phone number and a page are the lead; everything else is what the
-  // visitor chose to tell us. The /apply funnel asks all four questions, but
-  // the capture form on /rent and the area pages (10.09.2026) makes them
-  // optional — a number with nothing else is still a person to write to, and
-  // "Not specified" on the card is honest where a forced answer is not.
-  if (!listingCode || !phone) {
+  // A phone number is the lead; everything else is what the visitor chose to
+  // tell us. The /apply funnel used to ask four questions; since 10.09.2026
+  // the site's forms ask for a name and a number only — a number with nothing
+  // else is still a person to write to.
+  if (!phone) {
     res.status(400).json({ error: "Missing required fields." });
     return;
   }
@@ -87,26 +124,55 @@ router.post("/apply-lead", async (req, res) => {
     return;
   }
 
-  const budgetLabel = budget ? (BUDGET_LABELS[budget] ?? budget) : "Not specified";
-  const moveInLabel = moveIn ? (MOVE_IN_LABELS[moveIn] ?? moveIn) : "Not specified";
-  const bedroomsLabel = bedrooms || "Not specified";
+  const budgetLabel = budget ? (BUDGET_LABELS[budget] ?? budget) : "";
+  const moveInLabel = moveIn ? (MOVE_IN_LABELS[moveIn] ?? moveIn) : "";
   const contactName = name || "Website visitor";
+  const traffic = trafficLabel(body);
 
+  // An enquiry about a listing IS a request for that listing: its bedrooms
+  // and area fill the card when the visitor was not asked (the welcome and
+  // the matcher read these fields; nothing is written where nothing is known
+  // — a "Not specified" placeholder was read back to the client verbatim).
+  let bedroomsLabel = bedrooms;
+  let areaLabel = areas.join(", ");
+  if (!sale && (!bedroomsLabel || !areaLabel)) {
+    try {
+      const listing = (await fetchAllPropertiesForPriceLookup()).find((p) => p.id.toUpperCase() === listingCode.toUpperCase());
+      if (listing) {
+        if (!bedroomsLabel && listing.bedrooms) bedroomsLabel = `${listing.bedrooms}BR`;
+        if (!areaLabel && listing.area) areaLabel = listing.area;
+      }
+    } catch (err) {
+      logger.warn({ err, listingCode }, "apply-lead: catalog lookup failed (card fields stay as submitted)");
+    }
+  }
+
+  const cardFields: Array<{ field_id: number; values: Array<{ value: string }> }> = [];
+  if (budgetLabel) cardFields.push({ field_id: FIELD_BUDGET, values: [{ value: budgetLabel }] });
+  if (bedroomsLabel) cardFields.push({ field_id: FIELD_BEDROOMS_TEXT, values: [{ value: bedroomsLabel }] });
+  if (areaLabel) cardFields.push({ field_id: FIELD_AREA_TEXT, values: [{ value: areaLabel }] });
+  if (moveInLabel) cardFields.push({ field_id: FIELD_MOVE_IN, values: [{ value: moveInLabel }] });
+  cardFields.push({ field_id: FIELD_SOURCE, values: [{ value: traffic === "Google" ? "Google Search" : `${traffic} · ${source}` }] });
+  for (const [key, fieldId] of Object.entries(TRACKING_FIELDS)) {
+    const v = body[key];
+    if (isNonEmptyString(v)) cardFields.push({ field_id: fieldId, values: [{ value: v.trim().slice(0, 250) }] });
+  }
+
+  // The name keeps the listing code FIRST: the sourcing pass reads the code
+  // out of the name, finds the villa in the catalog and sends the welcome.
   const leadPayload = [
     {
-      name: `${listingCode} - ${listingTitle}`,
-      pipeline_id: PIPELINE_RENTAL,
-      status_id: STATUS_NEW_LEAD,
-      custom_fields_values: [
-        { field_id: FIELD_BUDGET, values: [{ value: budgetLabel }] },
-        { field_id: FIELD_BEDROOMS_TEXT, values: [{ value: bedroomsLabel }] },
-        { field_id: FIELD_AREA_TEXT, values: [{ value: areas.join(", ") || "Not specified" }] },
-        { field_id: FIELD_MOVE_IN, values: [{ value: moveInLabel }] },
-      ],
+      name: `${listingCode} - ${listingTitle} — ${traffic}`,
+      pipeline_id: sale ? PIPELINE_SALE : PIPELINE_RENTAL,
+      status_id: sale ? STATUS_SALE_NEW_LEAD : STATUS_NEW_LEAD,
+      responsible_user_id: RESPONSIBLE_AMELIA,
+      custom_fields_values: cardFields,
       _embedded: {
+        tags: [{ name: "Website" }, { name: traffic }],
         contacts: [
           {
             name: contactName,
+            responsible_user_id: RESPONSIBLE_AMELIA,
             custom_fields_values: [{ field_code: "PHONE", values: [{ value: phone, enum_code: "WORK" }] }],
           },
         ],
@@ -140,7 +206,7 @@ router.post("/apply-lead", async (req, res) => {
     return;
   }
 
-  logger.info({ leadId, listingCode, budget, bedrooms, moveIn, areas }, "apply-lead: lead created from website form");
+  logger.info({ leadId, listingCode, pipeline: sale ? "sale" : "rental", source, traffic, budget, bedrooms: bedroomsLabel, moveIn, area: areaLabel }, "apply-lead: lead created from website form");
 
   // The form's free-text field has no custom-field home on the card, so it
   // goes on the lead as a note — the same place the old ad-form integration
