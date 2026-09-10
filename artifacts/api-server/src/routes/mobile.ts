@@ -253,8 +253,7 @@ const PAGE_HTML = `<!doctype html>
   .atts { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
   .att { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: rgba(255,255,255,.04); border: 1px solid #2a3146; border-radius: 8px; font-size: 12px; color: #cfd5e3; }
   .att-reminder { border-color: rgba(251,191,36,.3); background: rgba(251,191,36,.06); color: #fde68a; }
-  .att-flag { border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); color: #fde68a; }
-  .att-flag-red { border-color: rgba(248,113,113,.45); background: rgba(248,113,113,.08); color: #fca5a5; }
+  .att-flag { border-color: rgba(248,113,113,.45); background: rgba(248,113,113,.08); color: #fca5a5; }
   .att-flag .attlbl { white-space: normal; }
   .att-img img { max-width: 140px; max-height: 100px; border-radius: 6px; display: block; }
   .attlbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1036,11 +1035,8 @@ const PAGE_HTML = `<!doctype html>
         // Flags a broker set in the site's Internal data for this villa. For the
         // broker only: they never enter the text or the links the client receives.
         var fl = item.villa_flags && a.url ? item.villa_flags[a.url] : null;
-        if (fl && fl.redFlag) {
-          html += '<div class="att att-flag att-flag-red"><span>\\ud83d\\udea9</span><span class="attlbl">Red flag' + (fl.redFlagReason ? ': ' + esc(fl.redFlagReason) : '') + '</span></div>';
-        }
         if (fl && fl.constructionNearby) {
-          html += '<div class="att att-flag"><span>\\ud83c\\udfd7\\ufe0f</span><span class="attlbl">Construction nearby</span></div>';
+          html += '<div class="att att-flag"><span>\\ud83d\\udea9</span><span class="attlbl">Red flag: construction nearby</span></div>';
         }
       }
     }
