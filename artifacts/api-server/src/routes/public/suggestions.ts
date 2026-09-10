@@ -560,7 +560,7 @@ router.get("/suggestions", async (req, res) => {
       enriched = [...enriched.filter(pinnedNow), ...enriched.filter((i) => !pinnedNow(i))];
     }
 
-    // Broker flags from the site's Internal data (Construction nearby / Red flag) for the
+    // The broker's red flag from the site's Internal data (Construction nearby) for the
     // villas each draft attaches, so the broker sees the warning before sending. Beside
     // the attachments, never inside them: attachments are posted back verbatim on
     // approve. A failed flag read shows no warnings — it never costs the inbox.

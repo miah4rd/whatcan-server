@@ -1,24 +1,23 @@
 import { logger } from "./logger";
 
 /**
- * Broker flags on villas, read from the website's Internal data (property_private).
+ * The broker's red flag on a villa, read from the website's Internal data
+ * (property_private).
  *
- * Brokers tick "Construction nearby" or "Red flag" on the site after an inspection
- * or a bad viewing (owner, 2026-09-10 — Amelia in Unicorn Rental: "please flag
- * options with construction nearby", "R-YUD-054 is a major red flag, the client left
- * immediately"). The Copilot shows the warning on any draft that attaches such a
- * villa, so the broker sees it before sending. It is never put into anything a
- * client reads.
+ * Brokers tick "Construction nearby" on the site after an inspection or a bad
+ * viewing (owner, 2026-09-10 — Amelia in Unicorn Rental: "please flag options with
+ * construction nearby"). "Red flag" is the team's word for any important detail;
+ * everything else is written in Internal notes, so construction is the one flag with
+ * a field. The Copilot shows it on any draft that attaches such a villa, so the
+ * broker sees it before sending. It is never put into anything a client reads.
  *
  * Service key on purpose: property_private is admin/agent-only by RLS, and the anon
  * key this app uses for the catalog reads nothing there. Only flagged rows and only
- * the three flag columns are fetched — no owner contacts leave the site database
- * through this.
+ * the flag column are fetched — no owner contacts leave the site database through
+ * this.
  */
 export type PropertyFlags = {
   constructionNearby: boolean;
-  redFlag: boolean;
-  redFlagReason: string;
 };
 
 /** Short enough that a flag ticked on the site shows up on the next inbox refresh or two. */
@@ -33,28 +32,19 @@ export async function propertyFlagsById(): Promise<Map<string, PropertyFlags>> {
   if (!url || !key) return cache?.byId ?? new Map();
   try {
     const res = await fetch(
-      `${url}/rest/v1/property_private` +
-        `?select=property_id,construction_nearby,red_flag,red_flag_reason` +
-        `&or=(construction_nearby.eq.true,red_flag.eq.true)`,
+      `${url}/rest/v1/property_private?select=property_id,construction_nearby&construction_nearby=eq.true`,
       { headers: { apikey: key, Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) },
     );
     if (!res.ok) {
       logger.warn({ status: res.status }, "property flags fetch failed — drafts show no flag warnings");
       return cache?.byId ?? new Map();
     }
-    const rows = (await res.json()) as Array<{
-      property_id: string;
-      construction_nearby: boolean | null;
-      red_flag: boolean | null;
-      red_flag_reason: string | null;
-    }>;
+    const rows = (await res.json()) as Array<{ property_id: string; construction_nearby: boolean | null }>;
     const byId = new Map<string, PropertyFlags>();
     for (const r of rows) {
-      byId.set(String(r.property_id).toUpperCase(), {
-        constructionNearby: r.construction_nearby === true,
-        redFlag: r.red_flag === true,
-        redFlagReason: (r.red_flag_reason ?? "").trim(),
-      });
+      if (r.construction_nearby === true) {
+        byId.set(String(r.property_id).toUpperCase(), { constructionNearby: true });
+      }
     }
     cache = { at: Date.now(), byId };
     return byId;
