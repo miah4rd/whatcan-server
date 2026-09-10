@@ -72,7 +72,12 @@ router.post("/apply-lead", async (req, res) => {
   const name = isNonEmptyString(body.name) ? body.name.trim().slice(0, 100) : "";
   const phone = isNonEmptyString(body.phone) ? body.phone.trim().slice(0, 20) : "";
 
-  if (!listingCode || !budget || !moveIn || !bedrooms || !name || !phone) {
+  // A phone number and a page are the lead; everything else is what the
+  // visitor chose to tell us. The /apply funnel asks all four questions, but
+  // the capture form on /rent and the area pages (10.09.2026) makes them
+  // optional — a number with nothing else is still a person to write to, and
+  // "Not specified" on the card is honest where a forced answer is not.
+  if (!listingCode || !phone) {
     res.status(400).json({ error: "Missing required fields." });
     return;
   }
@@ -82,8 +87,10 @@ router.post("/apply-lead", async (req, res) => {
     return;
   }
 
-  const budgetLabel = BUDGET_LABELS[budget] ?? budget;
-  const moveInLabel = MOVE_IN_LABELS[moveIn] ?? moveIn;
+  const budgetLabel = budget ? (BUDGET_LABELS[budget] ?? budget) : "Not specified";
+  const moveInLabel = moveIn ? (MOVE_IN_LABELS[moveIn] ?? moveIn) : "Not specified";
+  const bedroomsLabel = bedrooms || "Not specified";
+  const contactName = name || "Website visitor";
 
   const leadPayload = [
     {
@@ -92,14 +99,14 @@ router.post("/apply-lead", async (req, res) => {
       status_id: STATUS_NEW_LEAD,
       custom_fields_values: [
         { field_id: FIELD_BUDGET, values: [{ value: budgetLabel }] },
-        { field_id: FIELD_BEDROOMS_TEXT, values: [{ value: bedrooms }] },
+        { field_id: FIELD_BEDROOMS_TEXT, values: [{ value: bedroomsLabel }] },
         { field_id: FIELD_AREA_TEXT, values: [{ value: areas.join(", ") || "Not specified" }] },
         { field_id: FIELD_MOVE_IN, values: [{ value: moveInLabel }] },
       ],
       _embedded: {
         contacts: [
           {
-            name,
+            name: contactName,
             custom_fields_values: [{ field_code: "PHONE", values: [{ value: phone, enum_code: "WORK" }] }],
           },
         ],
