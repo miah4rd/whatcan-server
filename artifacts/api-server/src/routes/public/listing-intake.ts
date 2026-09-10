@@ -135,7 +135,15 @@ router.post("/listing-intake/publish", async (req, res) => {
       return;
     }
 
-    res.json({ ok: true, propertyId: result.propertyId, url: result.url, submissionId: result.submissionId });
+    res.json({
+      ok: true,
+      propertyId: result.propertyId,
+      url: result.url,
+      submissionId: result.submissionId,
+      live: result.live,
+      blockers: result.blockers,
+      editUrl: result.editUrl,
+    });
   } catch (err) {
     logger.error({ err }, "listing intake publish crashed");
     res.status(500).json({ error: "Internal error" });

@@ -354,6 +354,11 @@ export function humanPropertyUrl(id: string): string {
   return `${SITE_HUMAN_BASE}/${encodeURIComponent(id)}`;
 }
 
+/** The site's admin page for a listing — where Internal data is filled in before it can go live. */
+export function adminPropertyUrl(id: string): string {
+  return `${new URL(SITE_HUMAN_BASE).origin}/admin/property/${encodeURIComponent(id)}`;
+}
+
 // ── Share card ──────────────────────────────────────────────────────────────
 
 export type PropertyShareCard = {

@@ -615,7 +615,7 @@ const PAGE_HTML = `<!doctype html>
       var j = await r.json();
       if (r.ok && j && j.ok) {
         liDone = j;
-        showToast("Published \\u2014 " + j.propertyId);
+        showToast((j.live === false ? "Saved as draft \\u2014 " : "Published \\u2014 ") + j.propertyId);
       } else {
         liErr = (j && j.error) || "Could not publish.";
       }
@@ -634,9 +634,16 @@ const PAGE_HTML = `<!doctype html>
     html += "</div></div></header><main>";
 
     if (liDone) {
-      html += '<div class="li-ok"><b>\\u2705 ' + esc(liDone.propertyId) + " is live.</b><br>";
-      html += "It is on the site and the bot can already offer it to clients.<br>";
-      html += '<a href="' + esc(liDone.url) + '" target="_blank" rel="noopener">' + esc(liDone.url) + "</a></div>";
+      if (liDone.live === false) {
+        html += '<div class="li-ok"><b>' + esc(liDone.propertyId) + " is saved as a draft.</b><br>";
+        html += "It is not on the site yet: a listing goes live only with its Internal data.<br>";
+        html += "Still missing: " + esc((liDone.blockers || []).join(", ")) + "<br>";
+        html += '<a href="' + esc(liDone.editUrl) + '" target="_blank" rel="noopener">Fill it in and publish</a></div>';
+      } else {
+        html += '<div class="li-ok"><b>\\u2705 ' + esc(liDone.propertyId) + " is live.</b><br>";
+        html += "It is on the site and the bot can already offer it to clients.<br>";
+        html += '<a href="' + esc(liDone.url) + '" target="_blank" rel="noopener">' + esc(liDone.url) + "</a></div>";
+      }
       html += '<button class="li-btn" id="li-again">Add another listing</button> ';
       html += '<button class="li-btn ghost" id="li-close2">Back to leads</button>';
       html += "</main>";

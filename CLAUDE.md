@@ -782,6 +782,18 @@ Supabase insert, one cache invalidation. Do not add a fourth copy.
   read-only by RLS design. Without it every publish — from any of the three
   surfaces — fails with "not set on the server", which is what it did from the
   day the /m intake chat shipped until someone checked.
+- **A listing from the assistant is created as a DRAFT and goes live only if the
+  site's database allows it (2026-09-10).** The site refuses to publish without
+  Internal data (owner name, phone, map pin, Drive folder, notes), none of which
+  intake collects — the old one-step insert with `is_draft: false` is refused
+  outright. `pushToSupabase` inserts a draft (after any overrides), asks
+  `listing_publish_blockers`, publishes only on an empty answer, and treats an
+  unreadable answer as blocked. Every surface says "saved as a draft, still
+  missing …" with the site's admin link (`adminPropertyUrl`) instead of
+  "published": the website bubble, `/m`, and the review-queue API response. Do
+  not keep a copy of the field list here — ask the database. The review page in
+  `artifacts/landing` is not rebuilt by deploy.sh (its dist dates from
+  2026-08-08), so it only refreshes the queue.
 - **Seeing the bubble requires an `admin`/`agent` row in the site's
   `user_roles`.** The brokers work in amoCRM and mostly have no account on the
   site at all, so this feature reaches only the people who have been granted a
@@ -1043,6 +1055,42 @@ card leaves only on positive evidence. The classifier returns null for this
 funnel; `promoteIfQualified` / `routeUnqualified` / `releaseFrom*` are gone.
 Audit by hand: `POST /api/admin/listing-audit` (dry), `?apply=1`, `?lead=<id>`.
 Two time-driven closers stay outside: three unanswered nudges, no WhatsApp.
+
+### A stage a card can neither enter nor leave (2026-09-10)
+
+The owner: "что с нашим автопилотом, где мои листинги?" Nothing had reached
+QUALIFIED (Pre-listed) on 09.09 or 10.09, while the top of the funnel kept
+working normally (13 new owner cards contacted that morning, 36 replies in).
+Two engine faults, both invisible from the board:
+
+- **The occupied deadlock.** `desiredStage` parks a villa in long term only
+  when it is occupied AND does not free within 90 days; a villa that frees
+  sooner falls through to the bar — where `meetsQualified` then blocked it on
+  the very same "occupied" stop signal. So a card that frees soon could not be
+  parked (it frees soon) and could not qualify (it is occupied): five cards
+  with a complete data set sat in TAKEN TO WORK, 23204741 among them (2BR,
+  45M incl., min stay 12, free 1 October). Only `not_our_format`, or an
+  `occupied` that is NOT `freeSoon`, blocks the bar now. **Any condition that
+  both routes a card away and blocks its promotion has to be read in one
+  direction only — check both when adding one.**
+- **A send judged on empty facts.** `reconcileListingStage(facts: null)` — the
+  send path, "signals only, no model call" — was handed `emptyFacts()`, which
+  says "nothing about this villa is known", not "do not re-read". Every
+  message we sent therefore re-judged a complete card as "not yet: bedrooms,
+  price, minimum stay…" and pulled it back to TAKEN TO WORK: 23518851 and
+  23519135 flapped Initial Contact → long term → TAKEN TO WORK → long term →
+  TAKEN TO WORK inside ten minutes, and no card could have held QUALIFIED
+  past its next message anyway. The last facts read now stand on a send; with
+  nothing ever read, a send judges nothing. **`null` means "unread", never
+  "empty" — a judgement on absent data is not a judgement.**
+
+Fixed and applied 10.09 (`POST /api/admin/listing-audit?apply=1`): 4 cards to
+QUALIFIED, 2 parked in long term, 4 Initial Contact → TAKEN TO WORK; the board
+went 11 → 15 pre-listed. What remains is a data gap, not a bug: 44 cards where
+the owner is talking but the card still lacks price, minimum stay or earliest
+viewing — half of those threads predate the 07.09 bar and were never asked.
+The owner-nudge pass asks exactly the missing fields (`meetsQualified().missing`
+in listing-acquisition-prompt) on its own cadence.
 
 ### Listing funnel: one owner per stage, stages move on data (2026-09-07)
 
