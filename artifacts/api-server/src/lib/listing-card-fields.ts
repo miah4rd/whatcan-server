@@ -540,7 +540,18 @@ export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[
   }
   // Only a CLASSIFIED stop blocks. The free-text signal alone flagged "We can
   // accept daily too" — an owner adding an option, not withdrawing one.
-  if (f.stopKind && f.stopSignal) missing.push(`stop signal: ${f.stopSignal}`);
+  //
+  // And "occupied" only blocks while the villa is genuinely out of reach.
+  // The engine parks a far-out one in long term BEFORE this check, so an
+  // occupied card that gets here is one that frees inside the window we can
+  // sell — availability, not a refusal. Blocking it stranded the card in a
+  // place with no exit: not parked (it frees soon), not qualified (the same
+  // note blocked it). Five cards with a complete data set sat in TAKEN TO
+  // WORK on 10.09 for exactly this — 23204741 (2BR, 45M incl., min stay 12,
+  // free 1 October) among them, and the owner asked where his listings were.
+  if (f.stopSignal && (f.stopKind === "not_our_format" || (f.stopKind === "occupied" && !freeSoon(f)))) {
+    missing.push(`stop signal: ${f.stopSignal}`);
+  }
   return { ok: missing.length === 0, missing };
 }
 
