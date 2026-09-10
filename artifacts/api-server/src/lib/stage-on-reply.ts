@@ -103,6 +103,83 @@ JSON only: {"regressed": true|false, "why": "<8 words>"}`,
   return { confirmed: out.regressed, why: out.why ?? "" };
 }
 
+export type ViewingCanonVerdict =
+  | { ok: true; viewingAt?: Date; clearViewingAt: boolean }
+  | { ok: false; reason: string };
+
+/**
+ * The viewing canons, for ANY stage write that involves a viewing stage —
+ * the manual-reply detectors, the outcome pass and the send path all go
+ * through here. Three canons, each naming the evidence it needs:
+ *   1. "Viewing done" needs the booked slot to have passed.
+ *   2. Leaving a viewing stage BACKWARD needs a stated cancellation / no-show /
+ *      rejection (one focused yes/no, fail-closed) and clears the slot.
+ *   3. "Viewing scheduled" needs a concrete slot readable in the thread, and
+ *      that slot is returned so the caller stores it.
+ * A person's explicit pick is never refused (`explicit`), but the slot is
+ * still read and a backward move still clears it — the send path used to
+ * write "Viewing scheduled" with no viewing_at at all, so the report was
+ * never asked for.
+ */
+export async function viewingCanons(
+  leadId: string,
+  o: {
+    fromStage: string | null | undefined;
+    toStage: string;
+    pipeline: string | null | undefined;
+    explicit: boolean;
+    /** A transcript the caller already built; read from lead_messages otherwise. */
+    threadText?: string;
+    /** Text leaving right now (approve), not yet in lead_messages. */
+    extraText?: string;
+    storedViewingAt?: Date | null;
+  },
+): Promise<ViewingCanonVerdict> {
+  const from = (o.fromStage ?? "").toLowerCase();
+  const to = o.toStage.trim().toLowerCase();
+  const isViewingStage = (s: string) => /viewing/.test(s);
+  const isViewingScheduled = /viewing\s*(scheduled|booked|arranged)/.test(to);
+  if (!isViewingStage(from) && !isViewingStage(to)) return { ok: true, clearViewingAt: false };
+
+  let stored = o.storedViewingAt;
+  if (stored === undefined) {
+    const [row] = await db.select({ viewingAt: leadsSyncTable.viewingAt }).from(leadsSyncTable).where(eq(leadsSyncTable.leadId, leadId)).limit(1);
+    stored = row?.viewingAt ?? null;
+  }
+  let text = o.threadText ?? (await transcript(leadId)).text;
+  if (o.extraText?.trim()) text = `${text}\n${fmt(new Date())} Broker: ${o.extraText.replace(/\s+/g, " ").trim()}`;
+
+  if (/viewing\s*done/.test(to) && stored && stored.getTime() > Date.now() && !o.explicit) {
+    return { ok: false, reason: `canon: booked slot ${fmt(stored)} has not come yet — cannot be "Viewing done"` };
+  }
+
+  let clearViewingAt = false;
+  if (isViewingStage(from) && from !== to) {
+    const order = await getPipelineStages(o.pipeline ?? "");
+    const idx = (name: string) => order?.all.findIndex((s) => s.name.trim().toLowerCase() === name) ?? -1;
+    const backward = idx(to) >= 0 && idx(from) >= 0 && idx(to) < idx(from);
+    if (backward) {
+      if (!o.explicit) {
+        const ev = await viewingRegressionEvidence(leadId, text, o.fromStage ?? "");
+        if (!ev.confirmed) {
+          return { ok: false, reason: `canon: leaving ${o.fromStage} backward needs a stated cancellation/no-show/rejection — none found (${ev.why})` };
+        }
+        logger.info({ leadId, from: o.fromStage, to: o.toStage, why: ev.why }, "viewing regression confirmed by evidence");
+      }
+      clearViewingAt = true;
+    }
+  }
+
+  if (isViewingScheduled) {
+    const viewingAt = await extractViewingAt(text);
+    if (!viewingAt && !o.explicit) {
+      return { ok: false, reason: "canon: Viewing scheduled needs a concrete slot in the thread (ahead or ≤2 days past) — none found" };
+    }
+    return viewingAt ? { ok: true, viewingAt, clearViewingAt: false } : { ok: true, clearViewingAt: false };
+  }
+  return { ok: true, clearViewingAt };
+}
+
 export type StageApplyResult = { moved: boolean; from?: string | null; to?: string; reason: string; viewingAt?: Date | null };
 
 /**
@@ -111,7 +188,7 @@ export type StageApplyResult = { moved: boolean; from?: string | null; to?: stri
  */
 export async function classifyAndApplyStage(
   leadId: string,
-  opts: { source: "manual-reply" | "backfill" | "viewing-outcome"; apply?: boolean; replyText?: string },
+  opts: { source: "manual-reply" | "backfill" | "viewing-outcome" | "inbound"; apply?: boolean; replyText?: string },
 ): Promise<StageApplyResult> {
   const apply = opts.apply !== false;
   const [row] = await db
@@ -165,46 +242,18 @@ export async function classifyAndApplyStage(
   const toLower = (cls.stage.name ?? "").toLowerCase();
   if (toLower === stageLower) return { moved: false, reason: "already there" };
 
-  // Viewing canons. Not "never leave a viewing stage" — that hid real
-  // cancellations behind a regex. Each canon names the evidence it needs:
-  //   1. "Viewing done" needs the booked slot to have passed. A card with a
-  //      future viewing_at cannot be done, whatever the prose says.
-  //   2. Leaving a viewing stage BACKWARD (scheduled → options, done →
-  //      options) needs a stated event: cancelled, no-show, the client
-  //      rejected what they saw or restarted the search. Asked as one
-  //      focused yes/no with the thread in front of it, fail-closed: no
-  //      evidence, no move. Forward moves (→ negotiation, reservation) are
-  //      free — a viewing that led somewhere is exactly the point.
-  const isViewingStage = (s: string) => /viewing/.test(s);
-  const isViewingDone = (s: string) => /viewing\s*done/.test(s);
-  if (isViewingDone(toLower) && row.viewingAt && row.viewingAt.getTime() > Date.now()) {
-    return { moved: false, reason: `canon: booked slot ${fmt(row.viewingAt)} has not come yet — cannot be "Viewing done"`, to: cls.stage.name };
-  }
-  let clearViewingAt = false;
-  if (isViewingStage(stageLower)) {
-    const order = await getPipelineStages(row.pipeline ?? "");
-    const idx = (name: string) => order?.all.findIndex((s) => s.name.trim().toLowerCase() === name) ?? -1;
-    const backward = idx(toLower) >= 0 && idx(stageLower) >= 0 && idx(toLower) < idx(stageLower);
-    if (backward) {
-      const ev = await viewingRegressionEvidence(leadId, text, row.leadStage ?? "");
-      if (!ev.confirmed) {
-        return { moved: false, reason: `canon: leaving ${row.leadStage} backward needs a stated cancellation/no-show/rejection — none found (${ev.why})`, to: cls.stage.name };
-      }
-      clearViewingAt = true;
-      logger.info({ leadId, from: row.leadStage, to: cls.stage.name, why: ev.why }, "viewing regression confirmed by evidence");
-    }
-  }
-
+  const canon = await viewingCanons(leadId, {
+    fromStage: row.leadStage,
+    toStage: cls.stage.name,
+    pipeline: row.pipeline,
+    explicit: false,
+    threadText: text,
+    storedViewingAt: row.viewingAt,
+  });
+  if (!canon.ok) return { moved: false, reason: canon.reason, to: cls.stage.name };
+  const viewingAt = canon.viewingAt ?? null;
+  const clearViewingAt = canon.clearViewingAt;
   const isViewingScheduled = /viewing\s*(scheduled|booked|arranged)/i.test(cls.stage.name);
-  const viewingAt = isViewingScheduled ? await extractViewingAt(text) : null;
-  // Canon: "Viewing scheduled" is a slot, not a mood. No concrete date and
-  // time in the thread (ahead, or at most two days past) means nothing is
-  // scheduled — the card stays where it is (viewing Suggested at most). The
-  // classifier proposed re-scheduling Alena I. on 09.09 from a viewing another
-  // agent held on 31.08.
-  if (isViewingScheduled && !viewingAt) {
-    return { moved: false, reason: "canon: Viewing scheduled needs a concrete slot in the thread (ahead or ≤2 days past) — none found", to: cls.stage.name };
-  }
 
   if (!apply) return { moved: false, from: row.leadStage, to: cls.stage.name, reason: `would move: ${cls.reason}`, viewingAt };
 

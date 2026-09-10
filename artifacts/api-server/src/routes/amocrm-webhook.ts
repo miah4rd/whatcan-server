@@ -18,7 +18,7 @@ import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
 import { isHosTrackedPipeline } from "../lib/adaptive-followup";
 import { movesStageOnReply } from "../lib/pipelines";
-import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments, attachedVillasBlock, allAttachmentsNamed } from "../lib/generate-suggestion";
+import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments, attachedVillasBlock, allAttachmentsNamed, enforceViewingProposal, viewingPushDue } from "../lib/generate-suggestion";
 import { getMergedDialog } from "../lib/merged-conversation";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
@@ -203,7 +203,12 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   const draft = sanitizeSuggestion(completion.content);
   const named = allAttachmentsNamed(draft, attachments);
   if (!named) logger.warn({ leadId: opts.leadId }, "webhook draft did not name every attached villa — forcing rewrite");
-  const text = await reconcileTextWithAttachments(draft, attachments, !named);
+  let text = await reconcileTextWithAttachments(draft, attachments, !named);
+  text = await enforceViewingProposal(text, attachments, {
+    leadId: opts.leadId,
+    due: isRental && viewingPushDue(dialog.messages, opts.leadStage),
+    lastLeadText,
+  });
 
   return { text, attachments };
 }
@@ -429,39 +434,13 @@ export async function classifyStageInBackground(
       // minutes after the scout created them, while the draft still sat
       // unsent in the inbox. So the automatic move asks a different question:
       // where is this conversation RIGHT NOW, with nothing pending.
-      const nowState = await classifyStage({
-        pipeline: lead.pipeline,
-        currentStage: lead.leadStage,
-        conversationText: formatDialogForAI(dialog.messages),
-        replyText: "",
-        attachmentsCount: 0,
-      });
-      if (!nowState || nowState.terminal) return;
-      const ok = await updateLeadStatus(leadId, nowState.stage.id).catch(() => false);
-      if (ok) {
-        await db
-          .update(leadsSyncTable)
-          .set({
-            leadStage: nowState.stage.name,
-            leadStageId: String(nowState.stage.id),
-            updatedAt: new Date(),
-          })
-          .where(eq(leadsSyncTable.leadId, leadId));
-        await db
-          .insert(stageEventsTable)
-          .values({
-            leadId,
-            fromStage: lead.leadStage,
-            toStage: nowState.stage.name,
-            responsibleUser: lead.responsibleUser ?? null,
-          })
-          .catch(() => {});
-        logger.info(
-          { leadId, from: lead.leadStage, to: nowState.stage.name, reason: nowState.reason },
-          "stage moved automatically from the conversation",
-        );
-      } else {
-        logger.warn({ leadId, to: nowState.stage.name }, "automatic stage move rejected by amoCRM");
+      // ONE path for a stage read from the thread — the same one the manual-
+      // reply detectors and the send path use — so the viewing canons and the
+      // viewing_at extraction apply here too. This block used to call the
+      // classifier and write the stage itself (a second implementation).
+      const applied = await classifyAndApplyStage(leadId, { source: "inbound", replyText: "" });
+      if (applied.moved) {
+        logger.info({ leadId, from: applied.from, to: applied.to, viewingAt: applied.viewingAt ?? null, reason: applied.reason }, "stage moved automatically from the conversation");
       }
     }
   } catch (err) {
