@@ -8,6 +8,7 @@ import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-fo
 import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
 import { classifyStage, safeStageIdForLead, isRuleOwnedAcquisitionStage } from "../../lib/stage-classifier";
+import { viewingCanons } from "../../lib/stage-on-reply";
 import { reconcileListingStage } from "../../lib/listing-stage-engine";
 import {
   resolveSendChannel,
@@ -850,8 +851,12 @@ router.post("/approve", async (req, res) => {
   // Listing funnel: QUALIFIED / Details / agreement are earned by data (the
   // qualification rule) or chosen by a person — never applied from a
   // classification, however old the draft that carries it.
-  const [stageCtx] = autoStage && !explicitNewStage
-    ? await db.select({ pipeline: leadsSyncTable.pipeline }).from(leadsSyncTable).where(eq(leadsSyncTable.leadId, sug.leadId)).limit(1)
+  const [stageCtx] = autoStage || explicitNewStage
+    ? await db
+        .select({ pipeline: leadsSyncTable.pipeline, leadStage: leadsSyncTable.leadStage, viewingAt: leadsSyncTable.viewingAt })
+        .from(leadsSyncTable)
+        .where(eq(leadsSyncTable.leadId, sug.leadId))
+        .limit(1)
     : [];
   if (!explicitNewStage && autoStage && isRuleOwnedAcquisitionStage(stageCtx?.pipeline, autoStage.name)) {
     req.log.info(
@@ -859,6 +864,40 @@ router.post("/approve", async (req, res) => {
       "auto stage refused: rule-owned acquisition stage, the qualification rule decides",
     );
     autoStage = null;
+  }
+  // Viewing canons on the send path. The classification was made before the
+  // send and, until 10.09, was written as-is: "Viewing scheduled" landed with
+  // no viewing_at, so the outcome pass never asked for the report. The same
+  // three rules the manual-reply detectors obey decide here — a slot is read
+  // for "Viewing scheduled", "Viewing done" needs the slot to have passed, a
+  // backward move needs stated evidence. The broker's own pick is never
+  // refused, but the slot is still recorded. Fail-closed for the auto move.
+  let viewingPatch: { viewingAt?: Date | null } = {};
+  {
+    const target = explicitNewStage ?? autoStage?.name ?? null;
+    if (target && /viewing/i.test(`${target} ${stageCtx?.leadStage ?? ""}`)) {
+      try {
+        const v = await viewingCanons(sug.leadId, {
+          fromStage: stageCtx?.leadStage,
+          toStage: target,
+          pipeline: stageCtx?.pipeline,
+          explicit: !!explicitNewStage,
+          extraText: skipMessage ? "" : finalMessage,
+          storedViewingAt: stageCtx?.viewingAt ?? null,
+        });
+        if (!v.ok) {
+          req.log.info({ leadId: sug.leadId, refused: target, reason: v.reason }, "auto stage refused by a viewing canon");
+          autoStage = null;
+        } else if (v.viewingAt) {
+          viewingPatch = { viewingAt: v.viewingAt };
+        } else if (v.clearViewingAt) {
+          viewingPatch = { viewingAt: null };
+        }
+      } catch (err) {
+        req.log.warn({ err, leadId: sug.leadId, target }, "viewing canon check failed — auto stage not applied");
+        if (!explicitNewStage) autoStage = null;
+      }
+    }
   }
   const effectiveNewStage = explicitNewStage ?? (autoStage ? autoStage.name : null);
   if (effectiveNewStage) {
@@ -912,6 +951,7 @@ router.post("/approve", async (req, res) => {
         leadStage: effectiveNewStage,
         leadStageId: stageId ?? undefined,
         ...(clearClock ? { nextFollowupAt: null } : {}),
+        ...viewingPatch,
         updatedAt: new Date(),
       })
       .where(eq(leadsSyncTable.leadId, sug.leadId));

@@ -24,6 +24,7 @@ import { processListingOwnerFollowup } from "./listing-owner-followup";
 import { processHandoverDrafts, HANDOVER_VERDICT } from "./handover-draft";
 import { processLongTermAvailabilityChecks } from "./long-term-check";
 import { maybeRunDailyListingAudit } from "./listing-stage-engine";
+import { processViewingOutcomes } from "./viewing-outcome";
 import { isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
 import { logStuckLeads } from "./stuck-leads";
 import { logUnknownPipelines, isReachStageName } from "./pipelines";
@@ -1626,6 +1627,12 @@ export function startFollowupScheduler(intervalMs = 5 * 60 * 1000): void {
     // the broker told which of HIS cards the facts disagree with. Drift is
     // seen by a report, not by the owner opening cards.
     maybeRunDailyListingAudit().catch((err) => logger.error({ err }, "listing stage audit error"));
+    // Three hours after a booked viewing: "Viewing done" when the thread says
+    // so, and the report goes due (task, push, placeholder card). Until
+    // 10.09 nothing ran this pass on its own — it was reachable only through
+    // the manual reclassify endpoint, so Lorenzo's 09.09 viewing had no
+    // report the next morning.
+    processViewingOutcomes().catch((err) => logger.error({ err }, "viewing outcome error"));
   }, intervalMs);
 
   // A paid ad lead sat unnoticed for up to ten minutes: one 5-min pass to seed

@@ -925,6 +925,98 @@ Output only the corrected message.${missingNote}`;
   return ensureAllNamed(text, attachments);
 }
 
+// ── Viewing push ────────────────────────────────────────────────────────────
+// The owner (10.09.2026): "показ — ключевая метрика, ведущая к сделке;
+// предлагать слот всем". Two weeks of data: 41 clients replied after a
+// shortlist, 6 were offered a concrete slot, 30 never heard the word
+// "viewing" from us; the bot proposed a slot in 10 of 438 messages. The
+// rulebook already said "offer a specific window" — a sentence in a 9,000
+// token prompt is not a rule. This is: a deterministic trigger, a block the
+// writer cannot miss, and a check on the draft with one rewrite.
+// The client has ended it, or sent everything back: a viewing push there is
+// tone-deaf (a shortlist or a goodbye is the right next message). "Too
+// expensive" alone is NOT here — a cheaper shortlist plus a slot is a fine
+// answer to it.
+const HARD_NO = /(found (a|another|our|the) (place|villa|one|apartment)|already (booked|rented|signed|found)|no longer (looking|need|interested)|not interested|none of (these|them|those)|unsubscribe|stop (messaging|texting|writing|contacting)|don'?t (contact|message|text) me)/i;
+const SLOT_WORDS = /(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this (morning|afternoon|evening|weekend)|next (week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\b\d{1,2}(:\d{2})?\s?(am|pm)\b|\bat \d{1,2}(:\d{2})?\b|\b\d{1,2}(st|nd|rd|th)?\s+(of\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}(st|nd|rd|th)?\b|\bon the \d{1,2}(st|nd|rd|th)\b)/i;
+const VIEW_WORDS = /(viewing|visit|see (it|the villa|the villas|them|the place|both|either|one of)|show (you|it|them)|check (it|them) out|come (and|to) see|walk-?through|video (tour|call|walk)|meet (you )?(at|there)|take you (to|around|through))/i;
+
+/** A message that proposes a viewing with an actual time in it. */
+export function proposesViewingSlot(text: string): boolean {
+  return VIEW_WORDS.test(text) && SLOT_WORDS.test(text);
+}
+
+/**
+ * Is THIS the message that must push for a viewing? Rental, options already
+ * sent, the client is still talking after them and has not said no, and no
+ * viewing is on the books yet. Silence after links is a push draft on the
+ * same rule; a hard no is not.
+ */
+export function viewingPushDue(
+  messages: ReturnType<typeof parseDialogContent>["messages"],
+  leadStage: string | null | undefined,
+): boolean {
+  const stage = (leadStage ?? "").toLowerCase();
+  if (/viewing\s*(scheduled|done)|negotiat|contract|reserv|check\s*in|closed|lost|won/.test(stage)) return false;
+  const firstLinkIdx = messages.findIndex((m) => m.from !== "lead" && /\/property\//i.test(m.text ?? ""));
+  if (firstLinkIdx === -1) return false;
+  const clientAfter = messages.slice(firstLinkIdx + 1).filter((m) => m.from === "lead");
+  // Silence after the links is pushed too (the follow-up carries the slot);
+  // a client who replied is pushed unless that reply ended it.
+  const last = clientAfter[clientAfter.length - 1]?.text ?? "";
+  if (HARD_NO.test(last)) return false;
+  return true;
+}
+
+function baliToday(): string {
+  return new Date().toLocaleDateString("en-GB", { timeZone: "Asia/Makassar", weekday: "long", day: "numeric", month: "long" });
+}
+
+export function viewingPushBlock(): string {
+  return `
+VIEWING PUSH — this message must move the client to a viewing. They have options and are talking; the next step is not more links, it is a date. Today is ${baliToday()} (Bali). Do ALL of this:
+- name the villa (or two) worth seeing — the one(s) they reacted to, else the best fit already sent;
+- propose TWO concrete windows within the next three days, e.g. "tomorrow at 11 or Friday at 15", and ask which suits (or ask "which day this week works for a viewing?" if their timing is unknown);
+- if they are not on the island, offer a video walkthrough at a concrete time instead;
+- if a villa cannot be shown before a date (occupied, tenants), say when it can and propose that date;
+- it is a proposal you will confirm with the owner, not a booking — say so in a few words;
+- do not send new links unless they rejected everything sent; do not end on "let me know what you think".
+`;
+}
+
+/**
+ * The draft must carry the slot when the rule is due. One rewrite, meaning
+ * and every villa name preserved; a second miss goes out as written and is
+ * logged — a broker sees it, a silent loop does not.
+ */
+export async function enforceViewingProposal(
+  text: string,
+  attachments: GeneratedSuggestion["attachments"],
+  opts: { leadId: string; due: boolean; lastLeadText: string },
+): Promise<string> {
+  if (!opts.due || proposesViewingSlot(text)) return text;
+  try {
+    const out = await chatCompletion({
+      model: WRITER_MODEL,
+      label: "draft:viewing-push",
+      max_tokens: 400,
+      temperature: 0.3,
+      system: `Rewrite the broker's WhatsApp message so it proposes a viewing with concrete times. Keep the meaning, the tone, the language and EVERY villa name exactly as written; keep it under the original length plus 40 words; no links in the body. Today is ${baliToday()} (Bali). Add: which villa to see, two concrete windows within the next three days ("tomorrow at 11 or Friday at 15"), and a question which suits. Never end on "let me know what you think".${attachments.length ? ` Villas attached under this message: ${attachments.map((a) => a.label).join("; ")}.` : ""}`,
+      messages: [{ role: "user", content: `Client's last message: ${opts.lastLeadText.slice(0, 400)}\n\nBroker's draft:\n${text}` }],
+    });
+    const rewritten = sanitizeSuggestion(out.content ?? "").trim();
+    if (rewritten.length > 20 && proposesViewingSlot(rewritten) && allAttachmentsNamed(rewritten, attachments)) {
+      logger.info({ leadId: opts.leadId }, "viewing push: draft rewritten to propose concrete viewing slots");
+      return rewritten;
+    }
+    logger.warn({ leadId: opts.leadId }, "viewing push: rewrite still carries no slot — sending the original");
+    return text;
+  } catch (err) {
+    logger.warn({ err, leadId: opts.leadId }, "viewing push: rewrite failed (non-fatal)");
+    return text;
+  }
+}
+
 export async function buildPromptAdditions(opts: {
   isRental: boolean;
   dialogMessages: ReturnType<typeof parseDialogContent>["messages"];
@@ -1056,8 +1148,10 @@ export async function buildPromptAdditions(opts: {
 
   // What the broker saw at the viewing — the one thing the thread cannot show.
   const viewingBlock = opts.isRental && opts.leadId ? await viewingReportPromptBlock(opts.leadId) : "";
+  // Options out, client talking, no viewing yet: this message books one.
+  const pushBlock = opts.isRental && viewingPushDue(opts.dialogMessages, opts.leadStage) ? viewingPushBlock() : "";
 
-  return buildLeadNameRule(opts.dialogMessages) + attachedRule + anchorLine + stockLine + currencyRule + adRule + identityRule + viewingBlock + learned;
+  return buildLeadNameRule(opts.dialogMessages) + attachedRule + anchorLine + stockLine + currencyRule + adRule + identityRule + viewingBlock + pushBlock + learned;
 }
 
 export async function generateSuggestion(opts: {
@@ -1281,7 +1375,12 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   const written = sanitizeSuggestion(completion.content);
   const named = allAttachmentsNamed(written, attachments);
   if (!named) logger.warn({ leadId: opts.leadId, attached: attachments.map((a) => a.label) }, "draft did not name every attached villa — forcing rewrite");
-  const text = await reconcileTextWithAttachments(written, attachments, !named);
+  let text = await reconcileTextWithAttachments(written, attachments, !named);
+  text = await enforceViewingProposal(text, attachments, {
+    leadId: opts.leadId,
+    due: isRental && viewingPushDue(dialog.messages, opts.leadStage),
+    lastLeadText,
+  });
 
   return { text, attachments };
 }
