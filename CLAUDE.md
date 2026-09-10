@@ -885,28 +885,41 @@ prints each canon that held. Read the thread before overriding it.
 
 The owner's lever: "Поднять заявку → показ: предлагать слот всем, а не
 четверым из двадцати одного. Это ноль рублей." Two weeks of data (26.08–09.09):
-59 leads got links, 41 replied, 6 were offered a concrete slot, 30 never heard
-the word "viewing" from us; the bot proposed a slot in 10 of 438 messages.
-The rulebook already said "offer a specific window" — a sentence in a 9,000
-token prompt is not a rule. Now (`generate-suggestion.ts`):
+59 leads got links, 41 replied, 6 were asked about a viewing with anything
+concrete, 30 never heard the word "viewing" from us; the bot proposed a slot
+in 10 of 438 messages. The rulebook already said "offer a specific window" —
+a sentence in a 9,000 token prompt is not a rule. And the second half of the
+owner's instruction, same day: "не перегнуть… чтобы триггер был, но
+выглядело как Амелино сообщение" — the trigger is ours, the words are the
+broker's. Amelia's own move is not "tomorrow at 11 or Friday at 15" (the
+first version made two drafts copy that literal example): she asks "are you
+currently in Bali to do some viewings?", "which day suits?", offers to check
+the owner's availability for a day, a virtual viewing before arrival, and
+gives a concrete time only once the owner confirmed it. Her 09.09 lesson says
+exactly that ("replace 'tomorrow' with an open question about preference").
+Now (`generate-suggestion.ts`):
 - `viewingPushDue(messages, stage)` — deterministic: Rental, links already in
   the thread, the card before Viewing scheduled, and the client's last reply
   (if any) is not a hard no (`HARD_NO`: found a place, not interested, stop).
-  Silence after links counts; "too expensive" counts (a cheaper shortlist plus
-  a slot is a fine answer).
-- `viewingPushBlock()` in `buildPromptAdditions`, so BOTH generators get it:
-  name the villa(s), two concrete windows on two different days within three
-  days with the real weekday names (today's Bali date is in the block; a
-  literal example was copied verbatim into two drafts, so there is none),
-  video walkthrough off-island, "I'll confirm with the owner", no new links
-  unless everything was rejected, never "let me know what you think".
+  Silence after links counts; "too expensive" counts.
+- `viewingPushBlock(broker, examples)` in `buildPromptAdditions`, so BOTH
+  generators get it. `brokerViewingExamples` reads the broker's OWN viewing
+  invitations (lead_messages `sender_type='broker'`, their Rental leads, 90
+  days, cached 15 min) and puts them in the block as the style; the block
+  lists the moves (ask if in Bali / which day / check the owner's
+  availability / virtual viewing / "I'll check with the owner", never a
+  booking) and carries no example sentence of its own. The broker's lessons
+  come after it in the prompt and win.
 - `enforceViewingProposal` at the tail of BOTH `generateSuggestion` copies:
-  `proposesViewingSlot` (a viewing word AND a time word) or one Sonnet
-  rewrite that keeps every villa name; a second miss goes out as written and
-  is logged (`viewing push:`). The first shortlist message is not pushed —
-  the push starts with the next message.
-Verified 10.09 on live regens (Hillary 23502345: video call, two slots;
-Melanie 23290763: in person, two slots, "I'll confirm with the owner").
+  `proposesViewingSlot` (a viewing word AND a time, a time-bound question or
+  a direct ask; "whenever you like" is not a move) or ONE Sonnet insertion —
+  one sentence in the broker's voice, with their lessons and their examples
+  in the prompt, the rest of the draft verbatim (rejected if it shrinks the
+  draft). A second miss goes out as written and is logged (`viewing push:`).
+  The first shortlist message is not pushed — the push starts with the next
+  message.
+Anything that shapes what a broker sends gets the same two halves: the
+trigger in code, the wording from the broker's own messages and lessons.
 
 **The viewing canons run on the send path too.** `viewingCanons()` in
 `stage-on-reply.ts` is the ONE implementation (manual-reply detectors, the

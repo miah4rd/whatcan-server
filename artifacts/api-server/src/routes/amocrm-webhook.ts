@@ -208,6 +208,9 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     leadId: opts.leadId,
     due: isRental && viewingPushDue(dialog.messages, opts.leadStage),
     lastLeadText,
+    responsibleUser: opts.responsibleUser,
+    kind: opts.kind,
+    leadStage: opts.leadStage,
   });
 
   return { text, attachments };
