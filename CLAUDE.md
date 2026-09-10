@@ -741,6 +741,24 @@ delivery record, link pacing. `approve.ts` and the auto-welcome both go through
 it. Do not grow a second one — every drift bug in this project's history is two
 implementations of the same behaviour.
 
+
+**No automatic welcome for places we cannot serve (2026-09-10).** Amelia,
+after the welcome read "4BR, Other, …, Sanur. Did I get that right?" to a
+client in Sanur: "can we not send messages to areas we don't cover?"
+`sendAdLeadWelcome` now asks `lib/area-coverage.ts` first. The places come
+from the card's area answer, or from the notes when that answer is "Other"; a
+place is served when an offerable rental sits in it, in its district or in a
+NEIGHBOUR_AREAS district (Jimbaran and Nusa Dua through Uluwatu), read from the
+live catalog, so a new villa in Sanur re-enables Sanur welcomes with no code
+change. Only when EVERY named place is unserved is the welcome withheld: the
+lead still gets the ordinary draft plus a "⊘ Review" flag saying why, and
+nothing is closed (rental autopilot is off, so nothing else sends). Nothing
+recognisable named, or the catalog unreadable, and the welcome goes as before.
+`isNonAnswer` also keeps "Other", "No", "-", "." out of the recap line. The 30
+days before: Pemogan and Ubud were welcomed and no conversation followed;
+Megan (Sanur) answered "West side is ok" — which is why the lead is flagged,
+not closed.
+
 ## The listing assistant has three surfaces, one implementation
 
 Adding a listing is a conversation, not a form (`lib/listing-intake.ts`). It is

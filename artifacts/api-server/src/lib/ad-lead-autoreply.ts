@@ -42,6 +42,7 @@ import { parseDialogContent } from "./dialog-parser";
 import { getLeadCardCriteria, type LeadCardAnswers } from "./lead-card-fields";
 import { leadPhone, phoneAlreadyMessaged } from "./phone-dedupe";
 import { mayOpenNewConversation, NEW_CONTACT_DAILY_CAP } from "./new-contact-budget";
+import { isNonAnswer, unservedAreasOnCard } from "./area-coverage";
 
 /**
  * Marks a delivery as the automatic ad-lead welcome. This is the ONLY record
@@ -134,13 +135,18 @@ async function autoWelcomeEnabled(): Promise<boolean> {
 function requestLine(answers: LeadCardAnswers): string {
   const parts = [
     answers.bedrooms,
-    answers.areas,
+    // "Other" is the form's way of saying the place is in the notes; read back
+    // verbatim it produced "Got your request: 4BR, Other, …" (10.09.2026).
+    answers.areas && !isNonAnswer(answers.areas) ? answers.areas : null,
     answers.budget,
     answers.moveIn ? `move-in ${answers.moveIn.replace(/^In\s+/i, "in ")}` : null,
     // Free text: the client's own extra wish ("Big garden"). Repeated only when
     // it is short enough to be a phrase — this field also collects the odd
     // pasted paragraph, and a wall of text quoted back reads as a machine.
-    answers.notes && answers.notes.length <= 60 ? answers.notes.replace(/\s+/g, " ") : null,
+    // A notes field filled in only to get past it ("No", "-", ".") is not a wish.
+    answers.notes && answers.notes.length <= 60 && !isNonAnswer(answers.notes)
+      ? answers.notes.replace(/\s+/g, " ")
+      : null,
   ].filter((p): p is string => Boolean(p && p.trim()));
   return parts.join(", ");
 }
@@ -257,6 +263,25 @@ export async function sendAdLeadWelcome(opts: {
     // client clicked, so there is nothing safe to send unattended. The broker
     // gets the ordinary draft instead.
     logger.warn({ leadId, listingId }, "ad welcome skipped — listing not found in catalog");
+    return false;
+  }
+
+  // A client asking only for places we have no villas in or near (Sanur, Ubud,
+  // Pemogan…) is not welcomed automatically: the recap would read their area
+  // back as if we could serve it (Amelia, 10.09.2026). Nothing is closed — the
+  // ordinary draft still reaches the inbox, flagged, and the broker decides.
+  const cardForArea = await getLeadCardCriteria(leadId).catch(() => null);
+  const unserved = await unservedAreasOnCard(cardForArea?.answers);
+  if (unserved) {
+    await db
+      .update(leadsSyncTable)
+      .set({
+        discardFlaggedAt: new Date(),
+        discardReason: `Asked for ${unserved.join(", ")}: no villas of ours there or nearby, so no automatic welcome was sent. Reply by hand if they may consider our areas, or close.`,
+      })
+      .where(and(eq(leadsSyncTable.leadId, leadId), sql`${leadsSyncTable.discardFlaggedAt} IS NULL`))
+      .catch(() => undefined);
+    logger.info({ leadId, listingId, unserved }, "ad welcome withheld — the client asked only for areas we have no villas in or near");
     return false;
   }
 
