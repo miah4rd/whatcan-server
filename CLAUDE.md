@@ -881,6 +881,47 @@ report sent "Not this one" back to Options sent. Canons, enforced in
 Audit by hand: `POST /api/admin/reclassify-manual?pipeline=rental` (dry)
 prints each canon that held. Read the thread before overriding it.
 
+### Every draft after the shortlist pushes for a viewing (2026-09-10)
+
+The owner's lever: "Поднять заявку → показ: предлагать слот всем, а не
+четверым из двадцати одного. Это ноль рублей." Two weeks of data (26.08–09.09):
+59 leads got links, 41 replied, 6 were offered a concrete slot, 30 never heard
+the word "viewing" from us; the bot proposed a slot in 10 of 438 messages.
+The rulebook already said "offer a specific window" — a sentence in a 9,000
+token prompt is not a rule. Now (`generate-suggestion.ts`):
+- `viewingPushDue(messages, stage)` — deterministic: Rental, links already in
+  the thread, the card before Viewing scheduled, and the client's last reply
+  (if any) is not a hard no (`HARD_NO`: found a place, not interested, stop).
+  Silence after links counts; "too expensive" counts (a cheaper shortlist plus
+  a slot is a fine answer).
+- `viewingPushBlock()` in `buildPromptAdditions`, so BOTH generators get it:
+  name the villa(s), two concrete windows on two different days within three
+  days with the real weekday names (today's Bali date is in the block; a
+  literal example was copied verbatim into two drafts, so there is none),
+  video walkthrough off-island, "I'll confirm with the owner", no new links
+  unless everything was rejected, never "let me know what you think".
+- `enforceViewingProposal` at the tail of BOTH `generateSuggestion` copies:
+  `proposesViewingSlot` (a viewing word AND a time word) or one Sonnet
+  rewrite that keeps every villa name; a second miss goes out as written and
+  is logged (`viewing push:`). The first shortlist message is not pushed —
+  the push starts with the next message.
+Verified 10.09 on live regens (Hillary 23502345: video call, two slots;
+Melanie 23290763: in person, two slots, "I'll confirm with the owner").
+
+**The viewing canons run on the send path too.** `viewingCanons()` in
+`stage-on-reply.ts` is the ONE implementation (manual-reply detectors, the
+outcome pass, `approve.ts`). Until 10.09 approve wrote the pre-send
+classification as-is: "Viewing scheduled" landed with no `viewing_at`, so the
+report was never asked for and "Viewing done" could not follow. The broker's
+explicit pick is never refused, but the slot is still read and stored; a
+backward move by a person clears it. Fail-closed for the auto move.
+
+**A pass that nothing schedules does not run.** `processViewingOutcomes` was
+reachable only through `POST /api/admin/reclassify-manual?apply=1` — Lorenzo's
+09.09 viewing had no report the next morning. It is on the 5-minute tick now.
+Anything new that "runs three hours after X" gets the same check before the
+verification claim: `grep -rn <fn> src` must show a scheduler call site.
+
 ### Stages also follow replies sent from the broker's phone (2026-09-07)
 
 Both manual-reply detectors (webhook `brokerRepliedFresh`, timeline sweep) call
