@@ -1171,6 +1171,23 @@ was scheduled ahead (Aquamarine 25.09, Forest Bloom from 13.09, Uma Avaya
 09.09) or offered and not taken (Umbala, D kasih); the one visit that
 happened was Amelia's client viewing at Namaste Villa on 05.09.
 
+### Broker flags on villas (2026-09-10)
+
+Brokers tick **Construction nearby** and **Red flag** (with a reason) in the
+site's Internal data — `property_private.construction_nearby / red_flag /
+red_flag_reason`, admin/agent-only by RLS. Asked for in Unicorn Rental by
+Amelia ("flag options with construction nearby"; R-YUD-054 "a major red flag,
+the client left immediately"). `lib/property-flags.ts` reads only flagged rows
+and only those three columns with the service key (3-minute cache);
+`/api/public/suggestions` puts `villa_flags` (keyed by attachment URL) BESIDE
+each draft's `attachments` — never inside them, because attachments are posted
+back verbatim on approve. `/m` draws the warning under the villa link; flags
+never enter anything a client receives. `openDetail` and the inbox refresh both
+copy card fields by name — a new field has to be added to both, or it vanishes
+when the card is opened or refreshed. The same Internal data carries the
+Pre-listed / Listed switch (`properties.pre_listed`): Listed means Yudi has
+inspected the villa and written its notes and green/red flags.
+
 ### Parked listing cards are answered and re-judged (2026-09-07)
 
 "long term" and "co-broke Agents" are parking stages: no proactive chasing.

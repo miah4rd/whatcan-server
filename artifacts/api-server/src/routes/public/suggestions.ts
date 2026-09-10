@@ -9,6 +9,7 @@ import { delegatedStagesByPipeline } from "../../lib/autopilot";
 import { dueReportsForLeads } from "../../lib/viewing-report";
 import { isPendingVisible, dedupePushPerLead, repliedSignalFromTimeline, loadReplySignals } from "../../lib/pending-visibility";
 import { findStuckLeads } from "../../lib/stuck-leads";
+import { flagsForAttachments } from "../../lib/property-flags";
 
 const router = Router();
 
@@ -559,7 +560,18 @@ router.get("/suggestions", async (req, res) => {
       enriched = [...enriched.filter(pinnedNow), ...enriched.filter((i) => !pinnedNow(i))];
     }
 
-    res.json({ items: enriched });
+    // Broker flags from the site's Internal data (Construction nearby / Red flag) for the
+    // villas each draft attaches, so the broker sees the warning before sending. Beside
+    // the attachments, never inside them: attachments are posted back verbatim on
+    // approve. A failed flag read shows no warnings — it never costs the inbox.
+    const withFlags = await Promise.all(
+      enriched.map(async (i) => {
+        const attachments = (i as unknown as { attachments?: Array<{ type?: string; url?: string | null }> }).attachments;
+        const villa_flags = await flagsForAttachments(attachments).catch(() => ({}));
+        return Object.keys(villa_flags).length > 0 ? { ...i, villa_flags } : i;
+      }),
+    );
+    res.json({ items: withFlags });
   } catch (err) {
     req.log.error({ err }, "suggestions fetch error");
     res.status(500).json({ error: "DB error" });
