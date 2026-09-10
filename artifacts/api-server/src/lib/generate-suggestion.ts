@@ -15,7 +15,7 @@ import { matchProperties, availabilityForCriteria, describePropertiesByIds, type
 import { getMergedDialog } from "./merged-conversation";
 import { db, pendingSuggestionsTable } from "@workspace/db";
 import { viewingReportPromptBlock } from "./viewing-report-context";
-import { eq, inArray, and } from "drizzle-orm";
+import { eq, inArray, and, sql } from "drizzle-orm";
 
 /**
  * Every property this lead has ALREADY been shown, so a follow-up shortlist
@@ -928,29 +928,39 @@ Output only the corrected message.${missingNote}`;
 // ── Viewing push ────────────────────────────────────────────────────────────
 // The owner (10.09.2026): "показ — ключевая метрика, ведущая к сделке;
 // предлагать слот всем". Two weeks of data: 41 clients replied after a
-// shortlist, 6 were offered a concrete slot, 30 never heard the word
-// "viewing" from us; the bot proposed a slot in 10 of 438 messages. The
-// rulebook already said "offer a specific window" — a sentence in a 9,000
-// token prompt is not a rule. This is: a deterministic trigger, a block the
-// writer cannot miss, and a check on the draft with one rewrite.
-// The client has ended it, or sent everything back: a viewing push there is
-// tone-deaf (a shortlist or a goodbye is the right next message). "Too
-// expensive" alone is NOT here — a cheaper shortlist plus a slot is a fine
-// answer to it.
+// shortlist, 6 were asked about a viewing with anything concrete, 30 never
+// heard the word from us. And the same day: "не перегнуть… чтобы триггер
+// был, но выглядело как Амелино сообщение" — the trigger is ours, the words
+// are the broker's. So the push is a deterministic trigger, a block that
+// shows the writer the broker's OWN viewing invitations as the style, and a
+// check on the draft that, when it fails, inserts one sentence in that voice
+// rather than rewriting the message.
 const HARD_NO = /(found (a|another|our|the) (place|villa|one|apartment)|already (booked|rented|signed|found)|no longer (looking|need|interested)|not interested|none of (these|them|those)|unsubscribe|stop (messaging|texting|writing|contacting)|don'?t (contact|message|text) me)/i;
 const SLOT_WORDS = /(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this (morning|afternoon|evening|weekend)|next (week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\b\d{1,2}(:\d{2})?\s?(am|pm)\b|\bat \d{1,2}(:\d{2})?\b|\b\d{1,2}(st|nd|rd|th)?\s+(of\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}(st|nd|rd|th)?\b|\bon the \d{1,2}(st|nd|rd|th)\b)/i;
+// The broker's own moves: "are you in Bali?", "which day suits?", "I can check
+// the owner's availability", "virtual viewing before your arrival".
+const TIME_ASK = /((which|what) (day|date|time)|when (do|will|would|could) you (arrive|be|land|come|get)|(are|will) you (currently |already |still )?(in bali|on the island|here|around)|(today|tomorrow|this week)'?s? availability|check (for )?(the |their |owner'?s? )?availability|earliest|as soon as|asap|before your arrival|on arrival|this week)/i;
+const DIRECT_ASK = /(would you (like|want|prefer) (that|to|me|us|a|the)|shall (i|we)|do you (want|plan|prefer)|want me to (check|arrange|book|schedule|set)|(can|could) (i|we) (arrange|schedule|book|set up|pencil)|would you still like)/i;
+const PASSIVE_ONLY = /(whenever (you|it)('re| are)? (like|free|ready|suits?|want)|any ?time|let me know (when|if) you('re| are|'d| would)? ?(like|want|free|ready|keen))/i;
 const VIEW_WORDS = /(viewing|visit|\bsee (it|them|the|this|that|both|either|one|villa|you (there|at|on))|show (you|it|them)|check (it|them) out|come (and|to) see|walk-?through|video (tour|call|walk)|\btour\b|meet (you )?(at|there)|take you (to|around|through))/i;
 
-/** A message that proposes a viewing with an actual time in it. */
+/**
+ * Does this message move the client toward a viewing? A viewing word plus
+ * either a time, a time-bound question ("are you in Bali?", "which day?",
+ * "I can check today's availability") or a direct ask. "Happy to arrange a
+ * viewing whenever you like" is not a move.
+ */
 export function proposesViewingSlot(text: string): boolean {
-  return VIEW_WORDS.test(text) && SLOT_WORDS.test(text);
+  if (!VIEW_WORDS.test(text)) return false;
+  if (SLOT_WORDS.test(text) || TIME_ASK.test(text)) return true;
+  return DIRECT_ASK.test(text) && !PASSIVE_ONLY.test(text);
 }
 
 /**
  * Is THIS the message that must push for a viewing? Rental, options already
- * sent, the client is still talking after them and has not said no, and no
- * viewing is on the books yet. Silence after links is a push draft on the
- * same rule; a hard no is not.
+ * sent, no viewing on the books, and the client's last word (if any) did not
+ * end it. Silence after the links is pushed too — the follow-up carries the
+ * question.
  */
 export function viewingPushDue(
   messages: ReturnType<typeof parseDialogContent>["messages"],
@@ -961,8 +971,6 @@ export function viewingPushDue(
   const firstLinkIdx = messages.findIndex((m) => m.from !== "lead" && /\/property\//i.test(m.text ?? ""));
   if (firstLinkIdx === -1) return false;
   const clientAfter = messages.slice(firstLinkIdx + 1).filter((m) => m.from === "lead");
-  // Silence after the links is pushed too (the follow-up carries the slot);
-  // a client who replied is pushed unless that reply ended it.
   const last = clientAfter[clientAfter.length - 1]?.text ?? "";
   if (HARD_NO.test(last)) return false;
   return true;
@@ -972,47 +980,112 @@ function baliToday(): string {
   return new Date().toLocaleDateString("en-GB", { timeZone: "Asia/Makassar", weekday: "long", day: "numeric", month: "long" });
 }
 
-export function viewingPushBlock(): string {
+/**
+ * The broker's own viewing invitations, from messages they sent themselves
+ * (sender_type 'broker' — the phone, not the bot), newest first. These are
+ * the style guide: the writer imitates them, and the insertion below is
+ * written "as in these". Cached per broker for 15 minutes.
+ */
+const viewingExampleCache = new Map<string, { at: number; lines: string[] }>();
+export async function brokerViewingExamples(responsibleUser: string | null | undefined): Promise<string[]> {
+  const key = (responsibleUser ?? "").trim().toLowerCase();
+  if (!key) return [];
+  const hit = viewingExampleCache.get(key);
+  if (hit && Date.now() - hit.at < 15 * 60_000) return hit.lines;
+  const lines: string[] = [];
+  try {
+    const res = await db.execute(sql`
+      SELECT m.text FROM lead_messages m
+      JOIN leads_sync l ON l.lead_id = m.lead_id
+      WHERE m.sender_type = 'broker'
+        AND lower(coalesce(l.pipeline, '')) = 'rental'
+        AND lower(coalesce(l.responsible_user, '')) = ${key}
+        AND m.sent_at > now() - interval '90 days'
+        AND length(m.text) BETWEEN 30 AND 420
+      ORDER BY m.sent_at DESC
+      LIMIT 300`);
+    for (const r of (res.rows ?? []) as Array<{ text: string | null }>) {
+      const t = (r.text ?? "").replace(/\s+/g, " ").trim();
+      if (!t || /https?:\/\//i.test(t) || t.startsWith(">>")) continue;
+      if (!proposesViewingSlot(t)) continue;
+      if (lines.some((x) => x.slice(0, 40) === t.slice(0, 40))) continue;
+      lines.push(t);
+      if (lines.length >= 5) break;
+    }
+  } catch (err) {
+    logger.warn({ err, broker: key }, "viewing push: could not read the broker's own examples (non-fatal)");
+  }
+  viewingExampleCache.set(key, { at: Date.now(), lines });
+  return lines;
+}
+
+function examplesBlock(broker: string, examples: string[]): string {
+  if (!examples.length) return "";
+  return `\nThis is how ${broker} does it — their own recent messages, same voice, same moves:\n${examples.map((e) => `  · "${e}"`).join("\n")}`;
+}
+
+export function viewingPushBlock(broker: string, examples: string[]): string {
   return `
-VIEWING PUSH — this message must move the client to a viewing. They have options and are talking; the next step is not more links, it is a date. Today is ${baliToday()} (Bali). Do ALL of this:
-- name the villa (or two) worth seeing — the one(s) they reacted to, else the best fit already sent;
-- propose TWO concrete windows on two different days within the next three days, written with the real weekday names and times that fit a viewing (morning or afternoon, never a copied example), and ask which suits; if their timing is unknown, ask which day this week works;
-- if they are not on the island, offer a video walkthrough at a concrete time instead;
-- if a villa cannot be shown before a date (occupied, tenants), say when it can and propose that date;
-- it is a proposal you will confirm with the owner, not a booking — say so in a few words;
-- do not send new links unless they rejected everything sent; do not end on "let me know what you think".
-`;
+
+VIEWING PUSH. Options are out and the client is still talking; the next step is a viewing, not another link. This message moves them toward one — the way ${broker} does it, never as a template.${examplesBlock(broker, examples)}
+Today is ${baliToday()} (Bali). What the message has to do, in ${broker}'s own words:
+- name the villa(s) worth seeing — the ones they reacted to, else the best fit already sent;
+- if the thread does not say whether they are in Bali or when they arrive, ask — a visit or a virtual viewing depends on it;
+- on the island: ask which day suits, or offer to check the owner's availability for a day you name; a time the owner already confirmed in the thread is proposed as it stands;
+- not on the island: offer a virtual viewing / video walkthrough;
+- a time the owner has not confirmed is "I'll check with the owner", never a booking;
+- no new links unless they rejected everything sent; end on the viewing question, not on "let me know what you think".`;
 }
 
 /**
- * The draft must carry the slot when the rule is due. One rewrite, meaning
- * and every villa name preserved; a second miss goes out as written and is
- * logged — a broker sees it, a silent loop does not.
+ * The draft must carry the move toward a viewing when the push is due. When
+ * it does not, ONE sentence is inserted in the broker's own voice — with
+ * their lessons and their own examples in front of the model — and the rest
+ * of the draft stays verbatim. A second miss goes out as written and is
+ * logged; a broker sees it, a silent loop does not.
  */
 export async function enforceViewingProposal(
   text: string,
   attachments: GeneratedSuggestion["attachments"],
-  opts: { leadId: string; due: boolean; lastLeadText: string },
+  opts: {
+    leadId: string;
+    due: boolean;
+    lastLeadText: string;
+    responsibleUser: string | null | undefined;
+    kind: string | null | undefined;
+    leadStage: string | null | undefined;
+  },
 ): Promise<string> {
   if (!opts.due || proposesViewingSlot(text)) return text;
+  const broker = brokerDisplayName(opts.responsibleUser) || "the broker";
   try {
+    const [examples, lessons] = await Promise.all([
+      brokerViewingExamples(opts.responsibleUser),
+      correctionsPromptBlock(
+        opts.responsibleUser,
+        deriveSituation({ pipeline: "rental", kind: opts.kind, leadStage: opts.leadStage, lastLeadText: opts.lastLeadText }),
+      ),
+    ]);
     const out = await chatCompletion({
       model: WRITER_MODEL,
       label: "draft:viewing-push",
-      max_tokens: 400,
+      max_tokens: 500,
       temperature: 0.3,
-      system: `Rewrite the broker's WhatsApp message so it proposes a viewing with concrete times. Keep the meaning, the tone, the language and EVERY villa name exactly as written; keep it under the original length plus 40 words; no links in the body. Today is ${baliToday()} (Bali). Add: which villa to see, two concrete windows on two different days within the next three days (real weekday names, morning or afternoon), and a question which suits. Never end on "let me know what you think".${attachments.length ? ` Villas attached under this message: ${attachments.map((a) => a.label).join("; ")}.` : ""}`,
-      messages: [{ role: "user", content: `Client's last message: ${opts.lastLeadText.slice(0, 400)}\n\nBroker's draft:\n${text}` }],
+      system: `You are ${broker}, a rental broker in Bali, finishing your own WhatsApp message. The draft below is yours and stays as it is: every sentence, every villa name, the greeting and the sign-off, verbatim. It is missing one thing — a move toward a viewing. Insert ONE sentence (two at most) that makes that move, where it reads naturally (usually right before the sign-off), in your own voice.${examplesBlock(broker, examples)}
+The move: if the thread does not say whether the client is in Bali or when they arrive, ask that; on the island — ask which day suits, or offer to check the owner's availability for a day; not on the island — offer a virtual viewing; a time the owner has not confirmed is "I'll check with the owner", never a booking. Today is ${baliToday()} (Bali). No links.${lessons}
+Return the full message and nothing else.${attachments.length ? ` Villas attached under this message: ${attachments.map((a) => a.label).join("; ")}.` : ""}`,
+      messages: [{ role: "user", content: `Client's last message: ${opts.lastLeadText.slice(0, 400)}\n\nYour draft:\n${text}` }],
     });
     const rewritten = sanitizeSuggestion(out.content ?? "").trim();
-    if (rewritten.length > 20 && proposesViewingSlot(rewritten) && allAttachmentsNamed(rewritten, attachments)) {
-      logger.info({ leadId: opts.leadId }, "viewing push: draft rewritten to propose concrete viewing slots");
+    const kept = rewritten.length >= Math.floor(text.length * 0.8);
+    if (kept && proposesViewingSlot(rewritten) && allAttachmentsNamed(rewritten, attachments)) {
+      logger.info({ leadId: opts.leadId, broker }, "viewing push: one sentence added in the broker's voice");
       return rewritten;
     }
-    logger.warn({ leadId: opts.leadId }, "viewing push: rewrite still carries no slot — sending the original");
+    logger.warn({ leadId: opts.leadId, kept, proposes: proposesViewingSlot(rewritten) }, "viewing push: insertion did not pass — sending the draft as written");
     return text;
   } catch (err) {
-    logger.warn({ err, leadId: opts.leadId }, "viewing push: rewrite failed (non-fatal)");
+    logger.warn({ err, leadId: opts.leadId }, "viewing push: insertion failed (non-fatal)");
     return text;
   }
 }
@@ -1148,8 +1221,12 @@ export async function buildPromptAdditions(opts: {
 
   // What the broker saw at the viewing — the one thing the thread cannot show.
   const viewingBlock = opts.isRental && opts.leadId ? await viewingReportPromptBlock(opts.leadId) : "";
-  // Options out, client talking, no viewing yet: this message books one.
-  const pushBlock = opts.isRental && viewingPushDue(opts.dialogMessages, opts.leadStage) ? viewingPushBlock() : "";
+  // Options out, no viewing yet: this message moves toward one, in the
+  // broker's own voice — their real invitations are the style guide.
+  const pushBlock =
+    opts.isRental && viewingPushDue(opts.dialogMessages, opts.leadStage)
+      ? viewingPushBlock(brokerDisplayName(opts.responsibleUser) || "the broker", await brokerViewingExamples(opts.responsibleUser))
+      : "";
 
   return buildLeadNameRule(opts.dialogMessages) + attachedRule + anchorLine + stockLine + currencyRule + adRule + identityRule + viewingBlock + pushBlock + learned;
 }
@@ -1380,6 +1457,9 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     leadId: opts.leadId,
     due: isRental && viewingPushDue(dialog.messages, opts.leadStage),
     lastLeadText,
+    responsibleUser: opts.responsibleUser,
+    kind: opts.kind,
+    leadStage: opts.leadStage,
   });
 
   return { text, attachments };
