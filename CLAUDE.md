@@ -1044,6 +1044,42 @@ funnel; `promoteIfQualified` / `routeUnqualified` / `releaseFrom*` are gone.
 Audit by hand: `POST /api/admin/listing-audit` (dry), `?apply=1`, `?lead=<id>`.
 Two time-driven closers stay outside: three unanswered nudges, no WhatsApp.
 
+### A stage a card can neither enter nor leave (2026-09-10)
+
+The owner: "что с нашим автопилотом, где мои листинги?" Nothing had reached
+QUALIFIED (Pre-listed) on 09.09 or 10.09, while the top of the funnel kept
+working normally (13 new owner cards contacted that morning, 36 replies in).
+Two engine faults, both invisible from the board:
+
+- **The occupied deadlock.** `desiredStage` parks a villa in long term only
+  when it is occupied AND does not free within 90 days; a villa that frees
+  sooner falls through to the bar — where `meetsQualified` then blocked it on
+  the very same "occupied" stop signal. So a card that frees soon could not be
+  parked (it frees soon) and could not qualify (it is occupied): five cards
+  with a complete data set sat in TAKEN TO WORK, 23204741 among them (2BR,
+  45M incl., min stay 12, free 1 October). Only `not_our_format`, or an
+  `occupied` that is NOT `freeSoon`, blocks the bar now. **Any condition that
+  both routes a card away and blocks its promotion has to be read in one
+  direction only — check both when adding one.**
+- **A send judged on empty facts.** `reconcileListingStage(facts: null)` — the
+  send path, "signals only, no model call" — was handed `emptyFacts()`, which
+  says "nothing about this villa is known", not "do not re-read". Every
+  message we sent therefore re-judged a complete card as "not yet: bedrooms,
+  price, minimum stay…" and pulled it back to TAKEN TO WORK: 23518851 and
+  23519135 flapped Initial Contact → long term → TAKEN TO WORK → long term →
+  TAKEN TO WORK inside ten minutes, and no card could have held QUALIFIED
+  past its next message anyway. The last facts read now stand on a send; with
+  nothing ever read, a send judges nothing. **`null` means "unread", never
+  "empty" — a judgement on absent data is not a judgement.**
+
+Fixed and applied 10.09 (`POST /api/admin/listing-audit?apply=1`): 4 cards to
+QUALIFIED, 2 parked in long term, 4 Initial Contact → TAKEN TO WORK; the board
+went 11 → 15 pre-listed. What remains is a data gap, not a bug: 44 cards where
+the owner is talking but the card still lacks price, minimum stay or earliest
+viewing — half of those threads predate the 07.09 bar and were never asked.
+The owner-nudge pass asks exactly the missing fields (`meetsQualified().missing`
+in listing-acquisition-prompt) on its own cadence.
+
 ### Listing funnel: one owner per stage, stages move on data (2026-09-07)
 
 The owner's audit of stage history: five cards reached Details on a friendly
