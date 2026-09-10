@@ -1008,6 +1008,10 @@ export async function brokerViewingExamples(responsibleUser: string | null | und
       const t = (r.text ?? "").replace(/\s+/g, " ").trim();
       if (!t || /https?:\/\//i.test(t) || t.startsWith(">>")) continue;
       if (!proposesViewingSlot(t)) continue;
+      // An invitation is short and asks something (or names when); a long
+      // lead-specific update ("Evelyn the staff is cleaning the carpet today")
+      // passes the detector but teaches nothing about the move.
+      if (t.length > 220 || (!/\?/.test(t) && !TIME_ASK.test(t))) continue;
       if (lines.some((x) => x.slice(0, 40) === t.slice(0, 40))) continue;
       lines.push(t);
       if (lines.length >= 5) break;
