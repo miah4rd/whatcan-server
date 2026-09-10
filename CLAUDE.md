@@ -782,6 +782,18 @@ Supabase insert, one cache invalidation. Do not add a fourth copy.
   read-only by RLS design. Without it every publish — from any of the three
   surfaces — fails with "not set on the server", which is what it did from the
   day the /m intake chat shipped until someone checked.
+- **A listing from the assistant is created as a DRAFT and goes live only if the
+  site's database allows it (2026-09-10).** The site refuses to publish without
+  Internal data (owner name, phone, map pin, Drive folder, notes), none of which
+  intake collects — the old one-step insert with `is_draft: false` is refused
+  outright. `pushToSupabase` inserts a draft (after any overrides), asks
+  `listing_publish_blockers`, publishes only on an empty answer, and treats an
+  unreadable answer as blocked. Every surface says "saved as a draft, still
+  missing …" with the site's admin link (`adminPropertyUrl`) instead of
+  "published": the website bubble, `/m`, and the review-queue API response. Do
+  not keep a copy of the field list here — ask the database. The review page in
+  `artifacts/landing` is not rebuilt by deploy.sh (its dist dates from
+  2026-08-08), so it only refreshes the queue.
 - **Seeing the bubble requires an `admin`/`agent` row in the site's
   `user_roles`.** The brokers work in amoCRM and mostly have no account on the
   site at all, so this feature reaches only the people who have been granted a

@@ -5,7 +5,7 @@ import fs from "fs";
 import { eq } from "drizzle-orm";
 import { db, listingSubmissionsTable, type ListingSubmission } from "@workspace/db";
 import { logger } from "../../lib/logger";
-import { invalidatePropertyCache } from "../../lib/property-catalog";
+import { invalidatePropertyCache, adminPropertyUrl } from "../../lib/property-catalog";
 // The Supabase insert lives in lib/listing-publish.ts so that this queue, the
 // intake chat in /m and the website assistant all publish through one function.
 import { pushToSupabase } from "../../lib/listing-publish";
@@ -206,8 +206,18 @@ router.post("/listing-submissions/:id/approve", async (req, res) => {
       .where(eq(listingSubmissionsTable.id, req.params.id as string));
 
     invalidatePropertyCache();
-    logger.info({ id: row.id, finalPropertyId }, "listing submission approved and pushed to Supabase");
-    res.json({ ok: true });
+    logger.info(
+      { id: row.id, finalPropertyId, live: pushed.live, blockers: pushed.blockers },
+      pushed.live
+        ? "listing submission approved and published"
+        : "listing submission approved and saved as a draft — Internal data missing on the site",
+    );
+    res.json({
+      ok: true,
+      live: pushed.live,
+      blockers: pushed.blockers,
+      editUrl: adminPropertyUrl(finalPropertyId.trim()),
+    });
   } catch (err) {
     logger.error({ err }, "approve listing submission failed");
     res.status(500).json({ error: "Internal error" });

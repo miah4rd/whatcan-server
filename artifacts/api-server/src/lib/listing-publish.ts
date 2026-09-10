@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db, listingSubmissionsTable, type ListingSubmission } from "@workspace/db";
 import { logger } from "./logger";
-import { invalidatePropertyCache, propertyUrlById } from "./property-catalog";
+import { adminPropertyUrl, invalidatePropertyCache, propertyUrlById } from "./property-catalog";
 import { absoluteUrls } from "./public-url";
 import { missingFields, suggestPropertyCode, type ListingDraft } from "./listing-intake";
 
@@ -23,12 +23,24 @@ import { missingFields, suggestPropertyCode, type ListingDraft } from "./listing
  * probe insert came back "42501 new row violates row-level security policy"),
  * so approvals cannot go through with the anon key no matter how the request
  * is shaped.
+ *
+ * The row is ALWAYS inserted as a draft and published in a second step, only
+ * when the site's database says nothing blocks it. Since 2026-09-10 that
+ * database refuses to take a listing live without its Internal data (owner
+ * name, phone, map pin, Google Drive folder, notes) — none of which this app
+ * collects. The old one-step insert with is_draft=false is refused outright and
+ * the listing would not reach the site at all; a draft the broker completes on
+ * the site is the honest outcome.
  */
+export type PushResult =
+  | { ok: true; live: boolean; blockers: string[]; reason?: string }
+  | { ok: false; error: string };
+
 export async function pushToSupabase(
   finalPropertyId: string,
   s: ListingSubmission,
   overrides: Partial<Record<string, unknown>>,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<PushResult> {
   const SUPABASE_URL = process.env["SUPABASE_URL"] ?? "";
   const SERVICE_KEY = process.env["SUPABASE_SERVICE_ROLE_KEY"] ?? "";
   if (!SUPABASE_URL || !SERVICE_KEY) {
@@ -67,8 +79,10 @@ export async function pushToSupabase(
     lng: s.lng,
     tags: [],
     status: "ready",
-    is_draft: false,
     ...overrides,
+    // After the overrides on purpose: a review-queue override must not turn this
+    // back into a one-step publish the database will refuse.
+    is_draft: true,
   };
 
   const res = await fetch(`${SUPABASE_URL}/rest/v1/properties`, {
@@ -88,7 +102,67 @@ export async function pushToSupabase(
   }
 
   await writeAvailability(finalPropertyId, s.availableFrom ?? null);
-  return { ok: true };
+
+  const blockers = await publishBlockers(finalPropertyId);
+  if (blockers.length > 0) {
+    return { ok: true, live: false, blockers };
+  }
+
+  const published = await fetch(
+    `${SUPABASE_URL}/rest/v1/properties?id=eq.${encodeURIComponent(finalPropertyId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify({ is_draft: false }),
+    },
+  );
+  if (!published.ok) {
+    const text = await published.text().catch(() => "");
+    logger.warn({ finalPropertyId, status: published.status, body: text.slice(0, 300) },
+      "listing saved as a draft; publishing it was refused");
+    return { ok: true, live: false, blockers: [], reason: text.slice(0, 300) };
+  }
+  return { ok: true, live: true, blockers: [] };
+}
+
+/**
+ * What still stops this listing going live, in the site database's own words.
+ *
+ * The rule is the database's (listing_publish_blockers, enforced by trigger
+ * properties_published_needs_internal_data). Asking it instead of keeping a
+ * field list here is deliberate: a second copy of the list would drift from the
+ * one that actually decides. An unreadable answer counts as blocked — a draft is
+ * safe, a wrong "it's live" is not.
+ */
+async function publishBlockers(propertyId: string): Promise<string[]> {
+  const SUPABASE_URL = process.env["SUPABASE_URL"] ?? "";
+  const SERVICE_KEY = process.env["SUPABASE_SERVICE_ROLE_KEY"] ?? "";
+  const unknown = ["Internal data (could not be checked)"];
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/listing_publish_blockers`, {
+      method: "POST",
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ _property_id: propertyId }),
+    });
+    if (!res.ok) {
+      logger.warn({ propertyId, status: res.status }, "publish blockers check failed — keeping the listing as a draft");
+      return unknown;
+    }
+    const data = (await res.json()) as unknown;
+    return Array.isArray(data) ? data.map(String) : unknown;
+  } catch (err) {
+    logger.warn({ err, propertyId }, "publish blockers check threw — keeping the listing as a draft");
+    return unknown;
+  }
 }
 
 /**
@@ -100,7 +174,7 @@ export async function pushToSupabase(
  * broker had told us (owner flagged it 2026-08-19).
  *
  * A villa free NOW needs no row: "no period" already means free.
- * Never fatal — the listing is already published, and a missing badge is a much
+ * Never fatal — the listing is already saved, and a missing badge is a much
  * smaller problem than an error thrown at a broker who has done nothing wrong.
  */
 async function writeAvailability(propertyId: string, availableFrom: string | null): Promise<void> {
@@ -128,12 +202,12 @@ async function writeAvailability(propertyId: string, availableFrom: string | nul
     });
     if (!res.ok) {
       logger.warn({ propertyId, status: res.status, body: (await res.text().catch(() => "")).slice(0, 200) },
-        "availability row not written — the listing is live but will show as free now");
+        "availability row not written — the listing will show as free now");
     } else {
       logger.info({ propertyId, availableFrom }, "availability written");
     }
   } catch (err) {
-    logger.warn({ err, propertyId }, "availability write threw — listing stays live");
+    logger.warn({ err, propertyId }, "availability write threw — the listing itself is saved");
   }
 }
 
@@ -161,11 +235,25 @@ export function bumpPropertyCode(code: string): string | null {
 }
 
 export type PublishOutcome =
-  | { ok: true; propertyId: string; url: string; submissionId: string }
+  | {
+      ok: true;
+      propertyId: string;
+      url: string;
+      submissionId: string;
+      /** False when the site kept it as a draft: its Internal data is not filled in yet. */
+      live: boolean;
+      /** Internal data fields still missing, as the site's database names them. */
+      blockers: string[];
+      /** Where a broker fills them in and publishes. */
+      editUrl: string;
+      reason?: string;
+    }
   | { ok: false; error: string; missing?: string[]; duplicate?: boolean; submissionId?: string };
 
 /**
- * Turns a finished draft into a live listing.
+ * Turns a finished draft into a listing on the site — live when the site's
+ * database allows it, otherwise a draft waiting for its Internal data (see
+ * pushToSupabase).
  *
  * `propertyId` is normally the code the broker typed. Pass "auto" and the next
  * free code in the series is chosen here — that is what the website assistant
@@ -268,7 +356,19 @@ export async function publishListingDraft(opts: {
   // Without this the bot would not offer the new villa for up to ten minutes —
   // the exact complaint that made this cache invalidation exist.
   invalidatePropertyCache();
-  logger.info({ id: row!.id, propertyId: code, broker }, "listing published");
+  logger.info(
+    { id: row!.id, propertyId: code, broker, live: pushed.live, blockers: pushed.blockers },
+    pushed.live ? "listing published" : "listing saved as a draft — Internal data missing on the site",
+  );
 
-  return { ok: true, propertyId: code, url: propertyUrlById(code), submissionId: row!.id };
+  return {
+    ok: true,
+    propertyId: code,
+    url: propertyUrlById(code),
+    submissionId: row!.id,
+    live: pushed.live,
+    blockers: pushed.blockers,
+    editUrl: adminPropertyUrl(code),
+    reason: pushed.reason,
+  };
 }

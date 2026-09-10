@@ -119,8 +119,25 @@ router.post("/broker-agent", async (req, res) => {
 
         if (result.ok) {
           await clearSession(sessionId);
-          logger.info({ sessionId, propertyId: result.propertyId, broker }, "listing published from website assistant");
           const photos = session.images.length;
+          if (!result.live) {
+            // Saved on the site, not live: the database will not publish a listing
+            // without its Internal data, and this chat never collects it. Say so
+            // plainly and hand the broker the page where it is filled in.
+            logger.info(
+              { sessionId, propertyId: result.propertyId, broker, blockers: result.blockers },
+              "listing saved as a draft from website assistant — Internal data missing",
+            );
+            const missing = result.blockers.join(", ") || "Internal data";
+            res.json({
+              reply:
+                intent.lang === "en"
+                  ? `Saved as a draft, not on the site yet: code ${result.propertyId}, ${photos} photo(s).\nA listing goes live only with its Internal data. Still missing: ${missing}.\nFill it in and press Publish here: ${result.editUrl}`
+                  : `Сохранил черновиком, на сайте его пока нет: код ${result.propertyId}, фото: ${photos}.\nЛистинг выходит на сайт только с заполненными внутренними данными (Internal data). Не хватает: ${missing}.\nЗаполните и нажмите Publish здесь: ${result.editUrl}`,
+            });
+            return;
+          }
+          logger.info({ sessionId, propertyId: result.propertyId, broker }, "listing published from website assistant");
           res.json({
             reply:
               intent.lang === "en"
