@@ -49,7 +49,6 @@ import { notifyBroker } from "./push-notifications";
 import {
   type ListingFacts,
   extractListingFacts,
-  dropUnevidencedStop,
   meetsQualified,
   floorQuoteIdr,
   freeSoon,
@@ -337,10 +336,14 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
   // minutes later on 11.09. The send trigger runs right after the send, so it
   // could not see its own message and left every first contact in Initial
   // Contact until the next morning's audit.
+  // Only a RECENT send stands in for the thread. A delivered message lands in
+  // the thread within minutes; a send older than an hour that never did is not
+  // evidence of contact — Asta Villa (23213343) has four sends since 17.08 on
+  // a card with no reachable number and not one message in its thread.
   const [sentRow] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(sentMessagesTable)
-    .where(eq(sentMessagesTable.leadId, leadId));
+    .where(and(eq(sentMessagesTable.leadId, leadId), sql`${sentMessagesTable.createdAt} > now() - interval '60 minutes'`));
   const outboundSent = (sig?.ours ?? 0) > 0 || (sentRow?.n ?? 0) > 0;
   const ownerReplied = (sig?.theirs ?? 0) > 0;
 
@@ -393,9 +396,6 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
   if (!facts.freeFromIso && row.listingFreeFrom) {
     facts = { ...facts, freeFromIso: row.listingFreeFrom.toISOString().slice(0, 10) };
   }
-  // A stop is a QUOTE of the owner's side. Facts cached before this check,
-  // and facts handed in by a caller, pass the same test the extractor applies.
-  facts = await dropUnevidencedStop(leadId, facts);
 
   let desired = desiredStage({ facts, outboundSent, ownerReplied });
 

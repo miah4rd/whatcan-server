@@ -1074,6 +1074,49 @@ funnel; `promoteIfQualified` / `routeUnqualified` / `releaseFrom*` are gone.
 Audit by hand: `POST /api/admin/listing-audit` (dry), `?apply=1`, `?lead=<id>`.
 Two time-driven closers stay outside: three unanswered nudges, no WhatsApp.
 
+### The autopilot check of 11.09: what "тупит" looked like
+
+The owner: "проверь как автопилот работает вчера, сегодня и двигает карты по
+этапам до квалификации, не тупит ли". Volume was fine (10.09: 65 bot
+messages, 92 owner messages in, 10 first contacts; 11.09 by 13:00: 52 / 57 /
+12, three of them to numbers without WhatsApp — the budget of 9 held, and two
+drafts held at 10:00 went out at 10:10 once those notices landed, by design).
+Most moves were right; five faults, all in `listing-stage-engine.ts`:
+
+- **A first contact stayed in Initial Contact until the next morning.** The
+  send trigger counted our messages in `lead_messages`, where a send lands
+  only when the sync picks it up (15 minutes later on 11.09). It now also
+  counts a `sent_messages` row from the LAST HOUR — only a recent one: Asta
+  Villa (23213343) has four sends since 17.08 and not one message in its
+  thread (no reachable number), and an old undelivered send is not contact.
+- **Every move was written twice.** The reply trigger and the autopilot's send
+  of that reply judged the same old stage in parallel: two amoCRM writes, two
+  stage events, two paid second opinions. `reconcileListingStage` is
+  serialised per card; the second call reads the stage the first one wrote.
+- **A card closed on a quote the owner then withdrew stayed closed.** Villa
+  Mimoza (23519133): closed at 14:38 on 32M in the same minute the bot
+  counter-offered 33M; the owner accepted 33M at 15:12 with a viewing date,
+  and nothing looked — a closed card was never judged again. A card the
+  ENGINE closed (last stage event by `engine:*`) is now re-judged when the
+  owner writes after the close, and reopened if the facts say so. A person's
+  close is never reopened. Mimoza went back to QUALIFIED on 11.09.
+- **The price floor closed a live negotiation.** A live trigger no longer
+  closes on the floor; the daily audit does, once the owner's last word is
+  18h old and the quote still stands.
+- **Long term released on "Alright 🙏".** Leaving long term needs a free date
+  inside the window, or availability the owner stated (`availableFrom`)
+  since the card was parked. Villa Solis (23528529) flapped on a thinner
+  extraction that happened to leave the tenant out.
+
+Tried and withdrawn the same day: a rule that a stop signal must appear in the
+owner's own words. It rested on a misread — Balay Villa's "We already have a
+full booking" looked invented because the query cut each message at 220
+characters, and the owner had written it after a `>>` quote in the same
+message. The rule then dropped a real stop on 23378987 that the extractor had
+rendered in English from Indonesian. **Read the whole message before calling
+an extraction invented: in `lead_messages` a WhatsApp reply is stored as
+`>> quote⏎reply`, and `left(text, N)` hides exactly the reply.**
+
 ### A stage a card can neither enter nor leave (2026-09-10)
 
 The owner: "что с нашим автопилотом, где мои листинги?" Nothing had reached
