@@ -38,7 +38,7 @@
  * longer being occupied; the owner being the counterpart. An extraction that
  * merely came back thinner moves nothing.
  */
-import { db, leadsSyncTable, leadMessagesTable, stageEventsTable, brokerSettingsTable } from "@workspace/db";
+import { db, leadsSyncTable, leadMessagesTable, sentMessagesTable, stageEventsTable, brokerSettingsTable } from "@workspace/db";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { getAmoLead, updateLeadStatus, closeLeadAsLost, createAmoTask } from "./amo-client";
@@ -49,6 +49,7 @@ import { notifyBroker } from "./push-notifications";
 import {
   type ListingFacts,
   extractListingFacts,
+  dropUnevidencedStop,
   meetsQualified,
   floorQuoteIdr,
   freeSoon,
@@ -126,6 +127,8 @@ export type Desired = {
   /** A close or a co-broke parking is confirmed by a focused second opinion
    *  before it is applied (destructive-verdict rule). */
   confirm?: "not_our_format" | "third_party";
+  /** Closed on the price floor — waits for the negotiation (see reconcile). */
+  floor?: true;
 };
 
 /**
@@ -144,6 +147,7 @@ export function desiredStage(i: EngineInput): Desired {
     return {
       stage: STAGE.CLOSED_LOST,
       reason: `below our floor: ${Math.round(quoted / 1_000_000)}M client-facing, minimum ${MIN_LISTING_MONTHLY_IDR / 1_000_000}M`,
+      floor: true,
     };
   }
   if (f.counterpart === "manager" || f.counterpart === "agent") {
@@ -237,10 +241,52 @@ async function ownerWroteSinceArrival(leadId: string, stage: string): Promise<bo
 }
 
 /**
+ * Did the ENGINE close this card, and has the owner written since? A card a
+ * person closed is theirs; only the engine's own close is reopened by facts.
+ */
+async function engineClosedAndOwnerWroteSince(leadId: string): Promise<boolean> {
+  const [last] = await db
+    .select({ at: stageEventsTable.changedAt, by: stageEventsTable.responsibleUser, to: stageEventsTable.toStage })
+    .from(stageEventsTable)
+    .where(eq(stageEventsTable.leadId, leadId))
+    .orderBy(desc(stageEventsTable.changedAt))
+    .limit(1);
+  if (!last?.at || !/closed|lost/i.test(last.to ?? "") || !String(last.by ?? "").startsWith("engine:")) return false;
+  const [n] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(leadMessagesTable)
+    .where(and(eq(leadMessagesTable.leadId, leadId), eq(leadMessagesTable.senderType, "lead"), sql`${leadMessagesTable.sentAt} > ${last.at}`));
+  return (n?.n ?? 0) > 0;
+}
+
+/** A quote under the floor closes the card only once it has stood this long. */
+const FLOOR_CLOSE_AFTER_MS = 18 * 3_600_000;
+
+const reconcileInFlight = new Map<string, Promise<ReconcileResult>>();
+
+/**
  * Bring one card to the stage its facts earn. Idempotent; safe to call from
  * every trigger (a reply generated, a message sent, the daily audit).
+ *
+ * One at a time per card. A reply is generated and the autopilot sends it
+ * within the same second, and both triggers used to judge the SAME old stage
+ * in parallel: two amoCRM writes and two stage events for one move (every
+ * engine move on 10–11.09 was recorded twice), and two paid second opinions
+ * for one close. Serialised, the second call reads the stage the first one
+ * wrote and returns "in place".
  */
 export async function reconcileListingStage(leadId: string, opts: ReconcileOpts): Promise<ReconcileResult> {
+  const prev = reconcileInFlight.get(leadId);
+  const run = (prev ? prev.catch(() => undefined) : Promise.resolve(undefined)).then(() => reconcileOnce(leadId, opts));
+  reconcileInFlight.set(leadId, run);
+  try {
+    return await run;
+  } finally {
+    if (reconcileInFlight.get(leadId) === run) reconcileInFlight.delete(leadId);
+  }
+}
+
+async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<ReconcileResult> {
   const apply = opts.apply !== false;
   const [row] = await db
     .select({
@@ -258,8 +304,20 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
   if (!row || !isListingAcquisition(row.pipeline) || row.botExcluded) {
     return { leadId, owner: "other", current, reason: "not a listing card the bot works", applied: false };
   }
-  if (isTerminalStage(current)) return { leadId, owner: "terminal", current, reason: "closed", applied: false };
-  const owner: ReconcileResult["owner"] = engineOwnsStage(current) ? "engine" : "human";
+  let owner: ReconcileResult["owner"];
+  if (isTerminalStage(current)) {
+    // A card the engine closed is reopened the way it was closed — by facts —
+    // once the owner has written since. Villa Mimoza (23519133, 10.09) was
+    // closed at 14:38 on a 32M quote in the same minute the bot counter-offered
+    // 33M; at 15:12 the owner accepted 33M and named a viewing day, and nothing
+    // looked, because a closed card was never judged again. A person's close
+    // is never reopened, and "won" is never touched.
+    const reopenable = norm(current).includes("lost") && (await engineClosedAndOwnerWroteSince(leadId));
+    if (!reopenable) return { leadId, owner: "terminal", current, reason: "closed", applied: false };
+    owner = "engine";
+  } else {
+    owner = engineOwnsStage(current) ? "engine" : "human";
+  }
 
   const [sig] = await db
     .select({
@@ -270,10 +328,20 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
       // Invalid Date compares false — every card was re-read on every run
       // (88 model calls on the first cached pass instead of 0).
       newestMs: sql<number | null>`(extract(epoch from max(${leadMessagesTable.sentAt})) * 1000)::float8`,
+      theirNewestMs: sql<number | null>`(extract(epoch from max(${leadMessagesTable.sentAt}) FILTER (WHERE ${leadMessagesTable.senderType} = 'lead')) * 1000)::float8`,
     })
     .from(leadMessagesTable)
     .where(and(eq(leadMessagesTable.leadId, leadId), sql`${leadMessagesTable.text} IS NOT NULL`));
-  const outboundSent = (sig?.ours ?? 0) > 0;
+  // Our send is recorded in sent_messages the instant it leaves; the same
+  // message reaches lead_messages only when the sync picks it up — fifteen
+  // minutes later on 11.09. The send trigger runs right after the send, so it
+  // could not see its own message and left every first contact in Initial
+  // Contact until the next morning's audit.
+  const [sentRow] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(sentMessagesTable)
+    .where(eq(sentMessagesTable.leadId, leadId));
+  const outboundSent = (sig?.ours ?? 0) > 0 || (sentRow?.n ?? 0) > 0;
   const ownerReplied = (sig?.theirs ?? 0) > 0;
 
   let facts: ListingFacts;
@@ -325,13 +393,38 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
   if (!facts.freeFromIso && row.listingFreeFrom) {
     facts = { ...facts, freeFromIso: row.listingFreeFrom.toISOString().slice(0, 10) };
   }
+  // A stop is a QUOTE of the owner's side. Facts cached before this check,
+  // and facts handed in by a caller, pass the same test the extractor applies.
+  facts = await dropUnevidencedStop(leadId, facts);
 
   let desired = desiredStage({ facts, outboundSent, ownerReplied });
 
+  // The floor closes a card only once the quote has stood. The reply prompt
+  // counter-offers up to the floor, so a quote under it is usually the START
+  // of a negotiation: Mimoza (10.09) was closed on 32M while the bot was
+  // proposing 33M, and the owner accepted 33M half an hour later. A live
+  // trigger never closes on the floor; the daily audit does, once the owner's
+  // last word is a day old and the quote still stands.
+  if (desired.stage === STAGE.CLOSED_LOST && desired.floor) {
+    const ownerWordAgeMs = sig?.theirNewestMs ? Date.now() - Number(sig.theirNewestMs) : Number.POSITIVE_INFINITY;
+    if (opts.source !== "audit" || ownerWordAgeMs < FLOOR_CLOSE_AFTER_MS) {
+      desired = {
+        stage: (isTerminalStage(current) ? STAGE.CLOSED_LOST : current) as EngineStage,
+        reason: "below our floor, still negotiating — closes if the quote stands a day",
+      };
+    }
+  }
+
   // Parking stickiness: leaving needs positive evidence, not a thinner read.
+  // Evidence is a free date inside the window, or availability the owner has
+  // stated since the card was parked. "Alright 🙏" plus one extraction that
+  // happened to leave out the tenant is not evidence: Villa Solis (23528529,
+  // 11.09) went long term → TAKEN TO WORK on exactly that, and straight back.
   if (norm(current) === norm(STAGE.LONG_TERM) && desired.stage !== STAGE.LONG_TERM && desired.stage !== STAGE.CLOSED_LOST) {
-    const evidence = freeSoon(facts) || (facts.stopKind !== "occupied" && (await ownerWroteSinceArrival(leadId, current)));
-    if (!evidence) desired = { stage: STAGE.LONG_TERM, reason: "parked; no new word from the owner and no near free date" };
+    const evidence =
+      freeSoon(facts) ||
+      (facts.stopKind !== "occupied" && !facts.freeFromIso && !!facts.availableFrom && (await ownerWroteSinceArrival(leadId, current)));
+    if (!evidence) desired = { stage: STAGE.LONG_TERM, reason: "parked; no near free date and no availability stated by the owner" };
   }
   if (norm(current) === norm(STAGE.CO_BROKE) && desired.stage !== STAGE.CO_BROKE && desired.stage !== STAGE.CLOSED_LOST) {
     if (facts.counterpart !== "owner") desired = { stage: STAGE.CO_BROKE, reason: "parked; the counterpart is still not established as the owner" };
@@ -342,7 +435,7 @@ export async function reconcileListingStage(leadId: string, opts: ReconcileOpts)
   if (desired.stage === STAGE.INITIAL && norm(current) !== norm(STAGE.INITIAL)) {
     desired = { stage: current as EngineStage, reason: "outbound not in the log, stage itself is the evidence" };
   }
-  if (norm(desired.stage) === norm(current)) {
+  if (norm(desired.stage) === norm(current) || (isTerminalStage(current) && desired.stage === STAGE.CLOSED_LOST)) {
     return { leadId, owner, current, desired: desired.stage, reason: `in place: ${desired.reason}`, applied: false };
   }
   if (owner !== "engine") {
