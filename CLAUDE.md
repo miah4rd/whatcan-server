@@ -1309,6 +1309,15 @@ floor is 33M client-facing (net + 10%), owner's words 05.09.
   tail is re-sent uncached on every draft. A calendar that fails to load is
   treated as "everything free" — a villa wrongly offered is a bad day, an empty
   shortlist is a broker with nothing to send at all.
+  **The calendar is read exactly the way the SITE reads it** (`freeFromOf`,
+  mirror of `getFreeFrom` in bali-villa-rentals `src/lib/rental-availability.ts`):
+  `occupied`/`rented` is a busy period, `available` means free from
+  `start_date` with a 2099 `end_date` sentinel. Until 11.09.2026 every row was
+  read as "busy until end_date", so each "Available from <date>" the brokers
+  set on the site became "free in 2100" and the villa never reached a
+  shortlist — 17 villas, including every new listing entered with a date
+  (R-YUD-088…098: zero drafts in 21 days while dateless new listings were
+  attached normally). A change to either reader changes both.
 
 ## Notifications
 

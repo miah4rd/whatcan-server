@@ -166,8 +166,40 @@ const FREE_FROM_HORIZON_DAYS = 92;
  * reads the database. So the same rule has to live here too, or the bot keeps
  * offering what the website already refuses to show.
  */
+type AvailabilityRow = { property_id: string; status: string | null; start_date: string | null; end_date: string | null };
+
+/**
+ * A villa's first free day (ISO date), or null when it is free today.
+ *
+ * The SAME reading as the website's `getFreeFrom`
+ * (bali-villa-rentals/src/lib/rental-availability.ts) — keep the two in step:
+ * - `occupied` / `rented`: busy start..end inclusive; a period covering today
+ *   frees the villa the day after it ends;
+ * - `available`: free from `start_date` on (`end_date` is a 2099 sentinel).
+ *
+ * Until 11.09.2026 every row was read as "busy until end_date", so the site's
+ * "Available from <date>" (status available, end 2099-12-31) came out as "free
+ * in 2100": 17 villas free within the horizon — every new listing entered with
+ * a date, R-YUD-088…098 — never reached a single shortlist.
+ */
+export function freeFromOf(periods: AvailabilityRow[], todayIso: string): string | null {
+  const busyToday = periods
+    .filter((p) => (p.status === "occupied" || p.status === "rented")
+      && p.start_date && p.end_date && p.start_date <= todayIso && p.end_date >= todayIso)
+    .map((p) => p.end_date as string)
+    .sort();
+  if (busyToday.length) {
+    const d = new Date(`${busyToday[busyToday.length - 1]}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString().slice(0, 10);
+  }
+  const available = periods.filter((p) => p.status === "available" && p.start_date);
+  if (available.some((p) => (p.start_date as string) <= todayIso)) return null;
+  return available.map((p) => p.start_date as string).sort()[0] ?? null;
+}
+
 async function applyAvailability(rows: SupabaseProperty[]): Promise<SupabaseProperty[]> {
-  let periods: Array<{ property_id: string; end_date: string | null }> = [];
+  let periods: AvailabilityRow[] = [];
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/property_availability?select=property_id,status,start_date,end_date`,
@@ -183,19 +215,13 @@ async function applyAvailability(rows: SupabaseProperty[]): Promise<SupabaseProp
   }
   if (periods.length === 0) return rows;
 
-  const today = new Date();
-  const todayMs = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
-
-  // Latest end date per villa among periods still running today.
-  const freeFrom = new Map<string, number>();
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const byVilla = new Map<string, AvailabilityRow[]>();
   for (const p of periods) {
-    if (!p.end_date) continue;
-    const end = Date.parse(`${p.end_date}T00:00:00Z`);
-    if (Number.isNaN(end) || end < todayMs) continue;
-    const cur = freeFrom.get(p.property_id);
-    if (cur === undefined || end > cur) freeFrom.set(p.property_id, end);
+    const list = byVilla.get(p.property_id);
+    if (list) list.push(p);
+    else byVilla.set(p.property_id, [p]);
   }
-  if (freeFrom.size === 0) return rows;
 
   // Stamped, never dropped. The site shows every listing now and marks the
   // far-out ones red rather than hiding them, so a lead CAN be looking at one
@@ -203,10 +229,8 @@ async function applyAvailability(rows: SupabaseProperty[]): Promise<SupabaseProp
   // when it frees up. Offerability is decided per shortlist instead
   // (offerableNow), which is the only place it actually matters.
   return rows.map((row) => {
-    const end = freeFrom.get(row.id);
-    if (end === undefined) return row;
-    // Free the day AFTER the occupancy ends.
-    return { ...row, free_from: new Date(end + 24 * 60 * 60 * 1000).toISOString().slice(0, 10) };
+    const free = freeFromOf(byVilla.get(row.id) ?? [], todayIso);
+    return free ? { ...row, free_from: free } : row;
   });
 }
 
