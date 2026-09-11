@@ -219,6 +219,66 @@ export function stripQuotedText(conversation: string): string {
     .join("\n");
 }
 
+// Words that carry no claim about THIS villa: they appear in any message, so
+// they must not count as evidence that the owner said a stop phrase.
+const EVIDENCE_STOP_WORDS = new Set([
+  "this", "that", "with", "from", "have", "having", "villa", "villas", "property", "will", "your", "they",
+  "them", "there", "their", "what", "when", "which", "would", "could", "should", "been", "were", "also",
+  "just", "only", "please", "thank", "thanks", "right", "some", "more", "very", "much", "into", "about",
+  "other", "than", "then", "well", "like", "sorry", "hello", "yang", "untuk", "dengan", "kami", "saya",
+  "anda", "bapak",
+]);
+
+function evidenceWords(s: string): string[] {
+  return s
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 4 && !EVIDENCE_STOP_WORDS.has(w));
+}
+
+/**
+ * Did the owner's side actually say the stop phrase? `stop_signal` is a QUOTE
+ * by contract, and a stop parks or closes a card. Balay Villa (23528665,
+ * 11.09): the owner had sent only an auto-greeting and "Hello good afternoon",
+ * the extractor returned "We already have a full booking" — words nobody
+ * wrote — and the next audit would have parked the villa on them.
+ * Half of the quote's content words must appear in the owner's own messages,
+ * compared on four-letter stems so "booked"/"booking", a typo ("yerly") or a
+ * paraphrase that keeps its stems is not lost. Failing the check drops the
+ * stop, which keeps the card being worked — the safe direction.
+ */
+export function stopSignalEvidenced(signal: string, ownerText: string): boolean {
+  const want = [...new Set(evidenceWords(signal))];
+  if (want.length === 0) return true;
+  const have = new Set(evidenceWords(ownerText).map((w) => w.slice(0, 4)));
+  const hits = want.filter((w) => have.has(w.slice(0, 4))).length;
+  return hits * 2 >= want.length;
+}
+
+/** Clears a stop whose quote is not in the owner's own messages. Fails open (keeps the facts). */
+export async function dropUnevidencedStop(leadId: string, f: ListingFacts): Promise<ListingFacts> {
+  if (!f.stopSignal) return f;
+  try {
+    const res = await db.execute(sql`
+      SELECT string_agg(text, E'\n' ORDER BY sent_at) AS t
+        FROM lead_messages
+       WHERE lead_id = ${leadId} AND sender_type = 'lead' AND text IS NOT NULL`);
+    const ownerText = stripQuotedText(String((res.rows?.[0] as { t?: string } | undefined)?.t ?? ""));
+    if (stopSignalEvidenced(f.stopSignal, ownerText)) return f;
+    logger.warn(
+      { leadId, stopSignal: f.stopSignal, stopKind: f.stopKind },
+      "listing facts: stop signal is not in the owner's own words — dropped",
+    );
+    return { ...f, stopSignal: null, stopKind: null };
+  } catch (err) {
+    logger.warn({ err, leadId }, "listing facts: stop signal could not be checked against the thread — kept");
+    return f;
+  }
+}
+
 /**
  * Facts already on the card fill the gaps in a fresh extraction.
  *
@@ -323,7 +383,7 @@ export async function extractListingFacts(conversation: string, leadId?: string)
       freeFromIso: /^\d{4}-\d{2}-\d{2}$/.test(String(raw["free_from_iso"] ?? "")) ? String(raw["free_from_iso"]) : null,
     };
     if (!leadId) return facts;
-    const merged = await withCardFacts(leadId, facts);
+    const merged = await withCardFacts(leadId, await dropUnevidencedStop(leadId, facts));
     await db
       .update(leadsSyncTable)
       .set({ listingFacts: merged as unknown as Record<string, unknown>, listingFactsAt: readAt })
