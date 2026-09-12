@@ -35,6 +35,7 @@ import { formatDialogForAI } from "./dialog-parser";
 import { getMergedConversation } from "./merged-conversation";
 import { sanitizeSuggestion } from "./sanitize-suggestion";
 import { logger } from "./logger";
+import { handleReferral, mayHoldReferral, REFERRAL_MARK } from "./listing-referral";
 
 /** One roster for every funnel — lib/pipelines.ts. */
 export { isListingAcquisition as isListingAcquisitionPipeline } from "./pipelines";
@@ -85,6 +86,7 @@ NO DASHES. Not the long one, not the short one, not a hyphen standing in for one
 
 WHAT TO DO:
 1. FIRST CONTACT (they have not replied to us yet): open on their listing, not on us. Reference the specific villa and ask the single most useful thing the ACTION BRIEF says to clarify, usually whether it's still available, plus the exact location or the dates. If the owner-or-manager question fits naturally in one line, ask it the way rule 2b puts it, with THREE options, never two: "are you the owner, part of the owner's own team, or is there a management company looking after it?" Two options force the owner's own assistant to answer "managing on behalf", which files a salaried employee as a middleman. If it does not fit, it waits for the next message. No pitch, no value proposition, no commission talk in this first message.
+1R. REFERRED NUMBER (the ACTION BRIEF says REFERRED BY): this person never saw a message from us, someone on the villa side gave us their number. Open with that: greet them by the name the brief gives (never invent one), say who passed the number on and for which villa, then ask in the rule 2 sentence for the monthly and yearly rate including our 10% agency commission, the minimum stay and the earliest day we could bring a client to view it. Here the price question belongs in the first message, because it is exactly why we were sent to them. Never write that you came across their listing.
 2. If they have confirmed they ARE the owner (or the villa's own manager, developer or reception, anyone entitled to let it): move to QUALIFY. A card can be listed once we know the bedrooms, a price we may put on the site, when it frees up, the minimum stay they accept and the earliest day we could show it to a client. Ask IN ONE SENTENCE, and only for what this conversation has not already given you:
 
    "Could you send me the number of bedrooms, the monthly and yearly rate including our 10% agency commission, the date it's available from, the minimum stay you accept, and the earliest day we could bring a client to view it? That's everything we need to put it in front of our clients."
@@ -251,8 +253,19 @@ OUR AGENT HAS ALREADY INSPECTED THIS VILLA IN PERSON (card stage: Inspection. do
 
   const leadContext = leadContextBase + knownBlock + stageBlock + followUpBlock;
 
+  // A number the villa side handed us (listing-referral.ts): the opener names
+  // who passed it on instead of pretending we read an ad.
+  const referred = (opts.leadNotes ?? "").includes(REFERRAL_MARK);
   const prompt = isFirstContact
-    ? `${leadContext}
+    ? referred
+      ? `${leadContext}
+WHAT WE KNOW ABOUT THE VILLA (from the person who referred them, NOT a message from this contact):
+"${(lastLeadText || "").slice(0, 1500)}"
+
+SITUATION: We have never spoken to this person. Their number was passed to us by someone on the villa side, as the ACTION BRIEF says.
+
+Task: write the opening WhatsApp message, following rule 1R in WHAT TO DO. Under 70 words.`
+      : `${leadContext}
 THEIR PUBLIC LISTING AD (they posted this in a Facebook group — it is NOT a message to us):
 "${(lastLeadText || "").slice(0, 1500)}"
 
@@ -326,6 +339,16 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
       logger.info({ ...r, source: "reply" }, "listing-acquisition: stage reconciled");
     })().catch((err) =>
       logger.warn({ err, leadId: opts.leadId }, "listing-acquisition: card fill failed (non-fatal)"),
+    );
+  }
+
+  // The villa side sent us to someone else with a number: open that
+  // conversation instead of promising "I'll reach out to them" and doing
+  // nothing (12.09: fourteen cards sat on exactly that). A regex gate first;
+  // the model is asked only when the message can hold a hand-off.
+  if (!isFirstContact && mayHoldReferral(lastLeadText)) {
+    void handleReferral(opts.leadId, { apply: true, source: "reply" }).catch((err) =>
+      logger.warn({ err, leadId: opts.leadId }, "listing referral: hand-off failed (non-fatal)"),
     );
   }
 

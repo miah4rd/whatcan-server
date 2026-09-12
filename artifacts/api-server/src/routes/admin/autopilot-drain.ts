@@ -101,6 +101,9 @@ router.post("/admin/autopilot-drain", async (req, res) => {
     // never reached the newer ones behind them: two force runs, thirty verdicts,
     // eight nudges still without one.
     .orderBy(
+      // A number the villa side handed us goes first inside the day's budget:
+      // someone asked us to write to that person (listing-referral.ts).
+      sql`(coalesce(${leadsSyncTable.leadNotes}, '') ILIKE '%REFERRED BY%') DESC`,
       sql`(${pendingSuggestionsTable.autopilotSkippedReason} IS NOT NULL)`,
       asc(pendingSuggestionsTable.createdAt),
     )
