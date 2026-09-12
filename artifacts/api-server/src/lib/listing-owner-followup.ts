@@ -21,8 +21,8 @@
  * reason to wonder what changed. A broker still approves every draft before it
  * sends; this pass only fills the PUSH tab.
  */
-import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
-import { and, eq, sql } from "drizzle-orm";
+import { db, leadsSyncTable, pendingSuggestionsTable, leadMessagesTable } from "@workspace/db";
+import { and, eq, sql, desc } from "drizzle-orm";
 import { logger } from "./logger";
 import { isListingAcquisition } from "./pipelines";
 import { villaFromLeadName, fetchLeadTitle, fetchOwnerName } from "./weekly-availability-check";
@@ -199,7 +199,24 @@ export async function processListingOwnerFollowup(): Promise<number> {
       if (!isOpenStage(lead.leadStage)) continue;
 
       // The owner answered — that is not silence, and the LIVE path handles it.
-      if ((lead.lastMessageFrom ?? "").toLowerCase() === "lead") continue;
+      // Who spoke last is read from the THREAD, not from
+      // leads_sync.last_message_from: that column keeps "lead" after the bot
+      // answers (the send path stamps last_our_message_at only), so owners the
+      // bot had already answered looked like owners waiting on us and were
+      // never nudged again. On 12.09 eleven cards sat like that since 05–06.09
+      // with the owner talking and us silent for a week. The column is only a
+      // fallback for a card whose thread was never logged.
+      const [newest] = await db
+        .select({ who: leadMessagesTable.senderType, at: leadMessagesTable.sentAt })
+        .from(leadMessagesTable)
+        .where(and(eq(leadMessagesTable.leadId, lead.leadId), sql`${leadMessagesTable.text} IS NOT NULL`))
+        .orderBy(desc(leadMessagesTable.sentAt))
+        .limit(1);
+      const ownerSpokeLast = newest ? newest.who === "lead" : (lead.lastMessageFrom ?? "").toLowerCase() === "lead";
+      if (ownerSpokeLast) continue;
+      // Silence runs from OUR latest word, whichever record has it: a reply
+      // Yudi typed on his phone is in the thread but not in last_our_message_at.
+      const lastOursAtMs = Math.max(lead.lastOurMessageAt!.getTime(), newest ? newest.at.getTime() : 0);
 
       // followupLevel is free to use here: the buyer scheduler clears
       // nextFollowupAt for this funnel and never advances the level on it.
@@ -210,7 +227,7 @@ export async function processListingOwnerFollowup(): Promise<number> {
         // the bot, which is done with it, and not by the broker, who has no
         // reason to open a card nothing points at. The owner's rule (04.09.2026):
         // after the third nudge with nothing back, close it.
-        const silentHours = (Date.now() - lead.lastOurMessageAt!.getTime()) / 3_600_000;
+        const silentHours = (Date.now() - lastOursAtMs) / 3_600_000;
         if (silentHours >= CLOSE_AFTER_LAST_NUDGE_HOURS) {
           const ok = await closeLeadAsLost(lead.leadId);
           logger.info(
@@ -227,7 +244,7 @@ export async function processListingOwnerFollowup(): Promise<number> {
         continue;
       }
 
-      const silentHours = (Date.now() - lead.lastOurMessageAt!.getTime()) / 3_600_000;
+      const silentHours = (Date.now() - lastOursAtMs) / 3_600_000;
       if (silentHours < NUDGE_AFTER_HOURS[round - 1]!) continue;
 
       // Already waiting for the broker — a second identical card every five
