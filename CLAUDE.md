@@ -759,6 +759,23 @@ days before: Pemogan and Ubud were welcomed and no conversation followed;
 Megan (Sanur) answered "West side is ok" — which is why the lead is flagged,
 not closed.
 
+**Catalog-form leads get the ad-lead mechanics; duplicate cards go to the bin
+(owner, 2026-09-12).** Lance filled the catalog form at 03:26 ("Catalog Lead -
+qualification", answers in the card fields, no listing code) and the website
+form on R-YUD-048 four minutes later. The catalog card matched neither seeding
+branch and was skipped every minute; the second card was another conversation
+with the same number. Now a card named "Catalog Lead…" is seeded from its card
+answers (`formAnswersFromCard`), welcomed by `sendAdLeadWelcome` with
+`listingId: null`, and drafted at +15 minutes with a brief that has no clicked
+villa (`clickedVilla` = a /property/ link in the seeded enquiry).
+`lib/duplicate-card.ts` closes a card to Lost before seeding only when ALL
+hold: created by automation (created_by 0), open in Rental, nothing sent or
+drafted on it, and one of its phones equals, digit for digit, a phone on an
+OLDER open Rental card. Notes on both cards start with "Note:" so the
+housekeeping filter never seeds them as the client's words. Anything unreadable
+keeps the card — a duplicate left open costs one look, a real lead in the bin
+costs the lead.
+
 ## The listing assistant has three surfaces, one implementation
 
 Adding a listing is a conversation, not a form (`lib/listing-intake.ts`). It is
