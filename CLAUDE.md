@@ -1091,6 +1091,37 @@ funnel; `promoteIfQualified` / `routeUnqualified` / `releaseFrom*` are gone.
 Audit by hand: `POST /api/admin/listing-audit` (dry), `?apply=1`, `?lead=<id>`.
 Two time-driven closers stay outside: three unanswered nudges, no WhatsApp.
 
+### The owner nudge ladder read a stale column (2026-09-12)
+
+The owner: "за сутки всего одна новая квала — в чём проблема делать больше
+квалов?" The top of the funnel was fine: 158 contacts in 14 days, 110 owners
+replied, 18 reached QUALIFIED — about one a day at nine new contacts a day.
+The fixable leak was in the middle. `processListingOwnerFollowup` skipped
+every card whose `leads_sync.last_message_from` was "lead", and that column
+keeps "lead" after the bot answers — the send path stamps
+`last_our_message_at` only. An owner who answered part of the qualifying
+question, got the bot's reply and went quiet was never asked again: 35 open
+cards (28 in TAKEN TO WORK) had nudges blocked, eleven of them silent on our
+side since 05–06.09. The pass now reads who spoke last from `lead_messages`
+(the column is only a fallback for an unlogged thread) and measures silence
+from our latest word in either record — a reply typed on the phone is in the
+thread only. Checked before deploy: 29 cards due round 1, none at the
+three-nudge close, and an owner's reply resets the ladder (`amo-timeline-sync`,
+`amo-sync`, the webhook).
+
+**Two qualification standards exist, and they disagree.** The listing manager
+(Cowork, skill `listing-qualification-standard`) follows the owner and
+Amelia's decision of 08.09: a price floor per bedroom (1BR 25M, 2BR 35M, 3BR
+45M, +10M per bedroom, showcase price with our 10%), QUALIFIED = bedrooms +
+price with the commission position, minimum stay and exact availability
+collected in Details. The engine here uses a flat 33M floor (owner, 05.09)
+and requires minimum stay and earliest viewing for QUALIFIED (owner, 07.09).
+On 12.09: the agent closed Villa Matahari (3BR, ~31M) that the engine had
+reopened as QUALIFIED; two current quals (Mimoza 2BR 33M, 23263701 3BR 39M)
+fail the per-bedroom floor; four TAKEN TO WORK cards meet the 08.09 bar and
+are held only by minimum stay or viewing. Which bar wins is the owner's
+decision — never align either side silently.
+
 ### The autopilot check of 11.09: what "тупит" looked like
 
 The owner: "проверь как автопилот работает вчера, сегодня и двигает карты по
