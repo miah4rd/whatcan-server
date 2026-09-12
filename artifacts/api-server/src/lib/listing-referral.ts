@@ -37,6 +37,10 @@ import { stripQuotedText } from "./listing-card-fields";
 
 const LISTINGS_PIPELINE_ID = 11180334;
 const STATUS_INITIAL_CONTACT = 87738346;
+const STATUS_TAKEN_TO_WORK = 87795530;
+const STATUS_LONG_TERM = 88322310;
+/** The stages the bot works; anything else is a person's card. Read live from amoCRM. */
+const BOT_STATUS_IDS = new Set([STATUS_INITIAL_CONTACT, STATUS_TAKEN_TO_WORK, STATUS_LONG_TERM]);
 const YUDI_USER_ID = 13301186;
 const MIN_PHONE_DIGITS = 9;
 const OPEN_ROLES = new Set<Role>(["owner", "family", "partner", "manager"]);
@@ -90,25 +94,32 @@ export function nameParts(name: string): { villa: string; area: string; bedrooms
 
 const settingKey = (leadId: string) => `listing_referral:${leadId}`;
 
-async function readThread(leadId: string): Promise<{ text: string; ownerText: string }> {
+async function readThread(leadId: string): Promise<{ text: string; ownerText: string; brokerFollowedUp: boolean }> {
   const rows = await db
     .select({ who: leadMessagesTable.senderType, at: leadMessagesTable.sentAt, text: leadMessagesTable.text })
     .from(leadMessagesTable)
     .where(and(eq(leadMessagesTable.leadId, leadId), sql`${leadMessagesTable.text} IS NOT NULL`))
     .orderBy(asc(leadMessagesTable.sentAt));
-  const lines: string[] = [];
   const owner: string[] = [];
-  for (const r of rows.slice(-40)) {
-    const day = r.at.toISOString().slice(0, 10);
+  let handoffAt: number | null = null;
+  let brokerFollowedUp = false;
+  for (const r of rows) {
     const body = r.text ?? "";
     if (r.who === "lead") {
       owner.push(body);
-      lines.push(`${day} villa: ${stripQuotedText(body).replace(/\s*\n\s*/g, " | ")}`);
-    } else {
-      lines.push(`${day} us: ${body.replace(/\s*\n\s*/g, " ")}`);
+      if (handoffAt === null && mayHoldReferral(body)) handoffAt = r.at.getTime();
+    } else if (r.who === "broker" && handoffAt !== null && r.at.getTime() > handoffAt) {
+      // A person, not the bot, wrote after the villa side handed us a number.
+      brokerFollowedUp = true;
     }
   }
-  return { text: lines.join("\n").slice(-9000), ownerText: owner.join("\n") };
+  const lines: string[] = [];
+  for (const r of rows.slice(-40)) {
+    const day = r.at.toISOString().slice(0, 10);
+    const body = r.text ?? "";
+    lines.push(r.who === "lead" ? `${day} villa: ${stripQuotedText(body).replace(/\s*\n\s*/g, " | ")}` : `${day} us: ${body.replace(/\s*\n\s*/g, " ")}`);
+  }
+  return { text: lines.join("\n").slice(-9000), ownerText: owner.join("\n"), brokerFollowedUp };
 }
 
 const DETECT_SYSTEM = `You read a WhatsApp thread between our listing agent (lines "us:") and the side of a villa we asked about (lines "villa:"). A shared contact card shows up as "_Отправлен контакт_ | <name> | TEL: <number>".
@@ -191,7 +202,15 @@ export async function handleReferral(sourceLeadId: string, opts: { apply: boolea
       return { ...base, reason: `stage ${row.stage}: the broker's card` };
     }
 
-    const { text, ownerText } = await readThread(sourceLeadId);
+    // The live stage, not our copy of it: a card a person has taken further is theirs.
+    const src = await amoFetch<{ name?: string; responsible_user_id?: number; status_id?: number; pipeline_id?: number }>(
+      `/api/v4/leads/${sourceLeadId}`,
+    );
+    if (!src || src.pipeline_id !== LISTINGS_PIPELINE_ID || !BOT_STATUS_IDS.has(Number(src.status_id))) {
+      return { ...base, reason: "amoCRM does not show this card on a bot stage" };
+    }
+
+    const { text, ownerText, brokerFollowedUp } = await readThread(sourceLeadId);
     if (!mayHoldReferral(ownerText)) return { ...base, reason: "no hand-off in the thread" };
 
     const d = await detect(text);
@@ -211,7 +230,6 @@ export async function handleReferral(sourceLeadId: string, opts: { apply: boolea
       return { ...base, ...found, action: "skipped", reason: "same number as the card" };
     }
 
-    const src = await amoFetch<{ name?: string; responsible_user_id?: number }>(`/api/v4/leads/${sourceLeadId}`);
     const parts = nameParts(src?.name ?? "");
     const villa = parts.villa || "the villa";
     const referrer = d.referrer || "the villa's contact";
@@ -231,6 +249,11 @@ export async function handleReferral(sourceLeadId: string, opts: { apply: boolea
       logger.info({ sourceLeadId, other, phone, role: d.role }, "listing referral: number already on a card, linked");
       return { ...base, ...found, action: "linked", newLeadId: other, reason: "linked to the existing card" };
     }
+
+    // A person already acted on the hand-off (Villa Soluna: Yudi wrote to the
+    // manager himself on 20.08 and the listing went online). Linking above is
+    // harmless; opening a second conversation with that person is not.
+    if (brokerFollowedUp) return { ...base, ...found, action: "skipped", reason: "the broker already followed up after the hand-off" };
 
     if (!opts.apply) return { ...base, ...found, action: "would_create", reason: `new card for ${d.name ?? "the referred contact"} (${d.role})` };
 
