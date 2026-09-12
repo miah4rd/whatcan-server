@@ -1109,6 +1109,13 @@ thread only. Checked before deploy: 29 cards due round 1, none at the
 three-nudge close, and an owner's reply resets the ladder (`amo-timeline-sync`,
 `amo-sync`, the webhook).
 
+**A minimum stay in nights is an answer.** `min_stay_months` was defined in
+months only, so "Minimum stay is 7 days" (Villa Luna Kedungu) and "our minimum
+stay is 3 nights" (Salt Villa) were stored as null: the card could never pass
+the bar, and the first nudge after the 12.09 fix asked that owner again — "I
+have mentioned it multiple times previously". A minimum under a month now
+extracts as 1.
+
 **Two qualification standards exist, and they disagree.** The listing manager
 (Cowork, skill `listing-qualification-standard`) follows the owner and
 Amelia's decision of 08.09: a price floor per bedroom (1BR 25M, 2BR 35M, 3BR
