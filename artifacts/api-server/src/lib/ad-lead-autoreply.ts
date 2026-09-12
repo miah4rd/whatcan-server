@@ -74,8 +74,14 @@ const BROKER_OPENING_DELAY_MS = 15 * 60 * 1000;
  * caught them. Work from the request when we have it, and when we do not, ask
  * for the pieces a shortlist actually needs — and say why we are asking.
  */
-function brokerOpeningBrief(welcomeSent: string, hasOptions = true): string {
-  return `SITUATION: This is a paid-ad lead. Fifteen minutes ago they clicked an ad for one villa and received the message below. They have not replied.
+function brokerOpeningBrief(welcomeSent: string, hasOptions = true, clickedVilla = true): string {
+  // A catalog-form lead (2026-09-12) answered the same questions but never
+  // clicked one villa: every line below about "the villa they clicked" would
+  // send the model looking for a link that is not there.
+  const arrived = clickedVilla
+    ? "Fifteen minutes ago they clicked an ad for one villa and received the message below."
+    : "Fifteen minutes ago they filled in our catalog form (their request, no single villa) and received the message below.";
+  return `SITUATION: This is a paid-ad lead. ${arrived} They have not replied.
 
 ALREADY SENT TO THEM, VERBATIM — everything here has been said once:
 """
@@ -85,16 +91,16 @@ ${welcomeSent.trim()}
 Task: Write the broker's FIRST real message. It always has the same four parts, in this order. Parts 1 and 2 are NOT optional — a message that opens straight into a list reads as a mailshot, and being heard is the whole reason this message exists:
 
 1. Greet them by name. (If no name is known, open with a greeting and no name — never invent one.)
-2. SAY THEIR REQUEST BACK TO THEM in one short line, so they can see they were heard. The request is what the Meta form asked them — budget, area, bedrooms, timing — and it is in the enquiry and the lead card above.
-   If the form answers are missing, THE VILLA THEY CLICKED IS THE REQUEST: take its bedrooms, its area and its monthly price and state those as what you understand they are looking for. ("Looks like you're after a 2-bedroom in Pererenan around Rp 50 million a month.")
+2. SAY THEIR REQUEST BACK TO THEM in one short line, so they can see they were heard. The request is what the Meta form asked them — budget, area, bedrooms, timing — and it is in the enquiry and the lead card above.${clickedVilla ? `
+   If the form answers are missing, THE VILLA THEY CLICKED IS THE REQUEST: take its bedrooms, its area and its monthly price and state those as what you understand they are looking for. ("Looks like you're after a 2-bedroom in Pererenan around Rp 50 million a month.")` : ""}
 3. ${hasOptions
-    ? `OFFER OPTIONS THAT FIT THAT REQUEST. The links are attached to this very message, so present them ("here are two that fit"); never ask permission to send them and never promise them for later. The LAST link is the villa they clicked in the ad — it is attached whether or not it fits, because they chose it with their own eyes; present it as "and the one you were looking at, for comparison", one short clause, not as one of the fits.
+    ? `OFFER OPTIONS THAT FIT THAT REQUEST. The links are attached to this very message, so present them ("here are two that fit"); never ask permission to send them and never promise them for later.${clickedVilla ? ` The LAST link is the villa they clicked in the ad — it is attached whether or not it fits, because they chose it with their own eyes; present it as "and the one you were looking at, for comparison", one short clause, not as one of the fits.` : ""}
    NAME THE AREA OF EACH OPTION, and if an option is NOT in the area they asked for, say so in the same breath — "this one's in Kerobokan rather than Pererenan". Bali areas are half an hour apart and a client who opens a link expecting their neighbourhood and finds another one stops trusting the next message. Never imply an option is in their area when it is not, and never quietly drop the area to avoid the point.`
     : `NOTHING IS ATTACHED TO THIS MESSAGE. Do not say "here are", do not describe other villas, do not promise to send anything. Instead ask the ONE thing that would let you put a shortlist together — which area, what budget, or what matters most to them — and say why you are asking.`}
 4. End with ONE open question.
 
-Absolutes:
-- Do not re-sell the villa they clicked: no features, no price. Name it once as "the one you were looking at" beside its link, and nothing more.
+Absolutes:${clickedVilla ? `
+- Do not re-sell the villa they clicked: no features, no price. Name it once as "the one you were looking at" beside its link, and nothing more.` : ""}
 - Do not ask when they are moving in or for how long, anywhere in this message. The message above already asked an open question and got silence.
 
 Under 80 words.`;
@@ -180,7 +186,8 @@ function requestLine(answers: LeadCardAnswers): string {
 function welcomeText(opts: {
   clientName: string;
   brokerName: string;
-  listingLabel: string;
+  /** Null on a catalog-form lead: there is no single villa to name. */
+  listingLabel: string | null;
   answers: LeadCardAnswers;
 }): string {
   // The owner's wording (2026-09-04), and the reasoning behind it: the first
@@ -201,7 +208,8 @@ function welcomeText(opts: {
     return `${hi} ${who} Got your request: ${request}. Did I get that right?`;
   }
   // Nothing on the card to read back: the old open question is the honest one.
-  return `${hi} ${who} Got your enquiry about ${opts.listingLabel}. What are you looking for — area, size, budget?`;
+  const about = opts.listingLabel ? ` about ${opts.listingLabel}` : "";
+  return `${hi} ${who} Got your enquiry${about}. What are you looking for — area, size, budget?`;
 }
 
 /**
@@ -234,7 +242,8 @@ function formatAsOurMessage(at: Date, text: string): string {
 export async function sendAdLeadWelcome(opts: {
   leadId: string;
   responsibleUser: string | null;
-  listingId: string;
+  /** Null for a catalog-form lead (2026-09-12): same welcome, no clicked villa. */
+  listingId: string | null;
   clientName: string;
   content: string;
 }): Promise<boolean> {
@@ -256,14 +265,18 @@ export async function sendAdLeadWelcome(opts: {
   const phone = await leadPhone(leadId);
   if (await phoneAlreadyMessaged(leadId, phone)) return false;
 
-  const known = await describePropertiesByIds([listingId]).catch(() => new Map());
-  const listing = known.get(listingId.toUpperCase());
-  if (!listing) {
-    // The code in the lead name is not in the catalog — we do not know what the
-    // client clicked, so there is nothing safe to send unattended. The broker
-    // gets the ordinary draft instead.
-    logger.warn({ leadId, listingId }, "ad welcome skipped — listing not found in catalog");
-    return false;
+  let listingLabel: string | null = null;
+  if (listingId) {
+    const known = await describePropertiesByIds([listingId]).catch(() => new Map());
+    const listing = known.get(listingId.toUpperCase());
+    if (!listing) {
+      // The code in the lead name is not in the catalog — we do not know what the
+      // client clicked, so there is nothing safe to send unattended. The broker
+      // gets the ordinary draft instead.
+      logger.warn({ leadId, listingId }, "ad welcome skipped — listing not found in catalog");
+      return false;
+    }
+    listingLabel = listing.clientLabel || listing.title;
   }
 
   // A client asking only for places we have no villas in or near (Sanur, Ubud,
@@ -320,7 +333,7 @@ export async function sendAdLeadWelcome(opts: {
   const text = welcomeText({
     clientName: opts.clientName,
     brokerName: brokerDisplayName(responsibleUser),
-    listingLabel: listing.clientLabel || listing.title,
+    listingLabel,
     answers,
   });
 
@@ -478,6 +491,9 @@ async function runBrokerOpeningPass(): Promise<number> {
       // the second message has to widen off.
       const lastLeadMessage = parsed.lastLeadMessage?.text ?? "";
       if (!lastLeadMessage) continue;
+      // An ad lead's seeded enquiry carries the clicked villa's link; a
+      // catalog-form lead's does not, and its brief must not ask for one.
+      const clickedVilla = /\/property\/[A-Za-z0-9-]+/.test(content);
 
       const situation = deriveSituation({
         pipeline: lead.pipeline,
@@ -498,7 +514,7 @@ async function runBrokerOpeningPass(): Promise<number> {
         leadStage: lead.leadStage,
         correctionsBlock: corrections,
         pipeline: lead.pipeline,
-        taskBrief: brokerOpeningBrief(lead.welcomeText ?? ""),
+        taskBrief: brokerOpeningBrief(lead.welcomeText ?? "", true, clickedVilla),
       });
       if (!text) continue;
 
@@ -519,7 +535,7 @@ async function runBrokerOpeningPass(): Promise<number> {
           leadStage: lead.leadStage,
           correctionsBlock: corrections,
           pipeline: lead.pipeline,
-          taskBrief: brokerOpeningBrief(lead.welcomeText ?? "", false),
+          taskBrief: brokerOpeningBrief(lead.welcomeText ?? "", false, clickedVilla),
         });
         if (retry.text) {
           text = retry.text;

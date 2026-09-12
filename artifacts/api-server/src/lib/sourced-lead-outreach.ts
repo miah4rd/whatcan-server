@@ -27,6 +27,8 @@ import { describePropertiesByIds } from "./property-catalog";
 import { enforceBudgetFilter } from "./budget-filter";
 import { sendAdLeadWelcome } from "./ad-lead-autoreply";
 import { leadPhone, phoneIsAlreadyInConversation } from "./phone-dedupe";
+import { closeIfDuplicateCard } from "./duplicate-card";
+import { getLeadCardCriteria, type LeadCardAnswers } from "./lead-card-fields";
 
 type AmoNote = { note_type?: string; params?: { text?: string } };
 
@@ -150,6 +152,22 @@ export function formAnswersFromNote(note: string): string {
   return answers ? `Here is what I filled in on your form: ${answers}` : "";
 }
 
+/**
+ * The catalog form (2026-09-12) leaves its answers in the card's fields, not in
+ * a note. Same sentence as `formAnswersFromNote`, values verbatim.
+ */
+export function formAnswersFromCard(a: LeadCardAnswers | null | undefined): string {
+  if (!a) return "";
+  const parts = [
+    a.bedrooms ? `bedrooms ${a.bedrooms}` : "",
+    a.areas ? `area ${a.areas}` : "",
+    a.budget ? `budget ${a.budget}` : "",
+    a.moveIn ? `move-in ${a.moveIn}` : "",
+    a.notes ? `notes: ${a.notes}` : "",
+  ].filter(Boolean);
+  return parts.length ? `Here is what I filled in on your form: ${parts.join("; ")}` : "";
+}
+
 function stripHousekeeping(block: string): string {
   return block
     .split(/\r?\n/)
@@ -267,6 +285,11 @@ export async function processSourcedLeadOutreach(): Promise<number> {
         .limit(1);
       if (everQueued) continue;
 
+      // A second automatic card for someone who already has an OPEN Rental card
+      // goes to the bin (owner, 2026-09-12). The rules that make it "exactly a
+      // duplicate" live in duplicate-card.ts; anything unsure keeps the card.
+      if (await closeIfDuplicateCard(lead.leadId)) continue;
+
       // Decoded before anything reads it: the note is both what the broker sees
       // on the card and what the model reads as the client's own request, and
       // amoCRM hands it over HTML-escaped (`FB group &quot;…&quot;`).
@@ -288,7 +311,18 @@ export async function processSourcedLeadOutreach(): Promise<number> {
         if (hit) adListing = { id: codeMatch[1].toUpperCase(), title: hit.title, url: hit.url };
       }
 
-      if (!adListing && (!note || !looksLikeClientRequest(note))) continue;
+      // The catalog form ("Catalog Lead - qualification", 2026-09-12) asks the
+      // same questions as a listing ad but names no villa, and its answers sit
+      // in the card's fields. Same mechanics as an ad lead: seeded from those
+      // answers, welcomed at once, broker opening after 15 minutes of silence.
+      // Before this it matched neither branch and was skipped on every pass
+      // (Lance, 23547869).
+      const catalogForm = !adListing && /^\s*catalog\s+lead\b/i.test(rawName);
+      const catalogAnswers = catalogForm
+        ? formAnswersFromCard((await getLeadCardCriteria(lead.leadId).catch(() => null))?.answers)
+        : "";
+
+      if (!adListing && !catalogForm && (!note || !looksLikeClientRequest(note))) continue;
 
       // Are we already talking to this person on another card? The scout
       // re-finds the same FB post on a later sweep and amoCRM has no idea the
@@ -302,7 +336,7 @@ export async function processSourcedLeadOutreach(): Promise<number> {
 
       // The ad/scout form may carry the budget — a below-threshold lead goes to
       // the bin instead of being seeded and worked.
-      if (await enforceBudgetFilter(lead.leadId, [note])) continue;
+      if (await enforceBudgetFilter(lead.leadId, [note, catalogAnswers].filter(Boolean))) continue;
 
       // The person, not the lead title — for ad leads those are different things.
       // The deal name is only a person's name when nothing else named them.
@@ -333,14 +367,22 @@ export async function processSourcedLeadOutreach(): Promise<number> {
         ? (formAnswers
             ? `Hi! I saw this villa and I'm interested: ${adListing.url}. ${formAnswers}`
             : `Hi! I saw this villa and I'm interested: ${adListing.url}`)
-        : note;
+        : catalogForm
+          ? `Hi! I'm looking for a villa to rent.${catalogAnswers ? ` ${catalogAnswers}` : ""}`
+          : note;
       const content = formatAsLeadMessage(at, leadName, enquiry);
 
       await db
         .update(leadsSyncTable)
         .set({
           content,
-          leadNotes: note || (adListing ? `Ad enquiry: ${adListing.id} — ${adListing.title}` : null),
+          leadNotes:
+            note ||
+            (adListing
+              ? `Ad enquiry: ${adListing.id} — ${adListing.title}`
+              : catalogForm
+                ? `Catalog form enquiry${catalogAnswers ? `. ${catalogAnswers}` : ""}`
+                : null),
           // It IS an inbound message — say so, and the normal LIVE pass takes over.
           lastMessageFrom: "lead",
           lastMessageAt: at,
@@ -354,21 +396,23 @@ export async function processSourcedLeadOutreach(): Promise<number> {
       // The paid lead is on their phone right now. Answer immediately, with no
       // broker in the loop — see lib/ad-lead-autoreply.ts for why this one
       // message is allowed to send itself and what refuses it.
-      if (adListing) {
+      if (adListing || catalogForm) {
         await sendAdLeadWelcome({
           leadId: lead.leadId,
           responsibleUser: lead.responsibleUser,
-          listingId: adListing.id,
+          listingId: adListing?.id ?? null,
           clientName: leadName,
           content,
         }).catch((err) => logger.error({ err, leadId: lead.leadId }, "ad welcome threw"));
       }
 
       logger.info(
-        { leadId: lead.leadId, leadName, stage: lead.leadStage, adListing: adListing?.id ?? null },
+        { leadId: lead.leadId, leadName, stage: lead.leadStage, adListing: adListing?.id ?? null, catalogForm },
         adListing
           ? "ad lead: listing code read from the lead name and seeded as the enquiry — LIVE will pick it up"
-          : "sourced-lead: request note seeded as the lead's first message — LIVE will pick it up",
+          : catalogForm
+            ? "catalog lead: form answers from the card seeded as the enquiry — LIVE will pick it up"
+            : "sourced-lead: request note seeded as the lead's first message — LIVE will pick it up",
       );
     } catch (err) {
       logger.error({ err, leadId: lead.leadId }, "sourced-lead seeding failed");
