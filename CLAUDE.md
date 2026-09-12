@@ -1147,7 +1147,14 @@ was right: the complaint was that nobody wrote to whoever we were sent to, and
 the villa's own sales team, reception or manager is the villa side (the 08.09
 standard counts them as entitled to let it). Every role except a self-declared
 agency now gets a card; a third party is found by the conversation and parked
-in co-broke by the engine's second opinion, as for any other card.
+in co-broke by the engine's second opinion, as for any other card. Opened the same
+day: The Santai, Aquamarine Villas, Villa Vedas Bali, Villa Toro and Villa
+White Nest; Marisa's number was already on #23519405 and was linked. With the
+three earlier ones, eight referral openers take the first eight places of the
+13.09 budget of nine. The scout also separates card names with a long dash and
+puts brand tags in brackets, and a contact card's name can read "Jeany (Sales
+Manager) Amelia" or "IKE": `nameParts`, `cleanVillaName` and `realName` handle
+all three, and the first five briefs were corrected by hand before seeding.
 
 ### The owner nudge ladder read a stale column (2026-09-12)
 
