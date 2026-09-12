@@ -1091,6 +1091,58 @@ funnel; `promoteIfQualified` / `routeUnqualified` / `releaseFrom*` are gone.
 Audit by hand: `POST /api/admin/listing-audit` (dry), `?apply=1`, `?lead=<id>`.
 Two time-driven closers stay outside: three unanswered nudges, no WhatsApp.
 
+### The villa side hands us another number (2026-09-12)
+
+The owner, looking at old listing conversations that never qualified: "так
+переделывай номер в карточке и пиши владельцу, в чём проблема? бот может?"
+Fourteen open cards ended the same way: reception, a manager or a wife
+answered "prices are with the owner, here is his number", the bot replied
+"I'll reach out to him directly", and nobody did, because nothing here could
+open a conversation with a number that was not on a card. Among old contacts
+that talked to us it was the largest single dead end.
+
+`lib/listing-referral.ts`, called from `generateListingAcquisitionReply` after
+a reply whose text can hold a hand-off (regex gate: a shared contact card, or
+a phone number next to contact/owner/partner/husband/hubungi…), then one Haiku
+call for {name, phone, role, referrer, evidence}.
+- **The number is not swapped on the old card.** The WhatsApp chat belongs to
+  the number it was opened with: Salesbot on that card keeps writing to the
+  staff member, and a contact with two numbers can fan one send out to both.
+  The referred person gets their own card: Rental Listings, Initial Contact,
+  tags Yudi / SRC:AI / Referral, a PROPERTY note and an ACTION BRIEF carrying
+  `REFERRED BY` — the notes the seeding pass already reads. The ordinary path
+  does the rest. The source card gets a note and `bot_excluded`.
+- **Guards, all in code:** the phone must appear in the villa side's own
+  messages; it must differ from the card's number; the role must be owner,
+  family, partner or the villa's own manager (reception, sales and booking
+  teams, agencies get no card); a number already on a Rental Listings card is
+  linked by notes on both cards instead; a card whose stage amoCRM does not
+  show as Initial Contact / TAKEN TO WORK / long term is left alone; and a
+  broker message after the hand-off blocks a new card (Villa Soluna: Yudi had
+  written to the manager himself on 20.08 and the listing is online). One
+  hand-off per source card (`broker_settings` `listing_referral:<id>`).
+- **The opener** follows rule 1R in the listing prompt: name who passed the
+  number on and the villa, and ask the price with our 10%, the minimum stay
+  and the viewing day in the first message. `realName` never lets a line label
+  ("villa") or a desk ("Reservation Team") stand in for a person — the first
+  card's brief read "say that villa from [OWN] Villa Platano passed on this
+  number" — `cleanVillaName` strips the scout's bracket tags, and
+  `greetingName` keeps "Pak Damien" whole. **Read every new card's notes before
+  the seeding pass does**; the first one was seeded within minutes and had to
+  be corrected in `leads_sync` as well as in amoCRM.
+- **The send is a first contact:** inside the nine-a-day budget, first in the
+  drain order (`lead_notes ILIKE '%REFERRED BY%'`).
+- Backlog tool: `POST /api/admin/listing-referrals` (dry), `?apply=1`,
+  `?lead=<id>`.
+
+Applied 12.09: three cards opened (Villa Platano → Ignasi, owner, +34; The
+Lakou Villas → Pak Damien, partner; Villa Daze Bali → Galang, the owner's
+husband, the corrected number ending 037), openers written and waiting for the
+13.09 budget; five linked (Nordoy → Marc, already on #23361369 in Details;
+Villa Gloria → Dewi, #23509143; Casa Petak → Petr, #23519703; Villa Bens
+Bidadari and Villa Arts Cherry → Dr Benny, #23519425); six not opened (sales
+teams, staff, "the PIC"), for the broker to judge.
+
 ### The owner nudge ladder read a stale column (2026-09-12)
 
 The owner: "за сутки всего одна новая квала — в чём проблема делать больше
