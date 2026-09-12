@@ -92,6 +92,25 @@ export function nameParts(name: string): { villa: string; area: string; bedrooms
   };
 }
 
+/** "[OWN] Villa Platano" -> "Villa Platano": the scout's tags are for the card, not for a message. */
+export function cleanVillaName(name: string): string {
+  return (name ?? "").replace(/\[[^\]]*\]\s*/g, "").replace(/\s{2,}/g, " ").trim();
+}
+
+/**
+ * A person's name as the thread gave it, or null. On the first run the model
+ * returned "villa" (the thread's own line label) as the referrer, and the
+ * brief told the writer to say "villa from Villa Platano passed on this
+ * number". A team or a desk is not someone to name either.
+ */
+export function realName(value: string | null | undefined): string | null {
+  const s = (value ?? "").replace(/\([^)]*\)/g, "").replace(/\s+(owner|manager)$/i, "").trim();
+  if (!s || s.length > 40) return null;
+  if (/^(the\s+)?(villa|villa side|us|we|owner|staff|reception|manager|admin|contact|the villa's contact)$/i.test(s)) return null;
+  if (/\b(team|support|reception|management|reservations?|sales|marketing|booking)\b/i.test(s)) return null;
+  return s;
+}
+
 const settingKey = (leadId: string) => `listing_referral:${leadId}`;
 
 async function readThread(leadId: string): Promise<{ text: string; ownerText: string; brokerFollowedUp: boolean }> {
@@ -231,8 +250,9 @@ export async function handleReferral(sourceLeadId: string, opts: { apply: boolea
     }
 
     const parts = nameParts(src?.name ?? "");
-    const villa = parts.villa || "the villa";
-    const referrer = d.referrer || "the villa's contact";
+    const villa = cleanVillaName(parts.villa) || "the villa";
+    const referrerName = realName(d.referrer);
+    const referrer = referrerName ?? "the person on the villa's number";
     const quote = (d.evidence ?? "").replace(/\s+/g, " ").slice(0, 200);
 
     const existing = await listingLeadsForPhone(phone);
@@ -260,7 +280,7 @@ export async function handleReferral(sourceLeadId: string, opts: { apply: boolea
     const facts = (row.facts ?? {}) as Record<string, unknown>;
     const bedrooms = facts["bedrooms"] ? String(facts["bedrooms"]) : parts.bedrooms.replace(/BR$/i, "");
     const known = [parts.area && `the area (${parts.area})`, bedrooms && `the bedroom count (${bedrooms})`].filter(Boolean).join(" and ");
-    const person = d.name ?? "";
+    const person = realName(d.name) ?? "";
     const responsible = src?.responsible_user_id ?? YUDI_USER_ID;
 
     const payload = [
@@ -285,11 +305,11 @@ export async function handleReferral(sourceLeadId: string, opts: { apply: boolea
     const newLeadId = created?.[0]?.id ? String(created[0].id) : null;
     if (!newLeadId) return { ...base, ...found, action: "skipped", reason: "amoCRM did not create the card" };
 
-    const propertyNote = `PROPERTY:\n${villa}${parts.area ? `, ${parts.area}` : ""}${bedrooms ? `, ${bedrooms} bedrooms` : ""}. Long-term rental enquiry. The contact on the villa's number, ${referrer}, told us to speak to ${person || "this person"} (${d.role}) about renting it.`;
+    const propertyNote = `PROPERTY:\n${villa}${parts.area ? `, ${parts.area}` : ""}${bedrooms ? `, ${bedrooms} bedrooms` : ""}. Long-term rental enquiry. ${referrerName ? `${referrerName}, on the villa's number,` : "The person on the villa's number"} told us to speak to ${person || "this person"} (${d.role}) about renting it.`;
     const briefNote = [
       "ACTION BRIEF",
-      `WHO TO CONTACT: ${person || "this contact"}, the ${d.role} for ${villa}. ${REFERRAL_MARK} ${referrer} on card #${sourceLeadId}: "${quote}".`,
-      `FIRST MESSAGE: ${person ? `greet ${person.split(/\s+/)[0]} by name, ` : "open with a plain Hi, "}say that ${referrer} from ${villa} passed on this number, and ask in one sentence for the monthly and yearly rate including our 10% agency commission, the minimum stay they accept and the earliest day we could bring a client to view it.${known ? ` Already known, do not ask again: ${known}.` : ""}`,
+      `WHO TO CONTACT: ${person || "this contact"}, the ${d.role} for ${villa}. ${REFERRAL_MARK} ${referrerName ?? "the villa's own number"} on card #${sourceLeadId}: "${quote}".`,
+      `FIRST MESSAGE: ${person ? `greet ${person.split(/\s+/)[0]} by name, ` : "open with a plain Hi, "}say that ${referrerName ? `${referrerName} from ${villa}` : `the team at ${villa}`} passed on this number, and ask in one sentence for the monthly and yearly rate including our 10% agency commission, the minimum stay they accept and the earliest day we could bring a client to view it.${known ? ` Already known, do not ask again: ${known}.` : ""}`,
     ].join("\n");
     await amoPost(`/api/v4/leads/${newLeadId}/notes`, [
       { note_type: "common", params: { text: propertyNote } },
