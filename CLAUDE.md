@@ -1115,7 +1115,8 @@ call for {name, phone, role, referrer, evidence}.
 - **Guards, all in code:** the phone must appear in the villa side's own
   messages; it must differ from the card's number; the role must be owner,
   family, partner or the villa's own manager (reception, sales and booking
-  teams, agencies get no card); a number already on a Rental Listings card is
+  teams, agencies get no card: CHANGED the same day, see below); a number
+  already on a Rental Listings card is
   linked by notes on both cards instead; a card whose stage amoCRM does not
   show as Initial Contact / TAKEN TO WORK / long term is left alone; and a
   broker message after the hand-off blocks a new card (Villa Soluna: Yudi had
@@ -1141,7 +1142,12 @@ husband, the corrected number ending 037), openers written and waiting for the
 13.09 budget; five linked (Nordoy → Marc, already on #23361369 in Details;
 Villa Gloria → Dewi, #23509143; Casa Petak → Petr, #23519703; Villa Bens
 Bidadari and Villa Arts Cherry → Dr Benny, #23519425); six not opened (sales
-teams, staff, "the PIC"), for the broker to judge.
+teams, staff, "the PIC"). The owner's answer to that was "почему??", and he
+was right: the complaint was that nobody wrote to whoever we were sent to, and
+the villa's own sales team, reception or manager is the villa side (the 08.09
+standard counts them as entitled to let it). Every role except a self-declared
+agency now gets a card; a third party is found by the conversation and parked
+in co-broke by the engine's second opinion, as for any other card.
 
 ### The owner nudge ladder read a stale column (2026-09-12)
 
