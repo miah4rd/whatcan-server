@@ -19,9 +19,13 @@
  * engine. The source card gets a note and leaves the bot's hands, so the staff
  * member is not chased for a price they already said they do not have.
  *
- * Who we open: the owner, the owner's family, a partner, the villa's own
- * manager. A reception desk, a sales or booking team, an agency: no card, the
- * outcome is only reported.
+ * Who we open: anyone the villa side itself sends us to: the owner, family, a
+ * partner, the villa's manager, its reception, its own sales team, "the PIC".
+ * The first version left six of those alone and the owner asked "почему??":
+ * the whole complaint was that nobody wrote to the person we were sent to.
+ * Whether that person turns out to be a third party is for the conversation
+ * and the stage engine to settle (co-broke, with its second opinion). Only a
+ * contact the villa side itself calls an AGENCY gets no card.
  * Guards, all in code: the phone must appear in the villa side's own messages
  * (a model-invented number is never dialled), must differ from the card's own
  * number, and must not already sit on a Rental Listings card (then the cards
@@ -43,7 +47,7 @@ const STATUS_LONG_TERM = 88322310;
 const BOT_STATUS_IDS = new Set([STATUS_INITIAL_CONTACT, STATUS_TAKEN_TO_WORK, STATUS_LONG_TERM]);
 const YUDI_USER_ID = 13301186;
 const MIN_PHONE_DIGITS = 9;
-const OPEN_ROLES = new Set<Role>(["owner", "family", "partner", "manager"]);
+const OPEN_ROLES = new Set<Role>(["owner", "family", "partner", "manager", "staff", "sales", "other"]);
 
 /** Written into the ACTION BRIEF; the reply prompt and the drain recognise a referral by it. */
 export const REFERRAL_MARK = "REFERRED BY";
