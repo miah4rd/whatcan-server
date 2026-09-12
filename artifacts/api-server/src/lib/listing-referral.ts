@@ -88,7 +88,9 @@ export function toIntlDigits(raw: string): string {
 
 /** The scout's card name: "Villa - Area - 2BR - note". */
 export function nameParts(name: string): { villa: string; area: string; bedrooms: string } {
-  const parts = (name ?? "").split(" - ").map((p) => p.trim()).filter(Boolean);
+  // The scout separates with a hyphen, and sometimes with a long dash: "Aquamarine
+  // Villas III (BREIG) — Pererenan (...)" came through as one villa name.
+  const parts = (name ?? "").split(/\s+[-–—]\s+/).map((p) => p.trim()).filter(Boolean);
   return {
     villa: parts[0] ?? "",
     area: parts.find((p, i) => i > 0 && !/\d\s*BR\b/i.test(p) && !/target|OTA|referral|\/mo|\bjt\b|\d+M\b/i.test(p)) ?? "",
@@ -98,7 +100,7 @@ export function nameParts(name: string): { villa: string; area: string; bedrooms
 
 /** "[OWN] Villa Platano" -> "Villa Platano": the scout's tags are for the card, not for a message. */
 export function cleanVillaName(name: string): string {
-  return (name ?? "").replace(/\[[^\]]*\]\s*/g, "").replace(/\s{2,}/g, " ").trim();
+  return (name ?? "").replace(/\[[^\]]*\]\s*/g, "").replace(/\s*\([^)]*\)/g, "").replace(/\s+(III|II|IV)$/i, "").replace(/\s{2,}/g, " ").trim();
 }
 
 /**
@@ -108,7 +110,9 @@ export function cleanVillaName(name: string): string {
  * number". A team or a desk is not someone to name either.
  */
 export function realName(value: string | null | undefined): string | null {
-  const s = (value ?? "").replace(/\([^)]*\)/g, "").replace(/\s+(owner|manager)$/i, "").trim();
+  // What comes before a bracket is the name: "Jeany (Sales Manager) Amelia" is Jeany.
+  let s = (value ?? "").split("(")[0]!.replace(/\s+(owner|manager)$/i, "").replace(/\s{2,}/g, " ").trim();
+  if (/^[A-Z]{3,}$/.test(s)) s = s[0] + s.slice(1).toLowerCase(); // a contact card's "IKE" is Ike
   if (!s || s.length > 40) return null;
   if (/^(the\s+)?(villa|villa side|us|we|owner|staff|reception|manager|admin|contact|the villa's contact)$/i.test(s)) return null;
   if (/\b(team|support|reception|management|reservations?|sales|marketing|booking)\b/i.test(s)) return null;
@@ -127,7 +131,7 @@ export function greetingName(person: string): string {
 /** Role in a sentence ("the owner of Villa X") and in brackets ("owner's family"). */
 const ROLE_OF: Record<Role, string> = {
   owner: "the owner of", family: "family of the owner of", partner: "a partner at", manager: "the manager of",
-  staff: "staff at", sales: "the sales team of", agency: "an agency for", other: "a contact for",
+  staff: "from the team at", sales: "from the sales team of", agency: "an agency for", other: "a contact at",
 };
 const ROLE_LABEL: Record<Role, string> = {
   owner: "owner", family: "owner's family", partner: "partner", manager: "villa manager",
