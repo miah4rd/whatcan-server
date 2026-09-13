@@ -52,8 +52,18 @@ function baliDateString(now: Date): string {
   return new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+/**
+ * Lines that keep their existing conversations but open no new ones. Yudi 2
+ * (62585), 13.09 15:10–15:30: 4 of its first 6 contacts got WAhelp's "WhatsApp
+ * is not installed on this number" — all ordinary Indonesian mobiles — where
+ * Yudi's first line saw 0–3 of 9–13 a day all week. Held until that is
+ * explained; a card that notice closes may be a live owner.
+ */
+const NO_NEW_CONTACTS = new Set<number>([62585]);
+
 /** How many first contacts this line may open today. */
 export function dailyCapForLine(line: number | null, now: Date = new Date()): number {
+  if (line !== null && NO_NEW_CONTACTS.has(line)) return 0;
   const start = line !== null ? LINE_WARMUP_START[line] : undefined;
   if (!start) return NEW_CONTACT_DAILY_CAP;
   const day = Math.round((Date.parse(baliDateString(now)) - Date.parse(start)) / 86_400_000) + 1;
