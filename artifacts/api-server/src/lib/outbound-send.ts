@@ -24,6 +24,7 @@ import {
   brokerLines,
   getLastMessengerFieldId,
   updateLastMessengerField,
+  isKnownWhatsappLine,
 } from "./amo-messenger-field";
 import { countActiveWhatsappChats, closeStaleDuplicateWhatsappTalks, whatsappTalkLines } from "./amo-client.js";
 import { isFirstOutbound, pickLineForNewConversation } from "./new-contact-budget";
@@ -160,6 +161,20 @@ export async function resolveSendChannel(
       error: "channel_unresolved",
       message:
         "Could not resolve the sending channel for this lead — the message was NOT sent. Send it manually from amoCRM (the draft stays in your inbox).",
+    };
+  }
+
+  // Salesbot 22127 has one branch per WhatsApp line we know (SOURCE_MAP). Since
+  // 13.09 its "None of the conditions" exit sends through Yudi 2 (62585), so a
+  // line it has no branch for — an old Instagram/Facebook source id left in the
+  // field — would leave from Yudi 2's WhatsApp instead of its own channel.
+  if (!isKnownWhatsappLine(source)) {
+    log.warn({ leadId, source }, "send refused — Salesbot has no branch for this source; it would go out on Yudi 2");
+    return {
+      ok: false,
+      error: "channel_unresolved",
+      message:
+        "This lead's chat channel is not one of our WhatsApp lines — the message was NOT sent. Send it manually from amoCRM (the draft stays in your inbox).",
     };
   }
 

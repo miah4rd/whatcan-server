@@ -1138,6 +1138,19 @@ responsible user, it is field 967477, and it is decided at the send:
   second). `BROKER_LINES.yudi` is back to `[59537]`; re-enable only after one
   send on 62585 is seen in a lead's timeline. A 200 from the Salesbot trigger
   is not delivery.
+- **Re-enabled ~15:00 the same day.** Cause of the loss: Salesbot 22127
+  branches on field 967477 per source id (step 0 conditions → one
+  `send_external_message` block per channel) and had no branch for 62585. The
+  owner added a "Yudi 2" Message block but wired it to "None of the
+  conditions", not to a 62585 condition; the old fallback (step 27, routing
+  Instagram/Facebook by `{{messenger}}`) is now orphaned and its send blocks
+  lost their channels on that save. So `resolveSendChannel` refuses any source
+  that is not in SOURCE_MAP — otherwise a stale Instagram id in the field would
+  go out from Yudi 2's WhatsApp. The three lost sends were re-keyed to
+  `lead_id = 'undelivered-62585:<id>'` (budget ignores `undelivered-%`), their
+  drafts put back to pending. Adding a line = SOURCE_MAP + BROKER_LINES + a
+  Salesbot branch, and a first send checked for a type-90 event in the lead's
+  `/ajax/v3/leads/{id}/events_timeline`.
 - Two traps that made the second line reply from the first: the timeline sync
   wrote the line NAME into 967477 and `mapNameToSourceId` prefix-matched
   "Yudi 2" as "Yudi"; and the reassignment guard compared names, so "Yudi 2"
