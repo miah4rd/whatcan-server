@@ -1151,6 +1151,18 @@ responsible user, it is field 967477, and it is decided at the send:
   drafts put back to pending. Adding a line = SOURCE_MAP + BROKER_LINES + a
   Salesbot branch, and a first send checked for a type-90 event in the lead's
   `/ajax/v3/leads/{id}/events_timeline`.
+- **Delivers, but held for new contacts (15:40 the same day).** After the
+  re-enable six first contacts left on 62585 and all six show a type-90 event
+  and a 62585 talk — Salesbot routing works. But four got WAhelp's
+  "На данном номере не установлен whatsapp" within a second, all ordinary
+  Indonesian mobiles, where Yudi's first line saw 0–3 such notices on 9–13
+  first contacts a day for a week. `live-reply-debounce` → `closeUndeliverable`
+  closed three of them as lost (23555637, 23549071, 23537919; 23549075 still
+  open). `NO_NEW_CONTACTS` in new-contact-budget.ts gives 62585 a cap of 0; its
+  two live conversations (23549077, 23549073) stay on it. Before lifting: find
+  out whether a fresh WAhelp line reports numbers it cannot resolve as "not
+  installed" (resend one of the four from 59537 and see if it arrives), and do
+  not let a line-2 notice close a card until then.
 - Two traps that made the second line reply from the first: the timeline sync
   wrote the line NAME into 967477 and `mapNameToSourceId` prefix-matched
   "Yudi 2" as "Yudi"; and the reassignment guard compared names, so "Yudi 2"
