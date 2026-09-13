@@ -1111,6 +1111,13 @@ responsible user, it is field 967477, and it is decided at the send:
   send) stays there; a first contact takes the first line with budget left;
   the chosen id is written into 967477 and a failed write refuses the send.
   A conversation on nobody's line of the broker falls back to the old rules.
+- **PAUSED the same day.** The first three sends routed to 62585 (13:20,
+  leads 23549089 / 23549083 / 23549081) never reached WhatsApp: field 967477
+  and the text field were written, Salesbot answered 200, but no type-90
+  outgoing event and no talk appeared (a send on 59537 shows both within a
+  second). `BROKER_LINES.yudi` is back to `[59537]`; re-enable only after one
+  send on 62585 is seen in a lead's timeline. A 200 from the Salesbot trigger
+  is not delivery.
 - Two traps that made the second line reply from the first: the timeline sync
   wrote the line NAME into 967477 and `mapNameToSourceId` prefix-matched
   "Yudi 2" as "Yudi"; and the reassignment guard compared names, so "Yudi 2"
