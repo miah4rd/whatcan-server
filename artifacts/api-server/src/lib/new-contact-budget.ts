@@ -23,6 +23,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { UNDELIVERABLE_LEAD_IDS } from "./undeliverable";
+import { brokerLines } from "./amo-messenger-field";
 
 /** Meta tolerates far more than this; the point is to stay unremarkable. */
 /**
@@ -36,6 +37,31 @@ export const NEW_CONTACT_DAILY_CAP = 9;
 
 /** Bali — the day boundary the brokers actually live in. */
 const TZ = "Asia/Makassar";
+
+/**
+ * A brand-new WhatsApp number is warmed up before it gets the full nine: Meta
+ * is harshest on a fresh number that opens many conversations at once. Owner,
+ * 2026-09-13, for Yudi's second line: 3 a day, then 6, then 9. Day 1 is the
+ * date below (Bali calendar).
+ */
+const LINE_WARMUP_START: Record<number, string> = {
+  62585: "2026-09-13",
+};
+
+function baliDateString(now: Date): string {
+  return new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/** How many first contacts this line may open today. */
+export function dailyCapForLine(line: number | null, now: Date = new Date()): number {
+  const start = line !== null ? LINE_WARMUP_START[line] : undefined;
+  if (!start) return NEW_CONTACT_DAILY_CAP;
+  const day = Math.round((Date.parse(baliDateString(now)) - Date.parse(start)) / 86_400_000) + 1;
+  if (day < 1) return 0;
+  if (day <= 3) return 3;
+  if (day <= 6) return 6;
+  return NEW_CONTACT_DAILY_CAP;
+}
 
 /**
  * The hours in which the bot may OPEN a conversation with a stranger.
@@ -82,12 +108,27 @@ function firstRow<T>(res: unknown): T | undefined {
  * not count however many messages it got today — repeat contact is not what
  * gets a number flagged.
  */
-export async function newContactsToday(responsibleUser: string | null): Promise<number> {
+export type LineBudget = { line: number | null; used: number; cap: number };
+
+/**
+ * Today's first contacts per WhatsApp line of this broker, primary line first.
+ *
+ * The limit belongs to the LINE (owner, 2026-09-13: Yudi got a second number to
+ * get a second nine). A first send is billed to the line stamped on it
+ * (`sent_messages.source_id`); rows from before the stamp existed, or stamped
+ * with a line that is not this broker's, are billed to the primary line — which
+ * is exactly how every one of them was counted before. A broker with a single
+ * line (or none we know) gets one bucket of nine, as always.
+ */
+export async function lineBudgets(responsibleUser: string | null, now: Date = new Date()): Promise<LineBudget[]> {
   const who = (responsibleUser ?? "").trim().toLowerCase();
+  const lines: Array<number | null> = brokerLines(responsibleUser);
+  if (lines.length === 0) lines.push(null);
+  const used = new Map<number | null, number>(lines.map((l) => [l, 0]));
   try {
     const res = await db.execute(sql`
-      SELECT count(*)::int AS n FROM (
-        SELECT DISTINCT ON (lead_id) lead_id, created_at, responsible_user
+      SELECT f.source_id FROM (
+        SELECT DISTINCT ON (lead_id) lead_id, created_at, responsible_user, source_id
         FROM sent_messages
         ORDER BY lead_id, created_at ASC
       ) f
@@ -98,35 +139,58 @@ export async function newContactsToday(responsibleUser: string | null): Promise<
         -- day's budget: "была попытка связаться, но связи не было".
         AND f.lead_id NOT IN ${UNDELIVERABLE_LEAD_IDS}
     `);
-    return Number(firstRow<{ n: number }>(res)?.n ?? 0);
+    const rows = ((res as { rows?: Array<{ source_id: string | null }> }).rows ??
+      (Array.isArray(res) ? (res as Array<{ source_id: string | null }>) : []));
+    for (const r of rows) {
+      const stamped = r.source_id !== null ? Number(r.source_id) : null;
+      const line = stamped !== null && lines.includes(stamped) ? stamped : lines[0]!;
+      used.set(line, (used.get(line) ?? 0) + 1);
+    }
   } catch (err) {
     // Fail OPEN: this is a politeness cap, not a safety guard. Silently
     // strangling every automatic first message because one query failed would
     // cost real leads, and the broker would see only silence.
     logger.warn({ err, responsibleUser }, "new-contact budget: count failed — allowing the send");
-    return 0;
   }
+  return lines.map((line) => ({ line, used: used.get(line) ?? 0, cap: dailyCapForLine(line, now) }));
 }
 
-export type NewContactBudget = { ok: true; used: number } | { ok: false; used: number };
+/** Leads this broker opened today across all of their lines. */
+export async function newContactsToday(responsibleUser: string | null): Promise<number> {
+  return (await lineBudgets(responsibleUser)).reduce((n, b) => n + b.used, 0);
+}
 
 /**
- * May an UNATTENDED path open a new conversation on this broker's line?
+ * The line a first contact should go out on right now: the first of the
+ * broker's lines with budget left, so the primary fills before the second one
+ * opens. Null when every line is spent today.
+ */
+export async function pickLineForNewConversation(responsibleUser: string | null): Promise<number | null> {
+  return (await lineBudgets(responsibleUser)).find((b) => b.used < b.cap)?.line ?? null;
+}
+
+export type NewContactBudget = { ok: boolean; used: number; cap: number; lines: LineBudget[] };
+
+/**
+ * May an UNATTENDED path open a new conversation on one of this broker's lines?
  * Callers that are refused must leave the draft in the inbox, never drop it —
  * the broker can still send it by hand, which is exactly the intended escape.
+ * Which line it goes out on is decided at the send itself (resolveSendChannel).
  */
 export async function mayOpenNewConversation(
   responsibleUser: string | null,
 ): Promise<NewContactBudget> {
-  const used = await newContactsToday(responsibleUser);
-  if (used >= NEW_CONTACT_DAILY_CAP) {
+  const lines = await lineBudgets(responsibleUser);
+  const used = lines.reduce((n, b) => n + b.used, 0);
+  const cap = lines.reduce((n, b) => n + b.cap, 0);
+  if (!lines.some((b) => b.used < b.cap)) {
     logger.warn(
-      { responsibleUser, used, cap: NEW_CONTACT_DAILY_CAP },
+      { responsibleUser, used, cap, lines },
       "new-contact budget spent for today — the draft stays in the inbox for the broker to send by hand",
     );
-    return { ok: false, used };
+    return { ok: false, used, cap, lines };
   }
-  return { ok: true, used };
+  return { ok: true, used, cap, lines };
 }
 
 /** Have we ever sent this lead anything? Cheap, and the only thing that makes a send "new". */

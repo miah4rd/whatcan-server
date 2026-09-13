@@ -1091,6 +1091,32 @@ funnel; `promoteIfQualified` / `routeUnqualified` / `releaseFrom*` are gone.
 Audit by hand: `POST /api/admin/listing-audit` (dry), `?apply=1`, `?lead=<id>`.
 Two time-driven closers stay outside: three unanswered nudges, no WhatsApp.
 
+### One broker, two WhatsApp numbers (2026-09-13)
+
+The owner gave Yudi a second WhatsApp (WAhelp "Yudi 2", amoCRM source
+62585) to get a second daily nine of first contacts in Rental Listings. The
+co-worker still creates every card on Yudi — the NUMBER is not the
+responsible user, it is field 967477, and it is decided at the send:
+
+- `BROKER_LINES` in `amo-messenger-field.ts` lists a broker's lines, primary
+  first (`yudi: [59537, 62585]`). `sourceIdForBroker` is the primary.
+- The budget is per LINE (`lineBudgets` in `new-contact-budget.ts`), billed by
+  `sent_messages.source_id` on a lead's first send; unstamped rows (before
+  13.09) or a line that is not the broker's go to the primary. A new line is
+  warmed up: 62585 gets 3 a day on 13–15.09, 6 on 16–18.09, 9 from 19.09
+  (`LINE_WARMUP_START`). `mayOpenNewConversation` is ok while ANY line has
+  budget. Read it live: `GET /api/admin/line-budget?broker=Yudi`.
+- `resolveSendChannel` → `resolveMultiLineSource` for a broker with 2+ lines:
+  a conversation on one of the broker's lines (amoCRM talks, then our stamped
+  send) stays there; a first contact takes the first line with budget left;
+  the chosen id is written into 967477 and a failed write refuses the send.
+  A conversation on nobody's line of the broker falls back to the old rules.
+- Two traps that made the second line reply from the first: the timeline sync
+  wrote the line NAME into 967477 and `mapNameToSourceId` prefix-matched
+  "Yudi 2" as "Yudi"; and the reassignment guard compared names, so "Yudi 2"
+  on a Yudi card looked like a handover. Known lines are now written as ids,
+  names match longest first, and the guard compares lines.
+
 ### The villa side hands us another number (2026-09-12)
 
 The owner, looking at old listing conversations that never qualified: "так

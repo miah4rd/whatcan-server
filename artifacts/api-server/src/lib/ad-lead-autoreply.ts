@@ -41,7 +41,7 @@ import { resolveSendChannel, deliverText } from "./outbound-send";
 import { parseDialogContent } from "./dialog-parser";
 import { getLeadCardCriteria, type LeadCardAnswers } from "./lead-card-fields";
 import { leadPhone, phoneAlreadyMessaged } from "./phone-dedupe";
-import { mayOpenNewConversation, NEW_CONTACT_DAILY_CAP } from "./new-contact-budget";
+import { mayOpenNewConversation } from "./new-contact-budget";
 import { isNonAnswer, unservedAreasOnCard } from "./area-coverage";
 
 /**
@@ -304,7 +304,7 @@ export async function sendAdLeadWelcome(opts: {
   const budget = await mayOpenNewConversation(responsibleUser);
   if (!budget.ok) {
     logger.warn(
-      { leadId, responsibleUser, used: budget.used, cap: NEW_CONTACT_DAILY_CAP },
+      { leadId, responsibleUser, used: budget.used, cap: budget.cap },
       "ad welcome held back — this line has already opened its day's worth of new conversations",
     );
     return false;
@@ -353,6 +353,7 @@ export async function sendAdLeadWelcome(opts: {
       kind: AD_AUTO_KIND,
       messageText: delivery.deliveryText,
       responsibleUser,
+      sourceId: channel.source,
       webhookStatus: delivery.hookStatus,
       webhookResponse: `${delivery.hookBody} | links 0/0`,
     })

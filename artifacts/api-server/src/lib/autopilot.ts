@@ -31,7 +31,6 @@ import {
   mayOpenNewConversation,
   isFirstOutbound,
   withinOutreachHours,
-  NEW_CONTACT_DAILY_CAP,
   OUTREACH_OPEN_HOUR,
   OUTREACH_CLOSE_HOUR,
 } from "./new-contact-budget";
@@ -418,10 +417,10 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
       const budget = await mayOpenNewConversation(sug.responsibleUser);
       if (!budget.ok) {
         logger.warn(
-          { leadId, used: budget.used, cap: NEW_CONTACT_DAILY_CAP },
-          "autopilot held back — this line has already opened its day's worth of new conversations",
+          { leadId, used: budget.used, cap: budget.cap, lines: budget.lines },
+          "autopilot held back — every line of this broker has already opened its day's worth of new conversations",
         );
-        return decline(`waiting for tomorrow's new-contact budget (${budget.used}/${NEW_CONTACT_DAILY_CAP})`);
+        return decline(`waiting for tomorrow's new-contact budget (${budget.used}/${budget.cap})`);
       }
     }
 

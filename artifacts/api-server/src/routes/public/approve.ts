@@ -690,6 +690,7 @@ router.post("/approve", async (req, res) => {
         kind: sug.kind,
         messageText: deliveryText,
         responsibleUser: currentResponsibleUser,
+        sourceId: messengerSource,
         webhookStatus: hookStatus,
         webhookResponse: chatSent && effectiveAttachments.length > 0
           ? `${hookBody} | links 0/${effectiveAttachments.length}`

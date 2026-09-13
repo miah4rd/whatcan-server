@@ -147,6 +147,8 @@ pool.query(`CREATE TABLE IF NOT EXISTS ai_usage (
   .then(() => pool.query(`CREATE INDEX IF NOT EXISTS ai_usage_created_at_idx ON ai_usage (created_at)`))
   .catch((err) => logger.error({ err }, "startup migration: ai_usage failed"));
 
+pool.query(`ALTER TABLE sent_messages ADD COLUMN IF NOT EXISTS source_id text`)
+  .catch((err) => logger.error({ err }, "startup migration: sent_messages.source_id failed"));
 pool.query(`ALTER TABLE pending_suggestions ADD COLUMN IF NOT EXISTS auto_sent BOOLEAN DEFAULT FALSE`)
   .catch((err) => logger.error({ err }, "startup migration: auto_sent failed"));
 

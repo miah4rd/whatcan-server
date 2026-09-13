@@ -83,6 +83,9 @@ export const sentMessagesTable = pgTable("sent_messages", {
   kind: text("kind"),
   messageText: text("message_text").notNull(),
   responsibleUser: text("responsible_user"),
+  // The WhatsApp line (amoCRM source id) the message went out on. The daily
+  // first-contact budget is per line, and a conversation stays on its line.
+  sourceId: text("source_id"),
   webhookStatus: integer("webhook_status"),
   webhookResponse: text("webhook_response"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

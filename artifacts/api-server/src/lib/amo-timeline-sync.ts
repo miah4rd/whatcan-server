@@ -16,7 +16,7 @@ import { generateSuggestion } from "./generate-suggestion.js";
 // inbox) and fires the broker push notification. generateSuggestion alone only
 // RETURNS the text — without queueing, the suggestion silently evaporates.
 import { queueSuggestion } from "../routes/amocrm-webhook.js";
-import { getLastMessengerFieldId, updateLastMessengerField } from "./amo-messenger-field.js";
+import { getLastMessengerFieldId, updateLastMessengerField, isKnownWhatsappLine } from "./amo-messenger-field.js";
 // Coalesces this detection with the real-time webhook's — both can fire for
 // the same burst of WhatsApp messages, so both route through the same debounce.
 import { scheduleLiveReply } from "./live-reply-debounce.js";
@@ -667,6 +667,10 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
               } else if (author?.origin_name) {
                 sourceName = author.origin_name;
               }
+              // Our own WhatsApp lines are written as their id, which is what
+              // Salesbot routes by. A name ("Yudi 2") went through a prefix
+              // match on the way back and came out as the other line.
+              if (isKnownWhatsappLine(sourceId)) sourceName = sourceId;
 
               if (sourceName) {
                 await updateLastMessengerField(lead.leadId, sourceName, parseInt(sourceId ?? "0", 10), fieldId);
@@ -949,14 +953,17 @@ async function processQuickPollLead(
     try {
       const author = latestIncomingEvent.data?.author;
       let sourceName: string | undefined;
+      let sourceId: string | undefined;
       if (author?.origin_profile) {
         try {
           const profile = typeof author.origin_profile === "string" ? JSON.parse(author.origin_profile) : author.origin_profile;
-          const sourceId = profile?.id ? String(profile.id) : undefined;
+          sourceId = profile?.id ? String(profile.id) : undefined;
           if (sourceId && sourceMap[sourceId]) sourceName = sourceMap[sourceId];
         } catch { /* ignore */ }
       }
       if (!sourceName && author?.origin_name) sourceName = author.origin_name;
+      // Same rule as the incoming detector above: our lines by id, not by name.
+      if (isKnownWhatsappLine(sourceId)) sourceName = sourceId;
       if (sourceName) {
         await updateLastMessengerField(leadId, sourceName, 0, fieldId);
       }
