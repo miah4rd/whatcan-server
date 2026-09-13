@@ -16,10 +16,17 @@
  *   3. sendAttachmentLinks — each property link as its own message.
  */
 import { db, sentMessagesTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { updateLeadCustomField, triggerSalesbot } from "./amo-chat-client";
-import { resolveOutboundSource, fillMessengerFromResponsibleIfNoMessages } from "./amo-messenger-field";
-import { countActiveWhatsappChats, closeStaleDuplicateWhatsappTalks } from "./amo-client.js";
+import {
+  resolveOutboundSource,
+  fillMessengerFromResponsibleIfNoMessages,
+  brokerLines,
+  getLastMessengerFieldId,
+  updateLastMessengerField,
+} from "./amo-messenger-field";
+import { countActiveWhatsappChats, closeStaleDuplicateWhatsappTalks, whatsappTalkLines } from "./amo-client.js";
+import { isFirstOutbound, pickLineForNewConversation } from "./new-contact-budget";
 import { stripEmojiForDelivery } from "./message-delivery.js";
 import { fetchTimeline, parseTimelineEvents, getAmoAuth } from "./amo-timeline-sync.js";
 
@@ -41,6 +48,63 @@ export type ChannelResult =
   | { ok: false; error: "channel_unresolved" | "multiple_chat_threads"; message: string };
 
 /**
+ * Which of a multi-line broker's numbers this send goes out on.
+ *
+ * 1. The lead already has a conversation on one of the broker's numbers (amoCRM
+ *    talks, or our own stamped send when the talk is not visible yet): that
+ *    number. A chat belongs to the number it was opened from; answering from
+ *    the other one opens a second chat with the same person.
+ * 2. Nobody has talked to this lead yet: the first number with budget left
+ *    today (primary first). All spent — only a broker's own Approve gets this
+ *    far — the primary.
+ * 3. A conversation exists but on nobody's line of this broker (a handover):
+ *    `source: null`, and the ordinary single-line rules decide.
+ *
+ * The chosen number is written into the field Salesbot reads. If that write
+ * fails the send is refused: Salesbot would otherwise go out on whatever
+ * number the field still holds.
+ */
+async function resolveMultiLineSource(
+  leadId: string,
+  responsibleUser: string | null,
+  lines: number[],
+  log: Log,
+): Promise<{ source: string | null } | { refuse: true }> {
+  let line: number | null = null;
+  let why = "";
+
+  const onOwnLine = (await whatsappTalkLines(leadId)).find((t) => lines.includes(t.sourceId));
+  if (onOwnLine) {
+    line = onOwnLine.sourceId;
+    why = "existing conversation (talk)";
+  } else {
+    const [stamped] = await db
+      .select({ sourceId: sentMessagesTable.sourceId })
+      .from(sentMessagesTable)
+      .where(and(eq(sentMessagesTable.leadId, leadId), isNotNull(sentMessagesTable.sourceId)))
+      .orderBy(desc(sentMessagesTable.createdAt))
+      .limit(1);
+    const n = Number(stamped?.sourceId);
+    if (lines.includes(n)) {
+      line = n;
+      why = "our earlier send";
+    } else if (await isFirstOutbound(leadId)) {
+      line = (await pickLineForNewConversation(responsibleUser)) ?? lines[0]!;
+      why = "first contact — line with budget left today";
+    }
+  }
+  if (line === null) return { source: null };
+
+  const ok = await updateLastMessengerField(leadId, String(line), line, getLastMessengerFieldId());
+  if (!ok) {
+    log.warn({ leadId, line }, "multi-line send: could not write the chosen number into the messenger field — refusing");
+    return { refuse: true };
+  }
+  log.warn({ leadId, responsibleUser, line, why }, "multi-line send: number chosen");
+  return { source: String(line) };
+}
+
+/**
  * Decide whether this lead can be safely sent to, and on which line.
  *
  * Both refusals here are deliberate: a send that goes out blind is worse than
@@ -51,22 +115,45 @@ export async function resolveSendChannel(
   responsibleUser: string | null,
   log: Log,
 ): Promise<ChannelResult> {
-  // No-dialog guard: a fresh ad lead has no messages, so the timeline sync has
-  // nothing to derive the channel from — point the field at the responsible
-  // user's own line first. A no-op when the lead does have a dialog.
-  await fillMessengerFromResponsibleIfNoMessages(leadId, responsibleUser).catch((e) => {
-    log.warn({ leadId, err: e }, "fillMessengerFromResponsible threw");
-  });
+  // A broker with more than one WhatsApp number (Yudi, 2026-09-13) needs the
+  // line decided here, per send: a conversation stays on the number it lives
+  // on, and a first contact takes the number with budget left today.
+  const lines = brokerLines(responsibleUser);
+  let source: string | null = null;
+  if (lines.length > 1) {
+    const multi = await resolveMultiLineSource(leadId, responsibleUser, lines, log).catch((e) => {
+      log.warn({ leadId, err: e }, "resolveMultiLineSource threw");
+      return { refuse: true as const };
+    });
+    if ("refuse" in multi) {
+      return {
+        ok: false,
+        error: "channel_unresolved",
+        message:
+          "Could not set which of the broker's WhatsApp numbers to send from — the message was NOT sent. Send it manually from amoCRM (the draft stays in your inbox).",
+      };
+    }
+    source = multi.source;
+  }
 
-  // Salesbot reads the "last messenger" field to decide which line/thread to
-  // send through. With that field empty it still accepts the trigger and
-  // returns 200, then delivers into the wrong conversation (or not at all) —
-  // amoCRM shows a red "Error" while the broker's inbox says "Sent". That
-  // silent false success is worse than any delivery failure.
-  const source = await resolveOutboundSource(leadId, responsibleUser).catch((e) => {
-    log.warn({ leadId, err: e }, "resolveOutboundSource threw");
-    return null;
-  });
+  if (!source) {
+    // No-dialog guard: a fresh ad lead has no messages, so the timeline sync has
+    // nothing to derive the channel from — point the field at the responsible
+    // user's own line first. A no-op when the lead does have a dialog.
+    await fillMessengerFromResponsibleIfNoMessages(leadId, responsibleUser).catch((e) => {
+      log.warn({ leadId, err: e }, "fillMessengerFromResponsible threw");
+    });
+
+    // Salesbot reads the "last messenger" field to decide which line/thread to
+    // send through. With that field empty it still accepts the trigger and
+    // returns 200, then delivers into the wrong conversation (or not at all) —
+    // amoCRM shows a red "Error" while the broker's inbox says "Sent". That
+    // silent false success is worse than any delivery failure.
+    source = await resolveOutboundSource(leadId, responsibleUser).catch((e) => {
+      log.warn({ leadId, err: e }, "resolveOutboundSource threw");
+      return null;
+    });
+  }
   if (!source) {
     return {
       ok: false,

@@ -358,6 +358,27 @@ export async function closeStaleDuplicateWhatsappTalks(leadId: string): Promise<
   }
 }
 
+/**
+ * The WhatsApp lines (amoCRM source ids) this lead already has conversations
+ * on, freshest first. A chat belongs to the number it was opened from, so for
+ * a broker with two numbers this is the truth about which one to reply from.
+ * Empty when there are none or amoCRM could not be read.
+ */
+export async function whatsappTalkLines(leadId: string): Promise<Array<{ sourceId: number; updatedAt: number }>> {
+  try {
+    const data = await amoFetch<{
+      _embedded?: { talks?: Array<{ source_id?: number | null; origin?: string; updated_at?: number }> };
+    }>(`/api/v4/talks?filter[entity_id]=${leadId}&filter[entity_type]=lead`);
+    return (data?._embedded?.talks ?? [])
+      .filter((t) => typeof t.source_id === "number" && (!t.origin || WHATSAPP_TALK_ORIGINS.test(t.origin)))
+      .map((t) => ({ sourceId: t.source_id as number, updatedAt: t.updated_at ?? 0 }))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  } catch (err) {
+    logger.warn({ leadId, err }, "whatsappTalkLines: could not read the lead's talks");
+    return [];
+  }
+}
+
 export async function countActiveWhatsappChats(leadId: string): Promise<number> {
   try {
     const data = await amoFetch<{

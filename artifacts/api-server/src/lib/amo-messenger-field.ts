@@ -31,6 +31,9 @@ const SOURCE_MAP: Record<number, string> = {
   61183: "Phone 1",
   61185: "Phone 2",
   61191: "Ferdian",
+  // Yudi's second WhatsApp (WAhelp "Yudi 2 Chanel", 2026-09-13): a second daily
+  // budget of first contacts for Rental Listings. Same person, second line.
+  62585: "Yudi 2",
 };
 
 const KNOWN_BOT_NAMES = Object.values(SOURCE_MAP);
@@ -39,6 +42,15 @@ const KNOWN_BOT_NAMES = Object.values(SOURCE_MAP);
 const NAME_TO_ID: Record<string, number> = {};
 for (const [id, name] of Object.entries(SOURCE_MAP)) {
   NAME_TO_ID[name.toLowerCase()] = Number(id);
+}
+// Longest name first, so "Yudi 2" is tried before "Yudi" — otherwise the
+// prefix match reads the second line's name as the first line.
+const NAMES_LONGEST_FIRST = Object.entries(NAME_TO_ID).sort((a, b) => b[0].length - a[0].length);
+
+/** Is this source id one of our WhatsApp lines (as opposed to Instagram, Facebook, …)? */
+export function isKnownWhatsappLine(sourceId: number | string | null | undefined): boolean {
+  const n = Number(sourceId);
+  return Number.isFinite(n) && SOURCE_MAP[n] !== undefined;
 }
 
 // Integration origin → default channel name
@@ -51,10 +63,10 @@ function mapNameToSourceId(name: string): number | null {
   if (!name) return null;
   const lower = name.toLowerCase().trim();
   if (NAME_TO_ID[lower]) return NAME_TO_ID[lower];
-  for (const [mapName, id] of Object.entries(NAME_TO_ID)) {
+  for (const [mapName, id] of NAMES_LONGEST_FIRST) {
     if (lower.startsWith(mapName + " ") || lower === mapName) return id;
   }
-  for (const [mapName, id] of Object.entries(NAME_TO_ID)) {
+  for (const [mapName, id] of NAMES_LONGEST_FIRST) {
     if (lower.includes(mapName)) return id;
   }
   return null;
@@ -72,21 +84,28 @@ function mapNameToSourceId(name: string): number | null {
  * HoS signs as "Nick" and their working leads route through 62249 — verified
  * against leads where delivery succeeded.
  */
-const BROKER_LINE: Record<string, number> = {
-  hos: 62249,
-  nick: 62249,
-  robert: 58745,
-  amelia: 56811,
-  sharon: 56951,
-  yudi: 59537,
-  saif: 59893,
-  kristo: 61161,
-  ferdian: 61191,
+const BROKER_LINES: Record<string, number[]> = {
+  hos: [62249],
+  nick: [62249],
+  robert: [58745],
+  amelia: [56811],
+  sharon: [56951],
+  // First line first: a day's first contacts fill it before the second opens.
+  yudi: [59537, 62585],
+  saif: [59893],
+  kristo: [61161],
+  ferdian: [61191],
 };
 
+/** Every WhatsApp line this broker sends from, primary first. Empty when unknown. */
+export function brokerLines(brokerName: string | null | undefined): number[] {
+  if (!brokerName) return [];
+  return BROKER_LINES[brokerName.trim().toLowerCase()] ?? [];
+}
+
+/** The broker's primary line — the one a conversation with no other evidence goes out on. */
 export function sourceIdForBroker(brokerName: string | null | undefined): number | null {
-  if (!brokerName) return null;
-  return BROKER_LINE[brokerName.trim().toLowerCase()] ?? null;
+  return brokerLines(brokerName)[0] ?? null;
 }
 
 /**
@@ -116,8 +135,12 @@ export async function resolveOutboundSource(
       ? mapNameToSourceId(current)
       : null;
   const fieldBroker = fieldSourceId ? SOURCE_MAP[fieldSourceId] : null;
+  // Compared by LINE, not by name: "Yudi 2" is Yudi's own second line, and a
+  // name comparison would call it a handover and move the chat to line one.
+  // HoS and Nick share 62249, which the old name check rewrote to itself.
+  const fieldIsOwnLine = fieldSourceId !== null && brokerLines(respLower).includes(fieldSourceId);
 
-  if (brokerLine && fieldBroker && fieldBroker.toLowerCase() !== respLower) {
+  if (brokerLine && fieldBroker && !fieldIsOwnLine) {
     await updateLastMessengerField(leadId, String(brokerLine), 0, LAST_MESSENGER_FIELD_ID).catch(() => false);
     logger.info(
       { leadId, responsibleUser, wasBroker: fieldBroker, wasSource: fieldSourceId, nowSource: brokerLine },
