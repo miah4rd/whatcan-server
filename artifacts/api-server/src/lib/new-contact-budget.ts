@@ -138,6 +138,9 @@ export async function lineBudgets(responsibleUser: string | null, now: Date = ne
         -- scored a conversation that never opened, so it must not spend the
         -- day's budget: "была попытка связаться, но связи не было".
         AND f.lead_id NOT IN ${UNDELIVERABLE_LEAD_IDS}
+        -- Sends we know never left (re-keyed after the fact, e.g. the three
+        -- Yudi 2 sends of 13.09 that Salesbot had no branch for).
+        AND f.lead_id NOT LIKE 'undelivered-%'
     `);
     const rows = ((res as unknown as { rows?: Array<{ source_id: string | null }> }).rows ??
       (Array.isArray(res) ? (res as unknown as Array<{ source_id: string | null }>) : []));

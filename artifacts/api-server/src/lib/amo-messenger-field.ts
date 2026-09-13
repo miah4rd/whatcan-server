@@ -91,11 +91,11 @@ const BROKER_LINES: Record<string, number[]> = {
   amelia: [56811],
   sharon: [56951],
   // First line first: a day's first contacts fill it before the second opens.
-  // 62585 ("Yudi 2") is PAUSED: on 13.09 at 13:20 three first contacts were
-  // routed to it, Salesbot 22127 returned 200 and wrote nothing into the chat
-  // (no type-90 event, no talk). Put it back as [59537, 62585] only after one
-  // send on it shows up in the lead's timeline.
-  yudi: [59537],
+  // 62585 ("Yudi 2"): Salesbot 22127 had no branch for it until 13.09 ~14:55
+  // (three sends at 13:20 were lost). The owner added the block, wired to the
+  // bot's "None of the conditions" exit — which is why resolveSendChannel
+  // refuses any source outside SOURCE_MAP.
+  yudi: [59537, 62585],
   saif: [59893],
   kristo: [61161],
   ferdian: [61191],
