@@ -6,6 +6,8 @@ import router from "./routes";
 import mobileRouter from "./routes/mobile";
 import swRouter from "./routes/public-sw";
 import propertyShareRouter from "./routes/property-share";
+import photoVariantsRouter from "./routes/photo-variants";
+import { startPhotoVariantScheduler } from "./lib/photo-variants";
 import { logger } from "./lib/logger";
 import { startFollowupScheduler } from "./lib/followup-scheduler";
 import { startAmoSyncScheduler } from "./lib/amo-sync";
@@ -50,6 +52,9 @@ app.use(swRouter);
 // and the SPA shell would otherwise swallow it and serve generic OG tags —
 // the exact bug this route fixes.
 app.use(propertyShareRouter);
+// Resized catalog photos for the website's worker; before the SPA fallback,
+// which would answer a missing file with index.html. See lib/photo-variants.ts.
+app.use(photoVariantsRouter);
 
 // ── Copilot Dashboard (landing app: login/dashboard/tasks/settings) ─────────
 // Built React SPA served statically; relative /api/* fetches inside it hit
@@ -75,6 +80,8 @@ startAiWatchdog();
 // Re-encodes phone walkthroughs uploaded to the site's property-videos bucket
 // (a third of the size, H.264 everywhere); see lib/video-compress.ts.
 startVideoCompressScheduler();
+// Renders every website catalog photo to webp 600/900/1600 for the site's /img.
+startPhotoVariantScheduler();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
 // When a rental is free from — asked in the intake chat, written to Supabase's

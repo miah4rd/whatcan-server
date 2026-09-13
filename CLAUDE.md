@@ -118,6 +118,26 @@ Supabase service credentials listing-publish uses; `VIDEO_COMPRESS_DISABLED=1`
 pauses it. One file per tick, `nice -n 10`, two threads, so the bot stays
 responsive.
 
+## Website photo variants (2026-09-13)
+
+`lib/photo-variants.ts` + `routes/photo-variants.ts`. The website serves every
+catalog photo through its own worker (`/img/...`, bali-villa-rentals
+`worker/image-edge.js`), which caches per Cloudflare location. On a cold
+location it used to fall back to Supabase: 1.5–3 s per photo for a render,
+1.8–2.1 s even for a plain object, so new listings and old villas lagged for
+their first visitors. This server renders each photo once with ffmpeg (webp
+q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
+`/photo-variants/w<width>/<bucket>/<path>`; the worker asks here first.
+- Every 60 s the pass reads `properties.images`, newest listings first; a 404
+  from the route puts that photo first. Progress: `GET /photo-variants/_status`.
+- Files are named by a sha1 of the object path — a URL never becomes a
+  filesystem path.
+- It stops while the disk has under 1.5 GB free: this is the bot's server. The
+  whole catalog (~6,800 photos) is about 1.7 GB.
+- A photo with an EXIF rotation is skipped and stays on the transformer.
+- `nice -n 10`, one ffmpeg thread, one photo at a time, 50 s per tick.
+  `PHOTO_VARIANTS_DISABLED=1` pauses it.
+
 ## Rules that exist because of a production bug
 
 - **amoCRM `content` timestamps are Moscow time (UTC+3), not UTC.** Parsing them
