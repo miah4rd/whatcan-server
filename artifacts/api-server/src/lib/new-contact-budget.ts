@@ -139,8 +139,8 @@ export async function lineBudgets(responsibleUser: string | null, now: Date = ne
         -- day's budget: "была попытка связаться, но связи не было".
         AND f.lead_id NOT IN ${UNDELIVERABLE_LEAD_IDS}
     `);
-    const rows = ((res as { rows?: Array<{ source_id: string | null }> }).rows ??
-      (Array.isArray(res) ? (res as Array<{ source_id: string | null }>) : []));
+    const rows = ((res as unknown as { rows?: Array<{ source_id: string | null }> }).rows ??
+      (Array.isArray(res) ? (res as unknown as Array<{ source_id: string | null }>) : []));
     for (const r of rows) {
       const stamped = r.source_id !== null ? Number(r.source_id) : null;
       const line = stamped !== null && lines.includes(stamped) ? stamped : lines[0]!;
