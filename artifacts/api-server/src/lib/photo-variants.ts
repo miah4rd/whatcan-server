@@ -34,6 +34,7 @@ export const VARIANT_WIDTHS = [600, 900, 1600] as const;
 const OBJECT_PUBLIC_PREFIX = "/storage/v1/object/public/";
 const VARIANTS_DIR = process.env["PHOTO_VARIANTS_DIR"] ?? "/opt/photo-variants";
 const TMP_DIR = path.join(VARIANTS_DIR, ".tmp");
+const BACKUP_STORAGE_DIR = process.env["PHOTO_VARIANTS_BACKUP_DIR"] ?? "/opt/migration/backup/storage";
 const POLL_MS = 60_000;
 const FIRST_RUN_MS = 45_000;
 const TICK_BUDGET_MS = 50_000;
@@ -176,13 +177,30 @@ async function needsRotation(file: string): Promise<boolean> {
   return (orientation !== undefined && orientation !== "1") || rotation !== 0;
 }
 
+/**
+ * The original, from the 2026-09-02 storage export on this disk when it is
+ * there (object names are content-derived or timestamped, so a file at the
+ * same path is the same photo), otherwise from Supabase. The first run took
+ * 3.8 s a photo, almost all of it the download from Sydney (2.3-5 s cold);
+ * the export holds ~6,400 of the ~6,800 catalog photos.
+ */
+async function readSource(base: string, objectPath: string): Promise<Buffer> {
+  try {
+    const local = path.join(BACKUP_STORAGE_DIR, ...decodeURIComponent(objectPath).split("/"));
+    if (local.startsWith(BACKUP_STORAGE_DIR + path.sep)) return await fs.readFile(local);
+  } catch {
+    // not in the export (or an undecodable name): download it
+  }
+  const res = await fetch(`${base}${OBJECT_PUBLIC_PREFIX}${objectPath}`);
+  if (!res.ok) throw new Error(`download ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
 async function renderOne(base: string, objectPath: string): Promise<"rendered" | "skipped"> {
   await fs.mkdir(TMP_DIR, { recursive: true });
   const tmp = await fs.mkdtemp(path.join(TMP_DIR, "v-"));
   try {
-    const res = await fetch(`${base}${OBJECT_PUBLIC_PREFIX}${objectPath}`);
-    if (!res.ok) throw new Error(`download ${res.status}`);
-    const bytes = Buffer.from(await res.arrayBuffer());
+    const bytes = await readSource(base, objectPath);
     if (bytes.byteLength > MAX_SOURCE_BYTES) throw new Error(`source is ${Math.round(bytes.byteLength / 1048576)} MB`);
     const input = path.join(tmp, "input");
     await fs.writeFile(input, bytes);
