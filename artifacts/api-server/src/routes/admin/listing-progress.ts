@@ -2,7 +2,7 @@ import { Router } from "express";
 import { getAmoLead } from "../../lib/amo-client";
 import { amoStageFor } from "../../lib/stage-classifier";
 import { LISTING_STAGE, LISTINGS_PIPELINE_ID } from "../../lib/listing-status-week";
-import { advanceListingProgress, applyForwardPath, auditListingProgress } from "../../lib/listing-progress";
+import { advanceListingProgress, applyForwardPath, auditListingProgress, restoreFromDeletedStage } from "../../lib/listing-progress";
 
 const router = Router();
 
@@ -43,6 +43,22 @@ router.post("/admin/listing-progress", async (req, res) => {
     moved: brief.filter((d) => d.moved).length,
     decisions: brief,
   });
+});
+
+/**
+ * POST /api/admin/listing-progress/restore?lead=<id>[,<id>…][&apply=1]
+ * A card amoCRM dropped into the first stage when its stage was deleted goes back to its stage before.
+ */
+router.post("/admin/listing-progress/restore", async (req, res) => {
+  const apply = String(req.query["apply"] ?? "") === "1";
+  const leads = String(req.query["lead"] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (leads.length === 0) {
+    res.status(400).json({ error: "lead required" });
+    return;
+  }
+  const out = [];
+  for (const lead of leads) out.push({ lead, ...(await restoreFromDeletedStage(lead, apply)) });
+  res.json({ apply, results: out });
 });
 
 router.post("/admin/listing-progress/move", async (req, res) => {
