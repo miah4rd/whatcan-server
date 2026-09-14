@@ -11,7 +11,7 @@ import { shouldSuppressPush, isStageWhitelisted } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whitelist";
 import { getMergedConversation, getMergedDialog } from "./merged-conversation";
 import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
-import { generateSuggestion, pickPropertyAttachments, reconcileTextWithAttachments, type GeneratedSuggestion, allAttachmentsNamed } from "./generate-suggestion";
+import { generateSuggestion, pickPropertyAttachments, reconcileTextWithAttachments, type GeneratedSuggestion, allAttachmentsNamed, applyViewingPush, viewingPushPromptBlock, type ViewingPushContext } from "./generate-suggestion";
 import { isAdaptiveBroker, isHosTrackedPipeline } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
@@ -230,6 +230,19 @@ export async function generateFollowup(opts: {
     formattedDialog,
   });
 
+  // Options out, no viewing yet: the follow-up carries the move toward one.
+  // Same gate, block and check as every other Rental draft — until 14.09 this
+  // path wrote 35 of 45 post-shortlist drafts and had none of them.
+  const pushCtx: ViewingPushContext = {
+    leadId: opts.leadId,
+    pipeline: opts.pipeline,
+    leadStage: opts.leadStage,
+    messages: parsedDialog.messages,
+    responsibleUser: opts.responsibleUser,
+    kind: "push",
+  };
+  const pushBlock = await viewingPushPromptBlock(pushCtx);
+
   // Classify objection to decide which attachments to suggest.
   // The classification does NOT dictate the message text — it only selects
   // what supplementary materials (AirDNA screenshots, links, etc.) to attach.
@@ -265,7 +278,7 @@ RULES:
 - Return ONLY the message body — no preamble, no quotes, no subject line
 
 AVAILABLE TACTICS (use only if genuinely relevant to the conversation, not forced):
-${tacticsHint}${listings.brief}${opts.correctionsBlock ?? (await correctionsPromptBlock(opts.responsibleUser, "followup"))}${AVOID_PHRASES_REMINDER}`,
+${tacticsHint}${listings.brief}${pushBlock}${opts.correctionsBlock ?? (await correctionsPromptBlock(opts.responsibleUser, "followup"))}${AVOID_PHRASES_REMINDER}`,
     messages: [
       {
         role: "user",
@@ -286,11 +299,12 @@ Write the follow-up message.`,
   // Same safety net the LIVE path has: the words must match the links that
   // will actually arrive, not the ones the writer imagined.
   const written1 = sanitizeSuggestion(completion.content);
-  const text = await reconcileTextWithAttachments(
+  const reconciled1 = await reconcileTextWithAttachments(
     written1,
     listings.attachments,
     !allAttachmentsNamed(written1, listings.attachments),
   );
+  const text = await applyViewingPush(reconciled1, listings.attachments, pushCtx);
 
   const rationale = `Follow-up #${opts.followupLevel} — context-aware. Situation tactic: ${entry.label}.`;
 
@@ -340,6 +354,17 @@ export async function generatePushFollowup(opts: {
     formattedDialog,
   });
 
+  // The viewing push — same shared gate, block and check (generate-suggestion.ts).
+  const pushCtx: ViewingPushContext = {
+    leadId: opts.leadId,
+    pipeline: opts.pipeline,
+    leadStage: opts.leadStage,
+    messages: mergedMessages,
+    responsibleUser: opts.responsibleUser,
+    kind: "push",
+  };
+  const pushBlock = await viewingPushPromptBlock(pushCtx);
+
   const leadContext = opts.leadNotes?.trim()
     ? `\nLead card notes: ${opts.leadNotes.trim()}`
     : "";
@@ -380,7 +405,7 @@ STYLE:
 - Under 80 words unless the situation genuinely needs more.
 - No "Just checking in", "Hope you're doing well", or other filler openers.
 - No formal sign-offs. Sign naturally if it fits, don't force it.
-- Return ONLY the message body — no preamble, no quotes, no explanation of your reasoning.${listings.brief}${opts.correctionsBlock ?? ""}${AVOID_PHRASES_REMINDER}`,
+- Return ONLY the message body — no preamble, no quotes, no explanation of your reasoning.${listings.brief}${pushBlock}${opts.correctionsBlock ?? ""}${AVOID_PHRASES_REMINDER}`,
     messages: [
       {
         role: "user",
@@ -391,11 +416,12 @@ STYLE:
   });
 
   const written2 = sanitizeSuggestion(completion.content);
-  const text = await reconcileTextWithAttachments(
+  const reconciled2 = await reconcileTextWithAttachments(
     written2,
     listings.attachments,
     !allAttachmentsNamed(written2, listings.attachments),
   );
+  const text = await applyViewingPush(reconciled2, listings.attachments, pushCtx);
   const rationale = isCold
     ? `PUSH — re-engagement (${opts.trailingUnanswered} unanswered touches), stage "${opts.leadStage}".`
     : `PUSH — adaptive follow-up, stage "${opts.leadStage}".`;

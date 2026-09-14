@@ -21,7 +21,8 @@ import { getAmoLead, getOpenAmoTasks, createAmoTask, amoPatch, amoPost, amoFetch
 import { notifyBroker } from "./push-notifications";
 import { brokerKey } from "./broker-identity";
 import { chatCompletion, WRITER_MODEL } from "./ai-client";
-import { generateSuggestion } from "./generate-suggestion";
+import { generateSuggestion, applyViewingPush } from "./generate-suggestion";
+import { getMergedDialog } from "./merged-conversation";
 import { correctionsPromptBlock, deriveSituation } from "./broker-corrections";
 
 export const REPORT_TASK_PREFIX = "Fill the viewing report";
@@ -349,7 +350,11 @@ async function composeClientDraft(
     .map((r) => `${r.who === "lead" ? "Client" : "Amelia"}: ${(r.text ?? "").replace(/\s+/g, " ").slice(0, 300)}`)
     .join("\n");
   const name = await clientName(leadId);
-  const [sync] = await db.select({ responsibleUser: leadsSyncTable.responsibleUser }).from(leadsSyncTable).where(eq(leadsSyncTable.leadId, leadId)).limit(1);
+  const [sync] = await db
+    .select({ responsibleUser: leadsSyncTable.responsibleUser, content: leadsSyncTable.content, leadStage: leadsSyncTable.leadStage, pipeline: leadsSyncTable.pipeline })
+    .from(leadsSyncTable)
+    .where(eq(leadsSyncTable.leadId, leadId))
+    .limit(1);
   const broker = (sync?.responsibleUser ?? "Amelia").split(/\s+/)[0];
 
   const report = [
@@ -369,7 +374,19 @@ Rules: acknowledge what the client said or felt (from the feedback); state the c
       messages: [{ role: "user", content: `Client: ${name || "the client"}${property ? ` · villa ${property}` : ""}\n\nRecent thread:\n${thread}\n\nViewing report:\n${report}` }],
     });
     const text = (out.content ?? "").trim();
-    return text.length > 10 ? text : null;
+    if (text.length <= 10) return null;
+    // The same viewing-push gate as every other Rental draft. After a held
+    // viewing the card sits on a viewing stage and the gate says no; a card a
+    // person moved back before Viewing scheduled is pushed like any other.
+    const dialog = await getMergedDialog(leadId, sync?.content ?? "");
+    return await applyViewingPush(text, [], {
+      leadId,
+      pipeline: sync?.pipeline,
+      leadStage: sync?.leadStage,
+      messages: dialog.messages,
+      responsibleUser: sync?.responsibleUser,
+      kind: "push",
+    });
   } catch (err) {
     logger.warn({ err, leadId }, "viewing report: draft composition failed");
     return null;
