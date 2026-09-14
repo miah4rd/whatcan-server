@@ -1418,7 +1418,9 @@ in `suggested_stage` and approve applied it at send time. Canon now:
 | TAKEN TO WORK → QUALIFIED | `promoteIfQualified` (`meetsQualified`: owner, bedrooms, price with commission position, min stay, earliest viewing, ≥33M client-facing) |
 | TAKEN TO WORK → co-broke / long term / Closed-lost | `routeUnqualified` (floor first, then counterpart, then occupied, then not-our-format with second opinion) |
 | long term / co-broke → TAKEN TO WORK / Details | `releaseFromLongTerm`, `releaseFromCoBroke` |
-| QUALIFIED → Details → Inspection. done → live | a person |
+| QUALIFIED → Details | a person |
+| TAKEN TO WORK / QUALIFIED / Details / Inspection. done → Inspection. done → live | the site's Pre-listed → Listed switch (a person's act), applied by `listing-status-pass` (2026-09-14) |
+| anything else into Inspection. done / live, and every exit from them | a person |
 
 The classifier on this funnel may only pick Initial Contact / TAKEN TO WORK and
 returns null when the card is already beyond them (`classifyStage`); approve
@@ -1453,8 +1455,9 @@ agreement on the spot. It is the listing funnel's counterpart of Rental's
   gets a LIVE draft for Yudi (never autopilot) written for this moment —
   agreement if not yet signed, publication timing, the one open item from
   the visit — and never re-asks photos, pin, price, availability or size.
-- *Exits:* → live when the villa is published (Yudi, or publishing); → long
-  term / Closed-lost only by Yudi. Nothing automatic leaves this stage.
+- *Exits:* → live when Yudi switches the listing to Listed on the site (the
+  pass below moves it) or by hand; → long term / Closed-lost only by Yudi.
+  Nothing else automatic leaves this stage.
 - *Metric:* arrival here is "Villas inspected" in the daily report; it is
   counted from the stage event, so a card moved here and back still counts.
 - *Open follow-up:* an "inspection report" after the visit (did it happen,
@@ -1462,7 +1465,10 @@ agreement on the spot. It is the listing funnel's counterpart of Rental's
   mechanism as the viewing report — not built yet.
 
 Only a person can vouch for the visit, so:
-- nothing sets it or leaves it automatically — not the classifier
+- the one automatic way in is `listing-status-pass` acting on Yudi's own
+  Pre-listed → Listed switch on the site (next section) — his explicit act, not
+  the bot's reading of a chat;
+- nothing else sets it or leaves it automatically — not the classifier
   (`RULE_OWNED_ACQUISITION_STAGES` includes `inspection`, and it is absent from
   `LISTING_ACQUISITION_MEANINGS` like live/RENTED), not the stage engine
   (`engineOwnsStage` is false there → audit reports only), not approve (a
@@ -1480,6 +1486,78 @@ No card had a confirmed inspection on 09.09.2026 — every visit in the threads
 was scheduled ahead (Aquamarine 25.09, Forest Bloom from 13.09, Uma Avaya
 09.09) or offered and not taken (Umbala, D kasih); the one visit that
 happened was Amelia's client viewing at Namaste Villa on 05.09.
+
+### The site's Listed switch moves the card to live (2026-09-14)
+
+Owner: "the switch in Internal data on the site — count the result by it and
+move the cards to live in the CRM". `properties.pre_listed` on the site
+(Pre-listed / Listed) is the inspection result. Until 14.09 it had no history,
+Listed and live disagreed (R-YUD-058 Listed, its card lost), and on 11.09 Yudi
+reported R-YUD-097 "marked Listed" when the database never got it.
+
+**Site side** (bali-villa-rentals, migration 20260914033216): trigger-journal
+`listing_status_log` (every insert and real `pre_listed` change: old/new, who,
+`source` site_user / service_role / sql), `listing_crm_link` (listing → card),
+`listing_status_actions` (what this pass decided), view
+`listing_status_weekly`. Browsers can only read them. The admin save now says
+"NOT saved" unless the database returned the values it sent.
+
+**`lib/listing-status-pass.ts`**, every 5 minutes (first run a minute after
+boot), idempotent through `listing_status_actions` (one row per journal row;
+a failed decision records nothing and is retried):
+- only journal rows `UPDATE true → false` move anything. An INSERT never does
+  (the column defaults to false, so creating or renaming a listing would
+  otherwise go live), nor a switch already reverted when the pass runs;
+- linked card in TAKEN TO WORK / QUALIFIED / Details → Inspection. done, 4 s,
+  → live; in Inspection. done → live. Then a note: who switched, when (Bali),
+  flags present or MISSING, own video, Drive folder. amoCRM refusing a move
+  throws → retried next pass (a card left in Inspection. done moves on);
+- card in live / Weekly Check Sent / Update Availability Received →
+  `already_live`, nothing;
+- long term / co-broke / lost / won, Initial Contact, a card outside Rental
+  Listings, no card, two candidate cards → not moved, `notifyBroker("yudi")`
+  push, listed in the report;
+- Listed → Pre-listed → never moves a card back; push only (skipped within
+  10 minutes of the listing's INSERT: the admin form creating/renaming it).
+- An unlinked listing is resolved by `resolveFrom`: its code in exactly one
+  open card's name or common notes (confirmed by the owner phone when that
+  phone is on any card), else its owner phone on exactly one open card that
+  names no other site code and whose phone no other listing shares. Two
+  candidates = ambiguous, never a guess. Card 23211429 ("[SYSTEM] FB прогон")
+  names every code and is ignored. The found link is stored.
+- The stage engine does not fight it: `engineOwnsStage` is false for
+  Inspection. done and live, and nothing here moves a card out of live.
+- Manual run: `POST /api/admin/listing-status-pass?dry=1` (dry = decide and
+  report only). Log lines: `listing switch: <id> <decision> — <detail>`.
+
+**Backfill 14.09.2026:** 36 unambiguous links (code + phone, or phone alone
+where unique). NOT linked, for the owner: R-YUD-050 (code on QUALIFIED
+23223641 and live 23355221), R-YUD-083 / R-YUD-050 and R-YUD-047 / R-YUD-096
+(one card claimed by two listings), R-YUD-092 (23263701 and 23519133),
+R-YUD-036 (its code is only a note on R-YUD-086's card), R-YUD-056 and
+R-YUD-087 (code on one card, owner phone on another), phone shared by two
+listings (R-YUD-046/060, R-YUD-051/R-CGU-002, R-YUD-062/064, R-YUD-077/081),
+only closed cards (R-YUD-002, R-YUD-058, R-YUD-073, R-YUD-084, R-UM-024).
+The listings already Listed before 14.09 were NOT moved: only switches
+journaled after the deploy move cards.
+
+**Weekly metric (owner, 14.09):** target **10 Pre-listed → Listed a week**
+(Mon–Sun, Bali) for Yudi from 14–20.09, `WEEKLY_LISTED_TARGET` in
+`lib/listing-status-week.ts` — the only place the number lives. "Listed" =
+distinct listings switched true → false that week (`listing_status_weekly`);
+"cards reached live" = distinct Rental Listings cards arriving in live in
+amoCRM events, by anyone. `GET /api/public/listing-status/week?week=YYYY-MM-DD`,
+`/weeks?n=4`; Yudi's report card carries `listingWeek` (shown in /m), the 8am
+push adds "Listed this week x / 10". `changed_by_email` cannot tell Yudi from
+the owner while both use info@unicorn-property.com.
+
+Verified 14.09.2026 end to end: throwaway draft R-TEST-SWITCH-01 linked to
+throwaway card 23561499 (QUALIFIED); the site's own `saveInternalData` run as
+the listing-bot session → "Saved — Listed · 1 red flag · 1 green flag";
+journal row `UPDATE true→false site_user listing-bot@…`; the scheduled pass
+4 minutes later: amoCRM events QUALIFIED → Inspection. done 11:52:07,
+→ live 11:52:11 (Bali), note written. Card closed lost, property, link and
+journal rows deleted. The same save as a signed-out session → "NOT saved".
 
 ### Construction nearby: the one structured red flag (2026-09-10)
 
@@ -1499,7 +1577,8 @@ client. `openDetail` and the inbox refresh both copy card fields by name — a
 new field has to be added to both, or it vanishes when the card is opened or
 refreshed. The same Internal data carries the Pre-listed / Listed switch
 (`properties.pre_listed`): Listed means Yudi has inspected the villa and
-written its notes and green/red flags.
+written its notes and green/red flags — and since 14.09 it moves the card to
+live (section above).
 
 ### Parked listing cards are answered and re-judged (2026-09-07)
 
