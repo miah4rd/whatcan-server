@@ -22,12 +22,14 @@
  *   Closed - lost       below the 33M floor, or not our format (confirmed)
  *   QUALIFIED           every fact on the bar is known — the handover point
  *
- * Beyond QUALIFIED (Details, Inspection. done, live, weekly checks) a person
- * works the card; the engine computes where the facts say it should be,
- * reports the gap, and never moves it. "Inspection. done" (09.09.2026, the
- * renamed "agreement", same amoCRM id) records the agent having been to the
- * villa with our own photos, video and notes — a physical act only a person
- * can vouch for, so nothing here sets or leaves it. Two closers stay outside the engine because they
+ * Beyond QUALIFIED the engine computes where the facts say a card should be,
+ * reports the gap, and never moves it: `engineOwnsStage` is false there.
+ * "Details ased" (id 87763166) and "Inspection sceduled" (id 87763170, a visit
+ * agreed — "Inspection. done" until 14.09.2026, "agreement" before 09.09) are
+ * set from the thread by lib/listing-progress.ts, run on every message and
+ * once a day after this audit; live only by the site's Listed switch
+ * (listing-status-pass.ts). Stage names are matched by exact string here and
+ * the owner renames stages: new code uses ids. Two closers stay outside the engine because they
  * are driven by time, not facts: three unanswered nudges
  * (listing-owner-followup) and a number without WhatsApp (undeliverable).
  *
@@ -46,6 +48,7 @@ import { safeStageIdForLead } from "./stage-classifier";
 import { isListingAcquisition } from "./pipelines";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { notifyBroker } from "./push-notifications";
+import { auditListingProgress } from "./listing-progress";
 import {
   type ListingFacts,
   extractListingFacts,
@@ -582,6 +585,13 @@ export async function maybeRunDailyListingAudit(): Promise<void> {
     .onConflictDoUpdate({ target: brokerSettingsTable.key, set: { value: day } })
     .catch(() => undefined);
   const r = await auditListingStages({ apply: true });
+  // After the engine's own moves (a card it just qualified is judged the same run):
+  // a message a detector missed still moves its card within a day.
+  const progressed: Array<{ leadId: string; to: string | null; moved: boolean }> = await auditListingProgress({ apply: true, source: "audit" }).catch((err) => {
+    logger.error({ err }, "listing progress audit failed");
+    return [];
+  });
+  logger.info({ scanned: progressed.length, moved: progressed.filter((p) => p.moved).map((p) => `${p.leadId}→${p.to}`) }, "listing progress audit complete");
   const lines = r.forBroker.slice(0, 6).map((x) => `#${x.leadId}: ${x.current} → facts say ${x.desired}`);
   const body = `Bot moved ${r.moved.length}, held ${r.held.length}${r.notJudged.length ? `, could not read ${r.notJudged.length}` : ""}. ${r.forBroker.length} of your cards disagree with their facts.${lines.length ? "\n" + lines.join("\n") : ""}`;
   await notifyBroker("yudi", "Listing stage audit", body, "/m").catch(() => 0);

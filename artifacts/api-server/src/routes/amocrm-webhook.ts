@@ -23,7 +23,7 @@ import { getMergedDialog } from "../lib/merged-conversation";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
 import { classifyAndApplyStage } from "../lib/stage-on-reply";
-import { onThreadChanged, threadDrivesStage, isEchoOfOurSend, threadTranscript } from "../lib/thread-stage-sync";
+import { onThreadChanged, threadDrivesStage, threadWatched, isEchoOfOurSend, threadTranscript } from "../lib/thread-stage-sync";
 import { enforceBudgetFilter } from "../lib/budget-filter";
 import { recordCommitment } from "../lib/commitment-scheduler";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
@@ -740,7 +740,7 @@ router.post("/amocrm/webhook", async (req, res) => {
       // phone) goes to the one stage decision; other client funnels only for a
       // reply the broker typed herself, since their stage is applied on send.
       // No messageAt from `content`: its times are coarser than the thread's.
-      if (threadDrivesStage(pipeline ?? existing?.pipeline) || brokerRepliedFresh) {
+      if (threadWatched(pipeline ?? existing?.pipeline) || brokerRepliedFresh) {
         onThreadChanged(leadId, { source: brokerRepliedFresh ? "phone" : isLive ? "inbound" : "webhook" });
       }
 

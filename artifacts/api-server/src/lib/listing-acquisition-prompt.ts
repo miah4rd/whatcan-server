@@ -31,6 +31,9 @@ import {
   type ListingFacts,
 } from "./listing-card-fields";
 import { reconcileListingStage } from "./listing-stage-engine";
+import { getAmoLead } from "./amo-client";
+import { LISTING_STAGE } from "./listing-status-week";
+import { latestInspectionSlot } from "./listing-progress";
 import { formatDialogForAI } from "./dialog-parser";
 import { getMergedConversation } from "./merged-conversation";
 import { sanitizeSuggestion } from "./sanitize-suggestion";
@@ -263,21 +266,38 @@ export async function generateListingAcquisitionReply(
     ? `\nTHIS IS A FOLLOW-UP: nobody has written for ${quietDays === 0 ? "most of a day" : `${quietDays} day(s)`}. Follow rule 2a — open it like a new message, by name, and do not answer their last line as if it had just arrived.\n`
     : "";
 
-  // The card's stage is a fact the thread cannot show: "Inspection. done"
-  // means our agent has BEEN to this villa (own photos, video, notes). The
-  // model would otherwise keep asking the owner for photos and the basics —
-  // the questions that make sense before a visit and read as amnesia after it.
+  // The card's stage is a fact the thread cannot show. Read by amoCRM id: the
+  // owner renames these stages (87763170 was "agreement", then "Inspection.
+  // done", since 14.09 "Inspection sceduled"), and leads_sync.lead_stage_id is
+  // not reliable. Until 14.09 this block told the model "OUR AGENT HAS ALREADY
+  // INSPECTED THIS VILLA" on 87763170 — since the rename that stage only means
+  // a visit is AGREED, so the conversation is about that visit, not after it.
   let stageBlock = "";
   try {
-    const [row] = await db
-      .select({ leadStage: leadsSyncTable.leadStage })
-      .from(leadsSyncTable)
-      .where(eq(leadsSyncTable.leadId, opts.leadId))
-      .limit(1);
-    if (/inspection/i.test(row?.leadStage ?? "")) {
+    const amo = await getAmoLead(opts.leadId).catch(() => null);
+    let statusId = amo?.status_id ?? null;
+    if (statusId == null) {
+      const [row] = await db
+        .select({ leadStage: leadsSyncTable.leadStage })
+        .from(leadsSyncTable)
+        .where(eq(leadsSyncTable.leadId, opts.leadId))
+        .limit(1);
+      const name = row?.leadStage ?? "";
+      statusId = /inspection|sceduled|scheduled/i.test(name) ? LISTING_STAGE.INSPECTION_SCHEDULED : /details/i.test(name) ? LISTING_STAGE.DETAILS_ASKED : null;
+    }
+    if (statusId === LISTING_STAGE.INSPECTION_SCHEDULED) {
+      const slot = await latestInspectionSlot(opts.leadId).catch(() => null);
+      const when = slot
+        ? `on ${slot.visitAt.toLocaleString("en-GB", { timeZone: "Asia/Makassar", weekday: "long", day: "numeric", month: "long", ...(slot.timeKnown ? { hour: "2-digit", minute: "2-digit" } : {}) })} Bali time`
+        : "as agreed in the thread";
       stageBlock =
         `
-OUR AGENT HAS ALREADY INSPECTED THIS VILLA IN PERSON (card stage: Inspection. done): our agent met the owner's side at the villa, walked it, took our own photos and video, made notes, and usually signed the listing agreement on the spot. Never ask for photos, a video, a map pin, the bedroom count, the price or availability again — all of it is in hand from the visit. What this conversation is about now, in this order: (1) the agreement — if the thread does not show it signed, confirm it is signed or arrange the signing; (2) publication — tell the owner the villa goes live on our site within a day or two of the agreement and that the link follows here; (3) anything the visit left open (a missing document, a date the owner promised) — ask for that one thing only. Do not sell the agency again, do not re-qualify, do not offer a second visit unless the owner asks.
+A VISIT TO THIS VILLA BY OUR AGENT IS SCHEDULED (card stage: Inspection scheduled) ${when}. It has not necessarily happened yet — never say or imply that we have already been there. What this conversation is about now: that visit — confirm the day and time, who meets our agent at the villa, access (pin, gate, parking, a tenant or guest in the villa), and reschedule politely if the villa side asks. Everything the villa side has already given in the thread (photos, video, pin, price, availability, size, documents) stays given: NEVER ask for any of it again; whatever is still missing is completed at the visit. Do not re-qualify, do not sell the agency again, do not propose another visit on top of the agreed one.
+`;
+    } else if (statusId === LISTING_STAGE.DETAILS_ASKED) {
+      stageBlock =
+        `
+WE HAVE ASKED THIS OWNER FOR THE LISTING DETAILS (card stage: Details asked). The villa is qualified. Ask only for what is still missing in the thread — photos or a video, sizes, the location pin, availability dates — never for anything they already sent. The next step is our agent's visit to the villa: if the villa side offers or asks about a visit, agree a concrete day AND time in the same reply.
 `;
     }
   } catch {

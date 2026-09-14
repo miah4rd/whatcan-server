@@ -7,9 +7,9 @@
  * `listing_status_log`: old/new value, who, through what). Every few minutes this pass reads the
  * changes it has not decided yet and, for each:
  *
- * - Pre-listed → Listed, card in TAKEN TO WORK / QUALIFIED / Details / Inspection. done:
- *   the card goes to Inspection. done, then to live (two status changes a few seconds apart, so
- *   amoCRM's event log shows the path), plus a note saying who listed it, when, and whether the
+ * - Pre-listed → Listed, card in TAKEN TO WORK / QUALIFIED / Details asked: the card goes to
+ *   Inspection scheduled, then to live (two status changes a few seconds apart, so amoCRM's event
+ *   log shows the path); a card already in Inspection scheduled goes straight to live; plus a note saying who listed it, when, and whether the
  *   inspection record (flags, video, Drive folder) is on the site.
  * - card already in live / Weekly Check Sent / Update Availability Received: nothing.
  * - card in long term / co-broke / lost / won, no card, or two candidate cards: not moved; Yudi gets
@@ -18,8 +18,9 @@
  *
  * Each decision is written to `listing_status_actions` (one row per log row), which is what makes
  * the pass idempotent and what the report reads. A person switched the listing, so this is the one
- * automatic way into Inspection. done and live — the stage engine does not own either
- * (`engineOwnsStage`), and nothing here ever moves a card out of live.
+ * automatic way into live — the stage engine does not own it (`engineOwnsStage`), and nothing here
+ * ever moves a card out of live. Inspection scheduled (renamed from "Inspection. done" on 14.09.2026,
+ * same id 87763170) is also entered from the thread by listing-progress.ts. Stages are ids here.
  *
  * Which card belongs to a listing is kept in `listing_crm_link`. An unlinked listing is resolved the
  * way the 14.09 backfill was: its code in an open card's name or notes, then its owner phone on the
@@ -43,8 +44,8 @@ const SITE = "https://unicorn-properties.com";
 const MOVABLE = new Set<number>([
   LISTING_STAGE.TAKEN_TO_WORK,
   LISTING_STAGE.QUALIFIED,
-  LISTING_STAGE.DETAILS,
-  LISTING_STAGE.INSPECTION_DONE,
+  LISTING_STAGE.DETAILS_ASKED,
+  LISTING_STAGE.INSPECTION_SCHEDULED,
 ]);
 const ALREADY_LIVE = new Set<number>([
   LISTING_STAGE.LIVE,
@@ -59,7 +60,7 @@ const SYSTEM_LEADS = new Set<number>([23211429]);
 /** Changes older than this are not picked up (the pass runs every 5 minutes). */
 const LOOKBACK_DAYS = 7;
 const PASS_EVERY_MS = 5 * 60 * 1000;
-/** Between "Inspection. done" and "live", so the two moves are two events in amoCRM. */
+/** Between "Inspection scheduled" and "live", so the two moves are two events in amoCRM. */
 const STEP_GAP_MS = 4000;
 /** A Listed → Pre-listed write this soon after the row was inserted is the admin form creating or renaming it. */
 const CREATION_WINDOW_MS = 10 * 60 * 1000;
@@ -422,11 +423,12 @@ async function decide(
   }
 
   const record = await inspectionRecord(p);
-  const path = lead.status_id === LISTING_STAGE.INSPECTION_DONE ? "Inspection. done → live" : `${stage} → Inspection. done → live`;
+  const inspection = stageName(LISTING_STAGE.INSPECTION_SCHEDULED);
+  const path = lead.status_id === LISTING_STAGE.INSPECTION_SCHEDULED ? `${inspection} → live` : `${stage} → ${inspection} → live`;
   if (!dry) {
-    if (lead.status_id !== LISTING_STAGE.INSPECTION_DONE) {
-      if (!(await updateLeadStatus(String(leadId), LISTING_STAGE.INSPECTION_DONE))) {
-        throw new Error(`amoCRM refused to move #${leadId} to Inspection. done`);
+    if (lead.status_id !== LISTING_STAGE.INSPECTION_SCHEDULED) {
+      if (!(await updateLeadStatus(String(leadId), LISTING_STAGE.INSPECTION_SCHEDULED))) {
+        throw new Error(`amoCRM refused to move #${leadId} to ${inspection}`);
       }
       await sleep(STEP_GAP_MS);
     }

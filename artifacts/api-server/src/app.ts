@@ -265,6 +265,19 @@ pool.query(`
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`))
   .then(() => pool.query(`CREATE INDEX IF NOT EXISTS stage_sync_decisions_lead_idx ON stage_sync_decisions (lead_id, created_at DESC)`))
+  // Rental Listings: every agreed visit to a villa that moved a card to Inspection scheduled (listing-progress.ts).
+  .then(() => pool.query(`
+    CREATE TABLE IF NOT EXISTS listing_inspection_slots (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      lead_id TEXT NOT NULL,
+      visit_at TIMESTAMPTZ NOT NULL,
+      time_known BOOLEAN NOT NULL DEFAULT FALSE,
+      agreed_at TIMESTAMPTZ,
+      quote TEXT,
+      source TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`))
+  .then(() => pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS listing_inspection_slots_lead_at_uq ON listing_inspection_slots (lead_id, visit_at)`))
   .then(() => logger.info("startup migration: stage_checked_at + viewing_slots ensured"))
   .catch((err) => logger.error({ err }, "startup migration: stage sync columns failed"));
 

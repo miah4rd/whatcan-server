@@ -112,13 +112,15 @@ const STAGE_ORDER: Record<string, string[]> = {
     "signing of the contract", "contract signed",
     "check in (inventory)", "check out", "closed - won",
   ],
-  // "agreement" was renamed "Inspection. done" on 2026-09-09 (same amoCRM id,
-  // 87763170): the listing agent has been to the villa and taken our own
-  // photos, video and notes. The old name stays next to the new one so the
-  // moves recorded under it still score.
+  // Renames keep their amoCRM id, and every old name stays: stage_events keep
+  // the name of the day. 87763166 "Details" → "Details ased" (14.09.2026, the
+  // owner's spelling; "details asked" in case it is corrected). 87763170
+  // "agreement" → "Inspection. done" (09.09) → "Inspection sceduled" (14.09):
+  // a visit to the villa is agreed. Aliases of one stage share its position
+  // (STAGE_ALIASES), so a rename never scores as a move.
   "rental listings": [
     "incoming leads", "initial contact", "taken to work", "qualified",
-    "details", "inspection. done", "agreement", "live", "rented", "closed - won",
+    "details ased", "inspection sceduled", "live", "rented", "closed - won",
   ],
   unicorn: [
     "new lead", "in progress", "1st follow up (next day)", "2nd follow up (3 days after)",
@@ -128,10 +130,24 @@ const STAGE_ORDER: Record<string, string[]> = {
   ],
 };
 
+/** Old or alternative names of one stage → the name STAGE_ORDER lists. */
+const STAGE_ALIASES: Record<string, Record<string, string>> = {
+  "rental listings": {
+    "qualified (pre-listed)": "qualified",
+    "details": "details ased",
+    "details asked": "details ased",
+    "agreement": "inspection sceduled",
+    "inspection. done": "inspection sceduled",
+    "inspection scheduled": "inspection sceduled",
+  },
+};
+
 function stageIndex(pipeline: string | null, stage: string | null): number {
-  const order = STAGE_ORDER[(pipeline ?? "").trim().toLowerCase()];
+  const key = (pipeline ?? "").trim().toLowerCase();
+  const order = STAGE_ORDER[key];
   if (!order || !stage) return -1;
-  return order.indexOf(stage.trim().toLowerCase());
+  const s = stage.trim().toLowerCase();
+  return order.indexOf(STAGE_ALIASES[key]?.[s] ?? s);
 }
 
 function isLost(stage: string | null): boolean {
@@ -150,10 +166,16 @@ function isListingWon(pipeline: string | null, stage: string | null): boolean {
   return s.includes("taken to work") || s.includes("inspection") || s.includes("agreement") || s.includes("live") || s.includes("rented");
 }
 
-/** Rental Listings: the agent has been to the villa — the card arrived at "Inspection. done". */
+/**
+ * Rental Listings: a visit to the villa was agreed — the card arrived at
+ * "Inspection sceduled" (id 87763170). Before 14.09.2026 the same stage was
+ * "Inspection. done" (and "agreement" before 09.09); those arrivals still count.
+ * The report field keeps its name `inspections`; its label is "Inspections scheduled".
+ */
 function isInspected(pipeline: string | null, stage: string | null): boolean {
   if ((pipeline ?? "").trim().toLowerCase() !== "rental listings") return false;
-  return (stage ?? "").toLowerCase().includes("inspection");
+  const s = (stage ?? "").toLowerCase();
+  return s.includes("inspection") || s.includes("sceduled") || s === "agreement";
 }
 
 /** Same shape the inbox card uses: the lead's own name out of the transcript. */

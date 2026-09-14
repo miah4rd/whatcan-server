@@ -1587,10 +1587,11 @@ in `suggested_stage` and approve applied it at send time. Canon now:
 | Initial Contact → TAKEN TO WORK | first message out (outreach / classifier) |
 | TAKEN TO WORK → QUALIFIED | `promoteIfQualified` (`meetsQualified`: owner, bedrooms, price with commission position, min stay, earliest viewing, ≥33M client-facing) |
 | TAKEN TO WORK → co-broke / long term / Closed-lost | `routeUnqualified` (floor first, then counterpart, then occupied, then not-our-format with second opinion) |
-| long term / co-broke → TAKEN TO WORK / Details | `releaseFromLongTerm`, `releaseFromCoBroke` |
-| QUALIFIED → Details | a person |
-| TAKEN TO WORK / QUALIFIED / Details / Inspection. done → Inspection. done → live | the site's Pre-listed → Listed switch (a person's act), applied by `listing-status-pass` (2026-09-14) |
-| anything else into Inspection. done / live, and every exit from them | a person |
+| long term / co-broke → TAKEN TO WORK | `releaseFromLongTerm`, `releaseFromCoBroke` |
+| QUALIFIED → Details ased (id 87763166) | `listing-progress.ts` `findDetailsAsk`: our message since qualification asks for listing details (2026-09-14) |
+| QUALIFIED / Details ased → Inspection sceduled (id 87763170) | `listing-progress.ts` `extractAgreedVisit`: a visit to the villa agreed for a concrete day (2026-09-14) |
+| TAKEN TO WORK / QUALIFIED / Details ased → Inspection sceduled → live; Inspection sceduled → live | the site's Pre-listed → Listed switch (a person's act), applied by `listing-status-pass` (2026-09-14) |
+| anything else into live, every exit from live, every move back | a person |
 
 The classifier on this funnel may only pick Initial Contact / TAKEN TO WORK and
 returns null when the card is already beyond them (`classifyStage`); approve
@@ -1599,7 +1600,79 @@ refuses a classified rule-owned stage even from an old draft
 `/api/v4/events?filter[type]=lead_status_changed` is the audit trail — our
 `stage_events` misses the bot's own closes.
 
-### Inspection. done: the agent has been to the villa (2026-09-09)
+### Details asked and Inspection scheduled follow the thread (2026-09-14)
+
+Owner, 14.09: two metrics, Pre-listed and live; Yudi takes qualified cards to
+live; inspections happen offline and what the thread shows is enough. He
+renamed the stages the same day: **87763166 "Details" → "Details ased"**,
+**87763170 "Inspection. done" → "Inspection sceduled"** (his spelling; read
+names from `GET /api/v4/leads/pipelines/11180334`, never assume them). The
+section below ("Inspection. done: the agent has been to the villa") is
+SUPERSEDED: that stage now means a visit is agreed, not held.
+
+**One rule, `lib/listing-progress.ts`** (`advanceListingProgress`), called from
+`syncStageFromThread` for a listing card whose stored stage reads qualified /
+details — so every path `onThreadChanged` covers: approve and autopilot sends,
+the timeline sweep (phone), amo-sync's outgoing feed, incoming detection, quick
+poll, the webhook. Their gate is `threadWatched(pipeline)` (Rental + Rental
+Listings); `threadDrivesStage` keeps its Rental meaning. Also once a day after
+the listing audit (`auditListingProgress` in `maybeRunDailyListingAudit`).
+Stages are ids (`LISTING_STAGE.DETAILS_ASKED` / `INSPECTION_SCHEDULED` in
+listing-status-week.ts), the card's status is read from amoCRM, never leads_sync.
+- **Window.** "Since qualification" = the first arrival in QUALIFIED at or after
+  07.09 12:00 Bali (the engine era; before it QUALIFIED was set loosely and
+  flapped), else the latest arrival, minus 5 minutes (the qualifying reply and
+  the move land in the same minute). From amoCRM events.
+- **Details asked** (`findDetailsAsk`): one of OUR messages (bot or broker) in
+  the window, with the quoted owner text removed (`ownWords`), has a sentence
+  naming a listing item (photos, video, size/luas, documents/perjanjian/kontrak,
+  pin/lokasi, inspection/survey/visit/kunjungan/datang, watermark, double check)
+  AND a request cue (?, could you, please, mohon, boleh, bisa, minta, kirim…).
+  Weak items (availability, dates, details) go to one yes/no Haiku check,
+  fail-closed. The automatic nudges count.
+- **Inspection scheduled** (`extractAgreedVisit`): only when the thread mentions a
+  visit or a time; one Haiku call for the most recent visit to the villa by our
+  side (Yudi, Amelia, with or without a client) that BOTH sides agreed for a
+  concrete day; open offers ("any time", "from 13 Sept"), ranges ("around the
+  21st"), unanswered requests and cancelled visits are null. The quote must be
+  found in the thread; a visit held before the window is ignored. Scheduled is
+  enough — a held visit counts too. QUALIFIED with a Details ask walks
+  QUALIFIED → Details ased → Inspection sceduled (4 s apart, two events).
+- **Forward only.** A card a person moved back (amoCRM event from a later stage
+  into the current one) is not moved again on evidence older than that move.
+  TAKEN TO WORK, parked, closed and live cards are never touched (TTW with an
+  agreed visit is only reported: `?taken=1`).
+- **Writes** amoCRM status first; then `stage_events`
+  (`engine:listing-progress:<source>`), `leads_sync`, a note with the evidence,
+  and for a visit a `listing_inspection_slots` row (created at boot).
+- Tools: `POST /api/admin/listing-progress` (dry; `?apply=1`, `?lead=`,
+  `?taken=1`); `POST /api/admin/listing-progress/move?lead=&to=details|inspection&evidence=&visitAt=&apply=1`
+  for a hand-checked move the thread rule cannot see (a duplicate card).
+  Log line: `listing-progress decision`.
+- **What reads the stages now:** the reply generator reads the amoCRM status id
+  — on Inspection sceduled it says a visit is SCHEDULED (with the slot), talk
+  about time/access, never re-ask what the owner gave, never imply we have been
+  there (until 14.09 it said "OUR AGENT HAS ALREADY INSPECTED THIS VILLA"); on
+  Details ased: ask only what is missing, and agree a day AND time when a visit
+  comes up. The daily report's `inspections` = arrivals at 87763170, label
+  "Inspections scheduled"; `STAGE_ALIASES` gives old names the same position.
+  `/api/public/inspections` finds the stage by id, returns `meaning` per arrival
+  (agreement / inspection done / inspection scheduled) and the agreed slot.
+  Owner nudges still run on Details ased (`"details"` substring) and skip
+  Inspection sceduled. Autopilot is unaffected: its threshold is QUALIFIED
+  (exclusive), so QUALIFIED and everything after were already the broker's.
+
+**The rename trap, again.** A stage rename keeps the id and silently breaks
+every string match: 09.09 ("agreement" → "Inspection. done") and 14.09. On a
+rename grep for the old AND new name and the id in: `STAGE_ORDER` /
+`STAGE_ALIASES` / `isInspected` / `isListingWon` (daily-report), `OPEN_STAGES`
+(listing-owner-followup, substring), `RULE_OWNED_ACQUISITION_STAGES` and
+`LISTING_ACQUISITION_MEANINGS` (stage-classifier), `STAGE` (listing-stage-engine,
+exact names), `LISTING_STAGE_NAME` (listing-status-week, fallback labels),
+autopilot `up_to_stage_name` (resolved by name through the live list), the
+stage-options cache (10 minutes), the prompt and the extension. New code: ids.
+
+### Inspection. done: the agent has been to the villa (2026-09-09) — superseded 14.09, see above
 
 The owner renamed "agreement" to "Inspection. done" in amoCRM (same stage,
 id 87763170, between Details and live). It records a physical act: Yudi went

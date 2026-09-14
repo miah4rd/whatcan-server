@@ -14,7 +14,7 @@ import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelis
 import { notifyBrokerForLead } from "./push-notifications";
 import { TRACKED_PIPELINE_NAMES, isReachStageName, REACH_STAGE_KEYWORDS } from "./pipelines";
 import { fillMessengerFromResponsibleIfNoMessages } from "./amo-messenger-field";
-import { onThreadChanged, threadDrivesStage } from "./thread-stage-sync";
+import { onThreadChanged, threadWatched } from "./thread-stage-sync";
 
 type AmoLead = {
   id: number;
@@ -665,7 +665,7 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
     // below on purpose: this detector used to see a phone reply first, stamp
     // last_our_message_at, and so hide it from the two detectors that did run
     // the stage logic (Lorenzo 12.09, links sent from the phone on five cards).
-    if (threadDrivesStage(existing.pipeline)) {
+    if (threadWatched(existing.pipeline)) {
       onThreadChanged(leadId, { source: "amo-outgoing-event", messageAt: eventAt });
     }
     const knownOurAt = existing.lastOurMessageAt;
