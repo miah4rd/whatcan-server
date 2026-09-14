@@ -14,6 +14,7 @@ import { getPushStageWhitelist, isPushStageAllowed } from "./push-stage-whitelis
 import { notifyBrokerForLead } from "./push-notifications";
 import { TRACKED_PIPELINE_NAMES, isReachStageName, REACH_STAGE_KEYWORDS } from "./pipelines";
 import { fillMessengerFromResponsibleIfNoMessages } from "./amo-messenger-field";
+import { onThreadChanged, threadDrivesStage } from "./thread-stage-sync";
 
 type AmoLead = {
   id: number;
@@ -653,6 +654,16 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
     if (!existing) continue; // Lead not in our DB yet — amo-sync will add it next cycle
 
     const eventAt = new Date(event.created_at * 1000);
+
+    // The stage follows this message whoever sent it — the Salesbot or the
+    // broker's own phone. This feed cannot tell them apart and does not need
+    // to: the stage sync reads the thread and knows. It runs BEFORE the skips
+    // below on purpose: this detector used to see a phone reply first, stamp
+    // last_our_message_at, and so hide it from the two detectors that did run
+    // the stage logic (Lorenzo 12.09, links sent from the phone on five cards).
+    if (threadDrivesStage(existing.pipeline)) {
+      onThreadChanged(leadId, { source: "amo-outgoing-event", messageAt: eventAt });
+    }
     const knownOurAt = existing.lastOurMessageAt;
 
     // Skip if we already know about a more recent broker message

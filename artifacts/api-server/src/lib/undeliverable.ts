@@ -60,6 +60,37 @@ export const UNDELIVERABLE_LEAD_IDS = sql`(
 )`;
 
 /**
+ * Should this card be closed as unreachable? ONE verdict for every path that
+ * reads a thread — the LIVE debounce and the stage sync both ask here.
+ *
+ * Until 14.09 only the LIVE path asked, so a notice that arrived as the echo
+ * of our own welcome, or right after it, closed nothing (23541093, 23545295,
+ * 23555223 sat open with "WhatsApp is not installed" as their only reply).
+ *
+ * Closed only when all three hold:
+ *   - the newest thing the client side "said" is the notice;
+ *   - the client never wrote a real message: a person who has talked to us
+ *     has WhatsApp, and the notice is about the line that sent it (Yudi 2 on
+ *     13.09 reported numbers that answered on the first line);
+ *   - nothing of ours went out more than 3 minutes after the notice: a
+ *     line re-test is waiting for its own answer.
+ */
+export function undeliverableVerdict(
+  messages: Array<{ senderType: string; text: string | null; sentAt: Date }>,
+): { close: boolean; noticeAt: Date | null; why: string } {
+  const fromClient = messages.filter((m) => m.senderType === "lead");
+  const notices = fromClient.filter((m) => isUndeliverableNotice(m.text));
+  if (notices.length === 0) return { close: false, noticeAt: null, why: "no notice" };
+  const last = notices[notices.length - 1]!;
+  if (fromClient.some((m) => !isUndeliverableNotice(m.text) && (m.text ?? "").trim())) {
+    return { close: false, noticeAt: last.sentAt, why: "the client has written to us — the notice is about the line, not the number" };
+  }
+  const retest = messages.some((m) => m.senderType !== "lead" && m.sentAt.getTime() > last.sentAt.getTime() + 3 * 60_000);
+  if (retest) return { close: false, noticeAt: last.sentAt, why: "we wrote again after the notice — waiting for that send's own answer" };
+  return { close: true, noticeAt: last.sentAt, why: "no WhatsApp on this number" };
+}
+
+/**
  * Close a card we could not reach and stop everything scheduled against it.
  *
  * Deliberately NOT the usual "terminal stages are the broker's tap" rule: that

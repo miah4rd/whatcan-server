@@ -486,8 +486,24 @@ export async function getAllOpenLeadTasksPaginated(): Promise<AmoTask[]> {
  * With onlyDueBefore, closes just the tasks already due by that moment —
  * a future task the broker set deliberately survives.
  */
-export async function closeAmoTasksForLead(leadId: string, opts?: { onlyDueBefore?: Date }): Promise<number> {
-  let tasks = await getOpenAmoTasks(leadId);
+/**
+ * Tasks only their own action may close. "Fill the viewing report" closes when
+ * the report is filed; a next step after a viewing closes when the broker does
+ * it. closeAmoTasksForLead used to close EVERY open task on any send or manual
+ * reply: Lorenzo's report task (viewing 09.09) was "Closed automatically" by
+ * the next WhatsApp message while the report stayed due, and Searra's
+ * "Counter-offer to owner" disappeared with nothing sent to the owner.
+ */
+export const VIEWING_REPORT_TASK_PREFIX = "Fill the viewing report";
+export const NEXT_STEP_TASK_PREFIX = "Next step after the viewing";
+export const LISTING_STEP_TASK_PREFIX = "Client after the viewing of";
+export function isProtectedTask(text: string | null | undefined): boolean {
+  const t = (text ?? "").trim().toLowerCase();
+  return [VIEWING_REPORT_TASK_PREFIX, NEXT_STEP_TASK_PREFIX, LISTING_STEP_TASK_PREFIX].some((p) => t.startsWith(p.toLowerCase()));
+}
+
+export async function closeAmoTasksForLead(leadId: string, opts?: { onlyDueBefore?: Date; includeProtected?: boolean }): Promise<number> {
+  let tasks = (await getOpenAmoTasks(leadId)).filter((t) => opts?.includeProtected || !isProtectedTask(t.text));
   if (opts?.onlyDueBefore) {
     const cutoff = Math.floor(opts.onlyDueBefore.getTime() / 1000);
     tasks = tasks.filter((t) => (t.complete_till ?? 0) <= cutoff);

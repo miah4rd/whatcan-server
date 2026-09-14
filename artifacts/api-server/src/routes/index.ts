@@ -52,6 +52,7 @@ import correctionsDedupeRouter from "./admin/corrections-dedupe";
 import amocrmChatWebhookRouter from "./amocrm-chat-webhook";
 import sendChatMessageRouter from "./public/send-chat-message";
 import listingStatusRouter from "./listing-status";
+import rentalStageSyncCheckRouter from "./admin/rental-stage-sync-check";
 import { adminAuth } from "../lib/admin-auth";
 
 const router: IRouter = Router();
@@ -114,5 +115,6 @@ router.use(syncTimelineRouter);
 router.use(amocrmChatWebhookRouter);
 router.use(sendChatMessageRouter);
 router.use(listingStatusRouter);
+router.use(rentalStageSyncCheckRouter);
 
 export default router;

@@ -18,6 +18,7 @@ import { startAiWatchdog } from "./lib/ai-watchdog";
 import { startReportScheduler } from "./lib/report-scheduler";
 import { startVideoCompressScheduler } from "./lib/video-compress";
 import { startListingStatusPass } from "./lib/listing-status-pass";
+import { startStageSyncCheckScheduler } from "./lib/stage-sync-check";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
 
@@ -81,6 +82,7 @@ startAiWatchdog();
 // Re-encodes phone walkthroughs uploaded to the site's property-videos bucket
 // (a third of the size, H.264 everywhere); see lib/video-compress.ts.
 startVideoCompressScheduler();
+startStageSyncCheckScheduler();
 // Renders every website catalog photo to webp 600/900/1600 for the site's /img.
 startPhotoVariantScheduler();
 // The site's Pre-listed / Listed switch moves the villa's Rental Listings card to live; see lib/listing-status-pass.ts.
@@ -213,6 +215,58 @@ pool.query(`ALTER TABLE lead_crm_tasks ADD COLUMN IF NOT EXISTS status TEXT NOT 
   .then(() => pool.query(`ALTER TABLE lead_crm_tasks ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ`))
   .then(() => logger.info("startup migration: lead_crm_tasks status/closed_at ensured"))
   .catch((err) => logger.error({ err }, "startup migration: lead_crm_tasks failed"));
+
+// ── Stage sync watermark + viewing slots (lib/thread-stage-sync.ts, 14.09) ──
+// stage_checked_at starts at "now" for every existing card, ONCE: history
+// before the deploy was judged by the old paths and must not be re-read in
+// bulk on the first sweep. viewing_slots keeps every agreed slot, so a second
+// viewing no longer overwrites the first one's claim to a report.
+pool.query(`
+  DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'leads_sync' AND column_name = 'stage_checked_at') THEN
+      ALTER TABLE leads_sync ADD COLUMN stage_checked_at TIMESTAMPTZ;
+      UPDATE leads_sync SET stage_checked_at = now();
+    END IF;
+  END $$;
+`)
+  .then(() => pool.query(`
+    CREATE TABLE IF NOT EXISTS viewing_slots (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      lead_id TEXT NOT NULL,
+      viewing_at TIMESTAMPTZ NOT NULL,
+      property_code TEXT,
+      agreed_at TIMESTAMPTZ,
+      source TEXT,
+      status TEXT NOT NULL DEFAULT 'scheduled',
+      report_id UUID,
+      report_lead_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`))
+  .then(() => pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS viewing_slots_lead_at_uq ON viewing_slots (lead_id, viewing_at)`))
+  .then(() => pool.query(`
+    INSERT INTO viewing_slots (lead_id, viewing_at, property_code, source, status, report_id, report_lead_id)
+    SELECT lead_id, viewing_at, property_code, 'report', 'reported', id, lead_id FROM viewing_reports
+    ON CONFLICT (lead_id, viewing_at) DO NOTHING`))
+  .then(() => pool.query(`
+    CREATE TABLE IF NOT EXISTS stage_sync_decisions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      lead_id TEXT NOT NULL,
+      source TEXT,
+      from_stage TEXT,
+      to_stage TEXT,
+      action TEXT NOT NULL,
+      direction TEXT,
+      moved BOOLEAN NOT NULL DEFAULT FALSE,
+      applied TEXT,
+      reason TEXT,
+      newest_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`))
+  .then(() => pool.query(`CREATE INDEX IF NOT EXISTS stage_sync_decisions_lead_idx ON stage_sync_decisions (lead_id, created_at DESC)`))
+  .then(() => logger.info("startup migration: stage_checked_at + viewing_slots ensured"))
+  .catch((err) => logger.error({ err }, "startup migration: stage sync columns failed"));
 
 
 pool.query(`

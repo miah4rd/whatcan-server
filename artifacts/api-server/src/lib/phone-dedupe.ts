@@ -73,7 +73,7 @@ export async function leadPhone(leadId: string): Promise<string> {
  * duplicate card carries a duplicate contact — matching on the id is exactly
  * what fails to spot the second card.
  */
-async function siblingLeadIds(leadId: string, phone: string): Promise<string[]> {
+export async function siblingLeadIds(leadId: string, phone: string): Promise<string[]> {
   const found = await amoFetch<{
     _embedded?: { contacts?: Array<{ _embedded?: { leads?: Array<{ id: number }> } }> };
   }>(`/api/v4/contacts?query=${encodeURIComponent(phone)}&with=leads&limit=10`);

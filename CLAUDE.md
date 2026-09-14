@@ -1031,13 +1031,14 @@ get a second insertion. The verb only (`to view`, `view some/the/it…`), not
 Anything that shapes what a broker sends gets the same two halves: the
 trigger in code, the wording from the broker's own messages and lessons.
 
-**The viewing canons run on the send path too.** `viewingCanons()` in
-`stage-on-reply.ts` is the ONE implementation (manual-reply detectors, the
-outcome pass, `approve.ts`). Until 10.09 approve wrote the pre-send
-classification as-is: "Viewing scheduled" landed with no `viewing_at`, so the
-report was never asked for and "Viewing done" could not follow. The broker's
-explicit pick is never refused, but the slot is still read and stored; a
-backward move by a person clears it. Fail-closed for the auto move.
+**The viewing canons run on the send path too.** Automatic moves apply them in
+`decideStage` (`thread-stage-sync.ts`, see "Stages follow the thread" below);
+`viewingCanons()` in `stage-on-reply.ts` covers the broker's explicit pick in
+`approve.ts`. Until 10.09 approve wrote the pre-send classification as-is:
+"Viewing scheduled" landed with no `viewing_at`, so the report was never asked
+for and "Viewing done" could not follow. The broker's explicit pick is never
+refused, but the slot is still read and stored (`viewing_slots` too); a
+backward move by a person clears it.
 
 **A pass that nothing schedules does not run.** `processViewingOutcomes` was
 reachable only through `POST /api/admin/reclassify-manual?apply=1` — Lorenzo's
@@ -1045,27 +1046,73 @@ reachable only through `POST /api/admin/reclassify-manual?apply=1` — Lorenzo's
 Anything new that "runs three hours after X" gets the same check before the
 verification claim: `grep -rn <fn> src` must show a scheduler call site.
 
-### Stages also follow replies sent from the broker's phone (2026-09-07)
+### Stages follow the thread, whoever wrote the message (2026-09-14)
 
-Both manual-reply detectors (webhook `brokerRepliedFresh`, timeline sweep) call
-`classifyAndApplyStage` in `lib/stage-on-reply.ts`. Three viewings agreed in one
-week, the CRM showed one — everything the broker confirmed outside Copilot moved
-nothing. `viewing_at` is read from the thread when a card lands on Viewing
-scheduled; `lib/viewing-outcome.ts` turns a passed slot into Viewing done (if the
-thread says so) or a "how did it go?" push draft stamped `viewing follow-up due`.
+Owner, 14.09: "всё должно быть синхронно вацап и копилот". The audit of
+07–13.09 found 29 Rental cards on a wrong stage, all from one disease: the
+stage decision lived in several copies that disagreed.
+- A reply typed on the phone was seen first by `syncOutgoingEvents` (repair
+  mode, no stage), which stamped `last_our_message_at`; the timeline sweep
+  (`lastOurMessageAt >= newest → continue`) and the webhook
+  (`brokerRepliedFresh` false) then saw nothing new, and nothing classified
+  it: Lorenzo's second viewing, Remi's viewing, links sent from the phone.
+- The echo of our own send reached the webhook as "the broker replied" and
+  re-classified a thread whose links were not stored yet: cards moved BACK.
+- approve applied a pre-send classification read from frozen `content`, and
+  the card's stored stage id outranked the new name: 20 `stage_events` rows
+  amoCRM never received.
+- The first message never set "need assessed"; a card held one viewing only.
 
-**Viewing canons, not a "no backward" guard.** The first version refused any move
-out of a viewing stage by regex; the owner rejected that ("лид по канонам не
-подходит на эту стадию, ты его насильно запрещаешь"). Now:
-- the classifier is told the CRM facts (booked slot, ahead/passed) and the two
-  canons in its rules: scheduled stays until the slot passes or a cancellation
-  is stated; done only after the slot passed AND the thread shows it happened;
-- code enforces only what code can: "Viewing done" with a future `viewing_at` is
-  refused; a BACKWARD move out of a viewing stage needs a focused yes/no
-  evidence check (cancelled / no-show / rejected what they saw / restarted),
-  fail-closed, and clears `viewing_at` when confirmed. Forward moves are free.
-- `/api/admin/reclassify-manual` (POST, `?days&pipeline&apply=1`) is the repair
-  and audit tool; run it dry first, it prints every canon that held.
+Now ONE entry point, `onThreadChanged(leadId, {source})` in
+`lib/thread-stage-sync.ts`, called for every new message on every path:
+`syncOutgoingEvents` (before its skips), the timeline sweep, incoming
+detection and quick poll, the webhook (every Rental event; other funnels only
+for a reply typed by hand), approve after a Rental send, the automatic
+welcome, `send-chat-message`; the outcome pass and `reclassify-manual` call
+`syncStageFromThread` directly. It debounces 75 s per lead (max 5 min),
+re-reads the lead's timeline into `lead_messages` (never `content`), takes the
+stage from amoCRM (never `leads_sync`) and decides once, with its own
+watermark `leads_sync.stage_checked_at`:
+1. no-WhatsApp notice → `closeUndeliverable`, by `undeliverableVerdict` (the
+   LIVE debounce asks the same verdict): the notice is the newest client-side
+   message, the client never wrote a real one, nothing of ours went out more
+   than 3 min after it (a line re-test);
+2. floors in code: anything we sent → at least "need assessed"; a `/property/`
+   link we sent → at least "Options sent"; never lower;
+3. viewing slots (`extractViewingSlot`: the slot, when it was agreed, the villa
+   named in THAT exchange or null) go to `viewing_slots`. A slot agreed after
+   the previous one passed is a new cycle: Viewing done → Viewing scheduled
+   with the new `viewing_at`, no regression check. On Negotiation or a closed
+   card the slot is still recorded, for its report;
+4. the classifier for the rest, told the facts. Forward moves are free;
+   "Viewing done" before the booked slot and "Viewing scheduled" without a
+   slot are refused; a backward move needs `backwardEvidence` (one yes/no,
+   fail-closed); when only our own sends are new (bot sender, or a
+   `sent_messages` row within ±3 min) nothing moves back. Viewing done →
+   Options sent needs no check when a shortlist of other villas went out
+   after the viewing (canon of 09.09).
+Closed won/lost, CHECK IN, Contract signed, the REACH ladder and administrative
+stages are never left automatically. For Rental, approve no longer applies
+`suggested_stage` (a person's pick still applies at once); for Unicorn it does,
+with the id of the name chosen. `stage_events` and `leads_sync` are written
+only after amoCRM accepted the status. One log line per run,
+`stage-sync decision` (lead, source, from, decided, reason — also "not moved
+because …"), and a `stage_sync_decisions` row. `classifyAndApplyStage` is a
+wrapper around it now.
+
+**The check runs itself (owner, 14.09: "мы это чиним уже в 10 раз").**
+`lib/stage-sync-check.ts`, daily from 09:00 Bali and 40 min after a restart if
+that day's run has not happened; on demand
+`GET /api/admin/rental-stage-sync-check?hours=24` (`&alert=1` pushes) or
+`scripts/rental-stage-sync-check.sh [hours]`. It fails on a card below its
+floor (amoCRM's stage), a `stage_events` row with no amoCRM
+`lead_status_changed` ±4 min to the same status, and a reply typed on the
+phone with no `stage_sync_decisions` row within 10 min; any failure pushes the
+owner through the AI-outage alert path, lead ids in the text.
+
+- `/api/admin/reclassify-manual` (POST, `?days&pipeline&apply=1&forward=1&slots=1`,
+  or `?lead=`) runs the same decision. Dry by default; a bulk run applies
+  forward moves only and prints the rest for a person to read first.
 - A correlated subquery inside `db.select({...})` rendered `lead_id = lead_id`
   and greeted Liu as "Fengshui": read per-lead values in their own query.
 
@@ -1119,7 +1166,31 @@ reports. Verified end to end on a throwaway card 08.09: task created → report
 filed → stage Negotiation done, report task completed, next-step task due
 next morning, note on the lead, placeholder retired, Sonnet draft written.
 The two task texts are deliberately NOT in `OUR_TASK_TEXT`: a client's reply
-must not close "Fill the viewing report" — only the filed report does. mobile.ts trap, again: strings inside the page literal are written by
+must not close "Fill the viewing report" — only the filed report does.
+
+**Every held viewing gets a report (14.09).** Week of 07.09: 2 of 5. Why the
+other three had none, and what holds now:
+- one slot per card: `leads_sync.viewing_at` was overwritten by a second
+  viewing, and the pass read only cards on "Viewing scheduled". Now every
+  agreed slot is a `viewing_slots` row (stage sync, a broker's pick, a
+  "rescheduled" report) and `processViewingOutcomes` reports each one 3 h after
+  it, whatever the card's stage;
+- a viewing agreed and held in a CLOSED card's thread (Remi, 23489993 closed
+  07.09 while he was still writing; open card 23528439): `reportCardFor` puts
+  the report on the client's open card in the same funnel (same contact, or
+  same phone); with no open card it stays on the closed one and the task and
+  push say "reopen it?". Never reopened automatically;
+- `closeAmoTasksForLead` closed EVERY open task on any send or manual reply:
+  Lorenzo's report task "Closed automatically" 10.09, Searra's "Counter-offer
+  to owner" and Liu's "Second visit" likewise. The report task, "Next step
+  after the viewing" and the listing-card step are `isProtectedTask` in
+  amo-client: only filing the report closes the first, the broker the others.
+  `viewing-report-due?lead=&at=&retask=1` re-creates a wrongly closed one;
+- the villa is read from the messages that agreed the slot; "the last code sent
+  before the slot" named the wrong villa in 2 of 3 reports. Unclear → empty,
+  and the form asks for the code;
+- a next step "by today" filed after 10:00 was due in the past: `stepDue` puts
+  it at 10:00 or 18:00 that day if still ahead, else three hours from now. mobile.ts trap, again: strings inside the page literal are written by
 hand — a Python heredoc collapsed `\\'` to `\'` and the bare quote took the
 whole page down for a minute; use `&rsquo;` in HTML strings.
 

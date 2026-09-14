@@ -23,6 +23,7 @@ import { getMergedDialog } from "../lib/merged-conversation";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
 import { classifyAndApplyStage } from "../lib/stage-on-reply";
+import { onThreadChanged, threadDrivesStage, isEchoOfOurSend, threadTranscript } from "../lib/thread-stage-sync";
 import { enforceBudgetFilter } from "../lib/budget-filter";
 import { recordCommitment } from "../lib/commitment-scheduler";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
@@ -397,11 +398,15 @@ export async function classifyStageInBackground(
       .limit(1);
     if (!lead) return;
 
-    const dialog = parseDialogContent(lead.content ?? "");
+    // The thread from lead_messages, never the frozen content column: content
+    // is refreshed only when someone opens the card, so a stage read from it
+    // judged a conversation days behind. Content stays the fallback for a card
+    // whose messages have not been synced yet.
+    const fromThread = await threadTranscript(leadId).catch(() => "");
     const classification = await classifyStage({
       pipeline: lead.pipeline,
       currentStage: lead.leadStage,
-      conversationText: formatDialogForAI(dialog.messages),
+      conversationText: fromThread || formatDialogForAI(parseDialogContent(lead.content ?? "").messages),
       replyText,
       attachmentsCount,
     });
@@ -605,12 +610,17 @@ router.post("/amocrm/webhook", async (req, res) => {
       let nextFollowupAt: Date | null = existing?.nextFollowupAt ?? null;
       let followupLevel = existing?.followupLevel ?? 0;
 
-      // Detect: broker just sent a NEW human message (not a re-delivery of old content)
-      const brokerRepliedFresh =
+      // Detect: broker just sent a NEW human message (not a re-delivery of old
+      // content), and not the echo of our own send. approve and the automatic
+      // welcome record a sent_messages row; taking their echo for "the broker
+      // replied" ran the manual-reply pass, and a stage read on a thread whose
+      // links were not stored yet, 4-10 s after every send (23552139, 12.09).
+      const newerOurMessage =
         !isLive &&
         !!lastOurAt &&
         !!existing?.lastOurMessageAt &&
         lastOurAt.getTime() > existing.lastOurMessageAt.getTime();
+      const brokerRepliedFresh = newerOurMessage && !(await isEchoOfOurSend(leadId, lastOurAt!).catch(() => false));
 
       if (isLive) {
         // Lead replied → LIVE → reset follow-up schedule + clear any pending PUSH items
@@ -627,10 +637,7 @@ router.post("/amocrm/webhook", async (req, res) => {
             ),
           );
       } else if (brokerRepliedFresh) {
-        // Same as the timeline sweep: a manual reply moves the stage too.
-        classifyAndApplyStage(leadId, { source: "manual-reply" }).catch((err) =>
-          logger.warn({ err, leadId }, "webhook: stage classification after manual reply failed"),
-        );
+        // The stage is decided by the stage sync, triggered below for this message.
         // Broker manually replied → clear stale LIVE suggestion.
         // Do NOT set nextFollowupAt — task-driven scheduling via amo-sync
         // will pick up the amoCRM task due date when it's time.
@@ -731,6 +738,14 @@ router.post("/amocrm/webhook", async (req, res) => {
         { leadId, leadRepliedAfterUs: dialog.leadRepliedAfterUs, brokerRepliedFresh, followupLevel, nextFollowupAt },
         "dialog analyzed",
       );
+
+      // Every message on a Rental card (the client's, ours, the broker's own
+      // phone) goes to the one stage decision; other client funnels only for a
+      // reply the broker typed herself, since their stage is applied on send.
+      // No messageAt from `content`: its times are coarser than the thread's.
+      if (threadDrivesStage(pipeline ?? existing?.pipeline) || brokerRepliedFresh) {
+        onThreadChanged(leadId, { source: brokerRepliedFresh ? "phone" : isLive ? "inbound" : "webhook" });
+      }
 
       // ── Dead-stage cleanup ────────────────────────────────────────────────────
       // If the lead just moved to a closed/lost/incorrect-information stage,

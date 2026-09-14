@@ -9,6 +9,7 @@ import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
 import { classifyStage, safeStageIdForLead, isRuleOwnedAcquisitionStage } from "../../lib/stage-classifier";
 import { viewingCanons } from "../../lib/stage-on-reply";
+import { onThreadChanged, recordViewingSlot, threadDrivesStage } from "../../lib/thread-stage-sync";
 import { reconcileListingStage } from "../../lib/listing-stage-engine";
 import {
   resolveSendChannel,
@@ -747,6 +748,12 @@ router.post("/approve", async (req, res) => {
     // engine returns at once for every other funnel.
     reconcileListingStage(sug.leadId, { facts: null, apply: true, source: "send" }).catch(() => undefined);
 
+    // Rental's stage follows the thread: judged once this text and its links
+    // are in amoCRM, by the same decision a reply typed on the phone gets.
+    if (chatSent && threadDrivesStage(prevSyncRow?.pipeline)) {
+      onThreadChanged(sug.leadId, { source: "approve" });
+    }
+
     // ── Track property picks — personalizes future matching for this broker ──
     if (currentResponsibleUser && effectiveAttachments.length > 0) {
       for (const att of effectiveAttachments) {
@@ -776,7 +783,19 @@ router.post("/approve", async (req, res) => {
       curStageLower.includes("1st follow up") ||
       curStageLower.includes("2nd follow up") ||
       curStageLower.includes("final follow up");
-    if (!explicitNewStage && !inReachStage && sug.suggestedStage && sug.suggestedStageId) {
+    // Rental: the stage follows the thread, not a classification made before
+    // the send. onThreadChanged (called right after the send, below) re-reads
+    // the thread with this message and its links stored and decides once — the
+    // same decision a reply typed on the phone gets. Applying suggested_stage
+    // here read the frozen content column and carried a stale id: 20
+    // stage_events rows in the week of 07.09 named stages amoCRM never got.
+    const threadOwnsStage = threadDrivesStage(prevSyncRow?.pipeline);
+    if (threadOwnsStage && !explicitNewStage) {
+      req.log.info(
+        { leadId: sug.leadId, suggested: sug.suggestedStage ?? null },
+        "auto stage: Rental follows the thread — the stage sync decides after the send",
+      );
+    } else if (!explicitNewStage && !inReachStage && sug.suggestedStage && sug.suggestedStageId) {
       if (sug.suggestedStageTerminal) {
         req.log.info(
           { leadId: sug.leadId, stage: sug.suggestedStage },
@@ -903,16 +922,21 @@ router.post("/approve", async (req, res) => {
   const effectiveNewStage = explicitNewStage ?? (autoStage ? autoStage.name : null);
   if (effectiveNewStage) {
     const prevSync = await db
-      .select({ leadStage: leadsSyncTable.leadStage })
+      .select({ leadStage: leadsSyncTable.leadStage, pipeline: leadsSyncTable.pipeline })
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, sug.leadId))
       .limit(1);
 
     const prevStage = prevSync[0]?.leadStage ?? null;
 
-    const requestedStageId =
-      (typeof body.stageId === "string" && body.stageId.trim() ? body.stageId.trim() : null) ??
-      (autoStage ? String(autoStage.id) : null);
+    // The id travels with the NAME it was chosen for: a broker's pick carries
+    // the id the picker sent, an automatic stage its own. The mobile card used
+    // to send its stored lead_stage_id on every approve and this line preferred
+    // it, so on 09.09 "Objection Handled" went out with Options sent's id —
+    // amoCRM stayed put while our tables recorded the new name.
+    const requestedStageId = explicitNewStage
+      ? (typeof body.stageId === "string" && body.stageId.trim() ? body.stageId.trim() : null)
+      : (autoStage ? String(autoStage.id) : null);
 
     // A status id belongs to ONE funnel, and writing it moves the lead into that
     // funnel. So an id that came from somewhere stale — our own stored
@@ -946,24 +970,11 @@ router.post("/approve", async (req, res) => {
     // stage-only move (skipMessage) — or when the new stage is a dead one where
     // chasing must stop.
     const clearClock = skipMessage || shouldSuppressPush(effectiveNewStage);
-    await db
-      .update(leadsSyncTable)
-      .set({
-        leadStage: effectiveNewStage,
-        leadStageId: stageId ?? undefined,
-        ...(clearClock ? { nextFollowupAt: null } : {}),
-        ...viewingPatch,
-        updatedAt: new Date(),
-      })
-      .where(eq(leadsSyncTable.leadId, sug.leadId));
-
-    if (effectiveNewStage !== prevStage) {
-      await db.insert(stageEventsTable).values({
-        leadId: sug.leadId,
-        fromStage: prevStage,
-        toStage: effectiveNewStage,
-        responsibleUser: currentResponsibleUser,
-      }).catch(() => {});
+    if (clearClock) {
+      await db
+        .update(leadsSyncTable)
+        .set({ nextFollowupAt: null, updatedAt: new Date() })
+        .where(eq(leadsSyncTable.leadId, sug.leadId));
     }
 
     // Update stage directly in amoCRM via API (stageId is the numeric status_id).
@@ -987,16 +998,42 @@ router.post("/approve", async (req, res) => {
     } catch (e) {
       req.log.error({ err: e }, "stage-change API error");
     }
+
+    // Our copy of the stage (leads_sync, stage_events, the viewing slot) is
+    // written only once amoCRM accepted the change. Written before it, a
+    // refused or skipped status change left a name on our side the board never
+    // showed: 20 stage_events rows without an amoCRM event, week of 07.09.
+    if (stageOk) {
+      await db
+        .update(leadsSyncTable)
+        .set({ leadStage: effectiveNewStage, leadStageId: stageId ?? undefined, ...viewingPatch, updatedAt: new Date() })
+        .where(eq(leadsSyncTable.leadId, sug.leadId));
+      if (effectiveNewStage !== prevStage) {
+        await db.insert(stageEventsTable).values({
+          leadId: sug.leadId,
+          fromStage: prevStage,
+          toStage: effectiveNewStage,
+          pipeline: prevSync[0]?.pipeline ?? null,
+          responsibleUser: currentResponsibleUser,
+        }).catch(() => {});
+      }
+      if (viewingPatch.viewingAt) {
+        await recordViewingSlot(sug.leadId, { viewingAt: viewingPatch.viewingAt }, explicitNewStage ? "broker-pick" : "approve").catch(() => undefined);
+      }
+    } else {
+      req.log.warn({ leadId: sug.leadId, newStage: effectiveNewStage, stageId }, "stage change not confirmed by amoCRM — our copy left unchanged");
+    }
   } else if (!skipMessage && sug.kind === "push" && (sug.followupLevel ?? 0) !== FINAL_FOLLOWUP_LEVEL) {
     // Reach/qualification follow-up advance (1st → 2nd → final), SYNCHRONOUS and
     // reliable — the old fire-and-forget path left a sent 1st follow-up stuck at
     // 1st. Runs only when no explicit or classifier stage was applied above.
-    // Status IDs are unique per pipeline, so both maps can be checked without a
-    // pipeline lookup.
+    // Unicorn's ladder only: Rental's funnel has had no follow-up stages since
+    // 18.08 (87318450 / 87318706 no longer exist in amoCRM, checked 14.09) and
+    // its stage follows the thread through the stage sync.
     try {
       const amoLead = await getAmoLead(sug.leadId);
       const curStatus = amoLead?.status_id;
-      const nextStatus = curStatus ? (FOLLOWUP_STAGE_ADVANCE[curStatus] ?? FOLLOWUP_STAGE_ADVANCE_RENTAL[curStatus]) : undefined;
+      const nextStatus = curStatus ? FOLLOWUP_STAGE_ADVANCE[curStatus] : undefined;
       if (nextStatus) {
         stageOk = await updateLeadStatus(sug.leadId, Number(nextStatus));
         req.log.info({ leadId: sug.leadId, from: curStatus, to: nextStatus, stageOk }, "follow-up stage advanced (sync)");
