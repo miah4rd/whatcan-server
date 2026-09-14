@@ -1896,6 +1896,57 @@ journal row `UPDATE true→false site_user listing-bot@…`; the scheduled pass
 → live 11:52:11 (Bali), note written. Card closed lost, property, link and
 journal rows deleted. The same save as a signed-out session → "NOT saved".
 
+### Weekly availability check: automatic, live and beyond only (2026-09-14)
+
+Owner: "Когда листинг попал в лайв, то 1 раз в неделю мы по регламенту уточняем
+про availability… сейчас это делает Юди через аппрувы, но это долго, иногда он
+забывает, нужно автоматически. Одно короткое сообщение 1 раз в неделю
+достаточно. ТОЛЬКО для листингов, которые прошли до этапа live в CRM, не
+раньше." Until then `weekly-availability-check.ts` wrote a push DRAFT for Yudi
+on Weekly Check Sent only: 6 from 27.08 never approved; the 2 sent on 07.09
+were both answered within an hour. **Regulation now — automatic, no approval:**
+- **Who:** a Rental Listings card in live / Weekly Check Sent / Update
+  Availability Received, or one amoCRM events show went through live and is not
+  Initial Contact / TAKEN TO WORK / long term / co-broke / closed now; linked
+  (`listing_crm_link`) to exactly one published rent listing; the owner has
+  written to us at least once. Never earlier stages, never a first contact —
+  so the 9-a-day new-contact budget is neither spent nor waited for.
+- **Line:** the owner must already have a WhatsApp talk on one of the
+  responsible broker's own numbers — `resolveSendChannel` then stays on it. A
+  thread only on another broker's line is skipped (it would reassign the card
+  and open a second chat).
+- **When:** nothing of ours (Copilot or phone) in 7 days, owner quiet 3 days, no
+  LIVE reply younger than 3 days pending in the inbox (an older forgotten draft
+  does not block), not two unanswered checks in a row (then it
+  stops and pushes Yudi once), Bali 10:00–17:00, one send per 5-minute pass and
+  ≥12 minutes between checks.
+- **What:** one fixed sentence, no model, English or Indonesian by the owner's
+  own words (`threadLanguage`), villa name from the card title, never the R-code:
+  "Hi <name>, quick weekly check on <villa>: is it still available? If it's
+  taken, when does it free up?" / "Halo <name>, cek mingguan untuk <villa>:
+  apakah masih tersedia? Kalau sudah terisi, kosong lagi mulai tanggal berapa?"
+- **How:** `resolveSendChannel` + `deliverText` (the one send path, the
+  conversation's own line), `sent_messages.kind = 'weekly-availability'`. The
+  card moves to Weekly Check Sent only when the type-90 event is in the lead's
+  timeline (`delivery_status` stamped into `webhook_response`); not seen in 45 s
+  → re-checked every pass, Yudi pushed after 2 h.
+- **Answer:** owner replies to the newest check, quiet 10 min → card to Update
+  Availability Received, note with the owner's words, one Haiku reading
+  (free_now / free_from / occupied_until / not_for_rent / unclear) behind code
+  guards (`guardAnswer`: a date needs an exact day in the owner's own words; a
+  month, "soon", a range with gaps is unclear). Clear → `property_availability`
+  in the admin format (status available, start = first free day, end 2099-12-31),
+  only when the listing has no row or one available row, read back before it
+  counts. Everything else, and "no longer for rent", → push to Yudi with the
+  owner's words; nothing is unpublished automatically. Marker per check:
+  `broker_settings` `weekly_check:answer:<sent id>`.
+- **Switch:** `broker_settings.weekly_availability_mode` on | dry | off (missing =
+  dry = the scheduler does nothing). Plan without sending:
+  `POST /api/admin/weekly-availability?dry=1[&answers=1]`; a pass now: `?run=1`.
+- Cadence check: `select lead_id, count(*) from sent_messages where kind =
+  'weekly-availability' and webhook_status = 200 and created_at > now() -
+  interval '7 days' group by 1 having count(*) > 1;` must return nothing.
+
 ### Construction nearby: the one structured red flag (2026-09-10)
 
 Brokers tick **Construction nearby** in the site's Internal data

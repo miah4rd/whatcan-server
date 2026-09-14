@@ -44,6 +44,7 @@ import { db, leadsSyncTable, leadMessagesTable, sentMessagesTable, brokerSetting
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch, amoPost, updateLeadStatus, whatsappTalkLines } from "./amo-client";
+import { brokerLines } from "./amo-messenger-field";
 import { invalidatePropertyCache } from "./property-catalog";
 import { resolveSendChannel, deliverText } from "./outbound-send";
 import { isFirstOutbound } from "./new-contact-budget";
@@ -344,8 +345,8 @@ async function planCard(lead: AmoLead, link: { property_id: string; title: strin
   base.lastContactMs = Math.max(lastOutMs, lastIn?.getTime() ?? 0);
   base.ownerTexts = inbound.slice(0, 15).map((m) => m.text ?? "");
   base.lang = threadLanguage(base.ownerTexts);
-  const talk = (await whatsappTalkLines(leadId).catch(() => []))[0];
-  base.line = talk ? String(talk.sourceId) : null;
+  const talks = await whatsappTalkLines(leadId).catch(() => []);
+  base.line = talks[0] ? String(talks[0].sourceId) : null;
 
   base.owner = await fetchOwnerName(leadId, villa);
   base.message = composeWeeklyCheck(base.lang, base.owner, villa);
@@ -353,6 +354,18 @@ async function planCard(lead: AmoLead, link: { property_id: string; title: strin
   if (inbound.length === 0 || (await isFirstOutbound(leadId))) {
     return { ...base, why: "the owner has never written to us — a weekly check is not a first contact" };
   }
+  // The question goes out on the line the owner is talking to. A thread that lives on another
+  // broker's number (Bumbak Dream Villa: the owner talks to Amelia's 56811, the card is Yudi's) would
+  // make resolveSendChannel reassign the card to Yudi's line and open a second chat with the owner.
+  const own = brokerLines(sync.responsibleUser);
+  if (talks.length === 0) return { ...base, why: "no WhatsApp conversation visible on this card in amoCRM" };
+  // resolveSendChannel keeps a multi-line broker on a talk that exists on one of their own numbers;
+  // with none, it would reassign the card to the broker's primary line and open a new chat.
+  const ownTalk = talks.find((t) => own.includes(t.sourceId));
+  if (!ownTalk) {
+    return { ...base, why: `the owner's conversation is only on line ${talks[0]!.sourceId}, not ${sync.responsibleUser}'s — would open a second chat` };
+  }
+  base.line = String(ownTalk.sourceId);
   if (lastOut && lastOut > daysAgo(CHECK_EVERY_DAYS)) {
     return { ...base, why: `we wrote to the owner ${lastOut.toISOString().slice(0, 16)} — less than ${CHECK_EVERY_DAYS} days ago` };
   }
@@ -365,10 +378,19 @@ async function planCard(lead: AmoLead, link: { property_id: string; title: strin
     .where(and(eq(sentMessagesTable.leadId, leadId), eq(sentMessagesTable.kind, WEEKLY_CHECK_KIND), gt(sentMessagesTable.createdAt, daysAgo(1))))
     .limit(1);
   if (attempt) return { ...base, why: "a check was attempted in the last 24 hours" };
+  // A reply written in the last 3 days is a conversation the broker is in; a draft left for a week
+  // is not, and must not keep the villa unchecked forever (Villa Lani: a draft from 09.09).
   const [pendingReply] = await db
     .select({ id: pendingSuggestionsTable.id })
     .from(pendingSuggestionsTable)
-    .where(and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending"), eq(pendingSuggestionsTable.kind, "live")))
+    .where(
+      and(
+        eq(pendingSuggestionsTable.leadId, leadId),
+        eq(pendingSuggestionsTable.status, "pending"),
+        eq(pendingSuggestionsTable.kind, "live"),
+        gt(pendingSuggestionsTable.createdAt, daysAgo(OWNER_ACTIVE_DAYS)),
+      ),
+    )
     .limit(1);
   if (pendingReply) return { ...base, why: "a reply to the owner is waiting in the inbox" };
 
