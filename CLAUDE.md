@@ -237,23 +237,42 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
   picks: a third closed loop after views. Over 01-14.09 on Rental leads the
   bot's drafts attached villas with a median listing age of 11 days (push) / 17
   (live), Amelia's own phone links 7; R-YUD-074 sat in bot drafts for 34 leads.
-  Now `rankShortlistFits` (property-catalog.ts) scores every fit inside
-  `strictShortlistPool` BEFORE anything is cut, each point with its reason:
-  price vs the stated ceiling (≥80% +3, ≥65% +2, ≥50% +1); a named area over an
-  allowed neighbour +1; free now +0.5, free-from with no move-in −1; dates
-  confirmed within 21 days (newest property_availability row) +0.5; stay unknown
-  and minimum 12 months −0.5 (6: −0.25) or yearly-only −1; under 8 photos −1,
-  temporary OTA photo set (property_private.notes via `listingQualityById`)
-  −0.5, 10+ photos +0.5; video +1; Listed +1; construction nearby −1.5; red flag
-  −2; on the site 14 days or less +1; offered to this lead in a draft the broker
-  SKIPPED in the last 21 days −1.5 (`skippedDraftPropertyIds`; lower, not out).
-  Ties: closer to the ceiling, then newer. Never views, never pick counts (the
-  read side was deleted; the counter is history only). The matcher sees the top
-  12 with `why:`; the edit composer the top 20 with client-safe reasons only
-  (price, area, dates, stay, video, new), never Listed/photos/construction. A
-  weight changes there, followed by a replay; no other sort anywhere. Replay
-  14.09, 23398487 (2BR Canggu/Berawa/Umalas ≤60M): old top R-YUD-098/053/095
-  (33-39M), new top R-YUD-088 (video, 7 days), R-YUD-059 (Listed), R-YUD-103.
+  The first fix (f359a54, 14.09 morning) summed fit and quality into one score
+  with +1 for a listing 14 days old or less, so "new" became the next bias, and
+  it read the retired boolean `red_flag`, so no red flag ever counted.
+  **Owner, the same evening: the request is the base of everything; old and new
+  villas mix freely ("у нас аренда, они сдаются, потом опять свободные"); what
+  we know about the villa decides only between equal fits.** Now
+  `rankShortlistFits` (property-catalog.ts) orders every fit inside
+  `strictShortlistPool` BEFORE anything is cut, each step only between villas
+  equal on the steps before it:
+  1. an area the client named over a neighbour they only allowed;
+  2. fit (`score`): price vs the stated ceiling ≥90% +3, ≥80% +2, ≥65% +1 (a
+     50M client sees 45-50 first; a form bucket "30-50" is read the same way;
+     a narrow range the client gave, floor ≥80% of the ceiling, is +3 all
+     through); no published price −3; free-from with no
+     move-in −1; stay unknown and yearly-only −1, minimum 12 months −0.5, 6
+     months −0.25;
+  3. not offered to this lead in a draft the broker SKIPPED in the last 21 days
+     (`skippedDraftPropertyIds`; lower, not out);
+  4. `quality`: construction nearby −1.5; each red flag line −1 (max 3; a line
+     restating the construction tick is not counted); each green flag line +0.5
+     (max 3 lines), both from `property_private.red_flags` / `green_flags` via
+     `listingQualityById`; Listed +1; video +1; under 8 photos −1, temporary OTA
+     photo set −0.5, 10+ photos +0.5; dates confirmed within 21 days +0.5;
+  5. `rotationTurn(leadId, id)`, a stable per-lead shuffle: villas equal on
+     everything alternate between leads instead of one going to all of them
+     (callers pass `leadId` / `rotationKey`).
+  No listing age anywhere, never views, never pick counts (the read side was
+  deleted; the counter is history only). The matcher sees the top 12 with
+  `why:`; the edit composer the top 20 with client-safe reasons only (price,
+  area, dates, stay, video), never Listed/photos/flags. A weight changes there,
+  followed by a replay; no other sort anywhere. Replay 14.09 evening (18 Rental
+  leads with drafts, prod vs branch `strictShortlistPool` on the same resolved
+  requests, read-only): top 3 changed on 12 of 16 leads with fits; median
+  listing age in the top 3 12 → 16 days (no bias either way); first place 8 →
+  11 different villas across 16 leads. 23558753 (2BR Canggu, 30-50M): old top
+  R-YUD-053 at 36.7M, new R-YUD-047/089/090 at 45-46M.
 - **A shortlist is 2-3 listings when 2-3 FIT — never padded (owner, 2026-09-04).**
   Bedrooms, area and budget are filters, not preferences: nothing of another
   size, district or price rides along because the right one was missing. One

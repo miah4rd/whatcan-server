@@ -270,7 +270,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
           clickedListingId: adId,
         });
         const named = [...new Set(recentLeadMessages.flatMap((t) => Array.from(String(t).matchAll(/\/property\/([A-Za-z0-9-]+)|\b(R-[A-Z]{2,6}-[A-Z0-9]+)\b/gi)).map((m) => (m[1] ?? m[2] ?? "").toUpperCase())).filter(Boolean))];
-        outcome = { ...(await shortlistOutcomeFor(request, { listingType, excludeIds, namedIds: named })).outcome, declined: true };
+        outcome = { ...(await shortlistOutcomeFor(request, { listingType, excludeIds, namedIds: named, rotationKey: opts.leadId })).outcome, declined: true };
       } catch (err) {
         logger.warn({ err, leadId: opts.leadId }, "request read on a skipped shortlist failed (non-fatal)");
       }
@@ -283,6 +283,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
       brokerId: opts.brokerId,
       excludeIds,
       proposedIds,
+      leadId: opts.leadId,
       seenCount: excludeIds.length,
       latestLeadMessage: opts.lastLeadText,
       brokerInstruction: opts.brokerInstruction ?? null,
