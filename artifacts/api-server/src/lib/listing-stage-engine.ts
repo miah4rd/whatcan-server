@@ -587,7 +587,7 @@ export async function maybeRunDailyListingAudit(): Promise<void> {
   const r = await auditListingStages({ apply: true });
   // After the engine's own moves (a card it just qualified is judged the same run):
   // a message a detector missed still moves its card within a day.
-  const progressed = await auditListingProgress({ apply: true, source: "audit" }).catch((err) => {
+  const progressed: Array<{ leadId: string; to: string | null; moved: boolean }> = await auditListingProgress({ apply: true, source: "audit" }).catch((err) => {
     logger.error({ err }, "listing progress audit failed");
     return [];
   });
