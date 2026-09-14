@@ -83,10 +83,24 @@ function isOurSender(senderPart: string): boolean {
 export function parseDialogContent(content: string): DialogSummary {
   const messages: ParsedMessage[] = [];
 
+  // The quick poll hands generators `content + "[LATEST MESSAGES …]" + a raw
+  // timeline tail` ("Amelia: https://…/property/R-YUD-048" lines with no
+  // timestamps). The message regex runs to the next timestamp or the end, so
+  // the whole tail — our own links and texts included — was glued onto the
+  // LAST message of content. When that was the client's, the "lead is
+  // discussing a villa we sent" gate saw our link IDs inside the client's
+  // words and skipped the shortlist (Lance 12.09 11:45, Luke 14.09 13:26), and
+  // the request reader took our "Rp 45 million, 6 month stay" for the
+  // client's (Chloé 14.09 20:11). The tail is not a parseable part of the
+  // dialog: every message in it is already in lead_messages, which the merged
+  // conversation reads properly.
+  const tailAt = content.search(/\n*\[LATEST MESSAGES\b[^\]]*\]/);
+  const body = tailAt >= 0 ? content.slice(0, tailAt) : content;
+
   // Reset lastIndex for global regex reuse
   GLOBAL_MSG_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = GLOBAL_MSG_RE.exec(content)) !== null) {
+  while ((m = GLOBAL_MSG_RE.exec(body)) !== null) {
     const [, dateStr, timeStr, sender, text] = m;
     const at = parseDate(dateStr!, timeStr!);
     if (!at) continue;
@@ -130,11 +144,25 @@ export function parseDialogContent(content: string): DialogSummary {
     lastOurMessage.at.getTime() - lastLeadMessage.at.getTime() < BOT_WINDOW_MS &&
     /\(bot\s*[-–]\s*amocrm\)/i.test(lastOurMessage.senderName);
 
+  // 3. The client answered our automatic message itself. The ad-lead welcome
+  //    is sent by "Amojo Bot (bot - amocrm)", so on a fresh ad lead there is
+  //    no HUMAN message of ours at all and rule 1 could never fire: Lance
+  //    answered the welcome at 11:24 on 12.09, the webhook read "not a reply",
+  //    stored the message time as known, the quick poll then skipped it as
+  //    old news — and no LIVE draft was written until the broker had already
+  //    answered by phone 14 minutes later.
+  const leadRepliedToBot =
+    !!lastLeadMessage &&
+    !lastHumanOurMessage &&
+    !!lastOurMessage &&
+    lastLeadMessage.at.getTime() > lastOurMessage.at.getTime();
+
   const leadRepliedAfterUs =
     (!!lastLeadMessage &&
       !!lastHumanOurMessage &&
       lastLeadMessage.at.getTime() > lastHumanOurMessage.at.getTime()) ||
-    botRespondedAfterLead;
+    botRespondedAfterLead ||
+    leadRepliedToBot;
 
   // Channel is in "us" messages (bot/manager senders), not in lead messages.
   // Take the most recent "us" message that has a known channel.

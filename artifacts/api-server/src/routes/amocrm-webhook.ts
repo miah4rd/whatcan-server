@@ -201,7 +201,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   });
 
   const draft = sanitizeSuggestion(completion.content);
-  const checked = await enforceRequestOnDraft({ leadId: opts.leadId, text: draft, attachments: picked.attachments, picked });
+  const checked = await enforceRequestOnDraft({ leadId: opts.leadId, text: draft, attachments: picked.attachments, picked, rental: isRental });
   const text = nothingInsideRequest(picked) ? checked.text : await applyViewingPush(checked.text, checked.attachments, {
     leadId: opts.leadId,
     pipeline: opts.pipeline,

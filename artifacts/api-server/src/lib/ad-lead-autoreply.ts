@@ -29,7 +29,7 @@
  * broker opening never fires. Reacting to silence is the entire point; talking
  * over a client who just replied would undo it.
  */
-import { db, leadsSyncTable, sentMessagesTable, pendingSuggestionsTable, brokerSettingsTable } from "@workspace/db";
+import { db, leadsSyncTable, sentMessagesTable, pendingSuggestionsTable, brokerSettingsTable, leadMessagesTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { describePropertiesByIds } from "./property-catalog";
@@ -479,6 +479,27 @@ async function runBrokerOpeningPass(): Promise<number> {
         .from(sentMessagesTable)
         .where(eq(sentMessagesTable.leadId, lead.leadId));
       if ((sentCount?.n ?? 0) > 1) continue;
+
+      // sent_messages only knows what WE sent through the bot. The client
+      // answering the welcome, or the broker writing from her own phone, lands
+      // only in lead_messages — and last_message_from flips back to "us" the
+      // moment she does. Lance (12.09) answered at 11:24, Amelia sent villas by
+      // phone at 11:38, and this pass still drafted "15 minutes of silence" at
+      // 11:39. Anything the client or the broker wrote after the welcome means
+      // the opening already happened.
+      if (lead.welcomeAt) {
+        const [after] = await db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(leadMessagesTable)
+          .where(
+            and(
+              eq(leadMessagesTable.leadId, lead.leadId),
+              sql`${leadMessagesTable.sentAt} > ${lead.welcomeAt}`,
+              sql`${leadMessagesTable.senderType} IN ('lead', 'broker')`,
+            ),
+          );
+        if ((after?.n ?? 0) > 0) continue;
+      }
 
       // Belt and braces on the race this whole design turns on: if a reply
       // landed between the query above and now, the client is talking and the

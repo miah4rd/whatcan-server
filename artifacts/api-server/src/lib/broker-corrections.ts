@@ -73,6 +73,22 @@ export function deriveSituation(opts: {
   return "options";
 }
 
+/**
+ * A client draft never asks who the villa is for (owner, 14.09.2026). One
+ * learned lesson — "before discussing specific properties, qualify whether
+ * the prospect is looking for themselves or representing a client" (Amelia,
+ * followup, active 12.09-14.09) — put "are you looking for this villa for
+ * yourself, or helping someone else?" in front of the villa in follow-ups to
+ * clients whose request was already known (Lance and Chloé, 13.09). Such a
+ * lesson is not stored and not applied outside owner conversations, where
+ * "are you the owner or managing it for someone else" is a real question.
+ */
+const WHO_IS_IT_FOR_LESSON = /themselves|for yourself|someone else|somebody else|on behalf of|representing (a )?client|decision[- ]?mak/i;
+
+export function lessonAppliesToClients(instruction: string): boolean {
+  return !WHO_IS_IT_FOR_LESSON.test(instruction ?? "");
+}
+
 function wordSet(s: string): Set<string> {
   return new Set(
     s
@@ -155,6 +171,10 @@ Respond with JSON only: {"instruction": "...", "situation": "style|${SITUATIONS.
     const situationContext = ctx
       ? [ctx.pipeline, ctx.leadStage].filter(Boolean).join(" / ") || null
       : null;
+    if (situation !== "owner_intake" && !lessonAppliesToClients(instruction)) {
+      logger.info({ brokerId, instruction, situation }, "lesson not stored — client drafts never ask who the villa is for");
+      return;
+    }
     await db.insert(brokerCorrectionsTable).values({ brokerId, instruction, situation, situationContext });
     logger.info({ brokerId, instruction, situation }, "learned from the broker's edit");
 
@@ -203,7 +223,9 @@ async function activeLessons(brokerId: string, limit: number, situation?: Situat
     .limit(limit);
   return rows
     .map((r) => ({ id: r.id, instruction: (r.instruction ?? "").trim(), situation: r.situation }))
-    .filter((r) => r.instruction);
+    .filter((r) => r.instruction)
+    // Applied to a client draft, a who-is-it-for lesson is never followed (see WHO_IS_IT_FOR_LESSON).
+    .filter((r) => !situation || situation === "owner_intake" || lessonAppliesToClients(r.instruction));
 }
 
 /**
@@ -271,6 +293,10 @@ Respond with JSON only: {"instruction": "...", "situation": "style|${SITUATIONS.
     const situationContext = ctx
       ? [ctx.pipeline, ctx.leadStage].filter(Boolean).join(" / ") || null
       : null;
+    if (situation !== "owner_intake" && !lessonAppliesToClients(instruction)) {
+      logger.info({ brokerId, instruction, situation }, "lesson not stored — client drafts never ask who the villa is for");
+      return;
+    }
     await db.insert(brokerCorrectionsTable).values({ brokerId, instruction, situation, situationContext });
     logger.info({ brokerId, instruction, situation }, "learned from the broker's manual edit");
 

@@ -1,4 +1,5 @@
-import { chatCompletion, chatCompletionJSON, WRITER_MODEL } from "./ai-client";
+import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL } from "./ai-client";
+import { areaNamesInText, fuzzyAreaNamesInText, landmarkAreasInText } from "./bali-areas";
 import { brokerDisplayName } from "./broker-identity";
 import { cleanLeadName } from "./lead-display-name";
 import { getLeadCardCriteria } from "./lead-card-fields";
@@ -10,7 +11,7 @@ import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestio
 import { buildRentalPromptParts } from "./rental-prompt";
 import { buildSalesPromptParts } from "./sales-prompt";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
-import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, type PropertyPick, type BrokerIntent, type ShortlistOutcome } from "./property-catalog";
+import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, clientOwnWords, type PropertyPick, type BrokerIntent, type ShortlistOutcome } from "./property-catalog";
 import { getMergedDialog } from "./merged-conversation";
 import { db, pendingSuggestionsTable } from "@workspace/db";
 import { viewingReportPromptBlock } from "./viewing-report-context";
@@ -86,46 +87,171 @@ async function alreadySentPropertyIds(
 }
 
 /**
- * Once the lead has picked out a specific villa, attaching a fresh batch talks
- * straight over them at the most important moment in the conversation — so this
- * is enforced in code rather than left to the matching model, which was asked
- * not to and did it anyway.
+ * Does THIS message carry a new shortlist? (owner, 14.09.2026 — final)
  *
- * Two signals, both deterministic:
- *  - the lead's own recent message references a listing we already sent them
- *    (quoting the link back is how "I like this one" arrives over WhatsApp)
- *  - the CRM stage already says the conversation is past browsing
+ * People rarely say "I don't like it". "Let's see more", "not quite my style",
+ * "I've seen these", "keep sending", "hopefully something comes up",
+ * "anything else?", "similar ones?" — and any new criterion (budget, area,
+ * pool, garden, pets, dates, parking) — are objections, and the answer is
+ * ALWAYS a new shortlist inside the request. New links are skipped only when
+ * the client's latest message clearly sits on ONE villa we already sent with a
+ * next step: its price, location, availability, a viewing of it, "I like this
+ * one". The stage alone decides nothing — after a viewing or a failed
+ * negotiation "any similar villas?" gets villas. When unsure, the shortlist
+ * goes: deterministic cues first, a small yes/no model check only for what
+ * they leave open, and that check fails toward sending.
+ *
+ * The gate this replaces skipped whenever a sent listing ID appeared in one of
+ * the client's last three messages, or the stage said viewing/negotiation. In
+ * the week of 11-14.09 the IDs it "saw" were never the client's: the quick
+ * poll appends a raw timeline tail to the content, the parser glued that tail
+ * — our own link messages — onto the client's last message, and Lance, Luke,
+ * Jesica, Chloé and Sophie all got "lead is discussing listings already sent"
+ * while asking for something else (dialog-parser.ts now cuts the tail). Every
+ * decision is logged with the rule that fired and its evidence.
  */
-/**
- * Quoting a listing back at us is only a "stop sending options" signal when the
- * lead LIKES it. Josua quoted the link we sent with "I really dont like the
- * floor" — a rejection — and the bot read the quote alone, sent no new options,
- * and promised to "come back shortly with the best options" instead. A rejection
- * is precisely when a fresh shortlist is wanted.
- */
-const REJECTS_THE_LISTING =
-  /(do ?n'?t|does ?n'?t|not) (like|love|work|suit|fit)|dislike|hate|too (expensive|pricey|small|big|far|dark|noisy|much)|not (for me|a fan|keen|what|quite)|something (else|different)|anything else|other options|не нравится|не подходит|не то\b|дорого|другие|другой|похуже|получше/i;
+export type ShortlistGate = { skip: boolean; reason: string; evidence: Record<string, unknown> };
 
-function shouldSkipNewListings(
-  messages: ReturnType<typeof parseDialogContent>["messages"],
-  alreadySentIds: string[],
-  leadStage: string | null | undefined,
-): boolean {
-  const stage = (leadStage ?? "").toLowerCase();
-  if (/viewing|zoom call|negotiat|reservation|contract signed|closed/.test(stage)) return true;
+const ASKS_FOR_MORE = new RegExp(
+  [
+    String.raw`\b(more|other|another|else|different|similar|alternative)\s+(options?|villas?|places?|ones?|properties|houses?|homes?|listings?|choices?)\b`,
+    String.raw`\bsimilar\b|\bthe others\b|\bother ones\b`,
+    String.raw`\bkeep (sending|them coming|looking|me posted|us posted)\b`,
+    String.raw`\bsend (me |us )?(more|others|some more|other)\b`,
+    String.raw`\b(anything|something|what) else\b`,
+    String.raw`\b(any|some) (others|more)\b`,
+    String.raw`\b(did|have|had|already|i've|we've|i have|we have)\s+(already\s+)?(seen|see|saw|checked|looked at)\s+(these|those|them|all)\b`,
+    String.raw`\b(i|we) saw (these|those|them)\b`,
+    String.raw`\bhopefully (something|one|another|we find|we get)\b`,
+    String.raw`\bsomething (great|good|nice|better|suitable|else)?\s?(comes|pops|turns) up\b`,
+    String.raw`\blet'?s see (more|others|what else|other)\b`,
+    String.raw`\bnot (quite|really|exactly|totally) (my|our|what|it|for|right)\b`,
+    String.raw`\bnot (my|our) (style|taste|thing|vibe|type)\b`,
+    String.raw`\bnot for (me|us)\b`,
+    String.raw`\b(do ?n'?t|does ?n'?t|did ?n'?t|not) (really )?(like|love|fit|suit|work for)\b|\bdislike\b`,
+    String.raw`\btoo (expensive|pricey|small|big|far|noisy|dark|much|busy|old)\b`,
+    String.raw`\bnone of (these|them|those)\b`,
+    String.raw`\byou (have|got|find) (any(thing)?|some(thing)?|other|more|(a|an|one)\s+(\w+\s+){0,3}(villa|house|place|home|bedroom|br|property|option|studio))\b`,
+    String.raw`\bany (news|updates?|new ones|new listings|new options|new villas)\b`,
+    String.raw`\bnew (ones|options|listings|villas)\b`,
+    String.raw`\b(still|keep|continue) (looking|searching|hunting)\b`,
+    String.raw`\blooking (for|at) (other|more|something else)\b`,
+    String.raw`другие|ещё вариант|еще вариант|похож|не нравится|не подходит|что-то ещё|что-нибудь ещё`,
+  ].join("|"),
+  "i",
+);
 
-  if (alreadySentIds.length === 0) return false;
-  const sent = new Set(alreadySentIds.map((id) => id.toUpperCase()));
-  const recentLeadMessages = messages.filter((m) => m.from === "lead").slice(-3);
+const NEW_CRITERIA = new RegExp(
+  [
+    String.raw`\b\d+([.,]\d+)?\s*(m|mil|mill?ions?|mio|mln|jt|juta|k)\b`,
+    String.raw`\b(budget|rupiah|idr|usd|per month|a month|monthly|per year|a year|yearly)\b|\brp\.?\s*\d|\$\s?\d`,
+    String.raw`\b(\d|one|two|three|four|five)\s*-?\s*(br|bed(room)?s?|bdr)\b|\bbedrooms?\b|\bstudio\b`,
+    String.raw`\b(pool|garden|yard|backyard|pets?|dogs?|cats?|parking|cars?|moto(rbike)?s?|scooters?|office|workspace|furnished|unfurnished|kitchen|enclosed|gym|kids|children|quiet|beach|rice ?fields?|bathtub|storage)\b`,
+    String.raw`\b(jan(uary)?|feb(ruary)?|march|april|june|july|aug(ust)?|sept?(ember)?|oct(ober)?|nov(ember)?|dec(ember)?)\b|\b(in|from|until|early|mid|end of|by) may\b`,
+    String.raw`\b(move[- ]?in|moving in|check[- ]?in|arriv(e|al|ing)|until|til|till|asap|as soon as|right away|immediately|next (week|month)|this (week|month)|long[- ]term|short[- ]term|\d+\s*(months?|weeks?|years?))\b`,
+  ].join("|"),
+  "i",
+);
 
-  for (const m of recentLeadMessages) {
-    const text = (m.text ?? "").toUpperCase();
-    if (![...sent].some((id) => text.includes(id))) continue;
-    // They mentioned one of ours — the sentiment decides what to do next.
-    if (REJECTS_THE_LISTING.test(m.text ?? "")) return false;
-    return true;
+/** The client points at ONE villa: "this one", "that villa", "the first one", "the one in Seseh". */
+const ONE_VILLA_REFERENCE =
+  /\b(this|that) (one|villa|house|place|property|home)\b|\bthe (first|second|third|fourth|last|other|1st|2nd|3rd|4th) (one|villa|house|place|option|link)\b|\b(the )?one (in|at|near|with) [a-z]/i;
+/** "it" used about a villa in a short message: "is it available?", "can we see it?". */
+const IT_ABOUT_A_VILLA = /\b(is it|it is|it's|is this|is that|see it|like it|love it|book it|take it|want it|reserve it|visit it|view it|of it|for it)\b/i;
+/** A next step on a villa: its price, where, when, a viewing, a yes. */
+const NEXT_STEP_ON_A_VILLA =
+  /\b(price|how much|cost|rate|discount|negotiat\w*|deposit|contract|lease|sign|book(ing)?|reserve|reservation|lock (it|this|that|the \w+) in|take (it|this|that)|go (for|with) (it|this|that)|avail\w*|free (from|on|in)|still (free|open|there)|when (can|could|is|will)|where|location|address|maps?|pin|how far|distance|viewing|visit|view (it|this|that)|see (it|this|that|the (villa|house|place))|come (and |to )?see|check (it|this|that) out|tour|photos?|pictures?|video|(i|we) (really )?(like|love|want|prefer)|interested in|keen on|go ahead|better)\b/i;
+const PAST_BROWSING_STAGE = /viewing\s*(scheduled|done)|zoom|negotiat|reservation|contract|check\s*in|closed|won/i;
+
+async function oneVillaFocusCheck(leadId: string, said: string, stage: string | null): Promise<{ focus: boolean; why: string } | null> {
+  try {
+    const res = await Promise.race([
+      chatCompletionJSON<{ focus?: unknown; why?: unknown }>({
+        model: HELPER_MODEL,
+        label: "shortlist-gate",
+        system: `A client of a Bali villa rental agency wrote the message below. We have already sent them links to some villas. Decide ONE thing: does this message clearly sit on ONE villa we already sent and move it to a next step — asking its price, location or availability, asking to view it, saying they like it, or arranging, confirming or reporting on a viewing or a deal for it?
+focus=false when they ask for more, other or similar villas, say what they saw is not right, give a new wish (budget, area, size, dates, pool, garden, pets, parking), or anything else. When unsure, false.
+Respond with JSON only: {"focus": true|false, "why": "<at most 12 words>"}`,
+        messages: [{ role: "user", content: `CRM stage: ${stage ?? "unknown"}\nClient's latest message(s):\n${said.slice(0, 800)}` }],
+        max_tokens: 60,
+        temperature: 0,
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+    ]);
+    if (!res || typeof res.focus !== "boolean") return null;
+    return { focus: res.focus, why: String(res.why ?? "").slice(0, 120) };
+  } catch (err) {
+    logger.warn({ err, leadId }, "shortlist gate: model check failed — options go");
+    return null;
   }
-  return false;
+}
+
+export async function decideShortlistGate(opts: {
+  leadId: string;
+  messages: ReturnType<typeof parseDialogContent>["messages"];
+  /** Everything already sent to this lead (alreadySentPropertyIds). */
+  sentIds: string[];
+  leadStage: string | null | undefined;
+  lastLeadText: string;
+}): Promise<ShortlistGate> {
+  const sent = [...new Set(opts.sentIds.map((i) => i.toUpperCase()))];
+  if (sent.length === 0) return { skip: false, reason: "nothing sent to this client yet", evidence: {} };
+
+  // The client's latest turn: what they wrote after our last message, or —
+  // when we spoke last (a follow-up) — their last message.
+  const msgs = opts.messages;
+  const lastOurIdx = msgs.map((m) => m.from).lastIndexOf("us");
+  let turn = msgs.slice(lastOurIdx + 1).filter((m) => m.from === "lead").map((m) => m.text ?? "");
+  if (turn.length === 0) {
+    const lastLead = [...msgs].reverse().find((m) => m.from === "lead");
+    if (lastLead) turn = [lastLead.text ?? ""];
+  }
+  const newest = (opts.lastLeadText ?? "").trim();
+  if (newest && !turn.some((t) => t.trim() === newest)) turn.push(newest);
+  turn = turn.filter((t) => t.trim()).slice(-4);
+  if (turn.length === 0) return { skip: false, reason: "no client message to answer — the draft carries options", evidence: {} };
+
+  const apostrophes = (s: string) => s.replace(/[’‘]/g, "'");
+  const ours = msgs.filter((m) => m.from === "us").map((m) => m.text ?? "");
+  const own = apostrophes(turn.map((t) => clientOwnWords(t, ours)).filter(Boolean).join("\n"));
+  const raw = apostrophes(turn.join("\n"));
+  const said = own.slice(0, 300);
+
+  const more = ASKS_FOR_MORE.exec(own);
+  if (more) return { skip: false, reason: "the client asks for more or turns down what they have", evidence: { phrase: more[0], said } };
+
+  const idsIn = sent.filter((id) => raw.toUpperCase().includes(id));
+  const ref = ONE_VILLA_REFERENCE.exec(own);
+  const itRef = own.length <= 80 ? IT_ABOUT_A_VILLA.exec(own) : null;
+  const step = NEXT_STEP_ON_A_VILLA.exec(own);
+  if (step && (idsIn.length === 1 || (idsIn.length === 0 && (ref || itRef)) || (ref && idsIn.length <= 1))) {
+    return {
+      skip: true,
+      reason: "the client is on one villa already sent, with a next step",
+      evidence: { villa: idsIn[0] ?? null, reference: ref?.[0] ?? itRef?.[0] ?? null, step: step[0], said },
+    };
+  }
+
+  const areas = [...areaNamesInText(own), ...fuzzyAreaNamesInText(own), ...landmarkAreasInText(own).map((l) => l.landmark)];
+  const criteria = NEW_CRITERIA.exec(own);
+  if (criteria || areas.length > 0) {
+    return { skip: false, reason: "the client gives new or changed criteria", evidence: { phrase: criteria?.[0] ?? null, areas, said } };
+  }
+
+  const late = PAST_BROWSING_STAGE.test(opts.leadStage ?? "");
+  const weakRef = idsIn.length > 0 || !!ref || turn.some((t) => t.startsWith(">>"));
+  if (late || weakRef) {
+    const verdict = await oneVillaFocusCheck(opts.leadId, own || raw, opts.leadStage ?? null);
+    if (verdict?.focus) {
+      return { skip: true, reason: "model check: the client is on one villa or its viewing", evidence: { why: verdict.why, stage: opts.leadStage ?? null, said } };
+    }
+    return {
+      skip: false,
+      reason: verdict ? "model check: not settled on one villa — options go" : "model check unavailable — options go",
+      evidence: { why: verdict?.why ?? null, stage: opts.leadStage ?? null, said },
+    };
+  }
+  return { skip: false, reason: "no sign the client is settled on one villa — options go", evidence: { said } };
 }
 
 /**
@@ -173,6 +299,8 @@ export type PickedAttachments = {
   excludeIds: string[];
   /** Villas offered to this lead in drafts the broker skipped (last 21 days) — ranked lower, not removed. */
   proposedIds?: string[];
+  /** The shortlist gate's decision for this message (null when a broker instruction or the ad opening decided). */
+  gate?: ShortlistGate | null;
 };
 
 export async function pickPropertyAttachments(opts: PickOptions): Promise<GeneratedSuggestion["attachments"]> {
@@ -250,12 +378,26 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
     const listingType = opts.isRental ? ("rent" as const) : ("sale" as const);
     const cardCriteria = card ? { bedrooms: card.bedrooms, areas: card.areas, budgetIdrMonthly: card.budgetIdrMonthly } : null;
 
-    if (
-      !opts.brokerInstruction &&
-      !opts.openingAfterWelcome &&
-      shouldSkipNewListings(opts.dialogMessages, excludeIds, opts.leadStage)
-    ) {
-      logger.info({ leadId: opts.leadId }, "property matcher skipped — lead is discussing listings already sent");
+    // A broker asking for different links, and the broker's opening on an ad
+    // lead, have already decided; every other draft asks the gate.
+    const gate: ShortlistGate | null =
+      opts.brokerInstruction || opts.openingAfterWelcome
+        ? null
+        : await decideShortlistGate({
+            leadId: opts.leadId,
+            messages: opts.dialogMessages,
+            sentIds: excludeIds,
+            leadStage: opts.leadStage,
+            lastLeadText: opts.lastLeadText,
+          });
+    if (gate) {
+      logger.info(
+        { leadId: opts.leadId, rule: gate.reason, stage: opts.leadStage ?? null, alreadySent: excludeIds.length, ...gate.evidence },
+        gate.skip ? `property matcher skipped — ${gate.reason}` : "shortlist gate: this message carries new options",
+      );
+    }
+
+    if (gate?.skip) {
       // No new links by design — but the writer still needs the request: a
       // villa already sent that is outside it must not be called a match.
       let outcome: ShortlistOutcome | null = null;
@@ -274,7 +416,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
       } catch (err) {
         logger.warn({ err, leadId: opts.leadId }, "request read on a skipped shortlist failed (non-fatal)");
       }
-      return { attachments: [], outcome, skipped: true, excludeIds, proposedIds };
+      return { attachments: [], outcome, skipped: true, excludeIds, proposedIds, gate };
     }
 
     const { picks, outcome } = await matchPropertiesDetailed({
@@ -295,6 +437,10 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
       leadNotes: opts.leadNotes ?? null,
       clickedListingId: adId,
       recentLeadMessages,
+      // Past the gate (or the broker's ad opening), a Rental draft carries
+      // options: the matching model chooses AMONG the fits and no longer
+      // decides whether to send any — fail toward sending (owner, 14.09).
+      mustAttach: opts.isRental && !opts.brokerInstruction,
     });
     const out = toAttachments(picks);
 
@@ -318,7 +464,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
       }
     }
     if (out.length === 0) logger.info({ leadId: opts.leadId, request: describeRequest(outcome.request) }, "property matcher returned nothing to attach");
-    return { attachments: out, outcome, skipped: false, excludeIds, proposedIds };
+    return { attachments: out, outcome, skipped: false, excludeIds, proposedIds, gate };
   } catch (err) {
     logger.warn({ err, leadId: opts.leadId }, "property matcher threw — sending the draft with no attachments");
     return { attachments: [], outcome: null, skipped: false, excludeIds, proposedIds };
@@ -1101,6 +1247,41 @@ const propertyIdOf = (url: string | null | undefined): string | null =>
   String(url ?? "").match(/\/property\/([A-Za-z0-9-]+)/i)?.[1]?.toUpperCase() ?? null;
 
 /**
+ * "Are you looking for this villa for yourself, or helping someone else?" —
+ * asked in front of the villa to clients whose request was already known
+ * (Lance and Chloé, 13.09 follow-ups). It came from a learned lesson (Amelia,
+ * followup, 12-14.09) that broker-corrections.ts now refuses; this is the
+ * final-text half, so no lesson or model habit can put it back.
+ */
+const WHO_IS_IT_FOR =
+  /\bfor (your ?self|yourselves|your own (move|stay|use|family))\b|\b(helping|on behalf of|sourcing (it |this )?for|representing) (someone|somebody|a (client|friend|colleague))\b|\b(someone|somebody) else\b|\bdecision[- ]?mak(er|ers|ing)\b/i;
+
+function stripWhoIsItForQuestion(text: string, leadId: string): string {
+  if (!WHO_IS_IT_FOR.test(text)) return text;
+  const out = text
+    .split("\n")
+    .map((line) => {
+      const kept: string[] = [];
+      for (const sentence of line.split(/(?<=[.!?])\s+/)) {
+        if (!WHO_IS_IT_FOR.test(sentence)) {
+          kept.push(sentence);
+          continue;
+        }
+        // "Hi Lance, quick one before …, are you looking for yourself?" keeps "Hi Lance,".
+        const greeting = /^((?:hi|hey|hello|good (?:morning|afternoon|evening)|morning)\b[^,.!?]{0,40}[,!])/i.exec(sentence);
+        if (greeting) kept.push(greeting[1]!);
+      }
+      return kept.join(" ");
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (out.length < 15) return text;
+  logger.warn({ leadId }, "draft check: removed a who-is-the-villa-for question (the request is already known)");
+  return out;
+}
+
+/**
  * THE final check every generator runs on a finished draft (see the block
  * comment above). Returns the text and the links that may actually go out.
  */
@@ -1110,6 +1291,8 @@ export async function enforceRequestOnDraft(opts: {
   attachments: GeneratedSuggestion["attachments"];
   picked?: PickedAttachments | null;
   language?: string | null;
+  /** A Rental client draft — the who-is-the-villa-for question is removed. */
+  rental?: boolean;
 }): Promise<{ text: string; attachments: GeneratedSuggestion["attachments"]; dropped: string[] }> {
   const request = opts.picked?.outcome?.request ?? null;
   const alreadySent = new Set((opts.picked?.excludeIds ?? []).map((i) => i.toUpperCase()));
@@ -1172,6 +1355,7 @@ export async function enforceRequestOnDraft(opts: {
   if (attachments.length === 0 && o && o.hasCore && o.fitCount === 0 && !o.declined && !opts.picked?.skipped && ASKS_OR_PROMISES_TO_SEND.test(text)) {
     text = await removePromiseOfOptions(text, opts.leadId);
   }
+  if (opts.rental) text = stripWhoIsItForQuestion(text, opts.leadId);
   const count2 = presentedVillaCount(text);
   if (count2 !== null && attachments.length > 0 && count2 !== attachments.length) {
     logger.warn({ leadId: opts.leadId, said: count2, attached: attachments.length }, "draft check: the text still gives a different number of villas than attached");
@@ -1812,7 +1996,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   });
 
   const written = sanitizeSuggestion(completion.content);
-  const checked = await enforceRequestOnDraft({ leadId: opts.leadId, text: written, attachments: picked.attachments, picked });
+  const checked = await enforceRequestOnDraft({ leadId: opts.leadId, text: written, attachments: picked.attachments, picked, rental: isRental });
   const text = nothingInsideRequest(picked) ? checked.text : await applyViewingPush(checked.text, checked.attachments, {
     leadId: opts.leadId,
     pipeline: opts.pipeline,

@@ -27,6 +27,17 @@ import { desc, eq } from "drizzle-orm";
 import { isUndeliverableNotice, closeUndeliverable, undeliverableVerdict } from "./undeliverable";
 
 const timers = new Map<string, NodeJS.Timeout>();
+/** Leads whose LIVE generation has fired and not finished yet. */
+const running = new Set<string>();
+
+/**
+ * A LIVE reply for this lead is waiting on its debounce or being written right
+ * now. The quick poll's "known message, never answered" safety net reads this
+ * so it never starts a second generation on top of the webhook's.
+ */
+export function liveReplyInFlight(leadId: string): boolean {
+  return timers.has(leadId) || running.has(leadId);
+}
 
 /**
  * Is the newest thing "the lead said" the integration reporting an unreachable
@@ -58,13 +69,18 @@ export function scheduleLiveReply(
   if (existing) clearTimeout(existing);
   const timer = setTimeout(() => {
     timers.delete(leadId);
+    running.add(leadId);
     void (async () => {
-      const u = await undeliverableState(leadId);
-      if (u.lastIsNotice) {
-        if (u.close) await closeUndeliverable(leadId);
-        return;
+      try {
+        const u = await undeliverableState(leadId);
+        if (u.lastIsNotice) {
+          if (u.close) await closeUndeliverable(leadId);
+          return;
+        }
+        await Promise.resolve(run()).catch(() => {});
+      } finally {
+        running.delete(leadId);
       }
-      await Promise.resolve(run()).catch(() => {});
     })().catch(() => {});
   }, delayMs);
   timers.set(leadId, timer);

@@ -307,7 +307,7 @@ Write the follow-up message.`,
   const written1 = sanitizeSuggestion(completion.content);
   // The same final check as every LIVE draft: links inside the request and
   // published, the text naming exactly them (count included), nothing else.
-  const checked1 = await enforceRequestOnDraft({ leadId: opts.leadId, text: written1, attachments: listings.attachments, picked: listings.picked });
+  const checked1 = await enforceRequestOnDraft({ leadId: opts.leadId, text: written1, attachments: listings.attachments, picked: listings.picked, rental: (opts.pipeline ?? "").trim().toLowerCase() === "rental" });
   const text = nothingInsideRequest(listings.picked) ? checked1.text : await applyViewingPush(checked1.text, checked1.attachments, pushCtx);
 
   const rationale = `Follow-up #${opts.followupLevel} — context-aware. Situation tactic: ${entry.label}.`;
@@ -421,7 +421,7 @@ STYLE:
   });
 
   const written2 = sanitizeSuggestion(completion.content);
-  const checked2 = await enforceRequestOnDraft({ leadId: opts.leadId, text: written2, attachments: listings.attachments, picked: listings.picked });
+  const checked2 = await enforceRequestOnDraft({ leadId: opts.leadId, text: written2, attachments: listings.attachments, picked: listings.picked, rental: (opts.pipeline ?? "").trim().toLowerCase() === "rental" });
   const text = nothingInsideRequest(listings.picked) ? checked2.text : await applyViewingPush(checked2.text, checked2.attachments, pushCtx);
   const rationale = isCold
     ? `PUSH — re-engagement (${opts.trailingUnanswered} unanswered touches), stage "${opts.leadStage}".`
