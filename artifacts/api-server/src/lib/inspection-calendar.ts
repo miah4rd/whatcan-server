@@ -116,13 +116,34 @@ export function villaNameFromCard(name: string | null | undefined): string | nul
 
 const CODE_RX = /(?<![A-Za-z0-9-])(R-[A-Za-z]+-\d+)(?![0-9])/g;
 
-type Desired = { key: string; slot: SlotRow; leads: AmoLead[]; body: CalendarEventBody; hash: string; visitAt: Date };
+/** The fields of one planned event, for readers other than the calendar (GET /api/public/inspections/upcoming). No phones. */
+export type InspectionInfo = {
+  key: string;
+  villa: string;
+  code: string | null;
+  listingTitle: string | null;
+  listingUrl: string | null;
+  area: string | null;
+  ownerName: string | null;
+  visitAt: string;
+  visitAtBali: string;
+  timeKnown: boolean;
+  agreedAt: string | null;
+  quote: string | null;
+  mapUrl: string | null;
+  address: string | null;
+  cards: string[];
+};
+
+type Desired = { key: string; slot: SlotRow; leads: AmoLead[]; body: CalendarEventBody; hash: string; visitAt: Date; info: InspectionInfo };
 
 async function buildPlan(): Promise<{ desired: Map<string, Desired>; stored: StoredRow[]; now: Date }> {
   await ensureTable();
   const now = new Date();
+  // A slot replaced by a new agreed time is 'rescheduled' (listing-progress.ts); only the current one counts.
   const slotsRes = await db.execute(sql`SELECT DISTINCT ON (lead_id) id, lead_id, visit_at, time_known, agreed_at, quote, created_at
-                                        FROM listing_inspection_slots ORDER BY lead_id, created_at DESC, visit_at DESC`);
+                                        FROM listing_inspection_slots WHERE status = 'scheduled'
+                                        ORDER BY lead_id, created_at DESC, visit_at DESC`);
   const latest = (slotsRes.rows ?? []) as SlotRow[];
   const candidates = latest.filter((s) => asDate(s.visit_at)!.getTime() >= now.getTime() - RECENT_MS);
   const storedRes = await db.execute(sql`SELECT sync_key, slot_id, lead_ids, visit_at, event_id, payload_hash, status FROM inspection_calendar_events`);
@@ -229,9 +250,38 @@ async function buildPlan(): Promise<{ desired: Map<string, Desired>; stored: Sto
       end: baliIso(new Date(visitAt.getTime() + DURATION_MS)),
     };
     const hash = crypto.createHash("sha1").update(JSON.stringify(body)).digest("hex");
-    desired.set(key, { key, slot, leads: cards, body, hash, visitAt });
+    const info: InspectionInfo = {
+      key,
+      villa,
+      code,
+      listingTitle: prop?.title ?? null,
+      listingUrl: code ? `${SITE}/property/${code}` : null,
+      area: (prop?.area ?? "").trim() || null,
+      ownerName: (priv?.owner_name ?? "").trim() || null,
+      visitAt: visitAt.toISOString(),
+      visitAtBali: `${baliHuman(visitAt)}${timed ? "" : " (time not fixed)"}`,
+      timeKnown: timed,
+      agreedAt: agreedAt ? agreedAt.toISOString() : null,
+      quote: (slot.quote ?? "").trim() || null,
+      mapUrl: mapUrl || null,
+      address: address || null,
+      cards: cards.map((c) => `${AMO}/${c.id}`),
+    };
+    desired.set(key, { key, slot, leads: cards, body, hash, visitAt, info });
   }
   return { desired, stored, now };
+}
+
+/**
+ * Every agreed villa visit still ahead (or started under three hours ago) within `days`, soonest
+ * first — from the same plan the calendar pass writes, so the list and the calendar agree. Read-only.
+ */
+export async function upcomingInspectionEvents(days = 14): Promise<InspectionInfo[]> {
+  const { desired, now } = await buildPlan();
+  return [...desired.values()]
+    .filter((d) => d.visitAt.getTime() >= now.getTime() - 3 * HOUR && d.visitAt.getTime() <= now.getTime() + days * DAY)
+    .sort((a, b) => a.visitAt.getTime() - b.visitAt.getTime())
+    .map((d) => d.info);
 }
 
 async function writeRow(d: Desired, status: string, eventId: string | null, error: string | null): Promise<void> {

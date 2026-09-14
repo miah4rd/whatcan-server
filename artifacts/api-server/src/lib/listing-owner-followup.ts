@@ -41,16 +41,17 @@ import { qualificationVerdictForLead } from "./listing-card-fields";
 const OPEN_STAGES = [
   "initial contact",
   "taken to work",
-  "qualified",
-  "details", // matches "Details ased" (id 87763166, renamed 14.09.2026) and "Details asked"
 ];
-// NOT here: "Inspection sceduled" (id 87763170 — "agreement" until 09.09,
-// "Inspection. done" until 14.09.2026). A visit to the villa is agreed: a nudge
-// asking the owner for bedrooms and a price reads as amnesia, and closing the
-// card after three silent nudges would throw away a planned visit. The card is
-// the broker's conversation there; the bot only answers what the owner writes.
-// A new stage name must not contain "details", "qualified" or "taken to work"
-// by accident — `isOpenStage` matches by substring.
+// NOT here since 14.09.2026: "QUALIFIED (Pre-listed)". The villa is qualified
+// and its next step is Yudi's inspection visit; the owner's silence there is
+// worked by the inspection booking ladder (lib/inspection-booking.ts: one ask,
+// at most two follow-ups two days apart, then Yudi's call). This nudge asks for
+// bedrooms, price, dates and the viewing day — on a qualified card that is
+// asking again what the owner already gave, and three silent nudges closed a
+// card that only needed a visit. "Details ased" was deleted the same day.
+// NOT here either: "Inspection sceduled" (id 87763170): a visit is agreed.
+// A new stage name must not contain "taken to work" or "initial contact" by
+// accident — `isOpenStage` matches by substring.
 
 /**
  * How long a card must have been quiet before each round, counted from OUR last

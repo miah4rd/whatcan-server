@@ -24,9 +24,9 @@
  *
  * Beyond QUALIFIED the engine computes where the facts say a card should be,
  * reports the gap, and never moves it: `engineOwnsStage` is false there.
- * "Details ased" (id 87763166) and "Inspection sceduled" (id 87763170, a visit
- * agreed — "Inspection. done" until 14.09.2026, "agreement" before 09.09) are
- * set from the thread by lib/listing-progress.ts, run on every message and
+ * "Inspection sceduled" (id 87763170, a visit agreed — "Inspection. done"
+ * until 14.09.2026, "agreement" before 09.09; "Details ased" 87763166 was
+ * deleted 14.09) is set from the thread by lib/listing-progress.ts, run on every message and
  * once a day after this audit; live only by the site's Listed switch
  * (listing-status-pass.ts). Stage names are matched by exact string here and
  * the owner renames stages: new code uses ids. Two closers stay outside the engine because they

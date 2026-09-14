@@ -3,8 +3,28 @@ import { amoFetch } from "../../lib/amo-client";
 import { logger } from "../../lib/logger";
 import { LISTING_STAGE } from "../../lib/listing-status-week";
 import { latestInspectionSlot } from "../../lib/listing-progress";
+import { upcomingInspectionEvents } from "../../lib/inspection-calendar";
 
 const router = Router();
+
+/**
+ * GET /api/public/inspections/upcoming?days=14
+ *
+ * Every agreed villa visit still ahead, soonest first: villa, site code, owner / manager name as in
+ * the site's Internal data, the time (Bali ISO, time fixed or not), map pin, exact address, area, the
+ * agreeing quote, the amoCRM card(s). No phone numbers. Built by the same plan the Google Calendar pass
+ * writes from (lib/inspection-calendar.ts), so this list and the calendar cannot disagree.
+ */
+router.get("/public/inspections/upcoming", async (req, res) => {
+  const days = Math.min(Math.max(Number(req.query["days"] ?? 14) || 14, 1), 60);
+  try {
+    const inspections = await upcomingInspectionEvents(days);
+    res.json({ days, count: inspections.length, inspections });
+  } catch (err) {
+    logger.error({ err }, "inspections/upcoming: failed");
+    res.status(500).json({ error: "could not read the inspection slots" });
+  }
+});
 
 /**
  * GET /api/public/inspections?days=7
