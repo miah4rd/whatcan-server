@@ -106,19 +106,17 @@ const STAGE_MEANINGS: Array<{ match: RegExp; meaning: string }> = [
  *
  * Deliberately absent: "Inspection sceduled", "live" and "RENTED". A visit
  * agreed (id 87763170 — "agreement" until 09.09, "Inspection. done" until
- * 14.09.2026) and "Details ased" (id 87763166) are set by ONE rule,
- * lib/listing-progress.ts, from the thread; live by the site's Listed switch;
- * a tenant moving in by a person. The classifier sets none of them (see
- * RULE_OWNED_ACQUISITION_STAGES) — the same principle that keeps Mailing and
- * Long-Term Cycle out of its hands.
+ * 14.09.2026) is set by ONE rule, lib/listing-progress.ts, from the thread;
+ * live by the site's Listed switch; a tenant moving in by a person. The
+ * classifier sets none of them (see RULE_OWNED_ACQUISITION_STAGES) — the same
+ * principle that keeps Mailing and Long-Term Cycle out of its hands. "Details
+ * ased" (87763166) was deleted by the owner on 14.09.2026.
  */
 const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = [
   { match: /closed[-\s]*won|выигран/i,
     meaning: "The owner has agreed to work with us and the listing is secured. Only on an unambiguous confirmation." },
   { match: /closed[-\s]*lost|проигран|отказ/i,
     meaning: "Dead: the contact turned out to be an agent or middleman we cannot work through, the owner refused, or the villa is already committed elsewhere. Only on an unambiguous statement, NEVER on mere silence." },
-  { match: /details|детал|информац/i,
-    meaning: "The villa is qualified and we have asked the owner's side for what completes the listing: photos, video, exact pin, available dates, size, documents, a visit. Set only by the listing-progress rule, never by this classifier." },
   // NOTE: "qualified" is deliberately ABSENT from this table, and so are the
   // stages beyond it — see RULE_OWNED_ACQUISITION_STAGES below. The meaning that
   // used to sit here said to choose it "the moment [ownership] is confirmed,

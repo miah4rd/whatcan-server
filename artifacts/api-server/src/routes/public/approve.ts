@@ -753,7 +753,7 @@ router.post("/approve", async (req, res) => {
 
     // Rental's stage follows the thread: judged once this text and its links
     // are in amoCRM, by the same decision a reply typed on the phone gets.
-    // Rental Listings too: a Details ask or an agreed visit sent from Copilot moves the card (listing-progress).
+    // Rental Listings too: an agreed visit sent from Copilot moves the card to Inspection scheduled (listing-progress).
     if (chatSent && threadWatched(prevSyncRow?.pipeline)) {
       onThreadChanged(sug.leadId, { source: "approve" });
     }

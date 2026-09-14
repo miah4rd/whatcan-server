@@ -113,14 +113,14 @@ const STAGE_ORDER: Record<string, string[]> = {
     "check in (inventory)", "check out", "closed - won",
   ],
   // Renames keep their amoCRM id, and every old name stays: stage_events keep
-  // the name of the day. 87763166 "Details" → "Details ased" (14.09.2026, the
-  // owner's spelling; "details asked" in case it is corrected). 87763170
-  // "agreement" → "Inspection. done" (09.09) → "Inspection sceduled" (14.09):
-  // a visit to the villa is agreed. Aliases of one stage share its position
-  // (STAGE_ALIASES), so a rename never scores as a move.
+  // the name of the day. 87763170 "agreement" → "Inspection. done" (09.09) →
+  // "Inspection sceduled" (14.09): a visit to the villa is agreed. Aliases of
+  // one stage share its position (STAGE_ALIASES), so a rename never scores as a
+  // move. "Details ased" (87763166) was DELETED on 14.09.2026: its old events
+  // alias to "qualified", so a move into or out of it scores as no move.
   "rental listings": [
     "incoming leads", "initial contact", "taken to work", "qualified",
-    "details ased", "inspection sceduled", "live", "rented", "closed - won",
+    "inspection sceduled", "live", "rented", "closed - won",
   ],
   unicorn: [
     "new lead", "in progress", "1st follow up (next day)", "2nd follow up (3 days after)",
@@ -134,8 +134,10 @@ const STAGE_ORDER: Record<string, string[]> = {
 const STAGE_ALIASES: Record<string, Record<string, string>> = {
   "rental listings": {
     "qualified (pre-listed)": "qualified",
-    "details": "details ased",
-    "details asked": "details ased",
+    // deleted 14.09.2026 — old events only
+    "details": "qualified",
+    "details asked": "qualified",
+    "details ased": "qualified",
     "agreement": "inspection sceduled",
     "inspection. done": "inspection sceduled",
     "inspection scheduled": "inspection sceduled",
