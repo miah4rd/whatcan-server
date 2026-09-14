@@ -17,6 +17,7 @@ import { startCommitmentScheduler } from "./lib/commitment-scheduler";
 import { startAiWatchdog } from "./lib/ai-watchdog";
 import { startReportScheduler } from "./lib/report-scheduler";
 import { startVideoCompressScheduler } from "./lib/video-compress";
+import { startListingStatusPass } from "./lib/listing-status-pass";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
 
@@ -82,6 +83,8 @@ startAiWatchdog();
 startVideoCompressScheduler();
 // Renders every website catalog photo to webp 600/900/1600 for the site's /img.
 startPhotoVariantScheduler();
+// The site's Pre-listed / Listed switch moves the villa's Rental Listings card to live; see lib/listing-status-pass.ts.
+startListingStatusPass();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
 // When a rental is free from — asked in the intake chat, written to Supabase's

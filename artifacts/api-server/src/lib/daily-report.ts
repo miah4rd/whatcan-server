@@ -16,6 +16,8 @@
 import { pool } from "@workspace/db";
 import { cleanLeadName } from "./lead-display-name";
 import { parseDialogContent } from "./dialog-parser";
+import { isBroker } from "./broker-identity";
+import { LISTING_AGENT_BROKER, listingWeek, type ListingWeek } from "./listing-status-week";
 
 const BALI = "Asia/Makassar";
 
@@ -63,6 +65,11 @@ export interface ReportCard {
   listingsTaken: number;
   /** Rental Listings only: villas the agent inspected in person this period. */
   inspections: number;
+  /**
+   * The listing agent only: THIS Bali week (whatever the period) — listings switched Pre-listed →
+   * Listed on the site against the target, cards that reached live, switches that moved no card.
+   */
+  listingWeek?: ListingWeek;
   previous?: {
     sent: number;
     skipped: number;
@@ -443,6 +450,8 @@ export async function buildReport(
     period === "day" ? Promise.resolve(undefined) : activityFor(broker, pipeline, range.prevFrom, range.prevTo),
     period === "day" ? Promise.resolve(undefined) : outcomesFor(broker, pipeline, range.prevFrom, range.prevTo),
   ]);
+  // Owner, 14.09.2026: the inspections target is counted from the site switch, per Bali week.
+  const listing = isBroker(broker, LISTING_AGENT_BROKER) ? await listingWeek().catch(() => null) : null;
 
   const card: Omit<ReportCard, "headline"> = {
     broker,
@@ -458,6 +467,7 @@ export async function buildReport(
     viewings: outcomes.viewings,
     listingsTaken: outcomes.listingsTaken,
     inspections: outcomes.inspections,
+    ...(listing ? { listingWeek: listing } : {}),
     ...(prevActivity && prevOutcomes
       ? {
           previous: {

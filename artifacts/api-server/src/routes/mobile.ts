@@ -2041,6 +2041,15 @@ const PAGE_HTML = `<!doctype html>
       html += line("Villas inspected", c.inspections, prev ? delta(c.inspections, prev.inspections, true) : "");
     }
     html += line("Lost", c.lost, prev ? delta(c.lost, prev.lost, false) : "");
+    if (c.listingWeek) {
+      var lw = c.listingWeek;
+      html += '<div class="rep-head">Inspections · week from ' + lw.weekStart + "</div>";
+      html += line("Pre-listed → Listed on the site", lw.listed + " / " + lw.target);
+      html += line("Cards reached live (amoCRM)", lw.cardsReachedLive);
+      if (lw.needsAttention.length > 0) {
+        html += line("Listed, card NOT moved", lw.needsAttention.map(function (a) { return a.propertyId; }).join(", "));
+      }
+    }
     return html;
   }
 
