@@ -1169,6 +1169,13 @@ responsible user, it is field 967477, and it is decided at the send:
   changes. Run on 23549075, 23555637, 23549071, 23537919. Arrives from 59537 →
   line 2 misreports and needs fixing in WAhelp; notice again → the scout picks
   numbers without WhatsApp.
+  **Result 14.09 10:13:** both are true. Mai Villa (23549075) and Villa Putih
+  Berawa (23555637) got the notice again from 59537 — no WhatsApp. Villa Oasis
+  (23537919) was DELIVERED from 59537 (`delivery_status` 1) — Yudi 2's notice
+  was false. Tahuri Villa (23549071): no notice, still `delivery_status` 0 after
+  5 min — undecided. Read type-90 `data.delivery_status`: 0 sent, 1 delivered,
+  2 read (line 1's first contacts of 13.09: 19 read, 8 delivered). 62585 stays
+  held for new contacts until WAhelp explains the false notices.
 - Two traps that made the second line reply from the first: the timeline sync
   wrote the line NAME into 967477 and `mapNameToSourceId` prefix-matched
   "Yudi 2" as "Yudi"; and the reassignment guard compared names, so "Yudi 2"
