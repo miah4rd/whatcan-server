@@ -12,7 +12,7 @@ import { allAttachmentsNamed, pickPropertyAttachments, reconcileTextWithAttachme
 import { brokerDisplayName } from "../../lib/broker-identity";
 import { getLeadCardCriteria } from "../../lib/lead-card-fields";
 import { learnFromRevision, correctionsPromptBlock, deriveSituation } from "../../lib/broker-corrections";
-import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, toPickPublic, invalidatePropertyCache, priceOf, type SupabaseProperty } from "../../lib/property-catalog";
+import { extractBudgetIdr, describePropertiesByIds, parseBrokerIntent, allAreaVocabulary, candidatesForLead, toPickPublic, invalidatePropertyCache, priceOf, describeRequest, type SupabaseProperty } from "../../lib/property-catalog";
 
 const router = Router();
 
@@ -750,6 +750,10 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           cardCriteria: cardCrit
             ? { bedrooms: cardCrit.bedrooms, areas: cardCrit.areas, budgetIdrMonthly: cardCrit.budgetIdrMonthly }
             : null,
+          cardAnswers: cardCrit?.answers ?? null,
+          cardBudgetTexts: cardCrit?.budgetTexts ?? [],
+          leadNotes: dbLeadNotes || null,
+          clickedListingId: /Ad enquiry:\s*([A-Z0-9-]+)/i.exec(dbLeadNotes)?.[1] ?? null,
         });
 
         // A curated panel is law only while there is something on it. A panel
@@ -828,9 +832,12 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           // conversation — three of them 2BR — under a text about 1-bedrooms
           // (Mike, 08.09.2026). Selection is strict: nothing from another
           // size, area or price is attached to make up numbers.
+          // Strict (owner, 14.09.2026): outside the request only what a PERSON
+          // chose may go out — links the broker curated by hand, villas the
+          // broker named. The bot's own earlier links and the villa the client
+          // clicked have to be inside the request like everything else.
           const allowedOutside = new Set<string>([
-            ...currentIds.map((i) => i.toUpperCase()),
-            ...leadOwnIds,
+            ...(curatedDetected ? currentIds.map((i) => i.toUpperCase()) : []),
             ...namedIds,
           ]);
           const invented = composed.listingIds.filter((id) => !byId.has(id) && !allowedOutside.has(id));
@@ -865,6 +872,33 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
 
           let finalText = composed.text;
           let mustReconcile = false;
+
+          // "Keep the links" is not a licence to keep a link that is outside the
+          // request — often the broker's instruction just moved the request
+          // ("do not offer yearly rental, they need 3 months" came back
+          // keep_current with the yearly-only villas, 23538265). Replaced from
+          // the strict pool, never kept.
+          const outsideKept =
+            composed.decision === "keep_current" && !curatedLocked
+              ? currentIds.map((i) => i.toUpperCase()).filter((id) => !byId.has(id) && !namedIds.has(id))
+              : [];
+          if (outsideKept.length > 0) {
+            const have = new Set(chosen.map((c) => (c.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase()));
+            for (const id of pool.affordableIds) {
+              if (chosen.length >= Math.min(Math.max(currentIds.length, 1), 3)) break;
+              if (have.has(id.toUpperCase())) continue;
+              const cand = byId.get(id.toUpperCase());
+              if (!cand) continue;
+              const pick = toPickPublic(cand);
+              chosen.push({ type: "link", url: pick.url, label: pick.label });
+              have.add(id.toUpperCase());
+            }
+            mustReconcile = true;
+            req.log.info(
+              { leadId: body.leadId, outsideKept, now: chosen.length, request: describeRequest(pool.request) },
+              "suggest: kept links outside the client's request were replaced from the strict pool",
+            );
+          }
 
           // A villa the broker NAMED in the command is law, enforced in code —
           // the composer once answered "клиент спрашивает про эту опцию <link>"
@@ -1341,6 +1375,7 @@ Rewrite it so it contains NO property names, NO listing links and NO list of vil
           brokerInstruction: revision,
           currentAttachmentIds: currentIds,
           brokerIntent: intent,
+          leadNotes: dbLeadNotes || null,
         });
         // The shortlist can legitimately sit above what they asked to pay (their
         // own bracket may be sold out) — the message has to say so, not gloss it.
