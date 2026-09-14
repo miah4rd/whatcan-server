@@ -47,6 +47,11 @@ export async function processHandoverDrafts(): Promise<number> {
     );
 
     for (const pipeline of pipelines) {
+      // Rental Listings: QUALIFIED has its own next step, Yudi's inspection ask (inspection-booking.ts) —
+      // a PUSH when we wrote last, inside the LIVE reply when the owner did. The generic handover draft was
+      // a LIVE "thanks, we have everything" on top of our own unanswered message (Villa Castillo, 14.09.2026:
+      // "why is this in LIVE and not PUSH, and where is the visit?"), 17 cards at once.
+      if (pipeline.toLowerCase() === "rental listings") continue;
       const setting = await getAutopilotSetting(pipeline);
       if (setting.mode !== "on") continue;
       const handoverStage = await getHandoverStageName(pipeline);

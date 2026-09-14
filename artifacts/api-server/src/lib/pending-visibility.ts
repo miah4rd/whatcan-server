@@ -6,6 +6,9 @@ import { isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whiteli
 import { isReachStageName } from "./pipelines";
 import { isRentalScopedBroker, isHosTrackedPipeline } from "./adaptive-followup";
 
+/** listing-progress.ts INSPECTION_ASK_VERDICT, inlined: that module pulls the AI client and the db into every inbox read. */
+const INSPECTION_ASK_VERDICT = "inspection booking ask";
+
 // Shared visibility rules for pending suggestions. This is the single source of
 // truth used both by the /suggestions inbox route AND the push-notification
 // badge counter — if these two ever apply different rules, the number on the
@@ -254,7 +257,10 @@ export function isPendingVisible(
     const endOfTodayBali = new Date(
       Date.UTC(nowBali.getUTCFullYear(), nowBali.getUTCMonth(), nowBali.getUTCDate() + 1) - BALI_OFFSET_MS,
     );
-    if (!r.requestedAt && sync?.nextFollowupAt && sync.nextFollowupAt > endOfTodayBali) return false;
+    // The inspection ask checks Yudi's real tasks itself; nextFollowupAt is usually the bot's own
+    // "Sent (…)" task from its last message, which hid the ask for days.
+    const bookingAsk = (r.autopilotSkippedReason ?? "").startsWith(INSPECTION_ASK_VERDICT);
+    if (!r.requestedAt && !bookingAsk && sync?.nextFollowupAt && sync.nextFollowupAt > endOfTodayBali) return false;
   }
 
   /**
