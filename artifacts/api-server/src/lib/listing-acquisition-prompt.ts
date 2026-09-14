@@ -123,7 +123,10 @@ WHAT TO DO:
 
 3. If they have said they are an AGENT or otherwise NOT the owner: stop pitching management/investment content, a middleman can't agree to anything. Politely acknowledge, and ask if they can connect you directly with the actual owner. Keep it brief, low-pressure, and do not act as if a deal is progressing.
 
+4. NOT OUR FORMAT — short stays only. Unicorn lists villas for MONTHLY and YEARLY rental ONLY. If they say the villa is only for short-term, nightly, daily or holiday stays, or they quote a per-night rate as the only option: do NOT qualify it. No questions about rates, commission, minimum stay, availability, photos or viewings. Write ONE short, warm message: thank them, say plainly that we work with monthly and yearly rentals only, so this villa is not a fit for us right now, and leave the door open if they ever consider renting it monthly. Then stop. Never say or imply that we place short-stay clients — we do not, and a message that says "short term works too" is a false promise sent in the company's name.
+
 HARD RULES:
+- WE DO NOT DO SHORT-TERM, NIGHTLY OR DAILY RENTAL. Never claim we do, never ask for a nightly rate, never "work with" a per-night price. Monthly and yearly only.
 - COMMISSION: 10% is the ONLY percentage you may ever write. State it, ask for prices that include it, nothing else. You may not name a different rate, accept one, counter one, or say a rate "works for us", even if the other side proposes it and even if agreeing sounds helpful. Commission terms are the owner's decision to make with a human, and a draft that concedes one is a deal term given away by a bot. If they push on the rate, say the broker will confirm it, and stop there.
 - Never invent any other number either: no contract term, no price, no size, nothing this conversation has not given you.
 - Sign with your real name only if you introduce yourself, never an account label.
@@ -195,8 +198,38 @@ export async function generateListingAcquisitionReply(
     ? null
     : await extractListingFacts(formattedDialog || lastLeadText, opts.leadId).catch(() => null);
 
+  // ── Not our format: the one case where the next question is no question ──
+  //
+  // The owner of Velin Villa wrote "only available for short-term stay" and got
+  // back "no worries, short term works too!" plus a request for the nightly
+  // rate (autopilot, 2026-09-14) — seven owners in a month. The stage engine
+  // knew (stopKind "not_our_format" closes the card) but ran after the send;
+  // the writer had no rule and bridged the contradiction with an invented
+  // policy. Decided here, in code, from the extracted facts AND a plain-text
+  // check on the owner's own recent words, so a missed extraction cannot let
+  // it through. A monthly/yearly figure alongside the nightly one is not
+  // "only short stays" — the model then follows rule 4 on its own judgement.
+  const recentLeadText = messages
+    .filter((m) => m.from === "lead")
+    .slice(-3)
+    .map((m) => m.text)
+    .join("\n");
+  const SHORT_STAYS_ONLY =
+    /\b(only|just|hanya|cuma|khusus)\s+(for\s+|untuk\s+)?(short[- ]?term|short[- ]?stays?|daily|nightly|harian|per\s?night|per\s?malam)|short[- ]?term\s+(stay|only|rental only)|\b(not|no)\s+(available\s+)?(for\s+)?(long[- ]?term|monthly)|\b(per|\/)\s?(night|malam)\b|harian\s+(saja|aja|only)/i;
+  const MENTIONS_MONTHLY = /\b(monthly|per month|a month|yearly|per year|annual|bulanan|per bulan|tahunan|per tahun)\b/i;
+  const notOurFormat =
+    !isFirstContact &&
+    (facts?.stopKind === "not_our_format" ||
+      (SHORT_STAYS_ONLY.test(recentLeadText) && !MENTIONS_MONTHLY.test(recentLeadText)));
   let knownBlock = "";
-  if (facts) {
+  if (notOurFormat) {
+    logger.info(
+      { leadId: opts.leadId, viaFacts: facts?.stopKind === "not_our_format", signal: facts?.stopSignal ?? null },
+      "listing reply: short stays only — writing the polite decline, no qualification",
+    );
+    knownBlock =
+      `\nNOT OUR FORMAT: this person has said the villa is for short stays / nightly only${facts?.stopSignal ? ` ("${facts.stopSignal}")` : ""}. Follow rule 4 exactly: one short, warm decline — monthly and yearly only, not a fit right now, door open if they ever rent monthly. No questions of any kind. Do not thank them for information you will not use, do not ask for the nightly rate.\n`;
+  } else if (facts) {
     const settled: string[] = [];
     if (facts.bedrooms) settled.push(`bedrooms: ${facts.bedrooms}`);
     if (facts.monthlyIdr) settled.push(`monthly rate: ${Math.round(facts.monthlyIdr / 1_000_000)} juta`);
