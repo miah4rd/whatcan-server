@@ -2,24 +2,26 @@
  * Google Calendar API client for the shared "Brokers" calendar (owner, 14.09.2026: every agreed villa
  * inspection becomes a short note there, so Yudi opens the calendar and sees today's visits).
  *
- * OAuth: a refresh token from a one-time consent as info@unicorn-property.com (scopes calendar.events
- * + calendar.readonly), exchanged for an access token that is cached until a minute before it expires.
- * Env (values only in /opt/whatcan/.env): GOOGLE_CALENDAR_CLIENT_ID, GOOGLE_CALENDAR_CLIENT_SECRET,
- * GOOGLE_CALENDAR_REFRESH_TOKEN, GOOGLE_CALENDAR_ID.
+ * Auth — a Google SERVICE ACCOUNT (the OAuth consent as info@unicorn-property.com failed with
+ * invalid_grant on 14.09). The Brokers calendar is shared with the service account's email with
+ * "Make changes to events"; no domain-wide delegation, no impersonation. JWT bearer grant: an RS256
+ * assertion signed with node:crypto (scope calendar.events) → access token, cached until a minute
+ * before it expires. Env: GOOGLE_CALENDAR_SA_KEY_FILE (path of the JSON key, chmod 600, never in git)
+ * and GOOGLE_CALENDAR_ID. The refresh-token path (GOOGLE_CALENDAR_CLIENT_ID / _CLIENT_SECRET /
+ * _REFRESH_TOKEN) is kept as a fallback, used only when no key file is configured.
  *
  * Fail soft: every call returns { ok: false, reason } instead of throwing, and nothing here ever logs a
- * credential. No attendees are ever sent and every write carries sendUpdates=none — nobody gets an email.
+ * credential or the key file's content. No attendees are ever sent (a service account cannot invite
+ * anyway) and every write carries sendUpdates=none.
  */
+import crypto from "node:crypto";
+import fs from "node:fs";
 import { logger } from "./logger";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const API = "https://www.googleapis.com/calendar/v3";
-const ENV_NAMES = [
-  "GOOGLE_CALENDAR_CLIENT_ID",
-  "GOOGLE_CALENDAR_CLIENT_SECRET",
-  "GOOGLE_CALENDAR_REFRESH_TOKEN",
-  "GOOGLE_CALENDAR_ID",
-] as const;
+const SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const REFRESH_NAMES = ["GOOGLE_CALENDAR_CLIENT_ID", "GOOGLE_CALENDAR_CLIENT_SECRET", "GOOGLE_CALENDAR_REFRESH_TOKEN"] as const;
 
 export type CalendarEventTime = { dateTime?: string; date?: string; timeZone?: string };
 export type CalendarEventBody = {
@@ -42,38 +44,89 @@ export type CalendarEvent = CalendarEventBody & {
 };
 export type CalResult<T> = { ok: true; data: T } | { ok: false; status: number; reason: string };
 
-const env = (k: (typeof ENV_NAMES)[number]) => (process.env[k] ?? "").trim();
+const env = (k: string) => (process.env[k] ?? "").trim();
 
-export function calendarConfig(): { configured: boolean; missing: string[]; calendarId: string } {
-  const missing = ENV_NAMES.filter((k) => !env(k));
-  return { configured: missing.length === 0, missing, calendarId: env("GOOGLE_CALENDAR_ID") };
+export function calendarConfig(): { configured: boolean; missing: string[]; calendarId: string; auth: "service-account" | "refresh-token" | "none" } {
+  const calendarId = env("GOOGLE_CALENDAR_ID");
+  const keyFile = env("GOOGLE_CALENDAR_SA_KEY_FILE");
+  const missing: string[] = [];
+  if (!calendarId) missing.push("GOOGLE_CALENDAR_ID");
+  let auth: "service-account" | "refresh-token" | "none" = "none";
+  if (keyFile) {
+    if (fs.existsSync(keyFile)) auth = "service-account";
+    else missing.push(`GOOGLE_CALENDAR_SA_KEY_FILE (file not found)`);
+  } else if (REFRESH_NAMES.every((k) => env(k))) {
+    auth = "refresh-token";
+  } else {
+    missing.push("GOOGLE_CALENDAR_SA_KEY_FILE");
+  }
+  return { configured: !!calendarId && auth !== "none", missing, calendarId, auth };
 }
 
 let cached: { token: string; exp: number } | null = null;
+const b64url = (b: Buffer | string) => Buffer.from(b).toString("base64url");
+
+/** Service-account JWT assertion. Errors name the failing step only — never key content. */
+function serviceAccountAssertion(): { ok: true; assertion: string; tokenUri: string } | { ok: false; reason: string } {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(env("GOOGLE_CALENDAR_SA_KEY_FILE"), "utf8");
+  } catch (err) {
+    return { ok: false, reason: `service account key file unreadable (${(err as NodeJS.ErrnoException)?.code ?? "error"})` };
+  }
+  let key: { client_email?: string; private_key?: string; token_uri?: string };
+  try {
+    key = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: "service account key file is not valid JSON" };
+  }
+  if (!key.client_email || !key.private_key) return { ok: false, reason: "service account key file lacks client_email / private_key" };
+  const now = Math.floor(Date.now() / 1000);
+  const tokenUri = key.token_uri || TOKEN_URL;
+  const unsigned = `${b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${b64url(
+    JSON.stringify({ iss: key.client_email, scope: SCOPE, aud: tokenUri, iat: now, exp: now + 3600 }),
+  )}`;
+  try {
+    const sig = crypto.createSign("RSA-SHA256").update(unsigned).sign(key.private_key);
+    return { ok: true, assertion: `${unsigned}.${b64url(sig)}`, tokenUri };
+  } catch {
+    return { ok: false, reason: "service account private key could not sign the assertion" };
+  }
+}
 
 async function accessToken(): Promise<CalResult<string>> {
   if (cached && Date.now() < cached.exp) return { ok: true, data: cached.token };
   const cfg = calendarConfig();
   if (!cfg.configured) return { ok: false, status: 0, reason: `not configured: ${cfg.missing.join(", ")} missing` };
+  let url = TOKEN_URL;
+  let form: URLSearchParams;
+  if (cfg.auth === "service-account") {
+    const a = serviceAccountAssertion();
+    if (!a.ok) return { ok: false, status: 0, reason: a.reason };
+    url = a.tokenUri;
+    form = new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: a.assertion });
+  } else {
+    form = new URLSearchParams({
+      client_id: env("GOOGLE_CALENDAR_CLIENT_ID"),
+      client_secret: env("GOOGLE_CALENDAR_CLIENT_SECRET"),
+      refresh_token: env("GOOGLE_CALENDAR_REFRESH_TOKEN"),
+      grant_type: "refresh_token",
+    });
+  }
   try {
-    const res = await fetch(TOKEN_URL, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: env("GOOGLE_CALENDAR_CLIENT_ID"),
-        client_secret: env("GOOGLE_CALENDAR_CLIENT_SECRET"),
-        refresh_token: env("GOOGLE_CALENDAR_REFRESH_TOKEN"),
-        grant_type: "refresh_token",
-      }),
+      body: form,
       signal: AbortSignal.timeout(15000),
     });
     const body = (await res.json().catch(() => null)) as { access_token?: string; expires_in?: number; error?: string; error_description?: string } | null;
     if (!res.ok || !body?.access_token) {
       const err = body?.error ?? `HTTP ${res.status}`;
       const reason =
-        err === "invalid_grant"
-          ? "refresh token revoked or expired (invalid_grant) — redo the OAuth consent, see CLAUDE.md"
-          : `token exchange failed: ${err}${body?.error_description ? ` (${body.error_description.slice(0, 120)})` : ""}`;
+        `${cfg.auth} token exchange failed: ${err}` +
+        (body?.error_description ? ` (${body.error_description.slice(0, 160)})` : "") +
+        (err === "invalid_grant" ? (cfg.auth === "service-account" ? " — key revoked/deleted or server clock off; see CLAUDE.md" : " — refresh token revoked; see CLAUDE.md") : "");
       return { ok: false, status: res.status, reason };
     }
     cached = { token: body.access_token, exp: Date.now() + Math.max(60, (body.expires_in ?? 3600) - 60) * 1000 };

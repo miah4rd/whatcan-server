@@ -1752,15 +1752,25 @@ calendar and sees today's visits. Through the Google Calendar API, not a person.
 - **Fail soft**: `lib/google-calendar.ts` returns `{ ok:false, reason }`, never throws, never
   logs a credential; the stage pass is never blocked. Without credentials the pass logs
   "Google Calendar not configured" (at most every 6 h) and does nothing.
-- **Env** (values only in `/opt/whatcan/.env`): `GOOGLE_CALENDAR_CLIENT_ID`,
-  `GOOGLE_CALENDAR_CLIENT_SECRET`, `GOOGLE_CALENDAR_REFRESH_TOKEN` (scopes `calendar.events` +
-  `calendar.readonly`, consent as info@unicorn-property.com), `GOOGLE_CALENDAR_ID` = the shared
-  "Brokers" calendar. New values need `deploy.sh` (it restarts with `--update-env`).
-- **Token revoked / expired** (log reason `invalid_grant`; an OAuth client in "Testing" mode
-  expires refresh tokens after 7 days — publish the consent screen to avoid it): redo the
-  one-time consent as info@unicorn-property.com with the same client and scopes, replace
-  `GOOGLE_CALENDAR_REFRESH_TOKEN` in `.env` (the file has duplicate keys elsewhere — last value
-  wins, edit only this line), run `deploy.sh`, then `POST /api/admin/inspection-calendar/test`.
+- **Auth: a Google service account** (the OAuth consent as info@unicorn-property.com failed
+  with `invalid_grant` on 14.09). The Brokers calendar is shared with the service account's
+  email, "Make changes to events" — no domain-wide delegation, no impersonation. JWT bearer
+  grant, RS256 signed with node:crypto, scope `calendar.events`, access token cached ~1 h.
+  A service account cannot send invitations; we never add attendees.
+- **Env** (values only on the server): `GOOGLE_CALENDAR_SA_KEY_FILE` =
+  `/opt/whatcan/secrets/google-calendar-sa.json` (the JSON key, chmod 600, never in git, never
+  printed), `GOOGLE_CALENDAR_ID` = the shared "Brokers" calendar
+  (`c_cb134aa7…@group.calendar.google.com`, timezone Asia/Jakarta; we always send `+08:00` /
+  `Asia/Makassar`). Fallback only when no key file is set: `GOOGLE_CALENDAR_CLIENT_ID`,
+  `GOOGLE_CALENDAR_CLIENT_SECRET`, `GOOGLE_CALENDAR_REFRESH_TOKEN`. New values need `deploy.sh`
+  (it restarts with `--update-env`); `.env` has duplicate keys elsewhere — last value wins,
+  edit only these lines.
+- **Access lost** (log reason `service-account token exchange failed: invalid_grant` = key
+  deleted/disabled or server clock off; `403`/`404` on the calendar = the share was removed):
+  in Google Cloud → IAM → Service accounts create a new JSON key for the same account, put it at
+  the path above (chmod 600), delete the old key; or re-share the Brokers calendar with the
+  service account's email ("Make changes to events"). Then `deploy.sh` and
+  `POST /api/admin/inspection-calendar/test`.
 - Tools: `POST /api/admin/inspection-calendar` (dry plan; `?apply=1` runs the pass),
   `GET /api/admin/inspection-calendar/events` (what the calendar holds, from the API),
   `POST /api/admin/inspection-calendar/test` ([TEST] event: create → read back → delete).
