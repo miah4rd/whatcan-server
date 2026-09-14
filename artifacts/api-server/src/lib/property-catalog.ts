@@ -696,7 +696,10 @@ export function rankShortlistFits(fits: SupabaseProperty[], r: ClientRequest, ct
       // Close to what they said they would spend, never over it (the filter
       // refused over): a 50M client sees 45-50 first (owner, 14.09).
       const use = price / r.budgetMaxIdr;
-      score += use >= 0.9 ? 3 : use >= 0.8 ? 2 : use >= 0.65 ? 1 : 0;
+      // A narrow range the client gave ("35 to 40 million") is close all the
+      // way through: 35 is what they said too.
+      const inNarrowRange = r.budgetMinIdr !== null && r.budgetMinIdr >= 0.8 * r.budgetMaxIdr && price >= r.budgetMinIdr;
+      score += use >= 0.9 || inNarrowRange ? 3 : use >= 0.8 ? 2 : use >= 0.65 ? 1 : 0;
       note(`${millions(price)} of their ${millions(r.budgetMaxIdr)}${use < 0.5 ? " (far under it)" : ""}`, true);
     }
     // No move-in date stated: free now beats free from a date.
