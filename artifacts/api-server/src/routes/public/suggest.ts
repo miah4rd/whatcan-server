@@ -8,7 +8,7 @@ import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing"
 import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
-import { allAttachmentsNamed, pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment } from "../../lib/generate-suggestion";
+import { allAttachmentsNamed, pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment, alreadySentPropertyIds, relaxQuestion } from "../../lib/generate-suggestion";
 import { brokerDisplayName } from "../../lib/broker-identity";
 import { getLeadCardCriteria } from "../../lib/lead-card-fields";
 import { learnFromRevision, correctionsPromptBlock, deriveSituation } from "../../lib/broker-corrections";
@@ -739,9 +739,17 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           .slice(0, -1)
           .map((r) => (r.feedback ?? "").trim())
           .filter(Boolean);
+        // What the client already has is never offered again (owner, 14.09):
+        // this pool had no exclusion at all, so an edit re-attached R-YUD-048
+        // and R-UM-024 to Lance, who had both from Amelia's phone.
+        const ourOwn = dialogForMatching.filter((m) => m.from === "us").map((m) => m.text);
+        const leadAll = leadOwn.length > 0 ? leadOwn : dialogForMatching.filter((m) => m.from === "lead").map((m) => m.text);
+        const sentIds = await alreadySentPropertyIds(body.leadId, `${syncContent}\n${transcript}`, leadAll.join("\n"), ourOwn.join("\n")).catch(() => [] as string[]);
         const pool = await candidatesForLead({
           listingType: dbPipeline.toLowerCase() === "rental" ? "rent" : "sale",
-          recentLeadMessages: [...leadOwn].reverse(),
+          excludeIds: sentIds,
+          ourMessages: ourOwn,
+          recentLeadMessages: [...leadAll].reverse(),
           brokerInstruction: revision,
           // Every instruction of this editing session shapes the pool, newest
           // first so the latest statement wins — "attach the options too" on its
@@ -779,6 +787,13 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           attachmentsCurated: curatedLocked,
           candidates: pool.lines,
           language: outputLang === "auto" ? null : outputLang,
+          // An empty pool used to come back as "let me check … I'll come back
+          // with a proper shortlist" (Chloé, 14.09) — a promise that reaches
+          // the client empty. One concrete question instead.
+          emptyPoolGuidance:
+            pool.candidates.length === 0
+              ? `NOTHING in our catalog is inside this client's request (${describeRequest(pool.request)})${pool.fitsInclSent > 0 ? " that they have not already been sent" : ""}. Attach nothing unless the broker names a villa. Never promise to check, look, find, pull together or come back with a shortlist. Unless the broker's instruction says otherwise, ask exactly ONE concrete question: ${relaxQuestion(pool.hint)}.`
+              : undefined,
         });
 
         if (composed) {

@@ -11,9 +11,9 @@ import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestio
 import { buildRentalPromptParts } from "./rental-prompt";
 import { buildSalesPromptParts } from "./sales-prompt";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
-import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, clientOwnWords, type PropertyPick, type BrokerIntent, type ShortlistOutcome } from "./property-catalog";
+import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, clientOwnWords, type PropertyPick, type BrokerIntent, type ShortlistOutcome, type RelaxHint, type RelaxExample } from "./property-catalog";
 import { getMergedDialog } from "./merged-conversation";
-import { db, pendingSuggestionsTable } from "@workspace/db";
+import { db, pendingSuggestionsTable, sentMessagesTable } from "@workspace/db";
 import { viewingReportPromptBlock } from "./viewing-report-context";
 import { leadPhone } from "./phone-dedupe";
 import { villaContactPhoneKeys, phoneKey } from "./property-flags";
@@ -32,7 +32,7 @@ import { eq, inArray, and, gte, sql } from "drizzle-orm";
  * in the conversation and treats our own earlier link as the lead asking about
  * that listing, re-offering exactly what was just rejected.
  */
-async function alreadySentPropertyIds(
+export async function alreadySentPropertyIds(
   leadId: string,
   conversationText: string,
   /** The lead's OWN links are not something we sent them. Someone arriving from a
@@ -69,14 +69,33 @@ async function alreadySentPropertyIds(
 
   try {
     const rows = await db
-      .select({ attachments: pendingSuggestionsTable.attachments })
+      .select({ id: pendingSuggestionsTable.id, attachments: pendingSuggestionsTable.attachments })
       .from(pendingSuggestionsTable)
       .where(and(eq(pendingSuggestionsTable.leadId, leadId), inArray(pendingSuggestionsTable.status, ["approved", "edited"])));
-    for (const r of rows) {
-      for (const att of r.attachments ?? []) {
-        if (att.type !== "link" || !att.url) continue;
-        const m = att.url.match(/\/property\/([A-Za-z0-9-]+)/i);
-        if (m?.[1]) ids.add(m[1]);
+    if (rows.length > 0) {
+      // Only links that actually went out. A draft row lists what the bot
+      // attached, not what reached the client: Sophie's 12.09 draft was
+      // approved with its links dropped, the row still listed R-YUD-074,
+      // R-MER-040 and R-YUD-075, and those three stayed "already sent" — out
+      // of every later shortlist although she never saw them. The send record
+      // says how many links followed the text ("| links n/m"); a send with no
+      // marker carried none (a delivered link is in the conversation text
+      // above anyway). No send record yet = the send may be under way: count all.
+      const sends = await db
+        .select({ suggestionId: sentMessagesTable.suggestionId, webhookResponse: sentMessagesTable.webhookResponse })
+        .from(sentMessagesTable)
+        .where(eq(sentMessagesTable.leadId, leadId));
+      const sendOf = new Map(sends.filter((s) => s.suggestionId).map((s) => [String(s.suggestionId), s.webhookResponse ?? ""]));
+      for (const r of rows) {
+        const links = (r.attachments ?? []).filter((att) => att.type === "link" && att.url);
+        if (links.length === 0) continue;
+        const response = sendOf.get(String(r.id));
+        const marker = response === undefined ? null : /\|\s*links (\d+)\/(\d+)/.exec(response);
+        const wentOut = response === undefined ? links.length : marker ? Number(marker[1]) : 0;
+        for (const att of links.slice(0, wentOut)) {
+          const m = att.url!.match(/\/property\/([A-Za-z0-9-]+)/i);
+          if (m?.[1]) ids.add(m[1]);
+        }
       }
     }
   } catch {
@@ -378,6 +397,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
     const listingType = opts.isRental ? ("rent" as const) : ("sale" as const);
     const cardCriteria = card ? { bedrooms: card.bedrooms, areas: card.areas, budgetIdrMonthly: card.budgetIdrMonthly } : null;
 
+    const ourTexts = opts.dialogMessages.filter((m) => m.from === "us").map((m) => m.text);
     // A broker asking for different links, and the broker's opening on an ad
     // lead, have already decided; every other draft asks the gate.
     const gate: ShortlistGate | null =
@@ -405,6 +425,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
         const request = await resolveClientRequest({
           listingType,
           leadMessages: recentLeadMessages,
+          ourMessages: ourTexts,
           cardCriteria,
           cardAnswers: card?.answers ?? null,
           cardBudgetTexts: card?.budgetTexts ?? [],
@@ -437,6 +458,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
       leadNotes: opts.leadNotes ?? null,
       clickedListingId: adId,
       recentLeadMessages,
+      ourMessages: ourTexts,
       // Past the gate (or the broker's ad opening), a Rental draft carries
       // options: the matching model chooses AMONG the fits and no longer
       // decides whether to send any — fail toward sending (owner, 14.09).
@@ -610,6 +632,8 @@ export async function composeReplyWithListings(opts: {
   attachmentsCurated: boolean;
   candidates: Array<{ id: string; line: string }>;
   language?: string | null;
+  /** With an empty pool: what to say instead of promising a shortlist (built by the caller from relaxQuestion). */
+  emptyPoolGuidance?: string;
 }): Promise<{ text: string; listingIds: string[]; decision: "keep_current" | "none_this_message" | "new_selection" } | null> {
   const current = opts.currentAttachments.length
     ? opts.currentAttachments.map((a) => `${a.id} — ${a.label}`).join("\n")
@@ -653,7 +677,7 @@ ${
       }
 
 Properties you may attach (pick by ID; attaching NONE is a normal answer). They are ranked best match first — prefer the top unless the broker's instruction or the client's own words point to a lower one:
-${opts.candidates.map((c) => c.line).join("\n")}
+${opts.candidates.map((c) => c.line).join("\n")}${opts.candidates.length === 0 && opts.emptyPoolGuidance ? `(none)\n\n${opts.emptyPoolGuidance}` : ""}
 
 First decide attachments_decision — ONE of exactly these three, by MEANING, not keywords:
 - "keep_current" — the instruction is about wording only (shorter, warmer, translate, fix tone). listing_ids = exactly what is currently attached.
@@ -1125,18 +1149,38 @@ export function shortlistPromptBlock(picked: PickedAttachments | null | undefine
   if (picked.attachments.length > 0) {
     return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it. If you give a number of villas, it is exactly ${picked.attachments.length}.${advisory}`;
   }
-  const h = o.hint;
-  const question = !h
-    ? "whether the area, the budget or the number of bedrooms could flex"
-    : h.dim === "area"
-      ? `whether ${h.suggestion} would work for them (that is where the closest real options are)`
-      : h.dim === "budget"
-        ? `whether they could consider ${h.suggestion}`
-        : `whether ${h.suggestion} would work for them`;
+  const question = relaxQuestion(o.hint);
+  const exceptExample = o.hint?.example ? " except the one closest option the question below names" : "";
   if (o.fitCountInclSent > 0) {
-    return `\n\nEVERYTHING WE HAVE INSIDE THIS CLIENT'S REQUEST (${req}) HAS ALREADY BEEN SENT TO THEM. Nothing new is attached. Say honestly that what they already have is what we have for that brief right now; never promise to find, pull together or send more, never name or describe any other villa, never write "below" or "attached". If they turned those down, ask exactly ONE question: ${question}.${advisory}`;
+    return `\n\nEVERYTHING WE HAVE INSIDE THIS CLIENT'S REQUEST (${req}) HAS ALREADY BEEN SENT TO THEM. Nothing new is attached. Say honestly that what they already have is what we have for that brief right now; never promise to find, check, pull together or send more, never name or describe any other villa${exceptExample}, never write "below" or "attached". Ask exactly ONE question: ${question}.${advisory}`;
   }
-  return `\n\nNOTHING IN OUR CATALOG IS EXACTLY WITHIN THIS CLIENT'S REQUEST RIGHT NOW (${req}). No villa is attached to this message. Say that honestly in one short sentence in your own voice — never imply we have a match, never claim we cover or regularly work in that area, never name, describe or hint at a specific villa, never write "below" or "attached", and never promise to find or send options later. Then ask exactly ONE question: ${question}. One question only — no second question about arrival or viewings — and do not re-ask what they already told you.${advisory}`;
+  return `\n\nNOTHING IN OUR CATALOG IS EXACTLY WITHIN THIS CLIENT'S REQUEST RIGHT NOW (${req}). No villa is attached to this message. Say that honestly in one short sentence in your own voice — never imply we have a match, never claim we cover or regularly work in that area, never name or describe a specific villa${exceptExample}, never write "below" or "attached", and never promise to check, find or send options later ("let me check and come back with a proper shortlist" is exactly that promise). Then ask exactly ONE question: ${question}. One question only — no second question about arrival or viewings — and do not re-ask what they already told you.${advisory}`;
+}
+
+/** The closest real option as a client may hear it: size, area, price, free date — never a code or a title. */
+export function describeRelaxExample(e: RelaxExample): string {
+  const size = e.bedrooms ? `${e.bedrooms}-bedroom villa` : "villa";
+  const price = e.priceIdr > 0 ? ` at Rp ${Math.round(e.priceIdr / 100_000) / 10} million a month` : "";
+  const today = new Date(Date.now() + 8 * 3_600_000).toISOString().slice(0, 10);
+  const free =
+    e.freeFrom && e.freeFrom > today
+      ? `, free from ${new Date(`${e.freeFrom}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "long", timeZone: "UTC" })}`
+      : "";
+  return `a ${size} in ${e.area ?? "another area"}${price}${free}`;
+}
+
+/**
+ * The ONE question when nothing is inside the request (owner, 14.09.2026):
+ * which part could flex, naming the closest real option — "there is a
+ * 1-bedroom in Pererenan at Rp 30 million, would that work?" — instead of
+ * "could the area flex?" or "I'll come back with a proper shortlist".
+ */
+export function relaxQuestion(h: RelaxHint | null | undefined): string {
+  if (!h) return "whether the area, the budget or the number of bedrooms could flex";
+  const base = h.dim === "budget" ? `whether they could consider ${h.suggestion}` : `whether ${h.suggestion} would work for them`;
+  if (!h.example) return base;
+  const option = describeRelaxExample(h.example);
+  return `${base}, naming the closest real option in plain words — there is ${option} (e.g. "There is ${option}, would that work for you?")`;
 }
 
 /** Nothing inside the request exists at all (not even among villas sent) — no viewing to push, one question only. */
@@ -1320,10 +1364,22 @@ export async function enforceRequestOnDraft(opts: {
       return true;
     });
   }
+  // A villa the client already received is never attached again, whichever
+  // path picked it (owner, 14.09.2026).
+  if (alreadySent.size > 0) {
+    attachments = attachments.filter((a) => {
+      const id = propertyIdOf(a.url);
+      if (id && alreadySent.has(id)) {
+        dropped.push(`${id}: already sent to this client`);
+        return false;
+      }
+      return true;
+    });
+  }
   if (dropped.length > 0) {
     logger.warn(
       { leadId: opts.leadId, dropped, request: request ? describeRequest(request) : null },
-      "draft check: attachments outside the request or unpublished — removed",
+      "draft check: attachments outside the request, unpublished or already sent — removed",
     );
   }
 

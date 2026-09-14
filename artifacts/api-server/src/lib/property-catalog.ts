@@ -2,7 +2,7 @@ import { logger } from "./logger";
 import { conversationWindow } from "./dialog-parser";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { listingQualityById, type ListingQuality } from "./property-flags";
-import { allAreaNames, areaMatches, areaNamesInText, parentAreaOf, neighbourAreas } from "./bali-areas";
+import { allAreaNames, areaMatches, areaNamesInText, parentAreaOf, neighbourAreas, fuzzyAreaNamesInText, landmarkAreasInText } from "./bali-areas";
 import { publicBaseUrl } from "./public-url";
 
 const SUPABASE_URL = process.env["SUPABASE_URL"] ?? "";
@@ -1133,6 +1133,8 @@ export type ClientRequest = {
   /** Client-facing monthly price ceiling, rupiah. No headroom is ever added. */
   budgetMaxIdr: number | null;
   budgetMinIdr: number | null;
+  /** "Around 30 million": the figure itself — the ceiling and floor above are read 15% either way of it. */
+  budgetAroundIdr?: number | null;
   /** ISO date. */
   moveIn: string | null;
   stayMonths: number | null;
@@ -1143,6 +1145,8 @@ export type RequestInputs = {
   listingType: ListingType;
   /** The CLIENT's own messages, newest first. Never ours. */
   leadMessages: string[];
+  /** What WE sent in this thread — a quoted message of ours is cut out of the client's reply (clientOwnWords). */
+  ourMessages?: string[];
   /** The broker's instructions while editing a draft, newest first. */
   brokerInstructions?: string[];
   /** Parsed answers from the ad form on the amoCRM card. */
@@ -1176,6 +1180,21 @@ function baliTodayIso(): string {
   return new Date(Date.now() + 8 * 3_600_000).toISOString().slice(0, 10);
 }
 
+/**
+ * A move-in date the reader placed in the past. "I need to move in February",
+ * said in September, is next February — Chloé's became "today", and a villa
+ * free from 4 October was refused as too late for a client moving in five
+ * months later. A date only weeks behind ("from 1 September" on the 14th) means now.
+ */
+export function nextOccurrenceIso(iso: string, today: string): string {
+  if (iso >= today) return iso;
+  const behindDays = (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${iso}T00:00:00Z`)) / 86_400_000;
+  if (!(behindDays > 45)) return today;
+  const d = new Date(`${iso}T00:00:00Z`);
+  while (d.toISOString().slice(0, 10) < today) d.setUTCFullYear(d.getUTCFullYear() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 function addMonthsIso(iso: string, months: number): string {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCMonth(d.getUTCMonth() + Math.max(1, Math.round(months)));
@@ -1196,7 +1215,9 @@ export function describeRequest(r: ClientRequest): string {
     );
   }
   if (r.areas.length > 0) parts.push(`${r.areas.join(" / ")}${r.nearbyOk ? " or nearby" : ""}${r.releaseArea ? " (area released by the broker)" : ""}`);
-  if (r.budgetMaxIdr !== null) {
+  if (r.budgetAroundIdr) {
+    parts.push(`around ${millions(r.budgetAroundIdr)} a month`);
+  } else if (r.budgetMaxIdr !== null) {
     parts.push(
       r.budgetMinIdr
         ? `${millions(r.budgetMinIdr)} to ${millions(r.budgetMaxIdr).replace(/^Rp /, "")} a month`
@@ -1233,13 +1254,15 @@ function afterNormalizedPrefix(original: string, normLen: number): string {
 }
 
 /**
- * The client's OWN words in one message. A WhatsApp reply arrives as ">> <our
- * message> <their reply>"; the quote is cut by matching it against what WE
- * actually sent, so it works whether or not the line breaks survived (content
- * renders every message on one line). With no matching message of ours, the
- * old rule stays: the reply is what follows the LAST line break, and with no
- * break the message is left out — reading it whole turned our own "Rp 66
- * million/month" into the client's budget (23335045). Links are removed.
+ * The client's OWN words in one message — our quoted text is never the
+ * client's (owner, 14.09.2026). A WhatsApp reply arrives as ">> <our message>
+ * <their reply>". The quote is cut by matching it against what WE actually
+ * sent, so it works whether or not the line breaks survived: content renders
+ * every message on one line, and the old "after the last line break" rule then
+ * dropped the client's reply whole, or — on a multi-line reply — kept only its
+ * last line. With no matching message of ours the old rule stays; reading the
+ * message whole turned our own "Rp 66 million/month" into the client's budget
+ * (23335045). Links are removed.
  */
 export function clientOwnWords(text: string, ourMessages: string[] = []): string {
   let t = String(text ?? "");
@@ -1262,11 +1285,6 @@ export function clientOwnWords(text: string, ourMessages: string[] = []): string
   return t.replace(PROPERTY_URL, " ").replace(/\s+/g, " ").trim();
 }
 
-/** The request reader's view of one client message (unchanged: no quote matching here yet). */
-function clientWords(text: string): string {
-  return clientOwnWords(text);
-}
-
 /** Card notes minus our own markers ("Ad enquiry: R-X — <villa title>" carries a size and an area that are the villa's, not the client's). */
 function requestNotes(notes: string | null | undefined): string {
   const t = String(notes ?? "")
@@ -1281,6 +1299,10 @@ function requestNotes(notes: string | null | undefined): string {
 const BEDROOM_WORDS = /\d\s*\+?\s*(?:-|–|to|or|или|\/)?\s*\d?\s*(?:br\b|bed|bdr|bedroom|kamar|спал)|bedroom|спальн|kamar tidur/i;
 const MONEY_WORDS = /budget|бюджет|harga|\$\s?\d|usd|idr|\brp\b|rupiah|juta|\bjt\b|million|\bmill?\b|\bmio\b|\bmln\b|млн|\d\s*m\b|per month|a month|\/mo\b|per year|\/year|в месяц/i;
 const NEARBY_WORDS = /nearby|near by|around there|surrounding|neighbou?r|flexible on (the )?(area|location)|any area|рядом|поблизости|окрестност|sekitar/i;
+/** A budget said as a target: "around 30", "ideally 30mil", "~30jt", "30ish". */
+const APPROXIMATE_BUDGET = /\b(?:around|about|approx(?:imately)?|roughly|ideally|circa|something like|more or less|sekitar|kisaran)\s+(?:of\s+|is\s+|be\s+)?(?:rp\.?\s*|idr\s*|\$\s*)?\d|~\s*(?:rp\.?\s*)?\d|\d[\d.,]*\s*(?:m|mil|million|jt|juta|k)?\s*(?:-?ish\b|or so\b|give or take\b)|(?:около|примерно|в районе)\s*\d/i;
+/** A budget said as a limit — never read with any headroom. */
+const HARD_BUDGET_CEILING = /\b(?:max(?:imum)?|up to|no more than|not more than|under|below|less than|at most|top|limit|ceiling|maks(?:imal)?)\b|не больше|не более|максимум/i;
 const BROKER_RELEASES_AREA_WIDE = /whole island|anywhere|по всему острову|другие районы|других районах/i;
 
 function titleCaseWords(s: string): string {
@@ -1310,7 +1332,8 @@ export async function resolveClientRequest(inp: RequestInputs): Promise<ClientRe
     .map((t) => String(t ?? "").replace(PROPERTY_URL, " ").replace(/\s+/g, " ").trim())
     .filter(Boolean)
     .slice(0, 6);
-  const client = (inp.leadMessages ?? []).map(clientWords).filter(Boolean).slice(0, 25);
+  const ourSent = (inp.ourMessages ?? []).map(String);
+  const client = (inp.leadMessages ?? []).map((t) => clientOwnWords(t, ourSent)).filter(Boolean).slice(0, 25);
   const answers = inp.cardAnswers ?? null;
   const formLines = answers
     ? ([
@@ -1341,6 +1364,7 @@ export async function resolveClientRequest(inp: RequestInputs): Promise<ClientRe
     releaseArea: broker.some((t) => BROKER_RELEASES_AREA.test(t) || BROKER_RELEASES_AREA_WIDE.test(t)),
     budgetMaxIdr: null,
     budgetMinIdr: null,
+    budgetAroundIdr: null,
     moveIn: null,
     stayMonths: null,
     sources: { bedrooms: null, areas: null, budget: null, moveIn: null, stay: null },
@@ -1384,7 +1408,7 @@ export async function resolveClientRequest(inp: RequestInputs): Promise<ClientRe
 
 Sources, most authoritative first. For EACH field take the value from the most authoritative source that states it; inside one source the NEWEST statement wins ("actually 3 bedrooms" overrides an earlier "2 bedrooms"):
 1. BROKER — the broker's instruction while editing a draft (only when present).
-2. CLIENT — the client's own messages, newest first. A line starting with ">>" quotes OUR earlier message: use what that quote says only when the client's reply after it confirms it ("Yes", "correct").
+2. CLIENT — the client's own messages, newest first. A line starting with ">>" quotes OUR earlier message: use what that quote says only when the client's reply after it confirms it ("Yes", "correct"). A question about what we have ("maybe you have a one bedroom villa with a little garden?", "do you have something near Nuanu?") states what they want NOW — it is their newest statement for every field it names.
 3. FORM — the client's answers in the ad form. "Other", "-", "No", "Any" or a lone symbol are no answer.
 4. NOTES — our scout's summary of the client's own post.
 Never take a value from a villa WE described or offered, from a listing's title, or from a link the client clicked. Never fill in a typical value — null when nobody stated it.
@@ -1397,14 +1421,14 @@ Return JSON with exactly these keys:
 - "bedrooms_max": the upper end of a stated range ("also open to 4-5BR" after "minimum 3" -> 5); null for a single number or an open-ended minimum.
 - "bedrooms_at_least": true only for an open-ended minimum with no upper end.
 - "bedrooms_source": "broker" | "client" | "form" | "notes" | null.
-- "areas": names from the list above that the request names — every area they would accept ("Canggu, also open to Uluwatu" -> both).
+- "areas": names from the list above that the request names — every area they would accept ("Canggu, also open to Uluwatu" -> both). Names are often misspelled or voice-typed: "berewa" is Berawa, "pad on an" is Padonan, "cannot" inside a list of areas is Canggu — return the valid spelling.
 - "other_places": places the request names that are NOT on the list, spelled as written (e.g. "Kedungu"). A place named only as a limit or a landmark ("no further inland than X", "near Y beach", "close to Z cafe") is not an area. [] when none.
 - "areas_source": as above.
 - "nearby_ok": true only when they say nearby / surrounding areas / anywhere around also work.
-- "budget_max_idr_monthly": monthly ceiling in rupiah as an integer. "40 million"/"40jt" -> 40000000; a yearly figure divided by 12; USD x 16000; a range -> its upper end; different budgets for different sizes -> the largest. Null when no budget was stated.
+- "budget_max_idr_monthly": monthly ceiling in rupiah as an integer. "40 million"/"40jt"/"40mil" -> 40000000; "ideally around 30 million" -> 30000000; a yearly figure divided by 12; USD x 16000; a range -> its upper end; different budgets for different sizes -> the largest. Null when no budget was stated.
 - "budget_min_idr_monthly": the lower end of a stated range, else null.
 - "budget_source": as above.
-- "move_in": the move-in date as YYYY-MM-DD. "asap", "now", "immediately" -> today; "tomorrow" -> tomorrow; "this month" -> the last day of this month; "next month" -> the 1st of next month; "in 1-2 months" -> today plus one month; a month name -> the 1st of its next occurrence; a range of dates -> its start. Null when unstated.
+- "move_in": the move-in date as YYYY-MM-DD. "asap", "now", "immediately" -> today; "tomorrow" -> tomorrow; "this month" -> the last day of this month; "next month" -> the 1st of next month; "in 1-2 months" -> today plus one month; a month name -> the 1st of its NEXT occurrence, never a past date (said in September, "February" is February of next year); a range of dates -> its start. Null when unstated.
 - "move_in_source": as above.
 - "stay_months": integer. "3 months" -> 3; "21 Sep - 18 Dec" -> 3; "a year", "yearly contract", "12 months" -> 12; "6-12 months" -> 6. "long term" alone -> null. Null when unstated.
 - "stay_source": as above.`,
@@ -1442,9 +1466,10 @@ Return JSON with exactly these keys:
     r.sources.bedrooms = "form";
   }
 
-  // Areas — every name must actually appear in what a person wrote.
+  // Areas — every name must be in what a person wrote: literally, or misspelled
+  // inside a list of places (fuzzyAreaNamesInText: "berewa", "pad on an").
   if (ai) {
-    const named = new Set(areaNamesInText(allText).map((a) => a.toLowerCase()));
+    const named = new Set([...areaNamesInText(allText), ...fuzzyAreaNamesInText(allText, vocab)].map((a) => a.toLowerCase()));
     const fromList = (ai.areas ?? [])
       .map((a) => vocab.find((k) => k.toLowerCase() === String(a).trim().toLowerCase()))
       .filter((a): a is string => !!a && (lowerAll.includes(a.toLowerCase()) || named.has(a.toLowerCase())));
@@ -1453,6 +1478,24 @@ Return JSON with exactly these keys:
       .filter((p) => p.length > 2 && lowerAll.includes(p.toLowerCase()))
       .map((p) => vocab.find((k) => k.toLowerCase() === p.toLowerCase()) ?? titleCaseWords(p));
     const areas = [...new Set([...fromList, ...others])];
+    // A dictated list of places is the client's request even when the model
+    // kept only the form's area or dropped the misspelled items (Luke, 14.09:
+    // "also cannot, berewa, pad on an, seseh are also suitable" became Umalas
+    // / Seseh). Only a client message that lists two or more places with at
+    // least one misspelling is read this way, and a place it says NO to stays out.
+    for (const msg of client) {
+      const fuzzy = fuzzyAreaNamesInText(msg, vocab);
+      if (fuzzy.length === 0) continue;
+      const exact = areaNamesInText(msg).filter((a) => {
+        const esc = a.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return !new RegExp(`\\b(not|no|avoid|except|without|never|don'?t want|rather than|instead of)\\b[^,.;!?]{0,20}\\b${esc}\\b`, "i").test(msg);
+      });
+      const listed = [...new Set([...exact, ...fuzzy])];
+      if (listed.length < 2) continue;
+      const modelReadThisList = listed.some((a) => areas.some((x) => x.toLowerCase() === a.toLowerCase()));
+      if (!modelReadThisList && src(ai.areas_source) === "client") continue;
+      for (const a of listed) if (!areas.some((x) => x.toLowerCase() === a.toLowerCase())) areas.push(a);
+    }
     if (areas.length > 0) {
       r.areas = areas;
       r.sources.areas = src(ai.areas_source) ?? "client";
@@ -1469,6 +1512,21 @@ Return JSON with exactly these keys:
       }
     }
   }
+  // A landmark stands for the areas around it (Sophie 12.09, "something near
+  // the Nuanu?": Nuanu matched no villa and Seseh/Cemagi/Tabanan stayed shut).
+  const landmarks = landmarkAreasInText([...broker, ...client, notes].join("\n"));
+  if (landmarks.length > 0) {
+    const known = new Map(vocab.map((v) => [v.toLowerCase(), v]));
+    const near = [...new Set(landmarks.flatMap((l) => l.areas).map((a) => known.get(a.toLowerCase())).filter((a): a is string => !!a))];
+    if (near.length > 0) {
+      const markWords = landmarks.map((l) => l.landmark.toLowerCase().split(" ")[0]!);
+      const kept = r.areas.filter((a) => !markWords.some((w) => a.toLowerCase().includes(w)));
+      r.areas = [...new Set([...kept, ...near])];
+      if (!r.sources.areas) r.sources.areas = broker.length ? "broker" : "client";
+      logger.info({ landmarks: landmarks.map((l) => l.landmark), areas: near }, "client request: a landmark read as the areas around it");
+    }
+  }
+
   if (r.areas.length === 0 && (inp.cardCriteria?.areas?.length ?? 0) > 0) {
     r.areas = [...inp.cardCriteria!.areas];
     r.sources.areas = "form";
@@ -1494,6 +1552,18 @@ Return JSON with exactly these keys:
       r.budgetMaxIdr = inp.cardCriteria.budgetIdrMonthly;
       r.sources.budget = "form";
     }
+    // "Ideally around 30mil" is a target, not a ceiling (Lance, 12.09): read as
+    // "up to 30" it shut out the 33M villa that fit everything else. A figure
+    // the client gives with around / ideally / roughly is read 15% either
+    // way; a stated ceiling ("max", "up to", "under") never gets headroom.
+    if (r.sources.budget === "client" && r.budgetMaxIdr !== null) {
+      const said = client.find((t) => extractBudgetIdr([t]) === r.budgetMaxIdr);
+      if (said && APPROXIMATE_BUDGET.test(said) && !HARD_BUDGET_CEILING.test(said)) {
+        r.budgetAroundIdr = r.budgetMaxIdr;
+        r.budgetMaxIdr = Math.round((r.budgetAroundIdr * 1.15) / 100_000) * 100_000;
+        r.budgetMinIdr = Math.round((r.budgetAroundIdr * 0.85) / 100_000) * 100_000;
+      }
+    }
     const aiMax = Number(ai?.budget_max_idr_monthly);
     if (r.budgetMaxIdr === null && Number.isFinite(aiMax) && aiMax >= 1_000_000 && aiMax < 2_000_000_000 && MONEY_WORDS.test(allText)) {
       r.budgetMaxIdr = Math.round(aiMax);
@@ -1503,7 +1573,7 @@ Return JSON with exactly these keys:
     }
 
     if (ai?.move_in && /^\d{4}-\d{2}-\d{2}$/.test(ai.move_in) && !Number.isNaN(Date.parse(ai.move_in))) {
-      r.moveIn = ai.move_in < today ? today : ai.move_in;
+      r.moveIn = nextOccurrenceIso(ai.move_in, today);
       r.sources.moveIn = src(ai.move_in_source) ?? "client";
     }
     const stay = Number(ai?.stay_months);
@@ -1603,8 +1673,11 @@ export function requestMisfits(p: SupabaseProperty, r: ClientRequest, now: Date 
   return requestMisfitDims(p, r, now).map((m) => m.why);
 }
 
+/** The closest real villa behind a relax hint — described to a client in plain words, never by its code. */
+export type RelaxExample = { id: string; title: string; bedrooms: number | null; area: string | null; priceIdr: number; freeFrom: string | null };
+
 /** The one dimension whose loosening would open the most villas — the question to ask when nothing fits. */
-export type RelaxHint = { dim: "area" | "budget" | "bedrooms" | "dates"; count: number; suggestion: string };
+export type RelaxHint = { dim: "area" | "budget" | "bedrooms" | "dates"; count: number; suggestion: string; example?: RelaxExample | null };
 
 function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m: Misfit[] }>): RelaxHint | null {
   const byDim = new Map<Misfit["dim"], SupabaseProperty[]>();
@@ -1620,26 +1693,43 @@ function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m
     for (const v of vals) counts.set(v, (counts.get(v) ?? 0) + 1);
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([v]) => v);
   };
-  const near = (byDim.get("area") ?? []).filter((p) =>
-    r.areas.some((a) => neighbourAreas(a).some((n) => areaMatches(p.area, [n]))),
-  );
-  if (near.length > 0) {
-    const names = mostCommon(near.map((p) => parentAreaOf((p.area ?? "").split(",")[0]) ?? p.area ?? "")).filter(Boolean).slice(0, 2);
-    hints.push({ dim: "area", count: near.length, suggestion: `nearby ${names.join(" or ")}` });
+  // "Ask ONE concrete question naming the nearest real option" (owner,
+  // 14.09.2026): not "could the area flex?" and never "I'll come back with a
+  // shortlist" — "there is a 1-bedroom in Pererenan at Rp 30 million, would
+  // Pererenan work?". The example is the priced villa closest to their money.
+  const target = r.budgetAroundIdr ?? r.budgetMaxIdr;
+  const exampleOf = (ps: SupabaseProperty[]): RelaxExample | null => {
+    const priced = ps.filter((p) => priceOf(p) > 0);
+    const pool = priced.length > 0 ? priced : ps;
+    const best = [...pool].sort((a, b) =>
+      target ? Math.abs(priceOf(a) - target) - Math.abs(priceOf(b) - target) : priceOf(a) - priceOf(b),
+    )[0];
+    return best
+      ? { id: best.id, title: best.title, bedrooms: best.bedrooms ?? null, area: parentAreaOf((best.area ?? "").split(",")[0]) ?? best.area ?? null, priceIdr: priceOf(best), freeFrom: best.free_from ?? null }
+      : null;
+  };
+  const areaOnly = byDim.get("area") ?? [];
+  const near = areaOnly.filter((p) => r.areas.some((a) => neighbourAreas(a).some((n) => areaMatches(p.area, [n]))));
+  const areaPool = near.length > 0 ? near : areaOnly;
+  if (areaPool.length > 0) {
+    const names = mostCommon(areaPool.map((p) => parentAreaOf((p.area ?? "").split(",")[0]) ?? p.area ?? "")).filter(Boolean).slice(0, near.length > 0 ? 2 : 1);
+    const inNamed = areaPool.filter((p) => names.includes(parentAreaOf((p.area ?? "").split(",")[0]) ?? p.area ?? ""));
+    hints.push({ dim: "area", count: areaPool.length, suggestion: near.length > 0 ? `nearby ${names.join(" or ")}` : names.join(" or "), example: exampleOf(inNamed) });
   }
   const over = (byDim.get("budget") ?? []).filter((p) => r.budgetMaxIdr !== null && priceOf(p) > r.budgetMaxIdr && priceOf(p) <= r.budgetMaxIdr * 1.3);
   if (over.length > 0) {
     const cheapest = Math.min(...over.map(priceOf));
-    hints.push({ dim: "budget", count: over.length, suggestion: `a budget of about ${millions(cheapest)} a month` });
+    hints.push({ dim: "budget", count: over.length, suggestion: `a budget of about ${millions(cheapest)} a month`, example: exampleOf(over.filter((p) => priceOf(p) === cheapest)) });
   }
   const beds = byDim.get("bedrooms") ?? [];
   if (beds.length > 0 && r.bedroomsMin !== null) {
-    const target = r.bedroomsAtLeast || r.bedroomsMax === null ? r.bedroomsMin : r.bedroomsMin;
+    const bedTarget = r.bedroomsMin;
     const nearest = [...new Set(beds.map((p) => p.bedrooms).filter((b): b is number => typeof b === "number"))]
-      .sort((a, b) => Math.abs(a - target) - Math.abs(b - target) || a - b)[0];
+      .sort((a, b) => Math.abs(a - bedTarget) - Math.abs(b - bedTarget) || a - b)[0];
     // Only an adjacent size is a fair question — a 1BR client is not asked about 3 bedrooms.
-    if (nearest !== undefined && Math.abs(nearest - target) <= 1) {
-      hints.push({ dim: "bedrooms", count: beds.filter((p) => p.bedrooms === nearest).length, suggestion: `${nearest} bedroom${nearest === 1 ? "" : "s"}` });
+    if (nearest !== undefined && Math.abs(nearest - bedTarget) <= 1) {
+      const sized = beds.filter((p) => p.bedrooms === nearest);
+      hints.push({ dim: "bedrooms", count: sized.length, suggestion: `${nearest} bedroom${nearest === 1 ? "" : "s"}`, example: exampleOf(sized) });
     }
   }
   const dates = byDim.get("dates") ?? [];
@@ -1649,6 +1739,7 @@ function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m
       dim: "dates",
       count: dates.length,
       suggestion: earliest && (!r.moveIn || earliest > r.moveIn) ? `moving in from ${dayLabel(earliest)}` : "a longer contract",
+      example: exampleOf(earliest ? dates.filter((p) => p.free_from === earliest) : dates),
     });
   }
   hints.sort((a, b) => b.count - a.count);
@@ -1780,9 +1871,15 @@ export async function candidatesForLead(opts: {
   clickedListingId?: string | null;
   /** Villas equal on everything take turns between leads (rankShortlistFits). */
   leadId?: string | null;
+  /** What WE sent — a quoted message of ours is not the client's words. */
+  ourMessages?: string[];
 }): Promise<{
   candidates: SupabaseProperty[];
   request: ClientRequest;
+  /** With an empty pool: the one question worth asking, with the closest real option. */
+  hint: RelaxHint | null;
+  /** Fits including the ones already sent — tells "nothing exists" from "they have it all". */
+  fitsInclSent: number;
   /** The stated ceiling — no headroom (kept under the old names for the callers). */
   budgetIdr: number | null;
   budgetCeiling: number | null;
@@ -1795,6 +1892,7 @@ export async function candidatesForLead(opts: {
   const request = await resolveClientRequest({
     listingType: opts.listingType,
     leadMessages: opts.recentLeadMessages ?? [],
+    ourMessages: opts.ourMessages ?? [],
     brokerInstructions: instructions,
     cardCriteria: opts.cardCriteria ?? null,
     cardAnswers: opts.cardAnswers ?? null,
@@ -1821,6 +1919,8 @@ export async function candidatesForLead(opts: {
     budgetCeiling: request.budgetMaxIdr,
     budgetFloorIdr: request.budgetMinIdr,
     affordableIds: candidates.filter((p) => priceOf(p) > 0).map((p) => p.id),
+    hint: pool.hint,
+    fitsInclSent: pool.fitsInclSent,
     // Ranked best first (rankShortlistFits). Only reasons a client may hear:
     // the composer writes the client's text from these lines.
     lines: pool.ranked.slice(0, 20).map(({ p, whyClient }) => {
@@ -1874,6 +1974,8 @@ export type MatchOptions = {
   proposedIds?: string[];
   /** Villas equal on everything take turns between leads (rankShortlistFits). */
   leadId?: string | null;
+  /** What WE sent — a quoted message of ours is not the client's words. */
+  ourMessages?: string[];
   /**
    * The shortlist gate already decided this message carries options
    * (decideShortlistGate). The model then only chooses AMONG the fits; an
@@ -1915,6 +2017,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
   const request = await resolveClientRequest({
     listingType: opts.listingType,
     leadMessages: opts.recentLeadMessages ?? [],
+    ourMessages: opts.ourMessages ?? [],
     brokerInstructions: opts.brokerInstruction ? [opts.brokerInstruction] : [],
     cardCriteria: opts.cardCriteria ?? null,
     cardAnswers: opts.cardAnswers ?? null,

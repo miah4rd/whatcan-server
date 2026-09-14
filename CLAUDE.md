@@ -1227,8 +1227,55 @@ no draft, no reply of ours and no LIVE in flight (`knownIncomingNeverAnswered`,
 `liveReplyInFlight`); the opening pass skips a lead where the client or the
 broker wrote after the welcome (lead_messages, not only sent_messages).
 
-Phase 2 (request reading, never re-attaching a sent villa, edited drafts and
-their links) follows in its own section.
+### Phase 2: the request is the client's words, nothing is sent twice, links are never lost silently (2026-09-14)
+
+- **Request reading** (`resolveClientRequest`). `clientOwnWords(text,
+  ourMessages)` cuts OUR quoted message by matching what we actually sent, so
+  it works on content's one-line rendering too (Jesica's ">> … 2BR options …
+  If there's a 2br with an office space" now reads 2–3 bedrooms; before, the
+  whole reply was dropped). `nextOccurrenceIso`: a model date more than 45 days
+  in the past rolls forward by years ("February" said in September is next
+  February — Chloé's had become today, and a villa free from 4 October was
+  "too late"). `APPROXIMATE_BUDGET` ("around", "ideally", "roughly", "~",
+  "-ish") sets `budgetAroundIdr` and reads the ceiling ×1.15 and the floor
+  ×0.85; `HARD_BUDGET_CEILING` ("max", "up to", "under") never gets headroom
+  (Lance "Ideally around 30mil" → R-YUD-098 at 33M). `fuzzyAreaNamesInText`
+  (bali-areas.ts): edit distance ≤1 (≤2 from 7 letters) plus
+  `VOICE_AREA_ALIASES` ("cannot" → Canggu), only on short items of a list of
+  two or more places, with a stopword list ("loving" is not Lovina); a client
+  message listing places with a misspelling adds them all except one preceded
+  by not / avoid / except. `landmarkAreasInText`: Nuanu → Seseh, Cemagi,
+  Tabanan, Kedungu (only names in the vocabulary survive); also Tanah Lot,
+  Finns and Atlas beach clubs, Potato Head, Old Man's.
+- **Nothing inside the request.** `relaxationHint` carries an `example` (the
+  priced villa closest to the budget; any area when no neighbour has one) and
+  `relaxQuestion` names it in plain words — size, area, price, free date,
+  never a code or a title, so the stray-villa check does not strip it. The
+  edit path gets the same question (`composeReplyWithListings({
+  emptyPoolGuidance })`) instead of "let me check … I'll come back with a
+  proper shortlist".
+- **Never re-attached.** The edit path's pool now has an exclusion at all
+  (`candidatesForLead({ excludeIds })` from `alreadySentPropertyIds`);
+  `enforceRequestOnDraft` drops a sent villa on every generator.
+  `alreadySentPropertyIds` counts a draft row's links only as far as its send
+  record says they went out (`| links n/m`; no send record yet = all; a send
+  without the marker = none) — Sophie's 12.09 draft left with no links, its
+  row still listed three villas, and they were "already sent" forever.
+  approve now stores the links that actually go out on the row.
+- **Edited text that names none of its villas** and does not point at the
+  links (`REFERS_TO_ATTACHED_LINKS` now also "here they are", "these three",
+  "take a look"): approve refuses with 409 `links_not_named` and names the
+  villas; the /m page shows `json.message`. Chosen over keeping the links (a
+  text saying "nothing fits right now" would carry three villas) and over
+  dropping them (Sophie 14.09 got "Here they are:" with nothing under it).
+- **Replay** (worktree code, threads cut at the logged moments, read-only):
+  Lance → R-YUD-098 (around Rp 30M, move-in January); Luke → Umalas / Canggu
+  / Berawa / Padonan / Seseh, R-YUD-055, R-YUD-088 (Babakan), R-YUD-059;
+  Jesica → 2–3BR Seseh / Cemagi / Kedungu / Munggu, R-YUD-075 (R-YUD-074 at
+  22.5M is under the form's 30–50M floor ×0.85); Chloé → 1–2BR Umalas,
+  February next year, R-YUD-098; Sophie 12.09 and 14.09 → Seseh / Cemagi /
+  Tabanan / Kedungu, R-YUD-075 + R-MER-040; Lorenzo → R-YUD-053; the four
+  one-villa threads still get no links; no edit-path pool holds a sent villa.
 
 ### Stages follow the thread, whoever wrote the message (2026-09-14)
 
