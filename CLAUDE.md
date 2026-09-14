@@ -1164,6 +1164,72 @@ reachable only through `POST /api/admin/reclassify-manual?apply=1` — Lorenzo's
 Anything new that "runs three hours after X" gets the same check before the
 verification claim: `grep -rn <fn> src` must show a scheduler call site.
 
+### "Not that, send others" gets a new shortlist (2026-09-14, phase 1)
+
+Owner, 14.09 (final): people rarely say "I don't like it". "Let's see more",
+"not quite my style", "I've seen these", "keep sending", "hopefully something
+comes up", "anything else?", "similar ones?" and any new criterion (budget,
+area, pool, garden, pets, dates, parking) are objections — the answer is
+ALWAYS a new shortlist inside the request. No new links only when the
+client's latest message sits on ONE villa we already sent with a next step
+(its price / location / availability / a viewing of it, "I like this one").
+The stage alone decides nothing. When unsure, the shortlist goes.
+
+**The skip that fired all week was never the client.** The quick poll
+(`amo-timeline-sync.ts`, both LIVE call sites) hands generators
+`content + "[LATEST MESSAGES — …]" + a raw timeline tail` ("Amelia:
+https://…/property/R-YUD-048" lines, no timestamps). `parseDialogContent`
+runs each message to the next timestamp, so the whole tail — our own link
+messages — was glued onto the last message of content; when that was the
+client's, `shouldSkipNewListings` saw our link IDs in the client's words and
+logged "lead is discussing listings already sent" (Lance 12.09 ×2, Luke
+14.09 ×2, Jesica 11.09, Chloé 11.09, Sophie 14.09 — all seven reproduced with
+a read-only rebuild of the snippet; content alone skips none). The same glue
+fed our "Rp 45 million, 6-month stay" into Chloé's request on 14.09 20:11.
+`parseDialogContent` now cuts the tail (its messages are in lead_messages).
+**Anything that appends raw text to `content` must not be parsed as dialog.**
+
+**The gate** — `decideShortlistGate` in `generate-suggestion.ts`, asked by
+`pickPropertyAttachmentsDetailed` (so every generator: both
+`generateSuggestion` copies, both follow-up writers). On the client's latest
+turn (their messages after our last one; our quoted text cut by
+`clientOwnWords`), in order: `ASKS_FOR_MORE` → send; one villa
+(`ONE_VILLA_REFERENCE`, a sent ID in the message, or "is it / see it" in a
+short message) + `NEXT_STEP_ON_A_VILLA` → skip; `NEW_CRITERIA` or an area /
+landmark → send; a late stage or a weak reference (a sent ID, "this one", a
+quote) → Haiku yes/no, 8 s, anything but a clear "focus" → send; otherwise
+send. Every decision logs `property matcher skipped — <rule>` or `shortlist
+gate: this message carries new options` with `rule` and evidence. Past the
+gate a Rental draft carries options: `matchPropertiesDetailed({ mustAttach })`
+— the model chooses among fits, an empty choice or a failed call attaches the
+top ranked. Replay 14.09 (the logged moments): send for Lance, Luke, Jesica,
+Chloé, Sophie ×2, Lorenzo ("similar villas", Negotiation done); skip for
+23485903 "Is it available right?", 23461427 "location this villa?" (quoted
+R-AME-030), 23201221 "I love the last one", 23475455 "I like this one, is
+this one available to visit tmr" (quoted R-YUD-071).
+
+**No "for yourself or someone else?"** It came from Amelia's `followup`
+lesson 3e3dc234 (12–14.09, "qualify whether the prospect is looking for
+themselves or representing a client"), and reached 13.09 follow-ups to Lance
+and Chloé in front of the villa. `broker-corrections.ts` refuses such a
+lesson outside `owner_intake` and filters it on reading;
+`enforceRequestOnDraft({ rental: true })` strips the question (keeping a
+leading "Hi Name,") on every Rental generator.
+
+**A client reply gets its LIVE draft.** Lance answered the ad welcome at
+11:24 (12.09); the webhook read "not a reply" (`leadRepliedAfterUs` needed a
+HUMAN message of ours, the welcome is `bot - amocrm`) but stored the message
+time, the quick poll then skipped it as known, and the 15-minute opening
+drafted at 11:39 after Amelia had already sent villas by phone. Now: a reply
+to our bot message counts (`leadRepliedToBot`); the quick poll answers a
+client message from the last 15 minutes that the row marks known but that has
+no draft, no reply of ours and no LIVE in flight (`knownIncomingNeverAnswered`,
+`liveReplyInFlight`); the opening pass skips a lead where the client or the
+broker wrote after the welcome (lead_messages, not only sent_messages).
+
+Phase 2 (request reading, never re-attaching a sent villa, edited drafts and
+their links) follows in its own section.
+
 ### Stages follow the thread, whoever wrote the message (2026-09-14)
 
 Owner, 14.09: "всё должно быть синхронно вацап и копилот". The audit of
