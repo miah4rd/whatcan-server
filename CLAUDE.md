@@ -1563,6 +1563,116 @@ rendered in English from Indonesian. **Read the whole message before calling
 an extraction invented: in `lead_messages` a WhatsApp reply is stored as
 `>> quote⏎reply`, and `left(text, N)` hides exactly the reply.**
 
+### The owner is never asked twice, in Yudi's words (2026-09-14)
+
+The owner, relaying Yudi after he spoke with several owners: autopilot messages
+read "как будто робот с тобой общается", with "повторные, однотипные вопросы…
+там, где уже ответили".
+
+**Measured, 14 days.** 1,160 auto-sent owner messages; the 574 with a question
+and an earlier owner message were judged against the thread before them
+(Haiku), and every flagged repeat was re-checked strictly (Sonnet: does our
+message ASK it, did the VILLA SIDE answer it). 56 messages on 36 cards re-asked
+what the villa side had answered: 35 of 301 nudges (12%), 19 of 838 AI replies
+(2%), 2 of 21 older AI pushes. By point: who they are 18, still for rent 15,
+commission 14, price 12, minimum stay 12, availability 9, bedrooms 6, viewing 6,
+photos 3. Worst: Villa Yoshi (12.09), Ersanea (09.09, 13.09), Gelareh (09.09),
+Villa Amor (08.09) got the whole checklist after giving price with our 10%, the
+free date, the minimum stay and a viewing time. The Haiku pass alone flagged
+220; it counts statements ("since you manage it") as questions — never report
+a single-model count.
+
+Causes, one per writer:
+- **The nudge template asked everything when it had nothing to ask.**
+  `asks.length === 0` fell back to "are you still looking to rent it out? … the
+  number of bedrooms, the monthly and yearly rate…, the date…, the minimum
+  stay…, the earliest day…" — on cards with nothing missing, on a floor or
+  commission-terms note, and on a failed extraction.
+- **A `null` fact is "missing".** The extractor leaves null what it cannot read
+  ("3 nights", "tidak ada mininum", USD/EUR, "I just manage these properties",
+  a bare "Yes" to our commission question), and `meetsQualified` lists it.
+  14 of the 18 "who are you" repeats were nudges to people who had said who
+  they are.
+- **The reply prompt's "already answered" list came from the same facts**, and
+  nothing checked the finished draft.
+
+**Style, measured.** Yudi's phone messages to owners (30 days, 390 lines,
+Amelia's filtered): 8 words median, 40% two or three short lines, kak 19%,
+pak/bu 19%, a plain 🙏 12%, openers "Baik", "Thank you", "Selamat siang",
+"Hello". Auto-sent owner messages: 48 words median, 2% multi-line, "including
+our 10% agency commission" 32%, "that's everything we need" 29%, "clients" 41%
+(Yudi 11%), "Hi" 43%. The model copied the prompt's example sentences; no line
+Yudi typed reached the owner-facing prompt (his lessons did, `owner_intake`).
+Language was already right: 3 of 95 Indonesian threads were answered in English.
+
+**What changed.**
+- `lib/owner-thread-known.ts` — ONE check before anything asks an owner. A
+  point is KNOWN when the facts have it OR the villa side's own words answer it:
+  the `>>` quote and our own pasted text removed, their questions and promises
+  ("will send the commission details") not counted, a short yes/no straight
+  after our one-point question counted. Fail-safe towards not asking.
+  `stripRepeatedAsks` cuts a repeated question from a finished draft; price and
+  commission asked together are one question, repeated only when both are
+  known; a counter-offer, asking the other period, a concrete visit time, and a
+  re-ask after a failed send are not repeats. `removeRepeatedAsks` adds one
+  Haiku rewrite for a sentence mixing known and open points; `guardOwnerDraft`
+  is the no-model gate.
+- **Reply generator** (`listing-acquisition-prompt.ts` — both generateSuggestion
+  copies, handover, retouch and requalify call it): the ALREADY GIVEN block
+  from the shared check, STILL MISSING minus what the thread answers, the
+  finished draft checked (a draft of nothing but repeats is written once more,
+  else no draft — callers skip empty text). Literal sentences removed from the
+  prompt (the one-sentence checklist, "that's everything we need", the quoted
+  three-option and coordinator questions); the moves and the business rules
+  (price with our 10% in the same sentence, three options, viewing day) stay.
+  A facts-only not-our-format decline now needs `confirmsNotOurFormat`
+  (fail-closed): the replay showed "Maximal 3 bulan saja" at 37 juta a month
+  read as short stays only. `replayAsOf` writes the draft as of a moment and
+  writes nothing anywhere.
+- **The voice**: `lib/owner-voice.ts` on top of `lib/yudi-voice.ts` (the one
+  reader of Yudi's phone lines, shared with inspection booking): his lines in
+  the owner's language first, what he sent in place of drafts he rewrote (his
+  text only, never the draft), and the measured shape. His lessons follow and
+  win. No example sentence of ours.
+- **Nudge ladder** (`listing-owner-followup.ts`): `nudgeAsks` — never replied:
+  still for rent + who they are; replied: only open qualification points; no
+  facts readable: nothing; a commission rate of their own: nothing (the
+  broker's call); nothing open: no nudge, the ladder does not advance, and the
+  thread state is memoised so the 5-minute pass does not re-extract. Still no
+  AI: fixed EN/ID lines in the owner's language, Yudi's own phrasings ("May I
+  know…", "May I double check if the price is already included with our 10%
+  agency commission?", "Untuk harganya apakah sudah termasuk 10% komisi agensi
+  ya kak?"), a greeting line and "Thank you"/"Terimakasih". No "we have clients
+  searching in the area right now", no closing formula.
+- **Long-term availability check**: the same asks and register; photos and pin
+  only when not already sent.
+- **Autopilot** (`autopilot.ts`): `guardOwnerDraft` on every Rental Listings
+  draft before it is sent, whoever wrote it; a cut is logged ("autopilot: owner
+  draft re-asked what the thread already answers"), a draft of nothing but
+  repeats is retired. It runs before the handover stage only, so the weekly
+  availability check on live listings ("is it still available?") is untouched.
+
+**Before changing any of it**: replay on real past cases, read-only —
+`src/scripts/replay-owner-drafts.ts` bundled in a worktree (never
+`/opt/whatcan`), cases `{kind: reply|nudge, leadId, asOf, old}`. The detector
+alone (no facts) catches 42 of the 56 confirmed messages; the facts cover most
+of the rest.
+
+**Replay before deploy (14.09, 18 cases: the 10 worst confirmed repeats, 3
+confirmed AI-reply repeats, 5 recent replies for style), judged by the same
+strict Sonnet check as the analysis.** Old drafts with a repeated question: 12
+of 18; new: 1 — Yanti's price negotiation ("would you be able to meet 30
+million?"), a counter-offer the old draft made too, not a question she had
+answered. Six of the ten worst nudges now send NOTHING (Villa Yoshi, Ersanea,
+Gelareh, Umbala, Ayucandra, Buduk Dua: everything open was answered, or their
+own commission rate is the broker's call); the others ask only what is open —
+"Hello / For Villa Amor Pererenan, may I know the number of bedrooms? / Thank
+you", "Selamat sore kak / Untuk Villa Tapeni, boleh di bantu info harga sewa
+bulanan dan tahunan yang sudah termasuk 10% komisi agensi, minimal sewanya dan
+kapan kami bisa bawa client untuk lihat villanya ya kak? / Terimakasih". Words
+median 65 → 31 on the repeat cases, 48 → 34 on the style cases; "that's
+everything we need" 11 → 0, "clients searching in the area" 10 → 0.
+
 ### A stage a card can neither enter nor leave (2026-09-10)
 
 The owner: "что с нашим автопилотом, где мои листинги?" Nothing had reached

@@ -28,7 +28,9 @@ import { isListingAcquisition } from "./pipelines";
 import { villaFromLeadName, fetchLeadTitle, fetchOwnerName } from "./weekly-availability-check";
 import { closeLeadAsLost } from "./amo-client";
 import { maybeAutopilot } from "./autopilot";
-import { qualificationVerdictForLead } from "./listing-card-fields";
+import { meetsQualified } from "./listing-card-fields";
+import { ownerThreadKnown, type OwnerThreadKnown } from "./owner-thread-known";
+import { ownerThreadLanguage, type OwnerLang } from "./yudi-voice";
 
 /**
  * Stages where the owner conversation is still open.
@@ -100,68 +102,168 @@ function isOpenStage(stage: string | null): boolean {
 }
 
 /**
- * The owner reads this. Short enough to answer from a lock screen, and it says
- * what we want rather than asking how they are.
- *
- * It carries the WHOLE qualification ask in one sentence — bedrooms, price, and
- * the date free — because a card only reaches QUALIFIED once bedrooms and a
- * commission-inclusive price are known, and every extra round trip is a day
- * lost. The price is asked for in the form we need ("including our 10% agency
- * commission") rather than as "does your price include commission?": the
- * meta-question gets skipped or answered ambiguously, and the card then sits in
- * "commission position NOT confirmed" — a number we cannot put on the site.
- * "That's everything we need" is a promise, not filler: it tells the owner this
- * is the last question, not the first of a form.
+ * The points a nudge can ask, in the order they are asked. `price_plain` is the price when the
+ * commission position is already known (they said net, included, or named a rate): asking it
+ * "including our 10%" again would re-ask the half they answered.
  */
-export function composeNudge(ownerName: string, villa: string, missing: string[] = []): string {
-  const who = ownerName ? ` ${ownerName}` : "";
-  const what = villa || "your villa";
+export type NudgeAsk = "still_renting" | "owner" | "bedrooms" | "price" | "price_plain" | "commission" | "min_stay" | "viewing";
 
-  /**
-   * Ask again for what is ACTUALLY still missing on this card.
-   *
-   * The text used to be one fixed paragraph asking for bedrooms, price and date
-   * whatever the conversation had already established. People answer part of a
-   * question and leave the rest, which is ordinary — the owner's point: "это не
-   * значит, что мы что-то сделали неправильно, нужно просто переспросить". A
-   * nudge repeating a question they already answered reads as not listening,
-   * and one that never re-asks the unanswered part never gets it: 22 cards sat
-   * on "who are you" with the question asked exactly once.
-   *
-   * The counterpart question comes FIRST when it is open, because it decides
-   * qualification on its own, and it is phrased in three options so "I manage
-   * it" cannot stand for both an employee and an agency.
-   */
-  const asks: string[] = [];
-  if (missing.some((m) => m.startsWith("not the owner"))) {
-    asks.push("whether you're the owner, part of the owner's team, or if there's a management company looking after it");
+/** The asks that are owner points of their own (`price_plain` is a phrasing of `price`). */
+type AskPoint = Exclude<NudgeAsk, "price_plain">;
+
+const MISSING_TO_ASK: Array<[(m: string) => boolean, AskPoint]> = [
+  [(m) => m.startsWith("not the owner"), "owner"],
+  [(m) => m === "bedrooms", "bedrooms"],
+  [(m) => m === "price", "price"],
+  [(m) => m === "commission position", "commission"],
+  [(m) => m === "minimum stay", "min_stay"],
+  [(m) => m === "earliest viewing", "viewing"],
+];
+
+/**
+ * What a nudge may ask this owner: what the card is still missing, minus every point the thread
+ * already answers (owner-thread-known.ts).
+ *
+ * Until 14.09.2026 a nudge whose missing list held nothing it knew how to phrase (a card with all
+ * data, a floor or commission-terms note, a failed extraction) asked the WHOLE checklist, opened by
+ * "are you still looking to rent it out?". Villa Yoshi had given price with our 10%, the free date,
+ * the minimum stay and a viewing time five days earlier and got exactly that on 12.09; Ersanea,
+ * Umbala, Gelareh and Villa Amor the same week. And a fact the extraction read as `null` (a price in
+ * USD, "tidak ada minimum") was asked again as missing.
+ *
+ * - An owner who never replied: whether it is still for rent, and who they are (three options).
+ * - An owner who replied: only the open qualification points. Unsure (no facts could be read):
+ *   nothing — a nudge that might repeat a question is worse than no nudge.
+ * - Nothing open: no nudge at all. The card's next step is not a question.
+ */
+export function nudgeAsks(k: OwnerThreadKnown, missing: string[] | null): NudgeAsk[] {
+  if (!k.ownerReplied) {
+    return (["still_renting", "owner"] as AskPoint[]).filter((a) => !k.known[a]);
   }
-  if (missing.includes("bedrooms")) asks.push("how many bedrooms it has");
-  if (missing.includes("price")) asks.push("the monthly and yearly rate including our 10% agency commission");
-  else if (missing.includes("commission position")) asks.push("whether that rate already includes our 10% agency commission");
-  if (missing.includes("minimum stay")) asks.push("the minimum stay you accept");
-  if (missing.includes("earliest viewing")) asks.push("the earliest day we could bring a client to view it");
-
-  if (asks.length === 0) {
-    return (
-      `Hi${who}, just following up on ${what}, are you still looking to rent it out? ` +
-      `We have clients searching in the area right now.\n\n` +
-      `If so, could you send me the number of bedrooms, the monthly and yearly rate ` +
-      `including our 10% agency commission, the date it's available from, the minimum stay ` +
-      `you accept, and the earliest day we could bring a client to view it, ` +
-      `that's everything we need to put it in front of them.`
-    );
+  if (missing === null) return [];
+  // They named a commission rate that is not ours: the terms are the broker's call, not a question
+  // a bot repeats (Ersanea "our commission is 5%" got "including our 10%" again on 08.09).
+  if (missing.some((m) => m.startsWith("commission terms to agree"))) return [];
+  const asks: NudgeAsk[] = [];
+  for (const [is, a] of MISSING_TO_ASK) {
+    if (missing.some(is) && !k.known[a] && !asks.includes(a)) asks.push(a);
   }
-
-  const list =
-    asks.length === 1
-      ? asks[0]
-      : `${asks.slice(0, -1).join(", ")} and ${asks[asks.length - 1]}`;
-  return (
-    `Hi${who}, following up on ${what}, we have clients searching in the area right now. ` +
-    `Could you let me know ${list}? That's everything we need to put it in front of them.`
-  );
+  // A price the extraction could not read (USD, a pasted brochure) is still a price: the only open
+  // question is whether our 10% is inside it.
+  if (missing.includes("price") && k.known.price && !k.known.commission && !asks.includes("commission")) {
+    asks.push("commission");
+  }
+  const priceAt = asks.indexOf("price");
+  if (priceAt !== -1 && k.known.commission) asks[priceAt] = "price_plain";
+  return asks;
 }
+
+const HONORIFIC = /^(pak|bapak|bu|ibu|bli|mbak|mas|kak|ka)$/i;
+
+/** "Pak Damien" → pak Damien / pak; "Diana" → kak Diana / kak; no name → kak / kak. */
+export function indonesianAddress(name: string): { greet: string; call: string } {
+  const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return { greet: "kak", call: "kak" };
+  const first = parts[0]!.toLowerCase();
+  if (HONORIFIC.test(first) && parts.length > 1) {
+    const call = first === "bapak" ? "pak" : first === "ibu" ? "bu" : first === "ka" ? "kak" : first;
+    return { greet: `${call} ${parts.slice(1).join(" ")}`, call };
+  }
+  return { greet: `kak ${parts.join(" ")}`, call: "kak" };
+}
+
+function baliDayPart(at: Date): string {
+  const h = Number(at.toLocaleString("en-GB", { timeZone: "Asia/Makassar", hour: "2-digit", hourCycle: "h23" }));
+  return h < 11 ? "pagi" : h < 15 ? "siang" : h < 18 ? "sore" : "malam";
+}
+
+function joinList(items: string[], and: string): string {
+  return items.length <= 1 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} ${and} ${items[items.length - 1]}`;
+}
+
+/** The villa name as the scout's title gives it, or "" when there is none worth saying. */
+export function spokenVilla(villa: string): string {
+  return villa && villa.toLowerCase() !== "your villa" ? villa : "";
+}
+
+/** How Yudi opens: "Selamat siang kak Diana" / "Hello Marc". */
+export function ownerGreeting(owner: string, lang: OwnerLang, at: Date = new Date()): { line: string; call: string } {
+  if (lang === "id") {
+    const a = indonesianAddress(owner);
+    return { line: `Selamat ${baliDayPart(at)} ${a.greet}`, call: a.call };
+  }
+  return { line: owner ? `Hello ${owner}` : "Hello", call: "" };
+}
+
+/**
+ * The ask lines, in Yudi's words: the phrasings are his own from his phone messages to owners ("may
+ * i know if those pricing already included with 10% agency commission?", "may i double check if
+ * this price is already included with 10% agency commission?", "Untuk harga nya apakah sudah
+ * include 10% komisi agensi ya kak?", "Boleh di bantu untuk details harga nya ya kak?"). Shared by
+ * the nudge and the long-term availability check. Still no AI (see the header): the same question
+ * every round, but a short one, in the owner's language, with the price asked in the shape we need.
+ */
+export function ownerAskLines(asks: NudgeAsk[], o: { lang: OwnerLang; villa: string; call?: string }): string[] {
+  const lines: string[] = [];
+  const has = (a: NudgeAsk) => asks.includes(a);
+  if (o.lang === "id") {
+    const call = o.call || "kak";
+    const villa = spokenVilla(o.villa) || "villanya";
+    if (has("still_renting")) lines.push(`Untuk ${villa} apakah masih tersedia untuk sewa bulanan atau tahunan ya ${call}?`);
+    const nouns = [
+      has("bedrooms") && "jumlah kamar tidurnya",
+      has("price") && "harga sewa bulanan dan tahunan yang sudah termasuk 10% komisi agensi",
+      has("price_plain") && "harga sewa bulanan dan tahunannya",
+      has("min_stay") && "minimal sewanya",
+      has("viewing") && "kapan kami bisa bawa client untuk lihat villanya",
+    ].filter((x): x is string => Boolean(x));
+    if (nouns.length) {
+      lines.push(`${has("still_renting") ? "Boleh" : `Untuk ${villa}, boleh`} di bantu info ${joinList(nouns, "dan")} ya ${call}?`);
+    }
+    if (has("commission") && !has("price") && !has("price_plain")) lines.push(`Untuk harganya apakah sudah termasuk 10% komisi agensi ya ${call}?`);
+    if (has("owner")) {
+      lines.push(`${lines.length ? "Dan apakah" : "Apakah"} ${call} owner villanya, tim dari owner, atau ada management company yang kelola?`);
+    }
+    return lines;
+  }
+  const villa = spokenVilla(o.villa) || "your villa";
+  if (has("still_renting")) lines.push(`Is ${villa} still available for monthly or yearly rent?`);
+  const nouns = [
+    has("bedrooms") && "the number of bedrooms",
+    has("price") && "the monthly and yearly price, already included with our 10% agency commission",
+    has("price_plain") && "the monthly and yearly price",
+    has("min_stay") && "the minimum rental period",
+    has("viewing") && "when we could bring a client to view the villa",
+  ].filter((x): x is string => Boolean(x));
+  if (nouns.length) lines.push(`${has("still_renting") ? "May I also know" : `For ${villa}, may I know`} ${joinList(nouns, "and")}?`);
+  if (has("commission") && !has("price") && !has("price_plain")) {
+    lines.push("May I double check if the price is already included with our 10% agency commission?");
+  }
+  if (has("owner")) {
+    lines.push(`${lines.length ? "Also, may" : "May"} I know if you are the owner, part of the owner's team, or is there a management company looking after it?`);
+  }
+  return lines;
+}
+
+/**
+ * The owner reads this: a greeting line, only the questions still open, a short thanks — the shape
+ * of Yudi's own follow-ups ("Hallo bu Ana / apakah sudah ada details nya ya?"). No "we have clients
+ * searching in the area right now" (41% of auto-sent owner messages said "clients"; Yudi 11%), no
+ * "that's everything we need". Empty when there is nothing to ask.
+ */
+export function composeNudge(o: { owner: string; villa: string; lang: OwnerLang; asks: NudgeAsk[]; at?: Date }): string {
+  if (!o.asks.length) return "";
+  const g = ownerGreeting(o.owner, o.lang, o.at);
+  const asks = ownerAskLines(o.asks, { lang: o.lang, villa: o.villa, call: g.call });
+  return [g.line, ...asks, o.lang === "id" ? "Terimakasih" : "Thank you"].join("\n");
+}
+
+/**
+ * Cards where the last look found nothing left to ask, keyed by the newest message then: the pass
+ * runs every five minutes and must not pay for an extraction on the same unchanged thread each time.
+ * A failed extraction is retried after an hour.
+ */
+const nothingToAsk = new Map<string, { newestMs: number; until: number }>();
 
 /**
  * Queue one owner nudge per silent listing card. Returns how many were written.
@@ -264,9 +366,29 @@ export async function processListingOwnerFollowup(): Promise<number> {
         .limit(1);
       if (pending) continue;
 
+      // Only what the thread has not answered (owner-thread-known.ts). Nothing left: no nudge,
+      // and the ladder does not advance — a card with nothing to ask is not a silent owner.
+      const newestMs = newest ? newest.at.getTime() : 0;
+      const memo = nothingToAsk.get(lead.leadId);
+      if (memo && memo.newestMs === newestMs && Date.now() < memo.until) continue;
+      const known = await ownerThreadKnown(lead.leadId);
+      const asks = nudgeAsks(known, known.facts ? meetsQualified(known.facts).missing : null);
+      if (!asks.length) {
+        nothingToAsk.set(lead.leadId, {
+          newestMs,
+          until: known.facts ? Number.POSITIVE_INFINITY : Date.now() + 3_600_000,
+        });
+        logger.info(
+          { leadId: lead.leadId, round, factsRead: Boolean(known.facts), known: Object.keys(known.known) },
+          "listing-owner-followup: nothing left to ask that the thread has not answered — no nudge",
+        );
+        continue;
+      }
+
       const title = await fetchLeadTitle(lead.leadId);
       const villa = villaFromLeadName(title);
       const owner = await fetchOwnerName(lead.leadId, villa);
+      const lang = ownerThreadLanguage(known.lines);
 
       await db.insert(pendingSuggestionsTable).values({
         leadId: lead.leadId,
@@ -275,7 +397,7 @@ export async function processListingOwnerFollowup(): Promise<number> {
         // tab is selected by stage name (REACH_STAGE_KEYWORDS) and none of the
         // open acquisition stages are in it.
         kind: "push",
-        suggestionText: composeNudge(owner, villa, (await qualificationVerdictForLead(lead.leadId))?.missing ?? []),
+        suggestionText: composeNudge({ owner, villa, lang, asks }),
         status: "pending",
       });
 
@@ -286,7 +408,7 @@ export async function processListingOwnerFollowup(): Promise<number> {
 
       queued++;
       logger.info(
-        { leadId: lead.leadId, villa, round, silentHours: Math.round(silentHours) },
+        { leadId: lead.leadId, villa, round, silentHours: Math.round(silentHours), asks, lang },
         "listing-owner-followup: queued an owner nudge",
       );
       // Autopilot judges the nudge NOW — sends it if the stage is delegated and

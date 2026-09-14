@@ -27,6 +27,8 @@ import { eq, and, sql, desc } from "drizzle-orm";
 import { logger } from "./logger";
 import { getPipelineStages } from "./stage-classifier";
 import { isParkedListingStage } from "./stage-routing";
+import { isListingAcquisition } from "./pipelines";
+import { guardOwnerDraft } from "./owner-thread-known";
 import {
   mayOpenNewConversation,
   isFirstOutbound,
@@ -383,6 +385,29 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
     }
     if (sug.kind !== "live" && lastOursAt > 0 && now - lastOursAt < 20 * 3600_000) {
       return decline("cadence: something already went out in the last 20h — waiting");
+    }
+
+    // An owner is never asked twice (14.09.2026). Every writer already asks
+    // owner-thread-known.ts before asking; this is the last look, for whatever
+    // wrote the draft (reply, nudge, retouch, handover) and for a thread that
+    // moved while the draft waited for outreach hours. No model call: stored
+    // facts plus the villa side's own words; a repeated question is cut, and a
+    // draft that was nothing but repeated questions is retired.
+    if (isListingAcquisition(lead.pipeline)) {
+      const g = await guardOwnerDraft(leadId, sug.text);
+      if (g.changed) {
+        logger.warn(
+          { leadId, removed: g.removed.map((f) => ({ asked: f.repeated, sentence: f.sentence.slice(0, 140) })) },
+          "autopilot: owner draft re-asked what the thread already answers — cut before sending",
+        );
+        if (!g.text) return retire("every question in it was already answered in the thread — draft retired");
+        await db
+          .update(pendingSuggestionsTable)
+          .set({ suggestionText: g.text })
+          .where(eq(pendingSuggestionsTable.id, sug.id))
+          .catch(() => undefined);
+        sug.text = g.text;
+      }
     }
     if (setting.mode === "dry") {
       logger.info(

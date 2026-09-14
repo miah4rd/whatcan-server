@@ -18,6 +18,13 @@
  * CRM stage semantics for this pipeline are not fixed yet either (the owner
  * is configuring the funnel himself), so this module never touches stage —
  * that stays entirely manual for now.
+ *
+ * 14.09.2026, owners via Yudi: the autopilot sounds like a robot and asks what
+ * they already answered. Every AI draft to an owner is written here (both
+ * generateSuggestion copies, the handover, retouch and requalify all call this
+ * function), so the two fixes live here once: the words come from Yudi's own
+ * messages (owner-voice.ts), and nothing the thread already answers is asked
+ * again (owner-thread-known.ts — in the prompt, and cut from the finished draft).
  */
 import { db, leadsSyncTable } from "@workspace/db";
 import { eq, isNull, and } from "drizzle-orm";
@@ -28,6 +35,7 @@ import {
   extractListingFacts,
   syncListingFactsToCard,
   meetsQualified,
+  confirmsNotOurFormat,
   type ListingFacts,
 } from "./listing-card-fields";
 import { reconcileListingStage } from "./listing-stage-engine";
@@ -40,6 +48,16 @@ import { getMergedConversation } from "./merged-conversation";
 import { sanitizeSuggestion } from "./sanitize-suggestion";
 import { logger } from "./logger";
 import { handleReferral, mayHoldReferral, REFERRAL_MARK } from "./listing-referral";
+import {
+  ownerThreadKnown,
+  knownPromptBlock,
+  removeRepeatedAsks,
+  POINT_LABEL,
+  type OwnerPoint,
+  type OwnerThreadKnown,
+} from "./owner-thread-known";
+import { ownerVoiceBlock } from "./owner-voice";
+import { ownerThreadLanguage, type OwnerLang } from "./yudi-voice";
 
 /** One roster for every funnel — lib/pipelines.ts. */
 export { isListingAcquisition as isListingAcquisitionPipeline } from "./pipelines";
@@ -84,22 +102,20 @@ speaking to us, so an Indonesian ad does not put you into Indonesian, switch lan
 only once they have actually REPLIED to us, then match the language of that reply.
 Write your entire message in one language, no mixing.
 
-OUTPUT RULE (absolute): your reply IS the WhatsApp message. No preamble, no meta-commentary, nothing addressed to the broker. WhatsApp style: short, 2-4 sentences, natural, no bullet lists, no corporate tone.
+OUTPUT RULE (absolute): your reply IS the WhatsApp message. No preamble, no meta-commentary, nothing addressed to the broker. WhatsApp style, the way Yudi types to owners (his own messages follow below): short, one to three short lines with a line break where he would put one, natural, no bullet lists, no corporate tone, no pitch the conversation did not ask for.
 
 NO DASHES. Not the long one, not the short one, not a hyphen standing in for one. Everything else about your punctuation is fine as it is, and this rule is deliberately about the dash alone: it is the single habit that gives a machine away. People typing on a phone put a comma there, or start a new sentence. A villa owner who notices the dash stops reading a person and starts reading a bot. (Hyphens inside words are not dashes: "long-term" and "3-4BR" stay.)
 
 WHAT TO DO:
-1. FIRST CONTACT (they have not replied to us yet): open on their listing, not on us. Reference the specific villa and ask the single most useful thing the ACTION BRIEF says to clarify, usually whether it's still available, plus the exact location or the dates. If the owner-or-manager question fits naturally in one line, ask it the way rule 2b puts it, with THREE options, never two: "are you the owner, part of the owner's own team, or is there a management company looking after it?" Two options force the owner's own assistant to answer "managing on behalf", which files a salaried employee as a middleman. If it does not fit, it waits for the next message. No pitch, no value proposition, no commission talk in this first message.
-1R. REFERRED NUMBER (the ACTION BRIEF says REFERRED BY): this person never saw a message from us, someone on the villa side gave us their number. Open with that: greet them by the name the brief gives (never invent one), say who passed the number on and for which villa, then ask in the rule 2 sentence for the monthly and yearly rate including our 10% agency commission, the minimum stay and the earliest day we could bring a client to view it. Here the price question belongs in the first message, because it is exactly why we were sent to them. Never write that you came across their listing.
-2. If they have confirmed they ARE the owner (or the villa's own manager, developer or reception, anyone entitled to let it): move to QUALIFY. A card can be listed once we know the bedrooms, a price we may put on the site, when it frees up, the minimum stay they accept and the earliest day we could show it to a client. Ask IN ONE SENTENCE, and only for what this conversation has not already given you:
-
-   "Could you send me the number of bedrooms, the monthly and yearly rate including our 10% agency commission, the date it's available from, the minimum stay you accept, and the earliest day we could bring a client to view it? That's everything we need to put it in front of our clients."
+1. FIRST CONTACT (they have not replied to us yet): open on their listing, not on us. Reference the specific villa and ask the single most useful thing the ACTION BRIEF says to clarify, usually whether it's still available, plus the exact location or the dates. If the owner-or-manager question fits naturally in one line, ask it the way rule 2b describes, with THREE options, never two: the owner, the owner's own team, or a management company looking after it. Two options force the owner's own assistant to answer "managing on behalf", which files a salaried employee as a middleman. If it does not fit, it waits for the next message. No pitch, no value proposition, no commission talk in this first message.
+1R. REFERRED NUMBER (the ACTION BRIEF says REFERRED BY): this person never saw a message from us, someone on the villa side gave us their number. Open with that: greet them by the name the brief gives (never invent one), say who passed the number on and for which villa, then ask, in one short message, for the monthly and yearly rate including our 10% agency commission, the minimum stay and the earliest day we could bring a client to view it. Here the price question belongs in the first message, because it is exactly why we were sent to them. Never write that you came across their listing.
+2. If they have confirmed they ARE the owner (or the villa's own manager, developer or reception, anyone entitled to let it): move to QUALIFY. A card can be listed once we know the bedrooms, a price we may put on the site, when it frees up, the minimum stay they accept and the earliest day we could show it to a client. Ask for what is still missing in ONE message, and ONLY for what this conversation has not already given you: the ALREADY GIVEN list is binding, and a point they answered in any language, after a quote, or to Yudi's own messages is answered. Ask it the way Yudi asks in his own messages below, short, never as a form read out.
 
    THE VIEWING DAY IS NOT OPTIONAL. Last week clients asked to see seven of our listings and one could be shown; the rest were occupied, mid-renovation or the manager did not answer. A villa we cannot show is not stock. If everything else is known and only the viewing day is missing, ask for that alone.
 
-   PRICE AND COMMISSION ARE ONE QUESTION, ALWAYS. If your message asks about money at all, the words "including our 10% agency commission" go with it, in that same sentence. Never "what's the monthly rate?", never "could you share pricing details", never "berapa harganya" on its own: a bare price question gets a bare number, and then we need a second message days later to learn whether our fee sits inside it or on top. Half our drafts were doing exactly that. One question, one answer, one round trip.
+   PRICE AND COMMISSION ARE ONE QUESTION, ALWAYS. If your message asks about money at all, our 10% agency commission goes with it, in that same sentence: the price including our 10%. Never a bare price question ("what's the monthly rate?", "could you share pricing details", "berapa harganya" on its own): a bare price question gets a bare number, and then we need a second message days later to learn whether our fee sits inside it or on top. When they already gave a price without saying where our fee sits, ask only that: whether that price already includes our 10%.
 
-   Ask for the price in THAT shape, "including our 10% agency commission". Never ask "does your price include commission?": the meta-question gets skipped or answered ambiguously, and a price we cannot quote to a client is not a price. If the villa is a complex of several units, add whether the rate is for one villa or the whole complex. Close on "that's everything we need", it tells the owner this is the last question, not the first of a form. Everything else (land and build size, what's included, agreement, inspection) comes AFTER the villa is on the site; do not spend a round trip on it now.
+   If the villa is a complex of several units, add whether the rate is for one villa or the whole complex. Do not close on a formula ("that's everything we need", "itu saja yang kami perlukan"): Yudi never does. Everything else (land and build size, what's included, agreement, inspection) comes AFTER the villa is on the site; do not spend a round trip on it now.
 2a. FOLLOW-UP (you will be told when this is one): a day or more has passed since
    anyone wrote. That is not the same conversation continued, it is a new one
    opened on an old thread, and the person has slept, worked and forgotten us
@@ -107,7 +123,7 @@ WHAT TO DO:
    and in half a sentence say what you are coming back about. Only then the ask.
    The name is the one THEY have given you, how they signed a message, or how
    they introduced themselves earlier in this thread. Use it. If this
-   conversation has never carried a personal name, open with a plain "Hi" and
+   conversation has never carried a personal name, open with a plain greeting and
    the villa: a made-up name is far worse than none, and the villa's name is not
    a person's.
    Never open a follow-up with "Good to know, thanks!", "Got it", "Understood" or
@@ -118,18 +134,19 @@ WHAT TO DO:
 2b. WHEN YOU STILL DO NOT KNOW WHO THEY ARE, ask, but ask the question that
    actually matters, which is not their job title. What we need to know is
    whether the villa is run by a company that takes a commission of its own, or
-   whether they are the owner's side: "just so I know who I'm coordinating with,
-   is the villa handled by you and the owner directly, or is there a management
-   company looking after it?" An assistant, a family member or the owner's staff
-   answering that is the owner's side, do not push them to call themselves an
-   agent. Never ask "are you the owner or are you managing it for someone else":
-   it forces the owner's own assistant into the wrong answer.
+   whether they are the owner's side: ask whether the villa is handled by them
+   and the owner directly, or whether a management company looks after it. An
+   assistant, a family member or the owner's staff answering that is the owner's
+   side, do not push them to call themselves an agent. Never ask "are you the
+   owner or are you managing it for someone else": it forces the owner's own
+   assistant into the wrong answer. Once they have said who they are, never ask again.
 
 3. If they have said they are an AGENT or otherwise NOT the owner: stop pitching management/investment content, a middleman can't agree to anything. Politely acknowledge, and ask if they can connect you directly with the actual owner. Keep it brief, low-pressure, and do not act as if a deal is progressing.
 
 4. NOT OUR FORMAT — short stays only. Unicorn lists villas for MONTHLY and YEARLY rental ONLY. If they say the villa is only for short-term, nightly, daily or holiday stays, or they quote a per-night rate as the only option: do NOT qualify it. No questions about rates, commission, minimum stay, availability, photos or viewings. Write ONE short, warm message: thank them, say plainly that we work with monthly and yearly rentals only, so this villa is not a fit for us right now, and leave the door open if they ever consider renting it monthly. Then stop. Never say or imply that we place short-stay clients — we do not, and a message that says "short term works too" is a false promise sent in the company's name.
 
 HARD RULES:
+- NEVER ASK AGAIN what the villa side has already told us: anything under ALREADY GIVEN, or anything they plainly answered in the thread, in any wording, any language, as "just to confirm" or as one item of a list. Owners have complained about exactly this. When you are not sure whether they answered, do not ask: mention it as known instead. A draft that re-asks is cut before it is sent.
 - WE DO NOT DO SHORT-TERM, NIGHTLY OR DAILY RENTAL. Never claim we do, never ask for a nightly rate, never "work with" a per-night price. Monthly and yearly only.
 - COMMISSION: 10% is the ONLY percentage you may ever write. State it, ask for prices that include it, nothing else. You may not name a different rate, accept one, counter one, or say a rate "works for us", even if the other side proposes it and even if agreeing sounds helpful. Commission terms are the owner's decision to make with a human, and a draft that concedes one is a deal term given away by a bot. If they push on the rate, say the broker will confirm it, and stop there.
 - Never invent any other number either: no contract term, no price, no size, nothing this conversation has not given you.
@@ -146,18 +163,46 @@ type ListingAcquisitionOpts = {
   contentSnippet: string;
   leadNotes?: string | null;
   isFirstContact?: boolean;
+  /**
+   * Write the draft as it would have been written at this moment: the thread is
+   * cut there and NOTHING is written anywhere (no facts, card fill, stage, flag,
+   * referral). Today's stage is not the stage the card had then, so the stage
+   * and the inspection booking plan are skipped. For replaying a change on real
+   * past conversations before it ships (scripts/replay-owner-drafts.ts).
+   */
+  replayAsOf?: Date;
 };
+
+/** The qualification gaps `meetsQualified` names, as owner points. */
+const MISSING_POINT: Array<[RegExp, OwnerPoint]> = [
+  [/^bedrooms$/, "bedrooms"],
+  [/^price$/, "price"],
+  [/^commission position$/, "commission"],
+  [/^minimum stay$/, "min_stay"],
+  [/^earliest viewing$/, "viewing"],
+  [/^not the owner/, "owner"],
+];
+
+/** A gap the extraction left `null` but the villa side's own words answer is not a gap. */
+function answeredInThread(missing: string, k: OwnerThreadKnown): boolean {
+  const hit = MISSING_POINT.find(([rx]) => rx.test(missing));
+  return Boolean(hit && k.known[hit[1]]);
+}
+
+function hasWords(text: string, n: number): boolean {
+  return text.replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(/\s+/).filter(Boolean).length >= n;
+}
 
 export async function generateListingAcquisitionReply(
   opts: ListingAcquisitionOpts,
 ): Promise<{ text: string; contactType: ContactType }> {
+  const replay = opts.replayAsOf ?? null;
   const displayName = brokerDisplayName(opts.responsibleUser);
   const identityRule = displayName
     ? `\n\nYOU ARE WRITING AS ${displayName} if you sign or introduce yourself by name — never an account label.`
     : "";
   // This whole prompt IS one situation: talking an owner into listing with us.
   const learned = await correctionsPromptBlock(opts.responsibleUser, "owner_intake");
-  const system = SYSTEM_PROMPT + identityRule + learned;
 
   // MERGED, not `contentSnippet` alone. `leads_sync.content` is webhook-fed and
   // freezes for anything sent through Salesbot, so a reply written from it
@@ -165,7 +210,8 @@ export async function generateListingAcquisitionReply(
   // on the owner's "yes, we manage the villa" for twelve days while our answer
   // sat in lead_messages the whole time. Fixed here, in the one function both
   // live paths call, rather than at either call site.
-  const messages = await getMergedConversation(opts.leadId, opts.contentSnippet);
+  const merged = await getMergedConversation(opts.leadId, opts.contentSnippet);
+  const messages = replay ? merged.filter((m) => m.at.getTime() < replay.getTime()) : merged;
   const formattedDialog = formatDialogForAI(messages, 500, true);
   const lastLeadText =
     opts.lastLeadMessage.trim() ||
@@ -192,33 +238,39 @@ export async function generateListingAcquisitionReply(
   // thread: it re-asked a bedroom count the owner had given, under a message
   // that literally read "it's going to be available again around next week".
   // So the facts are extracted BEFORE the reply is written and handed over as
-  // settled — an instruction the model cannot lose track of halfway down a
-  // conversation. Re-asking a fact someone already gave you is what makes a
-  // message read as a robot, and it costs the reply.
+  // settled. Since 14.09 the settled list is the shared check
+  // (owner-thread-known.ts): the extracted facts AND the villa side's own words,
+  // because a fact the extraction left null ("tidak ada minimum", a price in
+  // USD, "before 13tg") was listed as missing and asked again.
   //
   // The same extraction then feeds the card fill and the stage check below, so
   // this is one model call, not two.
   const facts: ListingFacts | null = isFirstContact
     ? null
-    : await extractListingFacts(formattedDialog || lastLeadText, opts.leadId).catch(() => null);
+    : await extractListingFacts(formattedDialog || lastLeadText, replay ? undefined : opts.leadId).catch(() => null);
+  const known: OwnerThreadKnown | null = isFirstContact
+    ? null
+    : await ownerThreadKnown(opts.leadId, { facts, ...(replay ? { asOf: replay } : {}) }).catch(() => null);
 
   // The card's stage is a fact the thread cannot show. Read ONCE, by amoCRM id: the owner renames
   // these stages (87763170 was "agreement", then "Inspection. done", since 14.09 "Inspection
-  // sceduled"), and leads_sync.lead_stage_id is not reliable.
+  // sceduled"), and leads_sync.lead_stage_id is not reliable. A replay reads no stage.
   let statusId: number | null = null;
-  try {
-    statusId = (await getAmoLead(opts.leadId).catch(() => null))?.status_id ?? null;
-    if (statusId == null) {
-      const [row] = await db
-        .select({ leadStage: leadsSyncTable.leadStage })
-        .from(leadsSyncTable)
-        .where(eq(leadsSyncTable.leadId, opts.leadId))
-        .limit(1);
-      const name = row?.leadStage ?? "";
-      statusId = /inspection|sceduled|scheduled/i.test(name) ? LISTING_STAGE.INSPECTION_SCHEDULED : /qualified/i.test(name) ? LISTING_STAGE.QUALIFIED : null;
+  if (!replay) {
+    try {
+      statusId = (await getAmoLead(opts.leadId).catch(() => null))?.status_id ?? null;
+      if (statusId == null) {
+        const [row] = await db
+          .select({ leadStage: leadsSyncTable.leadStage })
+          .from(leadsSyncTable)
+          .where(eq(leadsSyncTable.leadId, opts.leadId))
+          .limit(1);
+        const name = row?.leadStage ?? "";
+        statusId = /inspection|sceduled|scheduled/i.test(name) ? LISTING_STAGE.INSPECTION_SCHEDULED : /qualified/i.test(name) ? LISTING_STAGE.QUALIFIED : null;
+      }
+    } catch {
+      // The stage is a refinement; a failed read must not cost the reply.
     }
-  } catch {
-    // The stage is a refinement; a failed read must not cost the reply.
   }
   const qualified = statusId === LISTING_STAGE.QUALIFIED;
 
@@ -241,9 +293,13 @@ export async function generateListingAcquisitionReply(
   const SHORT_STAYS_ONLY =
     /\b(only|just|hanya|cuma|khusus)\s+(for\s+|untuk\s+)?(short[- ]?term|short[- ]?stays?|daily|nightly|harian|per\s?night|per\s?malam)|short[- ]?term\s+(stay|only|rental only)|\b(not|no)\s+(available\s+)?(for\s+)?(long[- ]?term|monthly)|\b(per|\/)\s?(night|malam)\b|harian\s+(saja|aja|only)/i;
   const MENTIONS_MONTHLY = /\b(monthly|per month|a month|yearly|per year|annual|bulanan|per bulan|tahunan|per tahun)\b/i;
+  // The extraction's `not_our_format` alone is not enough to decline: on the 14.09 replay it read
+  // BK Villa's "Maximal 3 bulan saja" (37 juta a month — monthly rental) as short stays only, and
+  // the draft told the owner we cannot help. A decline sent to an owner gets the same fail-closed
+  // yes/no second opinion the engine asks before closing a card on it.
   const notOurFormat =
     !isFirstContact &&
-    (facts?.stopKind === "not_our_format" ||
+    ((facts?.stopKind === "not_our_format" && (await confirmsNotOurFormat(opts.leadId).catch(() => false))) ||
       (SHORT_STAYS_ONLY.test(recentLeadText) && !MENTIONS_MONTHLY.test(recentLeadText)));
   let knownBlock = "";
   if (notOurFormat) {
@@ -253,30 +309,23 @@ export async function generateListingAcquisitionReply(
     );
     knownBlock =
       `\nNOT OUR FORMAT: this person has said the villa is for short stays / nightly only${facts?.stopSignal ? ` ("${facts.stopSignal}")` : ""}. Follow rule 4 exactly: one short, warm decline — monthly and yearly only, not a fit right now, door open if they ever rent monthly. No questions of any kind. Do not thank them for information you will not use, do not ask for the nightly rate.\n`;
-  } else if (facts) {
-    const settled: string[] = [];
-    if (facts.bedrooms) settled.push(`bedrooms: ${facts.bedrooms}`);
-    if (facts.monthlyIdr) settled.push(`monthly rate: ${Math.round(facts.monthlyIdr / 1_000_000)} juta`);
-    if (facts.yearlyIdr) settled.push(`yearly rate: ${Math.round(facts.yearlyIdr / 1_000_000)} juta`);
-    if (facts.commission !== "unknown") settled.push(`commission position: ${facts.commission}`);
-    if (facts.availableFrom) settled.push(`available from: ${facts.availableFrom}`);
-    if (facts.minStayMonths !== null) settled.push(`minimum stay: ${facts.minStayMonths} months`);
-    if (facts.viewableFrom) settled.push(`viewable from: ${facts.viewableFrom}`);
-    if (facts.area) settled.push(`area: ${facts.area}`);
-    if (facts.counterpart !== "unclear") settled.push(`who we are speaking to: ${facts.counterpart}`);
-    const missing = meetsQualified(facts).missing;
-    if (settled.length) {
-      knownBlock =
-        `\nALREADY ANSWERED IN THIS THREAD — treat as settled, do NOT ask for any of it again:\n- ${settled.join("\n- ")}\n`;
-    }
+  } else if (known) {
+    knownBlock = knownPromptBlock(known);
     if (qualified) {
       // QUALIFIED: the qualification is done by the stage engine; an extraction that lost a fact on a
       // long thread must not turn into a question the owner already answered (owner via Yudi, 14.09:
       // owner messages "repeat questions owners already answered"). The stage block says what's next.
-    } else if (missing.length) {
-      knownBlock += `\nSTILL MISSING before this villa can be listed: ${missing.join(", ")}. Ask ONLY for these, and only for the ones it makes sense to ask THIS person.\n`;
-    } else {
-      knownBlock += `\nNothing is missing — this villa can be listed. Do not re-ask anything; move the conversation to the next real step instead.\n`;
+    } else if (facts) {
+      const missing = meetsQualified(facts).missing.filter((m) => !answeredInThread(m, known));
+      // A price the extraction could not read is still a price; what is open is our 10%.
+      if (!facts.monthlyIdr && !facts.yearlyIdr && known.known.price && !known.known.commission && !missing.includes("commission position")) {
+        missing.push("commission position");
+      }
+      if (missing.length) {
+        knownBlock += `\nSTILL MISSING before this villa can be listed: ${missing.join(", ")}. Ask ONLY for these, and only for the ones it makes sense to ask THIS person.\n`;
+      } else {
+        knownBlock += `\nNothing is missing — this villa can be listed. Do not re-ask anything; move the conversation to the next real step instead.\n`;
+      }
     }
   }
 
@@ -284,8 +333,9 @@ export async function generateListingAcquisitionReply(
   // timestamps in a transcript — it answered a four-day-old line with "Good to
   // know, thanks!" — so the gap is stated in words, and a day or more makes this
   // a follow-up that has to open like a new message.
+  const nowMs = (replay ?? new Date()).getTime();
   const lastAt = messages.length ? messages[messages.length - 1]!.at : null;
-  const quietDays = lastAt ? Math.floor((Date.now() - new Date(lastAt).getTime()) / 86_400_000) : 0;
+  const quietDays = lastAt ? Math.floor((nowMs - new Date(lastAt).getTime()) / 86_400_000) : 0;
   const isFollowUp = !isFirstContact && (opts.kind === "push" || quietDays >= 1);
   const followUpBlock = isFollowUp
     ? `\nTHIS IS A FOLLOW-UP: nobody has written for ${quietDays === 0 ? "most of a day" : `${quietDays} day(s)`}. Follow rule 2a — open it like a new message, by name, and do not answer their last line as if it had just arrived.\n`
@@ -319,6 +369,13 @@ A VISIT TO THIS VILLA BY OUR AGENT IS SCHEDULED (card stage: Inspection schedule
 
   const leadContext = leadContextBase + knownBlock + stageBlock + followUpBlock;
 
+  // The voice: Yudi's own messages in the language this owner writes (English
+  // until they have replied — the language rule), and his hand rewrites. His
+  // lessons come after it and win.
+  const lang: OwnerLang = known?.ownerReplied ? ownerThreadLanguage(known.lines) : "en";
+  const voice = await ownerVoiceBlock({ lang }).catch(() => "");
+  const system = SYSTEM_PROMPT + identityRule + voice + learned;
+
   // A number the villa side handed us (listing-referral.ts): the opener names
   // who passed it on instead of pretending we read an ad.
   const referred = (opts.leadNotes ?? "").includes(REFERRAL_MARK);
@@ -330,7 +387,7 @@ WHAT WE KNOW ABOUT THE VILLA (from the person who referred them, NOT a message f
 
 SITUATION: We have never spoken to this person. Their number was passed to us by someone on the villa side, as the ACTION BRIEF says.
 
-Task: write the opening WhatsApp message, following rule 1R in WHAT TO DO. Under 70 words.`
+Task: write the opening WhatsApp message, following rule 1R in WHAT TO DO. Short, the way Yudi opens, under 70 words.`
       : `${leadContext}
 THEIR PUBLIC LISTING AD (they posted this in a Facebook group — it is NOT a message to us):
 "${(lastLeadText || "").slice(0, 1500)}"
@@ -338,7 +395,7 @@ THEIR PUBLIC LISTING AD (they posted this in a Facebook group — it is NOT a me
 SITUATION: We have never spoken to this person. They have not contacted us. This is our
 cold first approach, off the back of the ad above.
 
-Task: write the opening WhatsApp message, following rule 1 in WHAT TO DO. Under 60 words.`
+Task: write the opening WhatsApp message, following rule 1 in WHAT TO DO. Short, the way Yudi opens, under 60 words.`
     : `FULL CONVERSATION (each line timestamped, oldest → newest).
 NOTE: the first line is their PUBLIC LISTING AD, not a message they sent us — everything
 after it is the real conversation.
@@ -347,27 +404,55 @@ ${leadContext}
 SITUATION: The contact just replied. Their latest message:
 "${lastLeadText}"
 
-Task: write the next WhatsApp reply, following the WHAT TO DO rules based on what this conversation has established so far. Under 90 words.`;
+Task: write the next WhatsApp reply, following the WHAT TO DO rules based on what this conversation has established so far. As short as Yudi's own replies, usually under 40 words.`;
 
-  const result = await chatCompletionJSON<{ reply?: string; contact_type?: string }>({
-    model: WRITER_MODEL,
-    label: "listing-acquisition",
-    system,
-    messages: [{ role: "user", content: prompt }],
-    max_tokens: 400,
-  });
+  const write = (extra = "") =>
+    chatCompletionJSON<{ reply?: string; contact_type?: string }>({
+      model: WRITER_MODEL,
+      label: "listing-acquisition",
+      system,
+      messages: [{ role: "user", content: prompt + extra }],
+      max_tokens: 400,
+    });
+  const result = await write();
 
   // QUALIFIED with an ask due: the reply carries the move toward Yudi's visit (one sentence in his
   // voice is inserted when the model left it out). The plan is null on every other stage.
-  const text = await applyInspectionAsk(sanitizeSuggestion((result.reply ?? "").trim()), booking);
+  let text = await applyInspectionAsk(sanitizeSuggestion((result.reply ?? "").trim()), booking);
   const contactType: ContactType =
     result.contact_type === "owner" || result.contact_type === "agent" ? result.contact_type : "unclear";
+
+  // The finished draft is checked, not trusted: a question about a point the
+  // thread already answers is cut (owner-thread-known.ts). A draft that was
+  // nothing but repeated questions is written once more, told so; if that too is
+  // empty there is no draft — callers skip an empty text.
+  if (known && text) {
+    const cleaned = await removeRepeatedAsks(text, known, opts.leadId);
+    if (cleaned.changed) {
+      const asked = [...new Set(cleaned.removed.flatMap((f) => f.repeated))];
+      logger.info(
+        { leadId: opts.leadId, asked, removed: cleaned.removed.map((f) => f.sentence.slice(0, 140)), replay: Boolean(replay) },
+        "listing reply: a question the thread already answers was cut from the draft",
+      );
+      text = cleaned.text;
+      if (!hasWords(text, 4)) {
+        const again = await write(
+          `\n\nYOUR FIRST DRAFT ONLY RE-ASKED WHAT THEY ALREADY ANSWERED (${asked.map((p) => POINT_LABEL[p]).join("; ")}). Write the reply again without asking for any of it: answer what they said, or confirm what is known and move to the next real step.`,
+        ).catch(() => null);
+        const second = again
+          ? await removeRepeatedAsks(await applyInspectionAsk(sanitizeSuggestion((again.reply ?? "").trim()), booking), known, opts.leadId)
+          : null;
+        text = second && hasWords(second.text, 4) ? second.text : "";
+        if (!text) logger.warn({ leadId: opts.leadId, asked }, "listing reply: nothing left to say that is not a repeated question — no draft");
+      }
+    }
+  }
 
   // Per the owner: never auto-close or auto-move stage here (the funnel's
   // stages aren't configured yet) — only flag, using the same "⊘ Review" chip
   // /m already renders for a dead-lead flag. Idempotent so re-classifying the
   // same lead as "agent" on a later reply doesn't keep resetting the flag.
-  if (contactType === "agent") {
+  if (contactType === "agent" && !replay) {
     try {
       await db
         .update(leadsSyncTable)
@@ -393,7 +478,7 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
   //
   // Deliberately not awaited — a Haiku call plus two amoCRM round trips, and
   // nothing about the draft depends on it. If it fails the card stays as it was.
-  if (!isFirstContact && facts) {
+  if (!isFirstContact && facts && !replay) {
     // Reuses the facts already extracted above — one model call feeds the
     // message, the card and the stage.
     void (async () => {
@@ -414,7 +499,7 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
   // conversation instead of promising "I'll reach out to them" and doing
   // nothing (12.09: fourteen cards sat on exactly that). A regex gate first;
   // the model is asked only when the message can hold a hand-off.
-  if (!isFirstContact && mayHoldReferral(lastLeadText)) {
+  if (!isFirstContact && !replay && mayHoldReferral(lastLeadText)) {
     void handleReferral(opts.leadId, { apply: true, source: "reply" }).catch((err) =>
       logger.warn({ err, leadId: opts.leadId }, "listing referral: hand-off failed (non-fatal)"),
     );
