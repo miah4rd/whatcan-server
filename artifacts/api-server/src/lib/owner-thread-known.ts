@@ -188,6 +188,10 @@ const SAID: Record<SaidPoint, RegExp[]> = {
   ],
 };
 
+/** The villa side declines to quote a fixed price for now — an answer, not a gap. */
+const PRICE_DEFERRED =
+  /\b(rates?|prices?|pricing|harga\w*)\b[^\n.]{0,40}\b(depend\w*|tergantung|on request|upon request|vary|varies)\b|\bonce you have (a )?(real )?(client|guest|dates?)\b[^\n]{0,80}\b(rates?|prices?|talk)\b|\b(talk|discuss) (about )?(the )?(rates?|prices?) (later|once|when)\b/i;
+
 /** A short yes/no straight after our one-point question answers that point ("Yes" to "is it including our 10%?"). */
 const SHORT_ANSWER = /^\s*(yes|yep|yup|ya|iya|iyah|betul|benar|correct|sure|sudah|udah|belum|no|not yet|include\w*|exclud\w*|termasuk|nett?)\b/i;
 
@@ -252,6 +256,18 @@ export function threadKnown(lines: ThreadLine[], facts: ListingFacts | null, asO
             put(p, { how: "thread", said: clip(hit) });
             if (p === "price" || p === "availability" || p === "viewing" || p === "min_stay" || p === "bedrooms") engaged = true;
           }
+        }
+        // "Rates depend on the villa and duration", "once you have a real client we can talk about
+        // rates": an answer about price, and it is no. Petr (23519703) said it on 09.09 and 13.09,
+        // wrote "You send me the message alredy twice", and the reply of 14.09 11:23 still asked
+        // for "monthly and yearly pricing … including our 10%". The price, and the commission that
+        // only exists with a price, are the broker's to ask again by hand.
+        const deferral = own
+          .split(/(?<=[.!?])\s+|\n/)
+          .find((s) => !QUESTION_SENTENCE.test(s.trim()) && PRICE_DEFERRED.test(s));
+        if (deferral) {
+          put("price", { how: "thread", said: clip(deferral) });
+          put("commission", { how: "thread", said: `no price given yet: "${clip(deferral, 80)}"` });
         }
         // "Yes" right after our question about exactly one point answers that point.
         const ourLast = [...earlier].reverse().find((e) => e.senderType !== "lead" && (e.text ?? "").trim());
