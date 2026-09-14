@@ -7,7 +7,7 @@
  * `listing_status_log`: old/new value, who, through what). Every few minutes this pass reads the
  * changes it has not decided yet and, for each:
  *
- * - Pre-listed → Listed, card in TAKEN TO WORK / QUALIFIED / Details asked: the card goes to
+ * - Pre-listed → Listed, card in TAKEN TO WORK / QUALIFIED: the card goes to
  *   Inspection scheduled, then to live (two status changes a few seconds apart, so amoCRM's event
  *   log shows the path); a card already in Inspection scheduled goes straight to live; plus a note saying who listed it, when, and whether the
  *   inspection record (flags, video, Drive folder) is on the site.
@@ -44,7 +44,6 @@ const SITE = "https://unicorn-properties.com";
 const MOVABLE = new Set<number>([
   LISTING_STAGE.TAKEN_TO_WORK,
   LISTING_STAGE.QUALIFIED,
-  LISTING_STAGE.DETAILS_ASKED,
   LISTING_STAGE.INSPECTION_SCHEDULED,
 ]);
 const ALREADY_LIVE = new Set<number>([

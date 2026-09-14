@@ -34,6 +34,7 @@ import { reconcileListingStage } from "./listing-stage-engine";
 import { getAmoLead } from "./amo-client";
 import { LISTING_STAGE } from "./listing-status-week";
 import { latestInspectionSlot } from "./listing-progress";
+import { applyInspectionAsk, bookingPlan, inspectionBookingPromptBlock, type BookingPlan } from "./inspection-booking";
 import { formatDialogForAI } from "./dialog-parser";
 import { getMergedConversation } from "./merged-conversation";
 import { sanitizeSuggestion } from "./sanitize-suggestion";
@@ -201,6 +202,26 @@ export async function generateListingAcquisitionReply(
     ? null
     : await extractListingFacts(formattedDialog || lastLeadText, opts.leadId).catch(() => null);
 
+  // The card's stage is a fact the thread cannot show. Read ONCE, by amoCRM id: the owner renames
+  // these stages (87763170 was "agreement", then "Inspection. done", since 14.09 "Inspection
+  // sceduled"), and leads_sync.lead_stage_id is not reliable.
+  let statusId: number | null = null;
+  try {
+    statusId = (await getAmoLead(opts.leadId).catch(() => null))?.status_id ?? null;
+    if (statusId == null) {
+      const [row] = await db
+        .select({ leadStage: leadsSyncTable.leadStage })
+        .from(leadsSyncTable)
+        .where(eq(leadsSyncTable.leadId, opts.leadId))
+        .limit(1);
+      const name = row?.leadStage ?? "";
+      statusId = /inspection|sceduled|scheduled/i.test(name) ? LISTING_STAGE.INSPECTION_SCHEDULED : /qualified/i.test(name) ? LISTING_STAGE.QUALIFIED : null;
+    }
+  } catch {
+    // The stage is a refinement; a failed read must not cost the reply.
+  }
+  const qualified = statusId === LISTING_STAGE.QUALIFIED;
+
   // ── Not our format: the one case where the next question is no question ──
   //
   // The owner of Velin Villa wrote "only available for short-term stay" and got
@@ -248,7 +269,11 @@ export async function generateListingAcquisitionReply(
       knownBlock =
         `\nALREADY ANSWERED IN THIS THREAD — treat as settled, do NOT ask for any of it again:\n- ${settled.join("\n- ")}\n`;
     }
-    if (missing.length) {
+    if (qualified) {
+      // QUALIFIED: the qualification is done by the stage engine; an extraction that lost a fact on a
+      // long thread must not turn into a question the owner already answered (owner via Yudi, 14.09:
+      // owner messages "repeat questions owners already answered"). The stage block says what's next.
+    } else if (missing.length) {
       knownBlock += `\nSTILL MISSING before this villa can be listed: ${missing.join(", ")}. Ask ONLY for these, and only for the ones it makes sense to ask THIS person.\n`;
     } else {
       knownBlock += `\nNothing is missing — this villa can be listed. Do not re-ask anything; move the conversation to the next real step instead.\n`;
@@ -266,25 +291,15 @@ export async function generateListingAcquisitionReply(
     ? `\nTHIS IS A FOLLOW-UP: nobody has written for ${quietDays === 0 ? "most of a day" : `${quietDays} day(s)`}. Follow rule 2a — open it like a new message, by name, and do not answer their last line as if it had just arrived.\n`
     : "";
 
-  // The card's stage is a fact the thread cannot show. Read by amoCRM id: the
-  // owner renames these stages (87763170 was "agreement", then "Inspection.
-  // done", since 14.09 "Inspection sceduled"), and leads_sync.lead_stage_id is
-  // not reliable. Until 14.09 this block told the model "OUR AGENT HAS ALREADY
-  // INSPECTED THIS VILLA" on 87763170 — since the rename that stage only means
-  // a visit is AGREED, so the conversation is about that visit, not after it.
+  // Until 14.09 this block told the model "OUR AGENT HAS ALREADY INSPECTED THIS
+  // VILLA" on 87763170 — since the rename that stage only means a visit is
+  // AGREED, so the conversation is about that visit, not after it. On QUALIFIED
+  // the next step is Yudi's inspection visit (lib/inspection-booking.ts): the
+  // plan decides ask / settle / hold, the words come from Yudi's own messages.
+  // "Details ased" (87763166) was deleted by the owner on 14.09.2026.
   let stageBlock = "";
+  let booking: BookingPlan | null = null;
   try {
-    const amo = await getAmoLead(opts.leadId).catch(() => null);
-    let statusId = amo?.status_id ?? null;
-    if (statusId == null) {
-      const [row] = await db
-        .select({ leadStage: leadsSyncTable.leadStage })
-        .from(leadsSyncTable)
-        .where(eq(leadsSyncTable.leadId, opts.leadId))
-        .limit(1);
-      const name = row?.leadStage ?? "";
-      statusId = /inspection|sceduled|scheduled/i.test(name) ? LISTING_STAGE.INSPECTION_SCHEDULED : /details/i.test(name) ? LISTING_STAGE.DETAILS_ASKED : null;
-    }
     if (statusId === LISTING_STAGE.INSPECTION_SCHEDULED) {
       const slot = await latestInspectionSlot(opts.leadId).catch(() => null);
       const when = slot
@@ -294,11 +309,9 @@ export async function generateListingAcquisitionReply(
         `
 A VISIT TO THIS VILLA BY OUR AGENT IS SCHEDULED (card stage: Inspection scheduled) ${when}. It has not necessarily happened yet — never say or imply that we have already been there. What this conversation is about now: that visit — confirm the day and time, who meets our agent at the villa, access (pin, gate, parking, a tenant or guest in the villa), and reschedule politely if the villa side asks. Everything the villa side has already given in the thread (photos, video, pin, price, availability, size, documents) stays given: NEVER ask for any of it again; whatever is still missing is completed at the visit. Do not re-qualify, do not sell the agency again, do not propose another visit on top of the agreed one.
 `;
-    } else if (statusId === LISTING_STAGE.DETAILS_ASKED) {
-      stageBlock =
-        `
-WE HAVE ASKED THIS OWNER FOR THE LISTING DETAILS (card stage: Details asked). The villa is qualified. Ask only for what is still missing in the thread — photos or a video, sizes, the location pin, availability dates — never for anything they already sent. The next step is our agent's visit to the villa: if the villa side offers or asks about a visit, agree a concrete day AND time in the same reply.
-`;
+    } else if (qualified && !isFirstContact && !notOurFormat) {
+      booking = await bookingPlan(opts.leadId, { statusId });
+      stageBlock = await inspectionBookingPromptBlock(booking);
     }
   } catch {
     // The stage is a refinement; a failed read must not cost the reply.
@@ -344,7 +357,9 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
     max_tokens: 400,
   });
 
-  const text = sanitizeSuggestion((result.reply ?? "").trim());
+  // QUALIFIED with an ask due: the reply carries the move toward Yudi's visit (one sentence in his
+  // voice is inserted when the model left it out). The plan is null on every other stage.
+  const text = await applyInspectionAsk(sanitizeSuggestion((result.reply ?? "").trim()), booking);
   const contactType: ContactType =
     result.contact_type === "owner" || result.contact_type === "agent" ? result.contact_type : "unclear";
 

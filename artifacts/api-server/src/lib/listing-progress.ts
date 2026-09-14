@@ -1,23 +1,25 @@
 /**
- * Rental Listings after qualification: the ONE owner of two moves (owner, 14.09.2026).
+ * Rental Listings after qualification: the ONE owner of the visit (owner, 14.09.2026).
  *
- *   QUALIFIED (Pre-listed) → Details asked      our side asked the villa side for anything that
- *                                               completes the listing (photos, video, sizes,
- *                                               documents / agreement, availability, pin, a visit)
- *   QUALIFIED / Details asked → Inspection      a visit to the villa by our side was AGREED for a
- *   scheduled                                   concrete day — whatever it is called (inspection,
- *                                               survey, kunjungan, "jam 12 saya datang", a viewing
- *                                               with a client at the villa). Scheduled is enough;
- *                                               nobody has to prove it happened.
- *   → live                                      only the site's Pre-listed → Listed switch
- *                                               (listing-status-pass.ts), not this file.
+ *   QUALIFIED (Pre-listed) → Inspection scheduled   a visit to the villa by our side was AGREED for a
+ *                                                   concrete day — whatever it is called (inspection,
+ *                                                   survey, kunjungan, "jam 12 saya datang", a viewing
+ *                                                   with a client at the villa). Scheduled is enough;
+ *                                                   nobody has to prove it happened.
+ *   Inspection scheduled, a new agreed time         the card's slot is replaced (old row 'rescheduled'),
+ *                                                   no stage move; the calendar hook hears "changed".
+ *   → live                                          only the site's Pre-listed → Listed switch
+ *                                                   (listing-status-pass.ts), not this file.
  *
  * The owner's model: two metrics, Pre-listed and live; Yudi's job is to take qualified cards to
- * live, inspections happen offline, and what the thread shows is enough.
+ * live, inspections happen offline, and what the thread shows is enough. The ask for the visit is
+ * lib/inspection-booking.ts (drafts for Yudi); this file only reads what was agreed.
  *
- * Stages are ids, never names: the owner renamed 87763166 "Details" → "Details ased" and 87763170
- * "Inspection. done" → "Inspection sceduled" on 14.09, and the one before that ("agreement" →
- * "Inspection. done", 09.09) had already broken string-matched code once.
+ * "Details ased" (87763166) was DELETED by the owner at 15:02 on 14.09.2026, an hour after asking for
+ * it. Its id stays in ORDER only so an old amoCRM event still ranks between QUALIFIED and Inspection.
+ *
+ * Stages are ids, never names: the owner renamed 87763170 "agreement" → "Inspection. done" (09.09) →
+ * "Inspection sceduled" (14.09), and string-matched code broke both times.
  *
  * Called from `syncStageFromThread` (every path that sees a new message on a listing card:
  * approve / autopilot sends, the timeline sweep, amo-sync's outgoing feed, incoming detection,
@@ -32,17 +34,17 @@ import { amoFetch, amoPost, getAmoLead, updateLeadStatus } from "./amo-client";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { isUndeliverableNotice } from "./undeliverable";
 import { amoStageFor } from "./stage-classifier";
-import { LISTINGS_PIPELINE_ID, LISTING_STAGE, LISTING_STAGE_NAME } from "./listing-status-week";
+import { DELETED_DETAILS_STAGE_ID, LISTINGS_PIPELINE_ID, LISTING_STAGE, LISTING_STAGE_NAME } from "./listing-status-week";
 import { queueInspectionCalendarSync } from "./inspection-calendar";
 
 const BALI = "Asia/Makassar";
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
-/** Two status changes this far apart, so amoCRM's event log shows the path. */
-const STEP_GAP_MS = 4000;
-/** The qualifying reply and the move to QUALIFIED land in the same minute; the ask in it counts. */
+/** The qualifying reply and the move to QUALIFIED land in the same minute; a visit settled in it counts. */
 const WINDOW_SLACK_MS = 5 * MIN;
+/** A new reading closer than this to the slot on record is the same visit, not a change. */
+const RESCHEDULE_MIN_SHIFT_MS = 30 * MIN;
 /**
  * Before this moment QUALIFIED was set by a loose classifier (and flapped), so an arrival then is
  * not qualification. The stage engine became the only mover on 07.09.2026 (CLAUDE.md, "Listing
@@ -50,10 +52,16 @@ const WINDOW_SLACK_MS = 5 * MIN;
  */
 const ENGINE_ERA = Date.parse("2026-09-07T12:00:00+08:00");
 
+/**
+ * `autopilot_skipped_reason` prefix of the booking drafts lib/inspection-booking.ts writes. Lives here
+ * because the move to Inspection scheduled retires them (the time is agreed, the ask is obsolete).
+ */
+export const INSPECTION_ASK_VERDICT = "inspection booking ask";
+
 /** The funnel after qualification, in order. A move from a later one into an earlier one is backward. */
 const ORDER: number[] = [
   LISTING_STAGE.QUALIFIED,
-  LISTING_STAGE.DETAILS_ASKED,
+  DELETED_DETAILS_STAGE_ID, // old events only
   LISTING_STAGE.INSPECTION_SCHEDULED,
   LISTING_STAGE.LIVE,
   LISTING_STAGE.WEEKLY_CHECK_SENT,
@@ -62,7 +70,6 @@ const ORDER: number[] = [
 const rank = (id: number | null | undefined) => (id == null ? -1 : ORDER.indexOf(id));
 
 export type ThreadMsg = { senderType: string; text: string | null; sentAt: Date };
-export type DetailsAsk = { at: Date; quote: string; how: "rule" | "model" };
 export type Visit = { visitAt: Date; timeKnown: boolean; agreedAt: Date | null; quote: string; why: string };
 
 export type ProgressDecision = {
@@ -75,8 +82,9 @@ export type ProgressDecision = {
   to: string | null;
   reason: string;
   windowStart: Date | null;
-  detailsAsk: DetailsAsk | null;
   visit: Visit | null;
+  /** On a card already in Inspection scheduled: the slot on record and the new agreed time. */
+  rescheduled: { from: Date | null; to: Date } | null;
   moved: boolean;
   applied: string;
 };
@@ -112,64 +120,11 @@ export function ownWords(m: ThreadMsg, earlier: ThreadMsg[]): string {
   return t.replace(/^\s*>>\s*/, "").replace(/Комментарий к (видео|изображению)/g, " ");
 }
 
-/** Things that complete a listing, asked in the same sentence as a request. */
-const STRONG_ITEM =
-  /\b(photos?|photoshoot|pictures?|pics|foto\w*|gambar|videos?|room ?tour|walk ?through|watermark|sizes?|sqm|m2|m²|luas|land size|building size|dokumen\w*|documents?|docs|perjanjian|agreement|kontrak|contract|sertifikat|certificates?|pin|lokasi\w*|location|google maps|maps link|alamat|address|inspect\w*|inspeksi\w*|survey|survei|visit\w*|kunjung\w*|berkunjung|datang|come (by|and|to|over)|floor ?plan|denah|double check|periksa)\b/i;
-/** Weak items: asked after qualification they usually complete a listing, but a model confirms. */
-const WEAK_ITEM = /\b(availab\w*|tanggal|dates?|details?|detailnya|spesifikasi|specifications?)\b/i;
-const MONEY = /\b(harga|price|pricing|rate|rates|komisi|commission|juta|jt|million|mio|idr|usd|rp)\b/i;
-const ASK_CUE =
-  /\?|\b(could|can|would|will) you\b|\b(please|pls|kindly|mohon|boleh|bisa|minta|tolong|kirim\w*|share|send|apakah|dibantu|sekalian|let me know|any chance|is it possible)\b/i;
-
-function sentences(t: string): string[] {
-  return t.split(/(?<=[.!?\n])\s+/).map((s) => s.trim()).filter(Boolean);
-}
-
-async function modelConfirmsAsk(ours: string, before: string): Promise<boolean> {
-  const out = await chatCompletionJSON<{ asks: boolean; why: string }>({
-    model: HELPER_MODEL,
-    label: "listing:details-ask-check",
-    max_tokens: 100,
-    temperature: 0,
-    system: `We list villas for rent. Below is OUR latest message to a villa owner's side, after the lines before it. Answer ONE question: does OUR message ASK the villa side for something that completes the villa's listing — photos, a video, sizes, documents or the listing agreement, availability dates, the location pin, a visit or inspection of the villa, or checking the listing details?
-
-true only when our message requests or asks for one of those.
-false for: thanks or confirmations of what they sent, promises ("I'll get back to you"), questions about who they are, about our client, and the qualification questions — price, commission, minimum stay, when the villa is free, the earliest day a CLIENT could view it — and anything you are unsure about.
-
-JSON only: {"asks": true|false, "why": "<8 words>"}`,
-    messages: [{ role: "user", content: `${before.slice(-1500)}\n\nOUR MESSAGE:\n${ours.slice(-1200)}` }],
-  }).catch(() => null);
-  return !!out && out.asks === true;
-}
-
-/** The first message of ours at or after `since` that asks for listing details. */
-export async function findDetailsAsk(messages: ThreadMsg[], since: Date): Promise<DetailsAsk | null> {
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i]!;
-    if (m.senderType === "lead" || m.sentAt.getTime() < since.getTime() || !(m.text ?? "").trim()) continue;
-    if (isUndeliverableNotice(m.text)) continue;
-    const words = ownWords(m, messages.slice(Math.max(0, i - 12), i));
-    // "Could you share the monthly rate for the client who will visit on the 9th?" names a visit but
-    // asks a price: a sentence about money is never decided by the rule (replay 14.09, Uma Avaya).
-    const strong = sentences(words).find((s) => STRONG_ITEM.test(s) && ASK_CUE.test(s) && !MONEY.test(s));
-    if (strong) return { at: m.sentAt, quote: strong.slice(0, 160), how: "rule" };
-    const weak = sentences(words).find((s) => (WEAK_ITEM.test(s) || STRONG_ITEM.test(s)) && ASK_CUE.test(s));
-    if (weak) {
-      const before = messages
-        .slice(Math.max(0, i - 3), i)
-        .map((p) => `${p.senderType === "lead" ? "Villa side" : "Us"}: ${(p.text ?? "").slice(-500)}`)
-        .join("\n");
-      if (await modelConfirmsAsk(words, before)) return { at: m.sentAt, quote: weak.slice(0, 160), how: "model" };
-    }
-  }
-  return null;
-}
-
 /** Worth asking the model about a visit only when the thread talks about one or about time. */
-const VISIT_CUE =
+export const VISIT_CUE =
   /\b(inspect\w*|inspeksi\w*|survey|survei|visit\w*|kunjung\w*|datang|come (by|over|and|to)|viewing|view it|lihat|ketemu|meet|photoshoot|ambil (foto|photo|video)|video tour|besok|tomorrow|today|hari ini|jam \d{1,2}|o'?clock|\d{1,2}\s*(am|pm)|morning|afternoon|pagi|siang|sore)\b|\b\d{1,2}[:.]\d{2}\b/i;
 
-function transcript(messages: ThreadMsg[], n: number): string {
+export function transcript(messages: ThreadMsg[], n: number): string {
   const rows = messages.filter((m) => (m.text ?? "").trim() && !isUndeliverableNotice(m.text)).slice(-n);
   return rows
     .map((m, i) => {
@@ -189,45 +144,166 @@ function parseIso(v: unknown): Date | null {
 
 const wordsOf = (s: string) => (s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []);
 
-/** The most recent visit to the villa by our side that both sides agreed for a concrete day. */
+const BALI_MS = 8 * HOUR;
+const WEEKDAYS: Array<[RegExp, number]> = [
+  [/\b(sunday|sun|hari minggu|minggu(?! (depan|ini|lalu|ke|kemarin)))\b/, 0],
+  [/\b(monday|mon|senin)\b/, 1],
+  [/\b(tuesday|tues?|selasa)\b/, 2],
+  [/\b(wednesday|wed|rabu)\b/, 3],
+  [/\b(thursday|thu|thurs?|kamis)\b/, 4],
+  [/\b(friday|fri|jumat|jum at)\b/, 5],
+  [/\b(saturday|sat|sabtu)\b/, 6],
+];
+const MONTHS: Record<string, number> = {
+  jan: 0, january: 0, januari: 0, feb: 1, february: 1, februari: 1, mar: 2, march: 2, maret: 2, apr: 3, april: 3,
+  may: 4, mei: 4, jun: 5, june: 5, juni: 5, jul: 6, july: 6, juli: 6, aug: 7, august: 7, agu: 7, agt: 7, agustus: 7,
+  sep: 8, sept: 8, september: 8, oct: 9, october: 9, okt: 9, oktober: 9, nov: 10, november: 10, dec: 11, december: 11, des: 11, desember: 11,
+};
+
+/**
+ * The calendar day that `words` name, read against the Bali date of the line that says them —
+ * in code, not by the model. 14.09.2026, 23555645: the owner wrote "You can visit the property on
+ * wednesday pm" on Monday 14.09, the model returned Thursday 17.09, the second opinion rightly said no,
+ * and a card with an agreed visit stayed in QUALIFIED. Explicit dates first ("15 September", "tgl 13",
+ * "13/9", "the 16th"), then relative words (today / hari ini, tomorrow / besok, lusa), then weekdays
+ * (the next one on or after the line's day; "next" / "depan" skips the same day). null when nothing
+ * resolves.
+ */
+export function resolveDayWords(words: string, said: Date): { y: number; m: number; d: number } | null {
+  const w = ` ${words.toLowerCase().replace(/[’'`]/g, " ").replace(/\s+/g, " ").trim()} `;
+  const b = new Date(said.getTime() + BALI_MS);
+  const y = b.getUTCFullYear();
+  const m = b.getUTCMonth();
+  const d = b.getUTCDate();
+  const wd = b.getUTCDay();
+  const at = (yy: number, mm: number, dd: number) => {
+    const t = new Date(Date.UTC(yy, mm, dd));
+    return { y: t.getUTCFullYear(), m: t.getUTCMonth(), d: t.getUTCDate() };
+  };
+  const plus = (n: number) => at(y, m, d + n);
+  // A day-of-month without a month: this month, or the next when it is already well past.
+  const dayOfMonth = (dd: number) => (dd < 1 || dd > 31 ? null : dd >= d - 3 ? at(y, m, dd) : at(y, m + 1, dd));
+  const withMonth = (dd: number, mm: number) => (dd < 1 || dd > 31 ? null : at(mm < m - 6 ? y + 1 : y, mm, dd));
+  for (const x of w.matchAll(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-z]{3,9})\b/g)) {
+    const mm = MONTHS[x[2]!];
+    if (mm !== undefined) return withMonth(Number(x[1]), mm);
+  }
+  for (const x of w.matchAll(/\b([a-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?\b/g)) {
+    const mm = MONTHS[x[1]!];
+    if (mm !== undefined) return withMonth(Number(x[2]), mm);
+  }
+  const slash = w.match(/\b(\d{1,2})\/(\d{1,2})\b/);
+  if (slash && Number(slash[2]) >= 1 && Number(slash[2]) <= 12) return withMonth(Number(slash[1]), Number(slash[2]) - 1);
+  const tgl = w.match(/\b(?:tgl|tanggal|tnggl|tangal|date|the)\s*(\d{1,2})(?:st|nd|rd|th)?\b/) ?? w.match(/\b(\d{1,2})(?:st|nd|rd|th)\b/);
+  if (tgl) return dayOfMonth(Number(tgl[1]));
+  if (/\b(lusa|day after tomorrow)\b/.test(w)) return plus(2);
+  if (/\b(besok|bsk|besuk|tomorrow|tmr|tmrw|tomorow)\b/.test(w)) return plus(1);
+  if (/\b(today|hari ini|tonight|this (morning|afternoon|evening)|pagi ini|siang ini|sore ini|malam ini|now|sekarang)\b/.test(w)) return plus(0);
+  const next = /\b(next|depan)\b/.test(w);
+  for (const [rx, idx] of WEEKDAYS) {
+    if (!rx.test(w)) continue;
+    let delta = (idx - wd + 7) % 7;
+    if (delta === 0 && next) delta = 7;
+    return plus(delta);
+  }
+  return null;
+}
+
+/** Day words that are only a time of day ("jam 1 siang ya", "at 12:00", "this afternoon"). */
+const TIME_ONLY = /\bjam\s*\d{1,2}|\b\d{1,2}[:.]\d{2}\b|\b\d{1,2}\s*(am|pm)\b|\b(pagi|siang|sore|morning|afternoon|noon)\b/i;
+
+/** The transcript with each line numbered, so the model can name a line instead of computing a date. */
+function numberedTranscript(messages: ThreadMsg[], n: number): { text: string; rows: ThreadMsg[] } {
+  const rows = messages.filter((m) => (m.text ?? "").trim() && !isUndeliverableNotice(m.text)).slice(-n);
+  const text = rows
+    .map((m, i) => {
+      let t = (m.senderType === "lead" ? m.text ?? "" : ownWords(m, rows.slice(Math.max(0, i - 12), i))).replace(/\s+/g, " ").trim();
+      if (t.length > 700) t = "…" + t.slice(-700);
+      return `[${i}] ${fmtDay(m.sentAt)} ${m.senderType === "lead" ? "Villa side" : "Us"}: ${t}`;
+    })
+    .join("\n");
+  return { text, rows };
+}
+
+/**
+ * The most recent visit to the villa by our side that both sides agreed for a concrete day. The model
+ * names the lines (which one names the day, which one settled it) and the time of day; the DATE is
+ * computed here from the day words and the Bali date of their line (`resolveDayWords`).
+ */
 export async function extractAgreedVisit(messages: ThreadMsg[], asOf: Date): Promise<Visit | null> {
-  const text = transcript(messages, 50);
+  const { text, rows } = numberedTranscript(messages, 50);
   if (!text) return null;
-  const out = await chatCompletionJSON<{ visit_at: string | null; time_known: boolean; agreed_at: string | null; quote: string | null; why: string | null }>({
+  const out = await chatCompletionJSON<{
+    found: boolean;
+    day_line: number | null;
+    day_words: string | null;
+    settle_line: number | null;
+    time: string | null;
+    time_known: boolean;
+    quote: string | null;
+    why: string | null;
+  }>({
     model: HELPER_MODEL,
     label: "listing:agreed-visit",
     max_tokens: 220,
     temperature: 0,
-    system: `Now is ${fmtDay(asOf)} (weekday, day/month, Bali time, year ${asOf.getFullYear()}). Each line starts with the weekday, day/month and time it was written, Bali time. "Us" is our real-estate agency (our agent Yudi, our colleague Amelia, or our bot); "Villa side" is the owner, their staff or manager.
+    system: `Each line starts with its number in brackets, then the weekday, day/month and Bali time it was written. "Us" is our real-estate agency (our agent Yudi, our colleague Amelia, or our bot); "Villa side" is the owner, their staff or manager.
 
 Find the MOST RECENT visit to the villa by our side that BOTH sides AGREED for a concrete calendar day. Whatever it is called counts: inspection / inspeksi, survey, visit / kunjungan, "datang", "come by", a photo or video shoot at the villa, a viewing with our client at the villa.
-AGREED means one side named a specific day (maybe a time) and the other accepted it ("ok", "boleh", "bisa", "betul", "aman", "see you", "well noted", "we'll wait for you"), or the villa side is expecting us on that day ("is the visit still on today?").
-NOT agreed: an open offer ("you can come any time", "visit possible from 13 Sept", "tell us one day before"), a request nobody answered, a range ("around the 21st", "next week"), a day the villa side declined or replaced, a visit postponed without a new day. If the agreed visit was later cancelled, answer null.
+AGREED means one side named a specific day (maybe a time) and the other accepted it ("ok", "boleh", "bisa", "betul", "aman", "see you", "well noted", "works great", "we'll wait for you"), or the villa side is expecting us on that day ("is the visit still on today?").
+NOT agreed: an open offer ("you can come any time", "visit possible from 13 Sept", "tell us one day before"), a request nobody answered, a range ("around the 21st", "next week"), a day the villa side declined or replaced, a visit postponed without a new day. If the agreed visit was later cancelled, found = false.
 
-- visit_at: that visit as ISO datetime +08:00. Use the stated time; "after 2pm" → 14:00, "before 11" → 10:00, "morning"/"pagi" → 10:00, "afternoon"/"siang" → 13:00, no time → 12:00. null if no agreed visit.
-- time_known: true only when a clock time or a clear part of day was agreed.
-- agreed_at: when it was settled — the date and time of the line that settled it, ISO +08:00.
-- quote: the words of that settling line (or the proposal it accepted), copied verbatim, at most 20 words.
-- why: at most 10 words.
-Relative words ("tomorrow", "besok", "Monday") are relative to the line they appear in.
-JSON only: {"visit_at": "2026-09-14T11:00:00+08:00" | null, "time_known": true|false, "agreed_at": "2026-09-13T12:05:00+08:00" | null, "quote": "..." | null, "why": "..." | null}`,
+Do NOT work out calendar dates. Point at the lines:
+- day_line: the number of the line whose words name the agreed day
+- day_words: those words, copied exactly as written in that line ("wednesday", "besok", "tgl 13", "15 September", "today", "Monday", "hari ini")
+- settle_line: the number of the line where the other side accepted it (or where the villa side expects us)
+- time: the agreed time as 24h "HH:MM". "after 2pm" → "14:00", "before 11" → "10:00", "morning"/"pagi" → "10:00", "afternoon"/"siang"/"pm" → "13:00", "sore" → "15:00". null when no time was agreed
+- time_known: true only when a clock time or a clear part of day was agreed
+- quote: the words of the settling line (or the proposal it accepted), copied verbatim, at most 20 words
+- why: at most 10 words
+JSON only: {"found": true|false, "day_line": 7 | null, "day_words": "wednesday" | null, "settle_line": 8 | null, "time": "13:00" | null, "time_known": true|false, "quote": "..." | null, "why": "..." | null}`,
     messages: [{ role: "user", content: text.slice(-9000) }],
   }).catch(() => null);
-  const at = parseIso(out?.visit_at);
-  if (!at) return null;
-  let agreed = parseIso(out?.agreed_at);
-  if (agreed && agreed.getTime() > asOf.getTime() + MIN) agreed = null;
+  if (!out?.found || out.day_line == null || !out.day_words) return null;
+  const dayRow = rows[Number(out.day_line)];
+  if (!dayRow) return null;
+  // The day words must be in the line they were taken from.
+  const dw = wordsOf(out.day_words);
+  const lineWords = new Set(wordsOf(dayRow.text ?? ""));
+  if (dw.length > 0 && dw.filter((x) => lineWords.has(x)).length / dw.length < 0.5) {
+    logger.info({ dayWords: out.day_words, line: out.day_line }, "listing-progress: day words not in their line — ignored");
+    return null;
+  }
+  const tm = String(out.time ?? "").match(/^(\d{1,2}):(\d{2})$/);
+  const hh = tm ? Math.min(23, Number(tm[1])) : 12;
+  const mi = tm ? Math.min(59, Number(tm[2])) : 0;
+  let day = resolveDayWords(out.day_words, dayRow.sentAt);
+  if (!day && tm && TIME_ONLY.test(out.day_words)) {
+    // "jam 12 saya datang ke lokasi villa ya" written at 10:01 (Ma'Wa, 11.09): a clock time and no day,
+    // still ahead on the day it was written → that day. The second opinion still has to agree.
+    const b = new Date(dayRow.sentAt.getTime() + BALI_MS);
+    const sameDay = { y: b.getUTCFullYear(), m: b.getUTCMonth(), d: b.getUTCDate() };
+    if (Date.UTC(sameDay.y, sameDay.m, sameDay.d, hh, mi) - BALI_MS > dayRow.sentAt.getTime()) day = sameDay;
+  }
+  if (!day) {
+    logger.info({ dayWords: out.day_words, said: dayRow.sentAt }, "listing-progress: day words did not resolve to a date — ignored");
+    return null;
+  }
+  const at = new Date(Date.UTC(day.y, day.m, day.d, hh, mi) - BALI_MS);
+  const settleRow = out.settle_line != null ? rows[Number(out.settle_line)] : undefined;
+  let agreed: Date | null = settleRow ? new Date(Math.max(settleRow.sentAt.getTime(), dayRow.sentAt.getTime())) : dayRow.sentAt;
+  if (agreed.getTime() > asOf.getTime() + MIN) agreed = null;
   if (at.getTime() > (agreed ?? asOf).getTime() + 60 * DAY) return null;
   if (agreed && at.getTime() < agreed.getTime() - 12 * HOUR) return null;
   // The quote has to be in the thread: an invented "yes see you tomorrow" moves nothing.
-  const quote = String(out?.quote ?? "").trim();
+  const quote = String(out.quote ?? "").trim();
   const qw = wordsOf(quote);
   const hay = new Set(wordsOf(text));
-  if (qw.length === 0 || qw.filter((w) => hay.has(w)).length / qw.length < 0.6) {
+  if (qw.length === 0 || qw.filter((x) => hay.has(x)).length / qw.length < 0.6) {
     logger.info({ quote, visitAt: at }, "listing-progress: visit quote not found in the thread — ignored");
     return null;
   }
-  return { visitAt: at, timeKnown: out?.time_known === true, agreedAt: agreed, quote: quote.slice(0, 200), why: String(out?.why ?? "").slice(0, 120) };
+  return { visitAt: at, timeKnown: out.time_known === true && !!tm, agreedAt: agreed, quote: quote.slice(0, 200), why: String(out.why ?? "").slice(0, 120) };
 }
 
 /**
@@ -244,6 +320,7 @@ export async function confirmAgreedVisit(messages: ThreadMsg[], v: Visit): Promi
     system: `Lines start with the weekday, day/month and Bali time. "Us" is our agency (agent Yudi, colleague Amelia, our bot); "Villa side" is the owner, staff or manager. Answer ONE question: is it SETTLED between both sides that someone from OUR side (alone or with a client) comes to the villa on ${day}?
 
 true ONLY when one side named that specific day and the other side accepted it ("ok", "boleh", "bisa", "betul", "aman", "see you", "well noted"), or the villa side is clearly expecting us that day, and nothing later cancelled or moved it.
+The villa side naming ONE specific day for us to come ("you can visit the property on Wednesday pm", "besok jam 11 bisa") and our side accepting that day ("Wednesday afternoon works great", "ok see you then", "baik kak") IS settled, whoever named it first.
 
 false for:
 - an open offer or availability ("you can come to check before the 13th", "visit on 15 September is possible", "tomorrow can be checked") that our side never took up with a day of its own
@@ -307,7 +384,7 @@ function lastStepBack(events: StatusEvent[], current: number): Date | null {
   return back.length ? new Date(back[back.length - 1]!.at) : null;
 }
 
-async function loadMessages(leadId: string): Promise<ThreadMsg[]> {
+export async function loadMessages(leadId: string): Promise<ThreadMsg[]> {
   const res = await db.execute(sql`
     SELECT sender_type, text, sent_at FROM lead_messages
      WHERE lead_id = ${leadId} AND text IS NOT NULL
@@ -345,19 +422,33 @@ export async function advanceListingProgress(leadId: string, o: ProgressOpts): P
   }
 }
 
+type SlotRecord = { id: string; visitAt: Date; timeKnown: boolean; agreedAt: Date | null; createdAt: Date };
+
+/** The card's current slot (not replaced by a reschedule). */
+async function currentSlot(leadId: string): Promise<SlotRecord | null> {
+  const res = await db
+    .execute(sql`SELECT id, visit_at, time_known, agreed_at, created_at FROM listing_inspection_slots
+                  WHERE lead_id = ${leadId} AND status = 'scheduled' ORDER BY visit_at DESC LIMIT 1`)
+    .catch(() => null);
+  const r = (res?.rows?.[0] ?? null) as { id: string; visit_at: string | Date; time_known: boolean; agreed_at: string | Date | null; created_at: string | Date } | null;
+  return r
+    ? { id: r.id, visitAt: new Date(r.visit_at), timeKnown: !!r.time_known, agreedAt: r.agreed_at ? new Date(r.agreed_at) : null, createdAt: new Date(r.created_at) }
+    : null;
+}
+
 async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDecision> {
   const apply = o.apply !== false;
   const base: ProgressDecision = {
     leadId, source: o.source, statusId: null, from: null, path: [], to: null, reason: "", windowStart: null,
-    detailsAsk: null, visit: null, moved: false, applied: apply ? "nothing to apply" : "dry run",
+    visit: null, rescheduled: null, moved: false, applied: apply ? "nothing to apply" : "dry run",
   };
   const done = (d: Partial<ProgressDecision>): ProgressDecision => {
     const r = { ...base, ...d };
     logger.info(
       {
         leadId, source: o.source, from: r.from, to: r.to, path: r.path, moved: r.moved, applied: r.applied, reason: r.reason,
-        detailsAsk: r.detailsAsk ? { at: r.detailsAsk.at, how: r.detailsAsk.how } : null,
         visit: r.visit ? { at: r.visit.visitAt, agreedAt: r.visit.agreedAt } : null,
+        rescheduled: r.rescheduled,
       },
       "listing-progress decision",
     );
@@ -370,14 +461,11 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
   const where = await amoStageFor(lead.pipeline_id, statusId).catch(() => null);
   const from = where?.stage ?? stageLabel(statusId);
   Object.assign(base, { statusId, from });
-  // The owner deleted "Details ased" (87763166) at 15:02 on 14.09.2026, an hour after asking for it.
-  // Stages exist only as the live funnel says: without it the ask rule is dormant and a visit moves
-  // QUALIFIED straight to Inspection scheduled. A PATCH to a deleted status is a 400 "NotSupportedChoice".
-  const hasDetails = !!where?.all.some((s) => s.id === LISTING_STAGE.DETAILS_ASKED);
   if (lead.pipeline_id !== LISTINGS_PIPELINE_ID) return done({ reason: "not a Rental Listings card" });
   const taken = statusId === LISTING_STAGE.TAKEN_TO_WORK;
-  if (statusId !== LISTING_STAGE.QUALIFIED && statusId !== LISTING_STAGE.DETAILS_ASKED && !(taken && o.reportTaken)) {
-    return done({ reason: `"${from}" is not QUALIFIED or Details asked — nothing here moves it` });
+  const scheduled = statusId === LISTING_STAGE.INSPECTION_SCHEDULED;
+  if (statusId !== LISTING_STAGE.QUALIFIED && !scheduled && !(taken && o.reportTaken)) {
+    return done({ reason: `"${from}" is not QUALIFIED or Inspection scheduled — nothing here moves it` });
   }
 
   const messages = await loadMessages(leadId);
@@ -388,15 +476,18 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
   const events = taken ? [] : await statusEvents(leadId);
   if (!taken && !events) return done({ reason: "amoCRM events could not be read — nothing decided", applied: "nothing" });
   const qualAt = taken ? null : qualificationStart(events!);
+  const arrivedScheduled = scheduled
+    ? events!.filter((e) => e.to === LISTING_STAGE.INSPECTION_SCHEDULED).map((e) => e.at).pop() ?? null
+    : null;
   const windowStart = taken
     ? new Date(Date.now() - 21 * DAY)
     : qualAt
       ? new Date(qualAt.getTime() - WINDOW_SLACK_MS)
       : new Date(Date.now() - DAY);
   base.windowStart = windowStart;
-  const stepBack = taken ? null : lastStepBack(events!, statusId);
+  const stepBack = taken || scheduled ? null : lastStepBack(events!, statusId);
+  const slot = scheduled ? await currentSlot(leadId) : null;
 
-  // Visit first: it is the further stage.
   let visit: Visit | null = null;
   const cueWindow = messages.filter((m) => m.sentAt.getTime() >= windowStart.getTime() - 7 * DAY);
   const freshCue = fresh.some((m) => VISIT_CUE.test(m.text ?? "")) || (o.full && cueWindow.some((m) => VISIT_CUE.test(m.text ?? "")));
@@ -417,6 +508,8 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
       logger.info({ leadId, visitAt: v.visitAt, windowStart }, "listing-progress: agreed visit predates qualification — ignored");
     } else if (!v.agreedAt || v.agreedAt.getTime() < windowStart.getTime() - DAY) {
       logger.info({ leadId, visitAt: v.visitAt, agreedAt: v.agreedAt, windowStart }, "listing-progress: no settling line after qualification — ignored");
+    } else if (scheduled && !isNewTime(v, slot, arrivedScheduled)) {
+      // the visit on record, read again — not a change
     } else if (!(await confirmAgreedVisit(thread, v))) {
       logger.info({ leadId, visitAt: v.visitAt, quote: v.quote }, "listing-progress: second opinion says the visit is not agreed — ignored");
     } else {
@@ -432,39 +525,78 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
     });
   }
 
-  let detailsAsk: DetailsAsk | null = null;
-  if (statusId === LISTING_STAGE.QUALIFIED && hasDetails) detailsAsk = await findDetailsAsk(messages, windowStart);
-  base.detailsAsk = detailsAsk;
+  if (scheduled) {
+    if (!visit) return done({ reason: slot ? `visit on record ${fmt(slot.visitAt)}; no new agreed time` : "Inspection scheduled, no slot on record and no agreed time read" });
+    const rescheduled = { from: slot?.visitAt ?? null, to: visit.visitAt };
+    const reason = slot
+      ? `visit moved ${fmt(slot.visitAt)} → ${fmt(visit.visitAt)}${visit.agreedAt ? ` (settled ${fmt(visit.agreedAt)})` : ""}: "${visit.quote}"`
+      : `visit agreed for ${fmt(visit.visitAt)} on a card moved here without a slot: "${visit.quote}"`;
+    if (!apply) return done({ rescheduled, reason });
+    const applied = await recordChangedVisit(leadId, slot, visit, o.source);
+    return done({ rescheduled, reason, applied });
+  }
 
   const after = (d: Date | null) => !stepBack || (!!d && d.getTime() > stepBack.getTime());
   let path: number[] = [];
   let reason = "";
   if (visit && after(visit.agreedAt ?? visit.visitAt)) {
-    path = statusId === LISTING_STAGE.QUALIFIED && detailsAsk
-      ? [LISTING_STAGE.DETAILS_ASKED, LISTING_STAGE.INSPECTION_SCHEDULED]
-      : [LISTING_STAGE.INSPECTION_SCHEDULED];
+    path = [LISTING_STAGE.INSPECTION_SCHEDULED];
     reason = `visit agreed for ${fmt(visit.visitAt)}${visit.agreedAt ? ` (settled ${fmt(visit.agreedAt)})` : ""}: "${visit.quote}"`;
-  } else if (statusId === LISTING_STAGE.QUALIFIED && detailsAsk && after(detailsAsk.at)) {
-    path = [LISTING_STAGE.DETAILS_ASKED];
-    reason = `details asked ${fmt(detailsAsk.at)} (${detailsAsk.how}): "${detailsAsk.quote}"`;
-  } else if (visit || detailsAsk) {
+  } else if (visit) {
     reason = `evidence predates a person's step back to "${from}" on ${stepBack ? fmt(stepBack) : "?"} — a person's pick wins`;
   } else {
-    reason = statusId === LISTING_STAGE.QUALIFIED && hasDetails
-      ? `no ask for details from us since qualification (${qualAt ? fmt(qualAt) : "unknown"}) and no agreed visit`
-      : `no agreed visit since qualification (${qualAt ? fmt(qualAt) : "unknown"})${hasDetails ? "" : " — no Details stage in the funnel"}`;
+    reason = `no agreed visit since qualification (${qualAt ? fmt(qualAt) : "unknown"})`;
   }
   if (path.length === 0) return done({ reason });
   const to = stageLabel(path[path.length - 1], where?.all);
   if (!apply) return done({ path, to, reason });
 
-  const moved = await applyForwardPath(leadId, statusId, path, {
-    source: o.source,
-    all: where?.all,
-    detailsAsk: path.includes(LISTING_STAGE.DETAILS_ASKED) ? detailsAsk : null,
-    visit: path.includes(LISTING_STAGE.INSPECTION_SCHEDULED) ? visit : null,
-  });
+  const moved = await applyForwardPath(leadId, statusId, path, { source: o.source, all: where?.all, visit });
   return done({ path, to, reason, moved: moved.ok, applied: moved.detail });
+}
+
+/**
+ * On a card already in Inspection scheduled, is this reading a NEW agreed time? Settled after the slot
+ * on record (or after the card arrived, when it has none), and a real shift: 30 minutes or more, or a
+ * clock time where the record had none.
+ */
+function isNewTime(v: Visit, slot: SlotRecord | null, arrivedAt: number | null): boolean {
+  if (v.visitAt.getTime() < Date.now() - 12 * HOUR) return false;
+  if (!slot) return !arrivedAt || (v.agreedAt ?? v.visitAt).getTime() >= arrivedAt - WINDOW_SLACK_MS;
+  const settledAfter = (v.agreedAt?.getTime() ?? 0) > (slot.agreedAt ?? slot.createdAt).getTime() + MIN;
+  if (!settledAfter) return false;
+  const shift = Math.abs(v.visitAt.getTime() - slot.visitAt.getTime());
+  return shift >= RESCHEDULE_MIN_SHIFT_MS || (!slot.timeKnown && v.timeKnown);
+}
+
+/** The new agreed time replaces the slot on record; a note on the card; the calendar hears "changed". */
+async function recordChangedVisit(leadId: string, slot: SlotRecord | null, v: Visit, source: string): Promise<string> {
+  const ins = await db
+    .execute(sql`INSERT INTO listing_inspection_slots (lead_id, visit_at, time_known, agreed_at, quote, source)
+                 VALUES (${leadId}, ${v.visitAt.toISOString()}, ${v.timeKnown}, ${v.agreedAt ? v.agreedAt.toISOString() : null}, ${v.quote}, ${`${source}:changed`})
+                 ON CONFLICT (lead_id, visit_at) DO UPDATE SET status = 'scheduled', superseded_at = NULL, time_known = EXCLUDED.time_known,
+                   agreed_at = EXCLUDED.agreed_at, quote = EXCLUDED.quote, source = EXCLUDED.source, created_at = now()
+                 RETURNING id`)
+    .catch((err) => {
+      logger.warn({ err, leadId }, "listing-progress: changed slot not recorded");
+      return null;
+    });
+  const newId = (ins?.rows?.[0] as { id?: string } | undefined)?.id;
+  if (!newId) return "the new time could not be recorded";
+  if (slot && slot.id !== newId) {
+    await db
+      .execute(sql`UPDATE listing_inspection_slots SET status = 'rescheduled', superseded_at = now() WHERE id = ${slot.id}::uuid`)
+      .catch(() => undefined);
+  }
+  const text = slot
+    ? `Inspection rescheduled: ${fmt(slot.visitAt)} → ${fmt(v.visitAt)} Bali${v.timeKnown ? "" : " (time not fixed)"}${v.agreedAt ? `, agreed ${fmt(v.agreedAt)}` : ""} — "${v.quote}"`
+    : `Inspection time recorded: ${fmt(v.visitAt)} Bali${v.timeKnown ? "" : " (time not fixed)"}${v.agreedAt ? `, agreed ${fmt(v.agreedAt)}` : ""} — "${v.quote}"`;
+  await amoPost(`/api/v4/leads/${leadId}/notes`, [{ note_type: "common", params: { text } }]).catch(() => null);
+  // The calendar pass reads each card's latest 'scheduled' slot (lib/inspection-calendar.ts) and
+  // updates the event; this only makes it run now instead of within 5 minutes.
+  queueInspectionCalendarSync(`slot ${slot ? "rescheduled" : "recorded"} for ${leadId}`);
+  logger.info({ leadId, from: slot?.visitAt ?? null, to: v.visitAt, source }, "listing-progress: visit time changed");
+  return slot ? "visit rescheduled" : "visit time recorded";
 }
 
 /**
@@ -476,7 +608,7 @@ export async function applyForwardPath(
   leadId: string,
   current: number,
   path: number[],
-  o: { source: string; all?: Array<{ id: number; name: string }>; detailsAsk?: DetailsAsk | null; visit?: Visit | null; evidenceNote?: string },
+  o: { source: string; all?: Array<{ id: number; name: string }>; visit?: Visit | null; evidenceNote?: string },
 ): Promise<{ ok: boolean; detail: string }> {
   let from = current;
   // stage_events carry the card's broker, as Rental's thread sync does: the daily report counts a
@@ -490,7 +622,6 @@ export async function applyForwardPath(
   for (let i = 0; i < path.length; i++) {
     const to = path[i]!;
     if (rank(to) <= rank(from)) return { ok: i > 0, detail: `refused: ${stageLabel(to, o.all)} is not ahead of ${stageLabel(from, o.all)}` };
-    if (i > 0) await new Promise((r) => setTimeout(r, STEP_GAP_MS));
     if (!(await updateLeadStatus(leadId, to))) {
       return { ok: i > 0, detail: `amoCRM refused ${stageLabel(to, o.all)}${i > 0 ? ` (reached ${stageLabel(from, o.all)})` : ""}` };
     }
@@ -504,24 +635,38 @@ export async function applyForwardPath(
     from = to;
   }
   const lines: string[] = [];
-  if (o.detailsAsk) lines.push(`Details asked — ${fmt(o.detailsAsk.at)} Bali, our message: "${o.detailsAsk.quote}"`);
+  let slotId: string | null = null;
   if (o.visit) {
     lines.push(
       `Inspection scheduled: ${fmt(o.visit.visitAt)} Bali${o.visit.timeKnown ? "" : " (time not fixed)"}` +
         `${o.visit.agreedAt ? `, agreed ${fmt(o.visit.agreedAt)}` : ""} — "${o.visit.quote}"`,
     );
-    await db
+    const ins = await db
       .execute(sql`INSERT INTO listing_inspection_slots (lead_id, visit_at, time_known, agreed_at, quote, source)
                    VALUES (${leadId}, ${o.visit.visitAt.toISOString()}, ${o.visit.timeKnown}, ${o.visit.agreedAt ? o.visit.agreedAt.toISOString() : null}, ${o.visit.quote}, ${o.source})
-                   ON CONFLICT (lead_id, visit_at) DO NOTHING`)
-      .catch((err) => logger.warn({ err, leadId }, "listing-progress: slot not recorded"));
-    queueInspectionCalendarSync(`slot recorded for ${leadId}`);
+                   ON CONFLICT (lead_id, visit_at) DO NOTHING
+                   RETURNING id`)
+      .catch((err) => {
+        logger.warn({ err, leadId }, "listing-progress: slot not recorded");
+        return null;
+      });
+    slotId = (ins?.rows?.[0] as { id?: string } | undefined)?.id ?? null;
+  }
+  if (path.includes(LISTING_STAGE.INSPECTION_SCHEDULED)) {
+    // The time is agreed: a booking draft still waiting for Yudi would ask for it again.
+    await db
+      .execute(sql`UPDATE pending_suggestions SET status = 'skipped', autopilot_skipped_at = now(),
+                          autopilot_skipped_reason = ${`${INSPECTION_ASK_VERDICT} — retired: visit agreed`}
+                    WHERE lead_id = ${leadId} AND status = 'pending'
+                      AND coalesce(autopilot_skipped_reason, '') LIKE ${`${INSPECTION_ASK_VERDICT}%`}`)
+      .catch(() => undefined);
   }
   if (o.evidenceNote) lines.push(o.evidenceNote);
   const text =
     `Stage moved automatically: ${path.map((id) => stageLabel(id, o.all)).join(" → ")} (owner's rules, 14.09.2026).\n` + lines.join("\n");
   const posted = await amoPost(`/api/v4/leads/${leadId}/notes`, [{ note_type: "common", params: { text } }]).catch(() => null);
   if (!posted) logger.warn({ leadId }, "listing-progress: card moved but the note was not written");
+  if (slotId) queueInspectionCalendarSync(`slot recorded for ${leadId}`);
   logger.info({ leadId, path, source: o.source }, "listing-progress: card moved");
   return { ok: true, detail: `moved to ${stageLabel(from, o.all)}` };
 }
@@ -573,22 +718,19 @@ export async function restoreFromDeletedStage(leadId: string, apply: boolean): P
   return { ok: true, detail: `restored: ${detail}`, to: stageLabel(target, all) };
 }
 
-/** The latest agreed visit on record for a card, for the reply generator and the metrics. */
+/** The card's current agreed visit, for the reply generator and the metrics. */
 export async function latestInspectionSlot(leadId: string): Promise<{ visitAt: Date; timeKnown: boolean } | null> {
-  const res = await db
-    .execute(sql`SELECT visit_at, time_known FROM listing_inspection_slots WHERE lead_id = ${leadId} ORDER BY visit_at DESC LIMIT 1`)
-    .catch(() => null);
-  const row = (res?.rows?.[0] ?? null) as { visit_at: string | Date; time_known: boolean } | null;
-  return row ? { visitAt: new Date(row.visit_at), timeKnown: !!row.time_known } : null;
+  const slot = await currentSlot(leadId);
+  return slot ? { visitAt: slot.visitAt, timeKnown: slot.timeKnown } : null;
 }
 
-/** Every open card in QUALIFIED / Details asked (and, when asked, TAKEN TO WORK for the report). */
+/** Every open card in QUALIFIED / Inspection scheduled (and, when asked, TAKEN TO WORK for the report). */
 export async function auditListingProgress(o: { apply: boolean; reportTaken?: boolean; source?: string }): Promise<ProgressDecision[]> {
   const ids: string[] = [];
   // Only statuses the funnel still has: a filter on a deleted status id fails the whole list.
   const live = await amoFetch<{ _embedded?: { statuses?: Array<{ id: number }> } }>(`/api/v4/leads/pipelines/${LISTINGS_PIPELINE_ID}`);
   const liveIds = new Set((live?._embedded?.statuses ?? []).map((s) => s.id));
-  const statuses = [LISTING_STAGE.QUALIFIED, LISTING_STAGE.DETAILS_ASKED, ...(o.reportTaken ? [LISTING_STAGE.TAKEN_TO_WORK] : [])].filter(
+  const statuses = [LISTING_STAGE.QUALIFIED, LISTING_STAGE.INSPECTION_SCHEDULED, ...(o.reportTaken ? [LISTING_STAGE.TAKEN_TO_WORK] : [])].filter(
     (s) => liveIds.size === 0 || liveIds.has(s),
   );
   for (let page = 1; page <= 10; page++) {

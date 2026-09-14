@@ -19,6 +19,7 @@ import { startReportScheduler } from "./lib/report-scheduler";
 import { startVideoCompressScheduler } from "./lib/video-compress";
 import { startListingStatusPass } from "./lib/listing-status-pass";
 import { startInspectionCalendarSync } from "./lib/inspection-calendar";
+import { startInspectionBookingPass } from "./lib/inspection-booking";
 import { startStageSyncCheckScheduler } from "./lib/stage-sync-check";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
@@ -90,6 +91,8 @@ startPhotoVariantScheduler();
 startListingStatusPass();
 // Agreed villa inspections → the shared Brokers Google Calendar; see lib/inspection-calendar.ts.
 startInspectionCalendarSync();
+// QUALIFIED listing cards: a PUSH draft for Yudi asking the owner to let him inspect, in his own words; see lib/inspection-booking.ts.
+startInspectionBookingPass();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
 // When a rental is free from — asked in the intake chat, written to Supabase's
@@ -281,6 +284,23 @@ pool.query(`
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`))
   .then(() => pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS listing_inspection_slots_lead_at_uq ON listing_inspection_slots (lead_id, visit_at)`))
+  // A new agreed time replaces the card's slot: the old row becomes 'rescheduled' (listing-progress.ts);
+  // the calendar pass reads only 'scheduled' rows.
+  .then(() => pool.query(`ALTER TABLE listing_inspection_slots ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'scheduled'`))
+  .then(() => pool.query(`ALTER TABLE listing_inspection_slots ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMPTZ`))
+  // Every inspection booking draft written for Yudi, whatever became of it: the ladder's loop guard (inspection-booking.ts).
+  .then(() => pool.query(`
+    CREATE TABLE IF NOT EXISTS listing_inspection_asks (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      lead_id TEXT NOT NULL,
+      round INT NOT NULL,
+      suggestion_id UUID,
+      text TEXT NOT NULL,
+      times JSONB,
+      lang TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`))
+  .then(() => pool.query(`CREATE INDEX IF NOT EXISTS listing_inspection_asks_lead_idx ON listing_inspection_asks (lead_id, created_at DESC)`))
   .then(() => logger.info("startup migration: stage_checked_at + viewing_slots ensured"))
   .catch((err) => logger.error({ err }, "startup migration: stage sync columns failed"));
 
