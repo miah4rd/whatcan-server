@@ -1690,6 +1690,27 @@ qualification; no ask since), and the Details cards 23361369, 23462331, 23339527
 23497771 (no agreed visit). TAKEN TO WORK with a visit, not moved: 23347975
 Aquamarine (25.09), 23550771 ("visit kosong tgl 15 Oktober", reads as an offer).
 
+**The owner deleted "Details ased" at 15:02 the same day.** amoCRM events: the
+Admin account (11230386) flicked Elara 23497771 to Inspection sceduled and back
+(14:58), moved the four cards that were in Details before the backfill
+(23361369, 23462331, 23339527, 23497771) to QUALIFIED by hand, then deleted
+status 87763166. The funnel is now QUALIFIED (Pre-listed) → Inspection sceduled
+→ live. amoCRM dropped the 14 cards the backfill had put in Details into
+**Initial Contact without a status event** — the stage engine owns Initial
+Contact and, on the 15:10 sends, moved four back to QUALIFIED by facts
+(23388973, 23497759, 23260811, 23283693). Rule 1 is dormant while the stage is
+absent (`hasDetails` from the live funnel; a PATCH to a deleted status is a 400
+"NotSupportedChoice", which is how it showed); a visit moves QUALIFIED straight
+to Inspection sceduled. Repair: 23263701, 23426777, 23434747, 23528517,
+23550763, 23555649 by `listing-audit?lead=&apply=1` (engine → QUALIFIED);
+23299227 Namaste and 23481615 Menuai — the engine would have put them in TAKEN TO
+WORK, below the QUALIFIED they held since 05–06.09 — by
+`POST /api/admin/listing-progress/restore?lead=` (`restoreFromDeletedStage`: a
+card whose last event put it in a status that no longer exists goes back to
+that event's `from`). **A deleted stage moves cards with no event and hands
+them to whatever owns the first stage: check `/leads/pipelines` before and
+after any backfill into an owner-configured stage.**
+
 **The rename trap, again.** A stage rename keeps the id and silently breaks
 every string match: 09.09 ("agreement" → "Inspection. done") and 14.09. On a
 rename grep for the old AND new name and the id in: `STAGE_ORDER` /

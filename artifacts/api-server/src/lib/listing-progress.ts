@@ -84,6 +84,11 @@ function fmt(d: Date): string {
   return d.toLocaleString("en-GB", { timeZone: BALI, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
+/** With the weekday: "Wednesday pm" is read against the line's own day (23555645 was dated Thursday). */
+function fmtDay(d: Date): string {
+  return d.toLocaleString("en-GB", { timeZone: BALI, weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
 function stageLabel(id: number | null | undefined, all?: Array<{ id: number; name: string }>): string {
   if (id == null) return "unknown";
   return all?.find((s) => s.id === id)?.name ?? LISTING_STAGE_NAME[id] ?? `stage ${id}`;
@@ -170,7 +175,7 @@ function transcript(messages: ThreadMsg[], n: number): string {
       // Keep the TAIL of a long message: a WhatsApp reply sits after the quote (CLAUDE.md, 11.09).
       let t = (m.senderType === "lead" ? m.text ?? "" : ownWords(m, rows.slice(Math.max(0, i - 12), i))).replace(/\s+/g, " ").trim();
       if (t.length > 700) t = "…" + t.slice(-700);
-      return `${fmt(m.sentAt)} ${m.senderType === "lead" ? "Villa side" : "Us"}: ${t}`;
+      return `${fmtDay(m.sentAt)} ${m.senderType === "lead" ? "Villa side" : "Us"}: ${t}`;
     })
     .join("\n");
 }
@@ -192,7 +197,7 @@ export async function extractAgreedVisit(messages: ThreadMsg[], asOf: Date): Pro
     label: "listing:agreed-visit",
     max_tokens: 220,
     temperature: 0,
-    system: `Now is ${fmt(asOf)} (day/month, Bali time, year ${asOf.getFullYear()}). Each line starts with the day/month and time it was written, Bali time. "Us" is our real-estate agency (our agent Yudi, our colleague Amelia, or our bot); "Villa side" is the owner, their staff or manager.
+    system: `Now is ${fmtDay(asOf)} (weekday, day/month, Bali time, year ${asOf.getFullYear()}). Each line starts with the weekday, day/month and time it was written, Bali time. "Us" is our real-estate agency (our agent Yudi, our colleague Amelia, or our bot); "Villa side" is the owner, their staff or manager.
 
 Find the MOST RECENT visit to the villa by our side that BOTH sides AGREED for a concrete calendar day. Whatever it is called counts: inspection / inspeksi, survey, visit / kunjungan, "datang", "come by", a photo or video shoot at the villa, a viewing with our client at the villa.
 AGREED means one side named a specific day (maybe a time) and the other accepted it ("ok", "boleh", "bisa", "betul", "aman", "see you", "well noted", "we'll wait for you"), or the villa side is expecting us on that day ("is the visit still on today?").
@@ -235,7 +240,7 @@ export async function confirmAgreedVisit(messages: ThreadMsg[], v: Visit): Promi
     label: "listing:visit-confirm",
     max_tokens: 100,
     temperature: 0,
-    system: `Lines start with day/month and Bali time. "Us" is our agency (agent Yudi, colleague Amelia, our bot); "Villa side" is the owner, staff or manager. Answer ONE question: is it SETTLED between both sides that someone from OUR side (alone or with a client) comes to the villa on ${day}?
+    system: `Lines start with the weekday, day/month and Bali time. "Us" is our agency (agent Yudi, colleague Amelia, our bot); "Villa side" is the owner, staff or manager. Answer ONE question: is it SETTLED between both sides that someone from OUR side (alone or with a client) comes to the villa on ${day}?
 
 true ONLY when one side named that specific day and the other side accepted it ("ok", "boleh", "bisa", "betul", "aman", "see you", "well noted"), or the villa side is clearly expecting us that day, and nothing later cancelled or moved it.
 
@@ -364,6 +369,10 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
   const where = await amoStageFor(lead.pipeline_id, statusId).catch(() => null);
   const from = where?.stage ?? stageLabel(statusId);
   Object.assign(base, { statusId, from });
+  // The owner deleted "Details ased" (87763166) at 15:02 on 14.09.2026, an hour after asking for it.
+  // Stages exist only as the live funnel says: without it the ask rule is dormant and a visit moves
+  // QUALIFIED straight to Inspection scheduled. A PATCH to a deleted status is a 400 "NotSupportedChoice".
+  const hasDetails = !!where?.all.some((s) => s.id === LISTING_STAGE.DETAILS_ASKED);
   if (lead.pipeline_id !== LISTINGS_PIPELINE_ID) return done({ reason: "not a Rental Listings card" });
   const taken = statusId === LISTING_STAGE.TAKEN_TO_WORK;
   if (statusId !== LISTING_STAGE.QUALIFIED && statusId !== LISTING_STAGE.DETAILS_ASKED && !(taken && o.reportTaken)) {
@@ -423,7 +432,7 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
   }
 
   let detailsAsk: DetailsAsk | null = null;
-  if (statusId === LISTING_STAGE.QUALIFIED) detailsAsk = await findDetailsAsk(messages, windowStart);
+  if (statusId === LISTING_STAGE.QUALIFIED && hasDetails) detailsAsk = await findDetailsAsk(messages, windowStart);
   base.detailsAsk = detailsAsk;
 
   const after = (d: Date | null) => !stepBack || (!!d && d.getTime() > stepBack.getTime());
@@ -440,9 +449,9 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
   } else if (visit || detailsAsk) {
     reason = `evidence predates a person's step back to "${from}" on ${stepBack ? fmt(stepBack) : "?"} — a person's pick wins`;
   } else {
-    reason = statusId === LISTING_STAGE.QUALIFIED
+    reason = statusId === LISTING_STAGE.QUALIFIED && hasDetails
       ? `no ask for details from us since qualification (${qualAt ? fmt(qualAt) : "unknown"}) and no agreed visit`
-      : "no agreed visit";
+      : `no agreed visit since qualification (${qualAt ? fmt(qualAt) : "unknown"})${hasDetails ? "" : " — no Details stage in the funnel"}`;
   }
   if (path.length === 0) return done({ reason });
   const to = stageLabel(path[path.length - 1], where?.all);
@@ -515,6 +524,53 @@ export async function applyForwardPath(
   return { ok: true, detail: `moved to ${stageLabel(from, o.all)}` };
 }
 
+/**
+ * A card amoCRM dropped into the funnel's first stage because the stage it sat in was DELETED (no
+ * status event records that drop). 14.09.2026: the owner deleted "Details ased" and 14 cards landed
+ * in Initial Contact, where the stage engine owns them and judged two of them down to TAKEN TO WORK.
+ * The card goes back to the stage it was in before the deleted one (its last event's `from`), when
+ * that stage still exists — the state a person last saw, not a new judgement.
+ */
+export async function restoreFromDeletedStage(leadId: string, apply: boolean): Promise<{ ok: boolean; detail: string; to?: string }> {
+  const lead = await getAmoLead(leadId).catch(() => null);
+  if (!lead?.status_id || lead.pipeline_id !== LISTINGS_PIPELINE_ID) return { ok: false, detail: "not a Rental Listings card amoCRM returned" };
+  const live = await amoFetch<{ _embedded?: { statuses?: Array<{ id: number; name: string }> } }>(`/api/v4/leads/pipelines/${LISTINGS_PIPELINE_ID}`);
+  const all = live?._embedded?.statuses ?? [];
+  if (all.length === 0) return { ok: false, detail: "the funnel could not be read" };
+  const events = await statusEvents(leadId);
+  const last = events?.[events.length - 1];
+  if (!last) return { ok: false, detail: "no status history" };
+  const has = (id: number | null) => id != null && all.some((s) => s.id === id);
+  if (last.to === lead.status_id) return { ok: false, detail: "the card is where its last status event put it — nothing to restore" };
+  if (has(last.to)) return { ok: false, detail: `its last event put it in ${stageLabel(last.to, all)}, which still exists — moved by something else, not restored` };
+  if (!has(last.from)) return { ok: false, detail: "the stage before the deleted one does not exist either" };
+  const target = last.from!;
+  const detail = `in ${stageLabel(lead.status_id, all)} after status ${last.to} was deleted; back to ${stageLabel(target, all)} (its stage before, ${new Date(last.at).toISOString()})`;
+  if (!apply) return { ok: true, detail: `would restore: ${detail}`, to: stageLabel(target, all) };
+  if (!(await updateLeadStatus(leadId, target))) return { ok: false, detail: `amoCRM refused ${stageLabel(target, all)}` };
+  const owner = await db
+    .execute(sql`SELECT responsible_user FROM leads_sync WHERE lead_id = ${leadId} LIMIT 1`)
+    .then((r) => ((r.rows?.[0] as { responsible_user?: string | null } | undefined)?.responsible_user ?? "").trim())
+    .catch(() => "");
+  await db
+    .execute(sql`INSERT INTO stage_events (lead_id, from_stage, to_stage, pipeline, responsible_user)
+                 VALUES (${leadId}, ${stageLabel(lead.status_id, all)}, ${stageLabel(target, all)}, 'Rental Listings', ${owner || "engine:listing-progress:restore"})`)
+    .catch(() => undefined);
+  await db
+    .execute(sql`UPDATE leads_sync SET lead_stage = ${stageLabel(target, all)}, lead_stage_id = ${String(target)}, updated_at = now() WHERE lead_id = ${leadId}`)
+    .catch(() => undefined);
+  await amoPost(`/api/v4/leads/${leadId}/notes`, [
+    {
+      note_type: "common",
+      params: {
+        text: `Stage restored to ${stageLabel(target, all)}: the stage this card was in ("Details ased", id ${last.to}) was deleted in amoCRM on 14.09.2026, and amoCRM had dropped the card into ${stageLabel(lead.status_id, all)}.`,
+      },
+    },
+  ]).catch(() => null);
+  logger.info({ leadId, detail }, "listing-progress: restored from a deleted stage");
+  return { ok: true, detail: `restored: ${detail}`, to: stageLabel(target, all) };
+}
+
 /** The latest agreed visit on record for a card, for the reply generator and the metrics. */
 export async function latestInspectionSlot(leadId: string): Promise<{ visitAt: Date; timeKnown: boolean } | null> {
   const res = await db
@@ -527,7 +583,12 @@ export async function latestInspectionSlot(leadId: string): Promise<{ visitAt: D
 /** Every open card in QUALIFIED / Details asked (and, when asked, TAKEN TO WORK for the report). */
 export async function auditListingProgress(o: { apply: boolean; reportTaken?: boolean; source?: string }): Promise<ProgressDecision[]> {
   const ids: string[] = [];
-  const statuses = [LISTING_STAGE.QUALIFIED, LISTING_STAGE.DETAILS_ASKED, ...(o.reportTaken ? [LISTING_STAGE.TAKEN_TO_WORK] : [])];
+  // Only statuses the funnel still has: a filter on a deleted status id fails the whole list.
+  const live = await amoFetch<{ _embedded?: { statuses?: Array<{ id: number }> } }>(`/api/v4/leads/pipelines/${LISTINGS_PIPELINE_ID}`);
+  const liveIds = new Set((live?._embedded?.statuses ?? []).map((s) => s.id));
+  const statuses = [LISTING_STAGE.QUALIFIED, LISTING_STAGE.DETAILS_ASKED, ...(o.reportTaken ? [LISTING_STAGE.TAKEN_TO_WORK] : [])].filter(
+    (s) => liveIds.size === 0 || liveIds.has(s),
+  );
   for (let page = 1; page <= 10; page++) {
     const q = statuses.map((s, i) => `filter[statuses][${i}][pipeline_id]=${LISTINGS_PIPELINE_ID}&filter[statuses][${i}][status_id]=${s}`).join("&");
     const d = await amoFetch<{ _embedded?: { leads?: Array<{ id: number }> } }>(`/api/v4/leads?${q}&limit=250&page=${page}`);
