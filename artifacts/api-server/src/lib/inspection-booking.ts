@@ -494,7 +494,8 @@ ${timesLines(plan)}
 If they did not answer about the visit, do not ask again in this reply.${style}
 `;
     }
-    block += `Never mention other villas, never call a time booked before they agree, never offer a time outside those listed.\n`;
+    block += `Never mention other villas, never call a time booked before they agree, never offer a time outside those listed.
+Yudi sends this himself: write the visit in the first person ("I'd like to come", "saya datang"), never "Yudi from our team". No time-of-day greeting (selamat pagi / siang / sore, good morning): it may go out hours later. If the villa side's last line is days old, do not answer it ("Great, thanks for confirming"); open like a new message.\n`;
   } else if (plan.mode === "hold") {
     block += `No visit request in this reply${plan.holdNote ? ` (${plan.holdNote})` : ""}. If the villa side brings a visit up themselves, agree a concrete day and time with them.\n`;
   }
@@ -600,24 +601,46 @@ export type BookingPassDecision = {
   queued: boolean;
 };
 
+/** handover-draft.ts HANDOVER_VERDICT, inlined: importing that module here would close an import cycle. */
+const HANDOVER_VERDICT = "handed over to the broker";
+
 async function queueAskDraft(plan: BookingPlan, text: string): Promise<string | null> {
-  // A pending draft on this card that is not the ask competes with it: an owner nudge (they stop at
-  // QUALIFIED since 14.09) or a LIVE draft already answered by a later message of ours.
+  // The handover draft is the handover pass's own marker for "this card has its next step". Retiring it
+  // (first live pass, 14.09 16:38) made that pass write a new LIVE draft two minutes later, and a LIVE
+  // queueSuggestion deletes every pending PUSH on the card: 3 of the 4 booking drafts vanished. So a
+  // pending handover draft is kept and its TEXT becomes the ask, in place; nothing else is written.
+  const handRes = await db
+    .execute(sql`SELECT id FROM pending_suggestions WHERE lead_id = ${plan.leadId} AND status = 'pending'
+                   AND autopilot_skipped_reason = ${HANDOVER_VERDICT} ORDER BY created_at DESC LIMIT 1`)
+    .catch(() => null);
+  const handoverId = (handRes?.rows?.[0] as { id?: string } | undefined)?.id ?? null;
+  // Any other pending draft competes with the ask: an owner nudge (they stop at QUALIFIED since 14.09) or
+  // a LIVE draft already answered by a later message of ours.
   await db
     .execute(sql`UPDATE pending_suggestions
                     SET status = 'skipped', autopilot_skipped_at = now(),
                         autopilot_skipped_reason = ${`superseded by the ${INSPECTION_ASK_VERDICT} (round ${plan.round})`}
                   WHERE lead_id = ${plan.leadId} AND status = 'pending'
-                    AND coalesce(autopilot_skipped_reason, '') NOT LIKE ${`${INSPECTION_ASK_VERDICT}%`}`)
+                    AND coalesce(autopilot_skipped_reason, '') NOT LIKE ${`${INSPECTION_ASK_VERDICT}%`}
+                    AND coalesce(autopilot_skipped_reason, '') <> ${HANDOVER_VERDICT}`)
     .catch((err) => logger.warn({ err, leadId: plan.leadId }, "inspection booking: competing drafts not retired"));
-  const ins = await db
-    .execute(sql`INSERT INTO pending_suggestions (lead_id, responsible_user, kind, suggestion_text, status, autopilot_skipped_reason, autopilot_skipped_at)
-                 VALUES (${plan.leadId}, ${plan.responsibleUser}, 'push', ${text}, 'pending', ${`${INSPECTION_ASK_VERDICT} · round ${plan.round}/${MAX_ASKS}`}, now())
-                 RETURNING id`)
-    .catch((err) => {
-      logger.error({ err, leadId: plan.leadId }, "inspection booking: draft not queued");
-      return null;
-    });
+  const ins = handoverId
+    ? await db
+        .execute(sql`UPDATE pending_suggestions SET suggestion_text = ${text}, attachments = NULL, suggested_stage = NULL, suggested_stage_id = NULL,
+                            suggested_stage_reason = NULL, suggested_stage_terminal = NULL
+                      WHERE id = ${handoverId}::uuid AND status = 'pending' RETURNING id`)
+        .catch((err) => {
+          logger.error({ err, leadId: plan.leadId }, "inspection booking: handover draft not rewritten");
+          return null;
+        })
+    : await db
+        .execute(sql`INSERT INTO pending_suggestions (lead_id, responsible_user, kind, suggestion_text, status, autopilot_skipped_reason, autopilot_skipped_at)
+                     VALUES (${plan.leadId}, ${plan.responsibleUser}, 'push', ${text}, 'pending', ${`${INSPECTION_ASK_VERDICT} · round ${plan.round}/${MAX_ASKS}`}, now())
+                     RETURNING id`)
+        .catch((err) => {
+          logger.error({ err, leadId: plan.leadId }, "inspection booking: draft not queued");
+          return null;
+        });
   const id = (ins?.rows?.[0] as { id?: string } | undefined)?.id ?? null;
   if (!id) return null;
   await db
