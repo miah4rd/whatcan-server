@@ -345,7 +345,7 @@ async function planCard(lead: AmoLead, link: { property_id: string; title: strin
   base.lastContactMs = Math.max(lastOutMs, lastIn?.getTime() ?? 0);
   base.ownerTexts = inbound.slice(0, 15).map((m) => m.text ?? "");
   base.lang = threadLanguage(base.ownerTexts);
-  const talks = await whatsappTalkLines(leadId).catch(() => []);
+  const talks: Array<{ sourceId: number; updatedAt: number }> = await whatsappTalkLines(leadId).catch(() => []);
   base.line = talks[0] ? String(talks[0].sourceId) : null;
 
   base.owner = await fetchOwnerName(leadId, villa);
