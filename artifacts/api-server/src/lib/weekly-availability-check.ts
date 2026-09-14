@@ -602,6 +602,29 @@ const BUSY_WORDS = /(not available|unavailable|booked|occupied|rented|taken|sold
 const DATE_WORDS =
   /\d|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|januari|februari|maret|mei|juni|juli|agustus|september|oktober|november|desember|tomorrow|besok|lusa)\w*/i;
 
+const MONTHS: string[][] = [
+  ["jan", "januari"], ["feb", "februari"], ["mar", "maret"], ["apr", "april"], ["may", "mei"], ["jun", "juni"],
+  ["jul", "juli"], ["aug", "agu", "agustus"], ["sep", "sept"], ["oct", "okt", "oktober"], ["nov"], ["dec", "des", "desember"],
+];
+
+/**
+ * The owner wrote this very calendar day: "October 16", "16 Okt", "16th of October", "16/10".
+ * The model marked "Available from October 16 / Open end" as not an exact day (Villa Lani, 14.09.2026).
+ */
+export function replyNamesDay(reply: string, isoDate: string): boolean {
+  const m = Number(isoDate.slice(5, 7));
+  const day = Number(isoDate.slice(8, 10));
+  if (!m || !day) return false;
+  const names = MONTHS[m - 1]!.join("|");
+  const d = `0?${day}(?:st|nd|rd|th)?`;
+  const text = reply.toLowerCase();
+  return (
+    new RegExp(`\\b${d}\\s*(?:of\\s+)?(?:${names})[a-z]*\\b`).test(text) ||
+    new RegExp(`\\b(?:${names})[a-z]*\\.?\\s*${d}\\b`).test(text) ||
+    new RegExp(`\\b0?${day}\\s*[/.-]\\s*0?${m}\\b`).test(text)
+  );
+}
+
 /** Fail-closed guards around the model's reading. Anything it cannot defend becomes "unclear". */
 export function guardAnswer(a: AvailabilityAnswer | null, reply: string, today: string): AvailabilityAnswer & { guard?: string } {
   const unclear = (guard: string) => ({ answer: "unclear" as const, date: a?.date ?? null, exact_day: false, quote: a?.quote ?? "", guard });
@@ -613,7 +636,7 @@ export function guardAnswer(a: AvailabilityAnswer | null, reply: string, today: 
   }
   const d = a.date ?? "";
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(Date.parse(`${d}T00:00:00Z`))) return unclear("no valid date");
-  if (!a.exact_day) return unclear("no exact day (a month or 'soon' is not a date for the site)");
+  if (!a.exact_day && !replyNamesDay(reply, d)) return unclear("no exact day (a month or 'soon' is not a date for the site)");
   if (!DATE_WORDS.test(reply)) return unclear("the date is not in the owner's words");
   const max = new Date(Date.parse(`${today}T00:00:00Z`) + 548 * 86400_000).toISOString().slice(0, 10);
   if (d > max) return unclear("date more than 18 months out");
@@ -790,6 +813,15 @@ export async function processAnswers(opts: { apply: boolean }): Promise<AnswerOu
         ]).catch(() => null);
         if (tellYudi) {
           await notifyBroker(LISTING_AGENT_BROKER, `Availability: ${villa}`, `#${c.lead_id} owner: "${reply.slice(0, 80)}" — ${tellYudi}`).catch(() => 0);
+        } else {
+          // The answer is on the site: the reply draft the owner's message raised is not Yudi's to approve
+          // (owner, 14.09.2026: the weekly check runs on autopilot). Unclear answers keep theirs.
+          const cleared = await db
+            .update(pendingSuggestionsTable)
+            .set({ status: "skipped" })
+            .where(and(eq(pendingSuggestionsTable.leadId, c.lead_id), eq(pendingSuggestionsTable.status, "pending"), gt(pendingSuggestionsTable.createdAt, since)))
+            .returning({ id: pendingSuggestionsTable.id });
+          if (cleared.length) result = `${result}; ${cleared.length} reply draft(s) cleared from the inbox`;
         }
         await setKey(doneKey, JSON.stringify({ at: new Date().toISOString(), answer: reading.answer, date: reading.date, result, moved }));
       }
