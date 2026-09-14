@@ -1725,55 +1725,62 @@ stage-options cache (10 minutes), the prompt and the extension. New code: ids.
 
 Owner, 14.09: once a villa visit is agreed, the bot writes a short note into the Unicorn
 Property Google Calendar ("вилла такая-то, время такое-то, инспекция") so Yudi opens the
-calendar and sees today's visits. Through the Google Calendar API, not a person.
+calendar and sees today's visits. Written by code, not a person.
 
+- **Transport: a Make.com scenario** — custom webhook → Google Calendar modules on
+  info@unicorn-property.com's connection → Webhook response (`lib/google-calendar.ts`). Direct
+  Google access is closed: the OAuth consent failed (`invalid_grant`) and the organisation
+  forbids service account keys (`iam.disableServiceAccountKeyCreation`), both 14.09 (an Apps
+  Script web app was the plan for an hour, then dropped). Protocol: POST JSON `{secret, action:
+  "create"|"update"|"delete", calendarId, eventId?, summary, description, location, start, end}`
+  (ISO `+08:00`) → direct JSON `{ok:true, id}` | `{ok:false, error}`. A Make webhook can take a
+  few seconds; it answers plain `Accepted` when the scenario is inactive — any non-JSON body is a
+  failure, retried next pass. No health check. The scenario sets the popups (60 and 15 minutes)
+  and adds no guests. **It cannot list or search events** — idempotency is ours alone.
 - **What is synced** (`lib/inspection-calendar.ts`): the latest `listing_inspection_slots` row
   per card whose visit is in the future or at most a day past, while the card sits in
   Inspection sceduled or further (live, Weekly Check Sent, Update Availability Received, won).
   One event per villa: key `prop:<R-code>` (site `listing_crm_link`, else exactly one site code
   in the card's name/notes) or `lead:<id>`; duplicate cards of one villa share the event.
-- **Event**: `Inspection — <villa> (<R-code>)`, 60 minutes, explicit `+08:00` /
-  `Asia/Makassar`; villa = the card name's first segment (the name Yudi uses — the site title is
-  a sales headline, it goes into the description), else the site title. Location = the site's
-  `google_maps_url`, else `exact_address`, else area. Description (English): listing title and
-  site link, owner/manager name, area, address, map, amoCRM card link(s), the agreeing quote.
-  Popups 60 and 15 minutes. A slot with `time_known = false` is an all-day note
-  "— time not fixed" (popup 17:00 the day before). No attendees; every write sends
-  `sendUpdates=none`.
+- **Event**: `Inspection — <villa> (<R-code>)`, 60 minutes, `+08:00`; villa = the card name's
+  first segment (the name Yudi uses — the site title is a sales headline, it goes into the
+  description), else the site title. Location = the site's `google_maps_url`, else
+  `exact_address`, else area. Description (English): listing title and site link,
+  owner/manager name, area, address, map, amoCRM card link(s), the agreeing quote, `ref <key>`.
+  A slot with `time_known = false` keeps its default hour with "— time not fixed" in the title
+  (the webhook has no all-day events).
 - **Pass**: every 5 minutes (`startInspectionCalendarSync`) and 8 s after
   `applyForwardPath` records a slot (`queueInspectionCalendarSync`). Missing → create; content
-  changed (sha1 of the body) → patch; card went back / lost / parked / left the funnel, or the
+  changed (sha1 of the body) → update; card went back / lost / parked / left the funnel, or the
   slot is gone → delete; visit more than a day past → row `retired`, event kept as history.
-  Idempotent: table `inspection_calendar_events` (sync_key → event_id, hash, status, last_error;
-  created at boot), and before any create the calendar is searched by the private extended
-  property `whatcanKey` and an existing event is adopted (extra copies deleted). A failed amoCRM
-  or site read aborts the pass — nothing is deleted on a bad read. An event deleted by hand is
-  written again only when the visit changes.
-- **Fail soft**: `lib/google-calendar.ts` returns `{ ok:false, reason }`, never throws, never
-  logs a credential; the stage pass is never blocked. Without credentials the pass logs
-  "Google Calendar not configured" (at most every 6 h) and does nothing.
-- **Auth: a Google service account** (the OAuth consent as info@unicorn-property.com failed
-  with `invalid_grant` on 14.09). The Brokers calendar is shared with the service account's
-  email, "Make changes to events" — no domain-wide delegation, no impersonation. JWT bearer
-  grant, RS256 signed with node:crypto, scope `calendar.events`, access token cached ~1 h.
-  A service account cannot send invitations; we never add attendees.
-- **Env** (values only on the server): `GOOGLE_CALENDAR_SA_KEY_FILE` =
-  `/opt/whatcan/secrets/google-calendar-sa.json` (the JSON key, chmod 600, never in git, never
-  printed), `GOOGLE_CALENDAR_ID` = the shared "Brokers" calendar
-  (`c_cb134aa7…@group.calendar.google.com`, timezone Asia/Jakarta; we always send `+08:00` /
-  `Asia/Makassar`). Fallback only when no key file is set: `GOOGLE_CALENDAR_CLIENT_ID`,
-  `GOOGLE_CALENDAR_CLIENT_SECRET`, `GOOGLE_CALENDAR_REFRESH_TOKEN`. New values need `deploy.sh`
-  (it restarts with `--update-env`); `.env` has duplicate keys elsewhere — last value wins,
-  edit only these lines.
-- **Access lost** (log reason `service-account token exchange failed: invalid_grant` = key
-  deleted/disabled or server clock off; `403`/`404` on the calendar = the share was removed):
-  in Google Cloud → IAM → Service accounts create a new JSON key for the same account, put it at
-  the path above (chmod 600), delete the old key; or re-share the Brokers calendar with the
-  service account's email ("Make changes to events"). Then `deploy.sh` and
+  A failed amoCRM or site read aborts the pass — nothing is deleted on a bad read. An event
+  deleted by hand is written again only when the visit changes.
+- **Idempotency** = table `inspection_calendar_events` (sync_key → event_id, hash, status,
+  summary, start_at, last_error; created at boot). The row is marked `creating` BEFORE a create
+  call. A create whose outcome is unknown (timeout, or the 302's reply lost — the script may have
+  written the event) becomes `uncertain` and is **not** created again automatically: look in the
+  calendar (search `ref prop:…`), delete a stray copy if any, then
+  `POST /api/admin/inspection-calendar?apply=1&retry=1`. A script `{ok:false}` is `error` and is
+  retried on the next pass.
+- **Fail soft**: the client returns `{ ok:false, reason }`, never throws, never logs the secret
+  or the URL; the stage pass is never blocked. Unconfigured, the pass logs "Google Calendar
+  webhook not configured" (at most every 6 h) and does nothing.
+- **Env** (values only in `/opt/whatcan/.env`, never printed): `GOOGLE_CALENDAR_WEBHOOK_URL`
+  (the `/exec` URL), `GOOGLE_CALENDAR_WEBHOOK_SECRET`, `GOOGLE_CALENDAR_ID` = the shared
+  "Brokers" calendar (`c_cb134aa7…@group.calendar.google.com`, timezone Asia/Jakarta). New
+  values need `deploy.sh` (it restarts with `--update-env`); `.env` has duplicate keys elsewhere
+  — last value wins, edit only these lines.
+- **When it breaks**: `scenario inactive (Make answered Accepted)` = the scenario is off — turn
+  it on in Make (requests sent while it was off may still be queued there and run later: check
+  the calendar for doubles); `scenario error: …secret…` = the secret differs on the two sides;
+  a Google Calendar module error = info@'s connection in Make expired or lost edit rights on the
+  Brokers calendar (reconnect it in Make → Connections); a 404 on the URL = the webhook was
+  recreated (new `GOOGLE_CALENDAR_WEBHOOK_URL`). Fix, `deploy.sh` if `.env` changed, then
   `POST /api/admin/inspection-calendar/test`.
-- Tools: `POST /api/admin/inspection-calendar` (dry plan; `?apply=1` runs the pass),
-  `GET /api/admin/inspection-calendar/events` (what the calendar holds, from the API),
-  `POST /api/admin/inspection-calendar/test` ([TEST] event: create → read back → delete).
+- Tools: `POST /api/admin/inspection-calendar` (dry plan; `?apply=1` runs the pass; `&retry=1`
+  re-creates `uncertain` rows), `GET /api/admin/inspection-calendar/events` (our table: key,
+  event id, summary, start, status), `POST /api/admin/inspection-calendar/test` ([TEST] event:
+  create → update → delete).
   Log line: `inspection calendar: <action>`.
 
 ### Inspection. done: the agent has been to the villa (2026-09-09) — superseded 14.09, see above

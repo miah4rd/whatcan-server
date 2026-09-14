@@ -1,7 +1,7 @@
 /**
  * Every agreed villa inspection is a note in the shared "Brokers" Google Calendar (owner, 14.09.2026:
  * "вилла такая-то, время такое-то, инспекция. Юди может открывать календарь и сразу смотреть, какие у
- * него сегодня встречи").
+ * него сегодня встречи"). Written through the Make.com webhook in google-calendar.ts.
  *
  * Source: `listing_inspection_slots` (written by listing-progress.ts when a Rental Listings card goes to
  * Inspection sceduled, id 87763170). The current agreement of a card is its latest recorded slot.
@@ -12,13 +12,16 @@
  *
  * The pass (every 5 minutes, and a few seconds after a slot is recorded):
  * - slot visit in the future or at most 1 day past, card in Inspection sceduled or further (live, weekly
- *   check, availability received, won) → the event exists and matches (create / patch);
+ *   check, availability received, won) → the event exists and matches (create / update);
  * - card went back (QUALIFIED, TAKEN TO WORK, Initial Contact), lost / parked, left the funnel, or its
  *   slot disappeared → the event is deleted;
  * - visit more than a day past → the row is retired; the event stays as history.
- * Idempotent: `inspection_calendar_events` holds the event id per key, and before creating, the calendar
- * is searched for the key in the event's private extended properties (whatcanKey), so a lost row never
- * duplicates an event. A failed amoCRM or site read aborts the pass: nothing is deleted on a bad read.
+ *
+ * Idempotency lives in `inspection_calendar_events` (the webhook cannot list or search events): one row
+ * per key with the event id, the body's hash and a status. The row is marked `creating` BEFORE the create
+ * call; a create whose outcome is unknown (timeout, lost reply) becomes `uncertain` and is NOT created
+ * again automatically — a person checks the calendar and re-runs with ?retry=1. A failed amoCRM or site
+ * read aborts the pass: nothing is deleted on a bad read.
  */
 import crypto from "node:crypto";
 import { db } from "@workspace/db";
@@ -30,10 +33,8 @@ import {
   calendarConfig,
   createEvent,
   deleteEvent,
-  getEvent,
-  listEvents,
-  patchEvent,
-  type CalendarEvent,
+  isMissingEventError,
+  updateEvent,
   type CalendarEventBody,
 } from "./google-calendar";
 
@@ -44,7 +45,6 @@ const RECENT_MS = DAY;
 const DURATION_MS = HOUR;
 const SITE = "https://unicorn-properties.com";
 const AMO = "https://unicornproperty.amocrm.ru/leads/detail";
-const SOURCE_TAG = "inspection";
 
 /** Where a card with an agreed visit may sit and still have the visit on the calendar. */
 const KEEP = new Set<number>([
@@ -60,7 +60,7 @@ type StoredRow = { sync_key: string; slot_id: string | null; lead_ids: string | 
 type AmoLead = { id: number; name: string | null; status_id: number; pipeline_id: number };
 
 export type CalendarAction = {
-  action: "create" | "patch" | "unchanged" | "adopt" | "delete" | "retire" | "error" | "skipped";
+  action: "create" | "update" | "unchanged" | "delete" | "retire" | "uncertain" | "error" | "skipped";
   key: string;
   summary?: string;
   start?: string;
@@ -86,6 +86,8 @@ function ensureTable(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`)
+    .then(() => db.execute(sql`ALTER TABLE inspection_calendar_events ADD COLUMN IF NOT EXISTS summary TEXT`))
+    .then(() => db.execute(sql`ALTER TABLE inspection_calendar_events ADD COLUMN IF NOT EXISTS start_at TEXT`))
     .then(() => undefined)
     .catch((err) => {
       ensured = null;
@@ -95,13 +97,12 @@ function ensureTable(): Promise<void> {
 }
 
 const asDate = (v: string | Date | null | undefined) => (v == null ? null : v instanceof Date ? v : new Date(v));
-const enc = encodeURIComponent;
 
-/** Bali is UTC+8 all year: wall-clock parts without Intl. */
-function baliIso(d: Date): { date: string; dateTime: string } {
+/** Bali is UTC+8 all year: wall-clock ISO without Intl. */
+const baliIso = (d: Date) => {
   const b = new Date(d.getTime() + 8 * HOUR).toISOString();
-  return { date: b.slice(0, 10), dateTime: `${b.slice(0, 10)}T${b.slice(11, 16)}:00+08:00` };
-}
+  return `${b.slice(0, 10)}T${b.slice(11, 16)}:00+08:00`;
+};
 const baliHuman = (d: Date) =>
   new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Makassar", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
 
@@ -117,9 +118,7 @@ const CODE_RX = /(?<![A-Za-z0-9-])(R-[A-Za-z]+-\d+)(?![0-9])/g;
 
 type Desired = { key: string; slot: SlotRow; leads: AmoLead[]; body: CalendarEventBody; hash: string; visitAt: Date };
 
-type Plan = { desired: Map<string, Desired>; stored: StoredRow[]; now: Date };
-
-async function buildPlan(): Promise<Plan> {
+async function buildPlan(): Promise<{ desired: Map<string, Desired>; stored: StoredRow[]; now: Date }> {
   await ensureTable();
   const now = new Date();
   const slotsRes = await db.execute(sql`SELECT DISTINCT ON (lead_id) id, lead_id, visit_at, time_known, agreed_at, quote, created_at
@@ -207,7 +206,6 @@ async function buildPlan(): Promise<Plan> {
     const villa = cards.map((c) => villaNameFromCard(c.name)).find(Boolean) ?? prop?.title ?? `card #${slot.lead_id}`;
     const mapUrl = (priv?.google_maps_url ?? "").trim();
     const address = (priv?.exact_address ?? "").trim();
-    const b = baliIso(visitAt);
     const timed = slot.time_known === true;
 
     const lines: string[] = [];
@@ -221,23 +219,14 @@ async function buildPlan(): Promise<Plan> {
     lines.push(`amoCRM card: ${AMO}/${cards[0]!.id}`);
     for (const c of cards.slice(1)) lines.push(`Same villa, another card: ${AMO}/${c.id}`);
     if ((slot.quote ?? "").trim()) lines.push(`Agreed${agreedAt ? ` ${baliHuman(agreedAt)}` : ""}: "${slot.quote!.trim().slice(0, 200)}"`);
-    lines.push("", "Written by whatcan from the card's thread; edits here are overwritten when the visit changes.");
+    lines.push("", `Written by whatcan from the card's thread (ref ${key}); edits here are overwritten when the visit changes.`);
 
     const body: CalendarEventBody = {
       summary: `Inspection — ${villa}${code ? ` (${code})` : ""}${timed ? "" : " — time not fixed"}`,
-      location: mapUrl || address || (prop?.area ?? "").trim() || undefined,
+      location: mapUrl || address || (prop?.area ?? "").trim(),
       description: lines.join("\n"),
-      start: timed ? { dateTime: b.dateTime, timeZone: "Asia/Makassar" } : { date: b.date },
-      end: timed
-        ? { dateTime: baliIso(new Date(visitAt.getTime() + DURATION_MS)).dateTime, timeZone: "Asia/Makassar" }
-        : { date: baliIso(new Date(visitAt.getTime() + DAY)).date },
-      // An all-day note reminds at 17:00 the day before (minutes before its midnight).
-      reminders: { useDefault: false, overrides: timed ? [{ method: "popup", minutes: 60 }, { method: "popup", minutes: 15 }] : [{ method: "popup", minutes: 420 }] },
-      extendedProperties: {
-        private: { whatcanSource: SOURCE_TAG, whatcanKey: key, whatcanSlotId: slot.id, whatcanLeadIds: cards.map((c) => c.id).join(",") },
-      },
-      guestsCanInviteOthers: false,
-      guestsCanSeeOtherGuests: false,
+      start: baliIso(visitAt),
+      end: baliIso(new Date(visitAt.getTime() + DURATION_MS)),
     };
     const hash = crypto.createHash("sha1").update(JSON.stringify(body)).digest("hex");
     desired.set(key, { key, slot, leads: cards, body, hash, visitAt });
@@ -245,60 +234,42 @@ async function buildPlan(): Promise<Plan> {
   return { desired, stored, now };
 }
 
-const startOf = (b: CalendarEventBody) => b.start.dateTime ?? `${b.start.date} (all day)`;
-
-async function saveRow(d: Desired, eventId: string, status = "synced"): Promise<void> {
-  await db.execute(sql`INSERT INTO inspection_calendar_events (sync_key, slot_id, lead_ids, visit_at, event_id, calendar_id, payload_hash, status, last_error, updated_at)
-    VALUES (${d.key}, ${d.slot.id}, ${d.leads.map((l) => l.id).join(",")}, ${d.visitAt.toISOString()}, ${eventId}, ${calendarConfig().calendarId}, ${d.hash}, ${status}, NULL, now())
-    ON CONFLICT (sync_key) DO UPDATE SET slot_id = EXCLUDED.slot_id, lead_ids = EXCLUDED.lead_ids, visit_at = EXCLUDED.visit_at, event_id = EXCLUDED.event_id,
-      calendar_id = EXCLUDED.calendar_id, payload_hash = EXCLUDED.payload_hash, status = EXCLUDED.status, last_error = NULL, updated_at = now()`);
+async function writeRow(d: Desired, status: string, eventId: string | null, error: string | null): Promise<void> {
+  await db.execute(sql`INSERT INTO inspection_calendar_events (sync_key, slot_id, lead_ids, visit_at, event_id, calendar_id, payload_hash, status, last_error, summary, start_at, updated_at)
+    VALUES (${d.key}, ${d.slot.id}, ${d.leads.map((l) => l.id).join(",")}, ${d.visitAt.toISOString()}, ${eventId}, ${calendarConfig().calendarId},
+            ${eventId ? d.hash : null}, ${status}, ${error ? error.slice(0, 500) : null}, ${d.body.summary}, ${d.body.start}, now())
+    ON CONFLICT (sync_key) DO UPDATE SET slot_id = EXCLUDED.slot_id, lead_ids = EXCLUDED.lead_ids, visit_at = EXCLUDED.visit_at,
+      event_id = COALESCE(EXCLUDED.event_id, inspection_calendar_events.event_id), calendar_id = EXCLUDED.calendar_id,
+      payload_hash = COALESCE(EXCLUDED.payload_hash, inspection_calendar_events.payload_hash), status = EXCLUDED.status,
+      last_error = EXCLUDED.last_error, summary = EXCLUDED.summary, start_at = EXCLUDED.start_at, updated_at = now()`);
 }
-async function markRow(key: string, status: string, error: string | null): Promise<void> {
-  await db.execute(sql`UPDATE inspection_calendar_events SET status = ${status}, last_error = ${error}, updated_at = now() WHERE sync_key = ${key}`).catch(() => undefined);
-}
-async function noteError(d: Desired, reason: string): Promise<void> {
+async function markRow(key: string, status: string, error: string | null, clearEvent = false): Promise<void> {
   await db
-    .execute(sql`INSERT INTO inspection_calendar_events (sync_key, slot_id, lead_ids, visit_at, status, last_error)
-      VALUES (${d.key}, ${d.slot.id}, ${d.leads.map((l) => l.id).join(",")}, ${d.visitAt.toISOString()}, 'error', ${reason.slice(0, 500)})
-      ON CONFLICT (sync_key) DO UPDATE SET last_error = EXCLUDED.last_error, updated_at = now()`)
+    .execute(sql`UPDATE inspection_calendar_events SET status = ${status}, last_error = ${error},
+                 event_id = CASE WHEN ${clearEvent ? "1" : "0"} = '1' THEN NULL ELSE event_id END, updated_at = now() WHERE sync_key = ${key}`)
     .catch(() => undefined);
 }
 
-/** Create, or adopt what the calendar already holds for this key (a lost row never duplicates). */
-async function ensureEvent(d: Desired, out: CalendarAction[]): Promise<void> {
-  const base = { key: d.key, summary: d.body.summary, start: startOf(d.body), location: d.body.location, leads: d.leads.map((l) => String(l.id)) };
-  const found = await listEvents({ privateProperty: `whatcanKey=${d.key}` });
-  if (!found.ok) {
-    await noteError(d, found.reason);
-    out.push({ ...base, action: "error", detail: `lookup: ${found.reason}` });
-    return;
-  }
-  const [first, ...extra] = found.data;
-  for (const e of extra) await deleteEvent(e.id);
-  if (first) {
-    const p = await patchEvent(first.id, d.body);
-    if (!p.ok) {
-      await noteError(d, p.reason);
-      out.push({ ...base, action: "error", eventId: first.id, detail: p.reason });
-      return;
-    }
-    await saveRow(d, first.id);
-    out.push({ ...base, action: "adopt", eventId: first.id, detail: extra.length ? `removed ${extra.length} duplicate(s)` : undefined });
-    return;
-  }
+/** Row first, then the call: a crash or a lost reply leaves `creating` / `uncertain`, never a silent second create. */
+async function create(d: Desired, base: CalendarAction, out: CalendarAction[]): Promise<void> {
+  await writeRow(d, "creating", null, null);
   const c = await createEvent(d.body);
-  if (!c.ok) {
-    await noteError(d, c.reason);
+  if (c.ok) {
+    await writeRow(d, "synced", c.data.id, null);
+    out.push({ ...base, action: "create", eventId: c.data.id });
+  } else if (c.transport) {
+    await writeRow(d, "uncertain", null, c.reason);
+    logger.warn({ key: d.key, reason: c.reason }, "inspection calendar: create outcome unknown — not retried automatically, check the calendar");
+    out.push({ ...base, action: "uncertain", detail: `${c.reason} — check the calendar, then ?apply=1&retry=1` });
+  } else {
+    await writeRow(d, "error", null, c.reason);
     out.push({ ...base, action: "error", detail: c.reason });
-    return;
   }
-  await saveRow(d, c.data.id);
-  out.push({ ...base, action: "create", eventId: c.data.id });
 }
 
 let running = false;
 
-export async function syncInspectionCalendar(o: { apply: boolean; reason?: string }): Promise<{ configured: boolean; missing: string[]; actions: CalendarAction[] }> {
+export async function syncInspectionCalendar(o: { apply: boolean; reason?: string; retryUncertain?: boolean }): Promise<{ configured: boolean; missing: string[]; actions: CalendarAction[] }> {
   const cfg = calendarConfig();
   if (o.apply && !cfg.configured) return { configured: false, missing: cfg.missing, actions: [] };
   if (o.apply && running) return { configured: true, missing: [], actions: [{ action: "skipped", key: "*", detail: "a pass is already running" }] };
@@ -310,39 +281,51 @@ export async function syncInspectionCalendar(o: { apply: boolean; reason?: strin
 
     for (const d of desired.values()) {
       const row = storedByKey.get(d.key);
-      const base = { key: d.key, summary: d.body.summary, start: startOf(d.body), location: d.body.location, leads: d.leads.map((l) => String(l.id)) };
-      const live = row && row.event_id && (row.status === "synced" || row.status === "retired");
+      const base: CalendarAction = { action: "skipped", key: d.key, summary: d.body.summary, start: d.body.start, location: d.body.location || undefined, leads: d.leads.map((l) => String(l.id)) };
+      const live = !!row?.event_id && ["synced", "retired", "error"].includes(row.status);
+      // `creating` left by a crash is as unknown as a lost reply.
+      const unknown = !row?.event_id && (row?.status === "uncertain" || row?.status === "creating");
+      if (unknown && !o.retryUncertain) {
+        actions.push({ ...base, action: "uncertain", detail: "an earlier create may have written this event — check the calendar, then ?apply=1&retry=1" });
+        continue;
+      }
       if (live && row!.payload_hash === d.hash) {
         actions.push({ ...base, action: "unchanged", eventId: row!.event_id });
         if (o.apply && row!.status !== "synced") await markRow(d.key, "synced", null);
         continue;
       }
       if (!o.apply) {
-        actions.push({ ...base, action: live ? "patch" : "create", eventId: row?.event_id ?? null });
+        actions.push({ ...base, action: live ? "update" : "create", eventId: row?.event_id ?? null });
         continue;
       }
       if (live) {
-        const p = await patchEvent(row!.event_id!, d.body);
-        if (p.ok) {
-          await saveRow(d, row!.event_id!);
-          actions.push({ ...base, action: "patch", eventId: row!.event_id });
+        const u = await updateEvent(row!.event_id!, d.body);
+        if (u.ok) {
+          await writeRow(d, "synced", u.data.id, null);
+          actions.push({ ...base, action: "update", eventId: u.data.id });
           continue;
         }
-        if (p.status !== 404 && p.status !== 410) {
-          await noteError(d, p.reason);
-          actions.push({ ...base, action: "error", eventId: row!.event_id, detail: p.reason });
+        if (u.transport || !isMissingEventError(u.reason)) {
+          await markRow(d.key, "error", u.reason);
+          actions.push({ ...base, action: "error", eventId: row!.event_id, detail: u.reason });
           continue;
         }
-        // Removed in the calendar by hand: the visit still stands, so it is written again.
+        // Removed in the calendar by hand, and the visit changed since: written again.
+        await markRow(d.key, "error", u.reason, true);
       }
-      await ensureEvent(d, actions);
+      await create(d, base, actions);
     }
 
     for (const row of stored) {
-      if (desired.has(row.sync_key) || row.status === "deleted" || row.status === "retired" || !row.event_id) continue;
+      if (desired.has(row.sync_key) || row.status === "deleted" || row.status === "retired") continue;
       const visitAt = asDate(row.visit_at);
       const aged = !!visitAt && visitAt.getTime() < now.getTime() - RECENT_MS;
-      const base = { key: row.sync_key, start: visitAt?.toISOString(), leads: (row.lead_ids ?? "").split(",").filter(Boolean), eventId: row.event_id };
+      const base: CalendarAction = { action: "skipped", key: row.sync_key, start: visitAt ? baliIso(visitAt) : undefined, leads: (row.lead_ids ?? "").split(",").filter(Boolean), eventId: row.event_id };
+      if (!row.event_id) {
+        actions.push({ ...base, action: row.status === "uncertain" || row.status === "creating" ? "uncertain" : "skipped", detail: "no longer wanted; no event id on record" });
+        if (o.apply) await markRow(row.sync_key, row.status === "uncertain" || row.status === "creating" ? "uncertain" : "deleted", null);
+        continue;
+      }
       if (aged) {
         actions.push({ ...base, action: "retire", detail: "visit more than a day past — event kept as history" });
         if (o.apply) await markRow(row.sync_key, "retired", null);
@@ -355,9 +338,10 @@ export async function syncInspectionCalendar(o: { apply: boolean; reason?: strin
       if (!r.ok) actions[actions.length - 1] = { ...actions[actions.length - 1]!, action: "error", detail: r.reason };
     }
 
-    const changed = actions.filter((a) => a.action !== "unchanged");
-    if (o.apply && changed.length) {
-      for (const a of changed) logger.info({ key: a.key, eventId: a.eventId, leads: a.leads, start: a.start, reason: o.reason }, `inspection calendar: ${a.action} ${a.summary ?? ""} ${a.detail ?? ""}`.trim());
+    if (o.apply) {
+      for (const a of actions.filter((x) => x.action !== "unchanged")) {
+        logger.info({ key: a.key, eventId: a.eventId, leads: a.leads, start: a.start, reason: o.reason }, `inspection calendar: ${a.action} ${a.summary ?? ""} ${a.detail ?? ""}`.trim());
+      }
     }
     return { configured: cfg.configured, missing: cfg.missing, actions };
   } finally {
@@ -384,7 +368,7 @@ export function startInspectionCalendarSync(): void {
     if (!cfg.configured) {
       if (Date.now() - warnedAt > 6 * HOUR) {
         warnedAt = Date.now();
-        logger.warn({ missing: cfg.missing }, "inspection calendar: Google Calendar not configured — pass skipped");
+        logger.warn({ missing: cfg.missing }, "inspection calendar: Google Calendar webhook not configured — pass skipped");
       }
       return;
     }
@@ -395,47 +379,35 @@ export function startInspectionCalendarSync(): void {
   setInterval(tick, PASS_EVERY_MS);
 }
 
-/** What the calendar holds from this sync (read back from the API). */
-export async function inspectionEventsFromCalendar(days = 60): Promise<{ ok: boolean; reason?: string; events: Array<{ id: string; summary: string; start: string; location?: string; key?: string }> }> {
-  const r = await listEvents({ privateProperty: `whatcanSource=${SOURCE_TAG}`, timeMin: new Date(Date.now() - 2 * DAY), timeMax: new Date(Date.now() + days * DAY) });
-  if (!r.ok) return { ok: false, reason: r.reason, events: [] };
-  return {
-    ok: true,
-    events: r.data.map((e: CalendarEvent) => ({
-      id: e.id,
-      summary: e.summary,
-      start: e.start?.dateTime ?? `${e.start?.date} (all day)`,
-      location: e.location,
-      key: e.extendedProperties?.private?.["whatcanKey"],
-    })),
-  };
+/** The webhook cannot list events: what this sync wrote, from our table. */
+export async function inspectionEventsFromCalendar(): Promise<Record<string, unknown>> {
+  await ensureTable();
+  const rows = await db.execute(sql`SELECT sync_key, event_id, summary, start_at, status, lead_ids, last_error, updated_at
+                                    FROM inspection_calendar_events ORDER BY start_at DESC NULLS LAST`);
+  return { configured: calendarConfig().configured, events: rows.rows ?? [] };
 }
 
-/** One clearly marked TEST event: create → read back → delete → read again. */
+/** One clearly marked TEST event through the webhook: create → update (the id resolves) → delete. */
 export async function calendarSelfTest(): Promise<Record<string, unknown>> {
   const cfg = calendarConfig();
   if (!cfg.configured) return { ok: false, reason: `not configured: ${cfg.missing.join(", ")} missing` };
-  const at = new Date(Date.now() + 2 * DAY);
-  const b = baliIso(at);
-  const start = `${b.date}T06:00:00+08:00`;
-  const end = `${b.date}T06:15:00+08:00`;
-  const created = await createEvent({
+  const day = new Date(Date.now() + 2 * DAY);
+  const date = baliIso(day).slice(0, 10);
+  const body: CalendarEventBody = {
     summary: "[TEST] whatcan calendar check — safe to delete",
-    description: "Created and deleted automatically by whatcan to verify the Google Calendar connection.",
-    start: { dateTime: start, timeZone: "Asia/Makassar" },
-    end: { dateTime: end, timeZone: "Asia/Makassar" },
-    reminders: { useDefault: false, overrides: [] },
-    extendedProperties: { private: { whatcanSource: "selftest", whatcanKey: `selftest:${Date.now()}` } },
-  });
+    description: "Created and deleted automatically by whatcan to verify the calendar connection.",
+    location: "",
+    start: `${date}T06:00:00+08:00`,
+    end: `${date}T06:15:00+08:00`,
+  };
+  const created = await createEvent(body);
   if (!created.ok) return { ok: false, step: "create", reason: created.reason };
-  const read = await getEvent(created.data.id);
-  const del = await deleteEvent(created.data.id);
-  const after = await getEvent(created.data.id);
+  const updated = await updateEvent(created.data.id, { ...body, summary: `${body.summary} (updated)` });
+  const deleted = await deleteEvent(created.data.id);
   return {
-    ok: read.ok && del.ok && (!after.ok ? true : after.data.status === "cancelled"),
-    created: { id: created.data.id, summary: created.data.summary, start: created.data.start },
-    readBack: read.ok ? { summary: read.data.summary, start: read.data.start, status: read.data.status } : { error: read.reason },
-    deleted: del.ok ? true : del.reason,
-    afterDelete: after.ok ? { status: after.data.status } : { status: after.status, reason: after.reason },
+    ok: updated.ok && deleted.ok,
+    created: { id: created.data.id, start: body.start },
+    updated: updated.ok ? { id: updated.data.id } : updated.reason,
+    deleted: deleted.ok ? true : deleted.reason,
   };
 }
