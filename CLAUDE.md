@@ -1163,6 +1163,12 @@ responsible user, it is field 967477, and it is decided at the send:
   out whether a fresh WAhelp line reports numbers it cannot resolve as "not
   installed" (resend one of the four from 59537 and see if it arrives), and do
   not let a line-2 notice close a card until then.
+- **Re-test from line 1 (owner, 14.09).** `POST /api/admin/line-retest?lead=&line=59537[&apply=1]`
+  repeats a card's first message from another line, only for a card that
+  carries the not-installed notice; stamped kind `line-retest`, no stage/task
+  changes. Run on 23549075, 23555637, 23549071, 23537919. Arrives from 59537 →
+  line 2 misreports and needs fixing in WAhelp; notice again → the scout picks
+  numbers without WhatsApp.
 - Two traps that made the second line reply from the first: the timeline sync
   wrote the line NAME into 967477 and `mapNameToSourceId` prefix-matched
   "Yudi 2" as "Yudi"; and the reassignment guard compared names, so "Yudi 2"
