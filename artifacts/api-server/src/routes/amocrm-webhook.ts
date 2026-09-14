@@ -18,7 +18,7 @@ import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
 import { isHosTrackedPipeline } from "../lib/adaptive-followup";
 import { movesStageOnReply } from "../lib/pipelines";
-import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments, attachedVillasBlock, allAttachmentsNamed, applyViewingPush } from "../lib/generate-suggestion";
+import { pickPropertyAttachmentsDetailed, buildPromptAdditions, attachedVillasBlock, applyViewingPush, enforceRequestOnDraft, nothingInsideRequest } from "../lib/generate-suggestion";
 import { getMergedDialog } from "../lib/merged-conversation";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
@@ -161,26 +161,13 @@ IMPORTANT: Do NOT include property links or listings in this follow-up. The brok
 
 Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
-  // Name, inventory truth and the "links ride along with this message" rule —
-  // shared with lib/generate-suggestion so this copy can't drift again.
-  const promptAdditions = await buildPromptAdditions({
-    isRental,
-    dialogMessages: dialog.messages,
-    lastLeadText,
-    leadNotes: opts.leadNotes ?? null,
-    responsibleUser: opts.responsibleUser ?? null,
-    leadId: opts.leadId,
-    leadStage: opts.leadStage ?? null,
-    kind: opts.kind,
-  });
-
-  // Shared picker — already-sent exclusion, current area/bedroom criteria, and
-  // the "lead already chose a villa" gate all live in ONE place. The bare
-  // matchProperties call that used to sit here is why this path kept
-  // re-attaching the same two already-sent listings whatever the lead asked.
-  // And it runs BEFORE the writer, so the writer is told the exact villas —
-  // see lib/generate-suggestion for why order is the whole fix.
-  const attachments = await pickPropertyAttachments({
+  // Links FIRST, then words, and the client's request decides which links
+  // exist at all — the same shared picker, prompt block and final draft check
+  // as lib/generate-suggestion (pickPropertyAttachmentsDetailed →
+  // buildPromptAdditions({ shortlist }) → enforceRequestOnDraft), so this copy
+  // cannot drift again. The bare matchProperties call that once sat here kept
+  // re-attaching two already-sent listings whatever the lead asked.
+  const picked = await pickPropertyAttachmentsDetailed({
     leadId: opts.leadId,
     brokerId: opts.responsibleUser,
     isRental,
@@ -192,20 +179,30 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     leadNotes: opts.leadNotes ?? null,
   });
 
+  const promptAdditions = await buildPromptAdditions({
+    isRental,
+    dialogMessages: dialog.messages,
+    lastLeadText,
+    leadNotes: opts.leadNotes ?? null,
+    responsibleUser: opts.responsibleUser ?? null,
+    leadId: opts.leadId,
+    leadStage: opts.leadStage ?? null,
+    kind: opts.kind,
+    shortlist: picked,
+  });
+
   const completion = await chatCompletion({
     model: WRITER_MODEL,
     label: "draft",
     system: systemPrompt,
     ...(cachePrefix ? { cachePrefix } : {}),
-    messages: [{ role: "user", content: prompt + promptAdditions + attachedVillasBlock(attachments) }],
+    messages: [{ role: "user", content: prompt + promptAdditions + attachedVillasBlock(picked.attachments) }],
     max_tokens: 400,
   });
 
   const draft = sanitizeSuggestion(completion.content);
-  const named = allAttachmentsNamed(draft, attachments);
-  if (!named) logger.warn({ leadId: opts.leadId }, "webhook draft did not name every attached villa — forcing rewrite");
-  let text = await reconcileTextWithAttachments(draft, attachments, !named);
-  text = await applyViewingPush(text, attachments, {
+  const checked = await enforceRequestOnDraft({ leadId: opts.leadId, text: draft, attachments: picked.attachments, picked });
+  const text = nothingInsideRequest(picked) ? checked.text : await applyViewingPush(checked.text, checked.attachments, {
     leadId: opts.leadId,
     pipeline: opts.pipeline,
     leadStage: opts.leadStage,
@@ -215,7 +212,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     lastLeadText,
   });
 
-  return { text, attachments };
+  return { text, attachments: checked.attachments };
 }
 
 export async function queueSuggestion(opts: {

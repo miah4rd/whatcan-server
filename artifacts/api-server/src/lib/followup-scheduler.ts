@@ -11,7 +11,7 @@ import { shouldSuppressPush, isStageWhitelisted } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whitelist";
 import { getMergedConversation, getMergedDialog } from "./merged-conversation";
 import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
-import { generateSuggestion, pickPropertyAttachments, reconcileTextWithAttachments, type GeneratedSuggestion, allAttachmentsNamed, applyViewingPush, viewingPushPromptBlock, type ViewingPushContext } from "./generate-suggestion";
+import { generateSuggestion, pickPropertyAttachmentsDetailed, shortlistPromptBlock, enforceRequestOnDraft, nothingInsideRequest, type PickedAttachments, type GeneratedSuggestion, applyViewingPush, viewingPushPromptBlock, type ViewingPushContext } from "./generate-suggestion";
 import { isAdaptiveBroker, isHosTrackedPipeline } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
@@ -160,13 +160,13 @@ async function followupListings(opts: {
   leadNotes: string | null;
   messages: Awaited<ReturnType<typeof getMergedDialog>>["messages"];
   formattedDialog: string;
-}): Promise<{ attachments: GeneratedSuggestion["attachments"]; brief: string }> {
+}): Promise<{ attachments: GeneratedSuggestion["attachments"]; brief: string; picked: PickedAttachments | null }> {
   // Acquiring listings from owners is not a shortlist conversation at all.
   if (isListingAcquisitionPipeline(opts.pipeline)) {
-    return { attachments: [], brief: "" };
+    return { attachments: [], brief: "", picked: null };
   }
   const lastLeadText = [...opts.messages].reverse().find((m) => m.from === "lead")?.text ?? "";
-  const attachments = await pickPropertyAttachments({
+  const picked: PickedAttachments = await pickPropertyAttachmentsDetailed({
     leadId: opts.leadId,
     brokerId: opts.responsibleUser,
     isRental: (opts.pipeline ?? "").trim().toLowerCase() === "rental",
@@ -178,8 +178,13 @@ async function followupListings(opts: {
     leadNotes: opts.leadNotes,
   }).catch((err) => {
     logger.warn({ err, leadId: opts.leadId }, "followup property matcher threw — writing without listings");
-    return [] as GeneratedSuggestion["attachments"];
+    return { attachments: [], outcome: null, skipped: false, excludeIds: [] } as PickedAttachments;
   });
+  const attachments = picked.attachments;
+  // The request the links passed — or, with nothing inside it, the honest
+  // "nothing exactly within your request" and ONE question (same block as
+  // every LIVE draft).
+  const requestBlock = shortlistPromptBlock(picked);
 
   const brief = attachments.length
     ? `
@@ -191,7 +196,7 @@ Name each of them and say which area it is in. Quote only the prices above, neve
 
 YOU HAVE NO PROPERTY LINKS TO ATTACH TO THIS MESSAGE. Nothing will arrive after it. So do not write "here are", "below", "attached", "these options", "any of these", and do not promise to send or prepare anything — whatever you offer here would reach the client empty. Referring back to villas you already sent EARLIER in the conversation above is fine, and naming them is better than "the options I sent".`;
 
-  return { attachments, brief };
+  return { attachments, brief: brief + requestBlock, picked };
 }
 
 export async function generateFollowup(opts: {
@@ -241,7 +246,8 @@ export async function generateFollowup(opts: {
     responsibleUser: opts.responsibleUser,
     kind: "push",
   };
-  const pushBlock = await viewingPushPromptBlock(pushCtx);
+  // Nothing inside the request exists at all: no viewing to push, one question only.
+  const pushBlock = nothingInsideRequest(listings.picked) ? "" : await viewingPushPromptBlock(pushCtx);
 
   // Classify objection to decide which attachments to suggest.
   // The classification does NOT dictate the message text — it only selects
@@ -299,16 +305,14 @@ Write the follow-up message.`,
   // Same safety net the LIVE path has: the words must match the links that
   // will actually arrive, not the ones the writer imagined.
   const written1 = sanitizeSuggestion(completion.content);
-  const reconciled1 = await reconcileTextWithAttachments(
-    written1,
-    listings.attachments,
-    !allAttachmentsNamed(written1, listings.attachments),
-  );
-  const text = await applyViewingPush(reconciled1, listings.attachments, pushCtx);
+  // The same final check as every LIVE draft: links inside the request and
+  // published, the text naming exactly them (count included), nothing else.
+  const checked1 = await enforceRequestOnDraft({ leadId: opts.leadId, text: written1, attachments: listings.attachments, picked: listings.picked });
+  const text = nothingInsideRequest(listings.picked) ? checked1.text : await applyViewingPush(checked1.text, checked1.attachments, pushCtx);
 
   const rationale = `Follow-up #${opts.followupLevel} — context-aware. Situation tactic: ${entry.label}.`;
 
-  return { text, entry, rationale, formattedDialog, attachments: listings.attachments };
+  return { text, entry, rationale, formattedDialog, attachments: checked1.attachments };
 }
 
 /**
@@ -363,7 +367,8 @@ export async function generatePushFollowup(opts: {
     responsibleUser: opts.responsibleUser,
     kind: "push",
   };
-  const pushBlock = await viewingPushPromptBlock(pushCtx);
+  // Nothing inside the request exists at all: no viewing to push, one question only.
+  const pushBlock = nothingInsideRequest(listings.picked) ? "" : await viewingPushPromptBlock(pushCtx);
 
   const leadContext = opts.leadNotes?.trim()
     ? `\nLead card notes: ${opts.leadNotes.trim()}`
@@ -416,17 +421,13 @@ STYLE:
   });
 
   const written2 = sanitizeSuggestion(completion.content);
-  const reconciled2 = await reconcileTextWithAttachments(
-    written2,
-    listings.attachments,
-    !allAttachmentsNamed(written2, listings.attachments),
-  );
-  const text = await applyViewingPush(reconciled2, listings.attachments, pushCtx);
+  const checked2 = await enforceRequestOnDraft({ leadId: opts.leadId, text: written2, attachments: listings.attachments, picked: listings.picked });
+  const text = nothingInsideRequest(listings.picked) ? checked2.text : await applyViewingPush(checked2.text, checked2.attachments, pushCtx);
   const rationale = isCold
     ? `PUSH — re-engagement (${opts.trailingUnanswered} unanswered touches), stage "${opts.leadStage}".`
     : `PUSH — adaptive follow-up, stage "${opts.leadStage}".`;
 
-  return { text, rationale, attachments: listings.attachments };
+  return { text, rationale, attachments: checked2.attachments };
 }
 
 /**

@@ -3,6 +3,7 @@ import { eq, and, isNotNull, desc } from "drizzle-orm";
 import { HELPER_MODEL, chatCompletionJSON } from "./ai-client";
 import { parseDialogContent, formatDialogForAI } from "./dialog-parser";
 import { getLeadCardCriteria } from "./lead-card-fields";
+import { resolveClientRequest } from "./property-catalog";
 import { syncRequestToAmoCard } from "./amo-request-fields";
 import { logger } from "./logger";
 
@@ -230,7 +231,7 @@ Fields:
 - openQuestion: true if the lead asked a real question that was never properly answered.
 - alive: "alive" | "dead_candidate" (per the rule above).
 - summary: 1-2 lines capturing the essence of this lead (who they are, what they want, where it stands).
-- request: an object holding what this client concretely asked for. Use null (and [] for areas) for anything they have NOT said. NEVER guess, never fill in a typical case — the broker reads this to remember a real person.
+- request: an object holding what this client concretely asked for, in THEIR OWN messages. Never take a size, an area or a price from a villa the broker offered them. Use null (and [] for areas) for anything they have NOT said. NEVER guess, never fill in a typical case — the broker reads this to remember a real person.
   - pax: how many people will actually live there, as an integer. "me and my wife" is 2, "family of four" is 4. This is people, NOT bedrooms.
   - bedrooms: how many bedrooms they want, as an integer. If they gave a range, use the lower number.
   - areas: array of the Bali areas or districts they named, e.g. ["Canggu", "Umalas"]. Empty array if none.
@@ -283,17 +284,52 @@ Respond with ONLY the JSON object.${calibrationBlock}`,
   // this codebase: what the client SAYS beats what a form once recorded, so the
   // card only fills what the conversation left blank. One extra API call, and
   // only when there is actually a gap to fill.
-  if (request.bedrooms === null || request.areas.length === 0 || request.budgetIdrMonthly === null) {
-    try {
-      const card = await getLeadCardCriteria(opts.leadId);
-      request = {
-        ...request,
-        bedrooms: request.bedrooms ?? card.bedrooms,
-        areas: request.areas.length > 0 ? request.areas : card.areas,
-        budgetIdrMonthly: request.budgetIdrMonthly ?? card.budgetIdrMonthly,
-      };
-    } catch {
-      // non-fatal — no card data simply means we know less
+  //
+  // Bedrooms, area and budget come from the ONE request reader the matcher uses
+  // (resolveClientRequest in property-catalog.ts): the client's own messages,
+  // the form, the scout's notes — never our own messages and never a villa we
+  // sent. Distilled from the whole conversation, these fields used to store a
+  // villa WE offered as the client's request (23278945: budget 24.2M = the
+  // cheapest villa sent; 23407509: "2BR / 30M" for a client asking strictly
+  // 4 bedrooms). The clicked ad villa is not passed: it is a signal for the
+  // shortlist, not something the client stated, and these fields say what the
+  // client stated. Only if that read fails does the old gap-fill stand.
+  try {
+    const card = await getLeadCardCriteria(opts.leadId).catch(() => null);
+    const [row] = await db
+      .select({ pipeline: leadsSyncTable.pipeline })
+      .from(leadsSyncTable)
+      .where(eq(leadsSyncTable.leadId, opts.leadId))
+      .limit(1);
+    const isRental = (row?.pipeline ?? "").trim().toLowerCase() === "rental";
+    const resolved = await resolveClientRequest({
+      listingType: isRental ? "rent" : "sale",
+      leadMessages: parsed.messages.filter((m) => m.from === "lead").map((m) => m.text).reverse(),
+      cardCriteria: card ? { bedrooms: card.bedrooms, areas: card.areas, budgetIdrMonthly: card.budgetIdrMonthly } : null,
+      cardAnswers: card?.answers ?? null,
+      cardBudgetTexts: card?.budgetTexts ?? [],
+      leadNotes: opts.leadNotes ?? null,
+    });
+    request = {
+      ...request,
+      bedrooms: resolved.bedroomsMin,
+      areas: resolved.areas,
+      budgetIdrMonthly: isRental ? resolved.budgetMaxIdr : request.budgetIdrMonthly,
+    };
+  } catch (err) {
+    logger.warn({ err, leadId: opts.leadId }, "lead-profile: request reader failed — falling back to the profile's own read plus the form");
+    if (request.bedrooms === null || request.areas.length === 0 || request.budgetIdrMonthly === null) {
+      try {
+        const card = await getLeadCardCriteria(opts.leadId);
+        request = {
+          ...request,
+          bedrooms: request.bedrooms ?? card.bedrooms,
+          areas: request.areas.length > 0 ? request.areas : card.areas,
+          budgetIdrMonthly: request.budgetIdrMonthly ?? card.budgetIdrMonthly,
+        };
+      } catch {
+        // non-fatal — no card data simply means we know less
+      }
     }
   }
 

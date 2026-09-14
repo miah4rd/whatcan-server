@@ -70,6 +70,10 @@ export type SupabaseProperty = {
   /** Set when the villa is occupied today: the first date it is free again.
    *  Null means free now. Filled from property_availability, never from Supabase. */
   free_from?: string | null;
+  /** The listing's own minimum stay (site field). */
+  min_stay_months?: number | null;
+  /** Occupied / rented periods that have not ended yet (ISO dates, inclusive). */
+  busy?: Array<{ start: string; end: string }>;
 };
 
 export type PropertyMatch = {
@@ -122,7 +126,7 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
 
   const url =
     `${SUPABASE_URL}/rest/v1/properties` +
-    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,created_at` +
+    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,created_at,min_stay_months` +
     `&is_draft=eq.false` +
     `&status=neq.sold` +
     `&order=created_at.desc`;
@@ -229,8 +233,12 @@ async function applyAvailability(rows: SupabaseProperty[]): Promise<SupabaseProp
   // when it frees up. Offerability is decided per shortlist instead
   // (offerableNow), which is the only place it actually matters.
   return rows.map((row) => {
-    const free = freeFromOf(byVilla.get(row.id) ?? [], todayIso);
-    return free ? { ...row, free_from: free } : row;
+    const periods = byVilla.get(row.id) ?? [];
+    const free = freeFromOf(periods, todayIso);
+    const busy = periods
+      .filter((p) => (p.status === "occupied" || p.status === "rented") && p.start_date && p.end_date && (p.end_date as string) >= todayIso)
+      .map((p) => ({ start: p.start_date as string, end: p.end_date as string }));
+    return { ...row, ...(free ? { free_from: free } : {}), ...(busy.length ? { busy } : {}) };
   });
 }
 
@@ -548,132 +556,6 @@ function extractLeadCriteriaRegex(
   }
 
   return { areas, bedrooms, bedroomsMax };
-}
-
-/**
- * Pull the lead's CURRENT area / bedroom requirements out of their own recent
- * messages, newest first, so a mid-conversation change wins outright.
- *
- * Reading what someone asked for is exactly the kind of thing a model is good
- * at — this used to be regex, and every new way of phrasing a range ("1BR or
- * 2BR" vs "3 or 4 bedrooms" vs "1-2 bedroom") needed its own pattern added by
- * hand, forever. What stays code is what happens AFTER extraction: the
- * min/max filter, the budget ceiling/floor, never inventing a price — the
- * places this codebase has repeatedly found the model can understand a rule
- * correctly and still not apply it. Reading intent and enforcing a limit are
- * different jobs; only the second one needs to be code.
- */
-async function extractLeadCriteria(
-  recentLeadMessages: string[],
-  pool: SupabaseProperty[],
-): Promise<{ areas: string[]; bedrooms: number | null; bedroomsMax: number | null }> {
-  const nonEmpty = recentLeadMessages.filter((m) => (m ?? "").trim());
-  if (nonEmpty.length === 0) return { areas: [], bedrooms: null, bedroomsMax: null };
-
-  // Vocabulary is the site's own area list (parents AND sub-areas), not just the
-  // strings that happen to appear in the catalog — a lead saying "Uluwatu" must
-  // be understood even when every Uluwatu listing is tagged Pecatu or Bingin.
-  const areaVocab = [...new Set([...allAreaNames(), ...pool.map((p) => (p.area ?? "").trim())])].filter(Boolean);
-
-  try {
-    const result = await chatCompletionJSON<{
-      areas?: string[];
-      bedrooms_min?: number | null;
-      bedrooms_max?: number | null;
-    }>({
-      model: HELPER_MODEL,
-      label: "lead-criteria",
-      system: `You read a real-estate client's own messages (or a broker's instruction about them) and extract what property they're asking for. Messages are listed NEWEST FIRST — if the requirement changed partway through the conversation ("actually, let's look at Uluwatu instead"), the newest statement wins outright over anything said earlier.
-
-Valid area names (use these spellings, nothing else — map whatever the client said to the closest match, or omit if nothing matches):
-${areaVocab.join(", ")}
-
-Return JSON with exactly these keys:
-- "areas": array of area names from the list above the client wants, newest statement wins. Empty if none mentioned.
-- "bedrooms_min": the bedroom count they asked for. If they gave a range ("1-2BR", "1BR or 2BR", "one to two bedrooms", "studio to 1BR" → 0), this is the LOWER end. If they gave one number, this is that number. Null if no bedroom count was stated.
-- "bedrooms_max": the UPPER end of a stated range. Null when they gave a single number, not a range.
-
-Be literal — do not infer a count or area the client didn't actually say.`,
-      messages: [{ role: "user", content: nonEmpty.slice(0, 10).join("\n---\n").slice(0, 3000) }],
-      max_tokens: 200,
-      temperature: 0,
-    });
-
-    const areas = (result.areas ?? [])
-      .map((a) => areaVocab.find((k) => k.toLowerCase() === String(a).toLowerCase()))
-      .filter((a): a is string => !!a);
-    const min =
-      typeof result.bedrooms_min === "number" && result.bedrooms_min > 0 ? Math.round(result.bedrooms_min) : null;
-    const max =
-      typeof result.bedrooms_max === "number" && result.bedrooms_max > 0 ? Math.round(result.bedrooms_max) : null;
-
-    return {
-      areas,
-      bedrooms: min,
-      // A max below the min, or a max with no min, isn't a valid range — treat
-      // it as if only one number was given rather than passing along garbage.
-      bedroomsMax: min !== null && max !== null && max > min ? max : null,
-    };
-  } catch (err) {
-    logger.warn({ err }, "extractLeadCriteria: AI extraction failed, falling back to pattern matching");
-    return extractLeadCriteriaRegex(recentLeadMessages, pool);
-  }
-}
-
-/**
- * How much stock actually exists for what the lead just asked for.
- *
- * Deterministic and cheap (cached catalog, no AI), so the reply can be written
- * KNOWING the answer instead of promising a shortlist that doesn't exist. A
- * lead asking for "Seminyak only" got "I've got a few in mind" while the
- * catalog held zero Seminyak listings — the matcher knew, the message didn't,
- * because the two run in parallel.
- */
-export async function availabilityForCriteria(opts: {
-  listingType: ListingType;
-  recentLeadMessages: string[];
-}): Promise<{ areas: string[]; bedrooms: number | null; matching: number; nearbyAreas: string[] } | null> {
-  const all = await fetchAllProperties();
-  // The stock line tells the client what we can offer them, so it must count
-  // only what is actually offerable — a villa free in a year is not stock.
-  const pool = all.filter((p) => p.listing_type === opts.listingType && offerableNow(p));
-  if (pool.length === 0) return null;
-
-  const { areas, bedrooms, bedroomsMax } = await extractLeadCriteria(opts.recentLeadMessages, pool);
-  if (areas.length === 0 && bedrooms === null) return null;
-
-  let matching = pool;
-  if (areas.length > 0) {
-    // Hierarchy-aware: "Uluwatu" must count listings tagged Pecatu, Bingin, etc.
-    matching = matching.filter((p) => areaMatches(p.area, areas));
-  }
-  if (bedrooms !== null) {
-    // A stated range ("1-2BR") counts stock across the whole range — exact-match
-    // here undercounted a range down to just its floor, so the prompt told the
-    // model "not much stock" while the shortlist below it (matchProperties,
-    // which does read the range) filled fine.
-    matching =
-      bedroomsMax !== null
-        ? matching.filter((p) => p.bedrooms !== null && p.bedrooms >= bedrooms && p.bedrooms <= bedroomsMax)
-        : matching.filter((p) => p.bedrooms === bedrooms);
-  }
-
-  // What we could honestly OFFER instead when their area comes up empty: the
-  // same size in a genuinely adjacent district. Offered in words only — the
-  // shortlist stays empty, nothing from another area rides along unasked.
-  const sizeFits = (p: SupabaseProperty) =>
-    bedrooms === null ||
-    (bedroomsMax !== null
-      ? p.bedrooms !== null && p.bedrooms >= bedrooms && p.bedrooms <= bedroomsMax
-      : p.bedrooms === bedrooms);
-  const nearby =
-    matching.length === 0 && areas.length > 0
-      ? [...new Set(areas.flatMap((a) => neighbourAreas(a)))].filter((n) =>
-          pool.some((p) => areaMatches(p.area, [n]) && sizeFits(p)),
-        )
-      : [];
-
-  return { areas, bedrooms, matching: matching.length, nearbyAreas: nearby.slice(0, 6) };
 }
 
 /**
@@ -1035,50 +917,630 @@ function dedupeByTitle(list: SupabaseProperty[]): SupabaseProperty[] {
   });
 }
 
-/**
- * The owner's criteria hierarchy, stated as system law: BEDROOMS, AREA, BUDGET
- * are the core — everything else (style, features, views) is secondary. A lead
- * who arrived from a listing ad has told us the core WITHOUT words: the villa
- * they clicked carries the bedrooms and the district. Those fill any criterion
- * the client has not stated themselves — their own words always override.
- */
-function inheritCriteriaFromAnchor(
-  criteria: { areas: string[]; bedrooms: number | null },
-  recentLeadMessages: string[],
-  pool: SupabaseProperty[],
-): void {
-  if (criteria.bedrooms !== null && criteria.areas.length > 0) return;
-  const ids = new Set(
-    recentLeadMessages.flatMap((m) =>
-      Array.from((m ?? "").matchAll(/\/property\/([A-Za-z0-9-]+)/gi)).map((x) => x[1]!.toUpperCase()),
-    ),
-  );
-  if (ids.size === 0) return;
-  const anchor = pool.find((p) => ids.has(p.id.toUpperCase()));
-  if (!anchor) return;
-  if (criteria.bedrooms === null && anchor.bedrooms) {
-    criteria.bedrooms = anchor.bedrooms;
-  }
-  if (criteria.areas.length === 0 && anchor.area) {
-    const parent = parentAreaOf(anchor.area);
-    if (parent) criteria.areas = [parent];
-  }
-  logger.info(
-    { anchor: anchor.id, bedrooms: criteria.bedrooms, areas: criteria.areas },
-    "criteria inherited from the villa the lead came in on",
-  );
-}
-
 /** A shortlist of one is a take-it-or-leave-it, not a choice. Never send fewer. */
 const MIN_SHORTLIST = 2;
 
+// ── The client's request: ONE definition, ONE filter (owner, 2026-09-14) ─────
+//
+// «Почему наш бот всё ещё отправляет не по запросу? Количество комнат, бюджет
+// и район — это основа запроса, и предлагать нужно только в нём.»
+//
+// Every path that puts a villa in front of a client reads the request from
+// resolveClientRequest and judges each villa with requestMisfits — the
+// shortlist builders below (matchProperties for every bot draft,
+// candidatesForLead for the edit path's composer), the prompt's inventory
+// line, and the final check on a finished draft (enforceRequestOnDraft in
+// generate-suggestion.ts). Before this the same idea lived in five copies
+// that disagreed: extractLeadCriteria + matchProperties (a +15% budget
+// "headroom", anchor alternatives at ±1 bedroom and any area),
+// candidatesForLead (its own filter), availabilityForCriteria (a third count
+// for the prompt), criteriaFromListing (a budget INVENTED as the clicked
+// villa's price × 1.15) and pickPropertyAttachments (the clicked villa
+// attached "fit or not", including one let until October 2027). Nothing read
+// the move-in date, the stay length or a listing's minimum stay, and a
+// client's "minimum 3 bedrooms" was read as exactly 3.
+
+export type RequestSource = "broker" | "client" | "form" | "notes" | "clicked" | null;
+
+export type ClientRequest = {
+  bedroomsMin: number | null;
+  /** Upper end of a stated range; null for a single count or an open "minimum N". */
+  bedroomsMax: number | null;
+  /** "minimum 3", "3+", "at least 3" — and the size of a clicked villa, which is a floor. */
+  bedroomsAtLeast: boolean;
+  /** Areas as the client named them — the site's names, or the client's own spelling for a place the site does not list (it then matches nothing). */
+  areas: string[];
+  /** The client (or broker) said nearby areas also work. Only then do neighbours count. */
+  nearbyOk: boolean;
+  /** The broker lifted the area filter on an edit ("look elsewhere"). */
+  releaseArea: boolean;
+  /** Client-facing monthly price ceiling, rupiah. No headroom is ever added. */
+  budgetMaxIdr: number | null;
+  budgetMinIdr: number | null;
+  /** ISO date. */
+  moveIn: string | null;
+  stayMonths: number | null;
+  sources: { bedrooms: RequestSource; areas: RequestSource; budget: RequestSource; moveIn: RequestSource; stay: RequestSource };
+};
+
+export type RequestInputs = {
+  listingType: ListingType;
+  /** The CLIENT's own messages, newest first. Never ours. */
+  leadMessages: string[];
+  /** The broker's instructions while editing a draft, newest first. */
+  brokerInstructions?: string[];
+  /** Parsed answers from the ad form on the amoCRM card. */
+  cardCriteria?: { bedrooms: number | null; areas: string[]; budgetIdrMonthly: number | null } | null;
+  /** The same answers as the client typed them. */
+  cardAnswers?: { bedrooms: string | null; areas: string | null; budget: string | null; moveIn: string | null; notes: string | null } | null;
+  cardBudgetTexts?: string[];
+  /** Card notes — the scout's summary of the client's own post lives here. */
+  leadNotes?: string | null;
+  /** The villa an ad lead clicked: fills bedrooms (as a floor) and area only when nobody stated them. Never a budget. */
+  clickedListingId?: string | null;
+};
+
+export function requestHasCore(r: ClientRequest | null | undefined): boolean {
+  return !!r && (r.bedroomsMin !== null || r.areas.length > 0 || r.budgetMaxIdr !== null);
+}
+
+function millions(v: number): string {
+  const m = v / 1_000_000;
+  return `Rp ${m % 1 === 0 ? m.toFixed(0) : m.toFixed(1)} million`;
+}
+
+function dayLabel(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${d.getUTCDate()} ${MON[d.getUTCMonth()]}`;
+}
+
+function baliTodayIso(): string {
+  return new Date(Date.now() + 8 * 3_600_000).toISOString().slice(0, 10);
+}
+
+function addMonthsIso(iso: string, months: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + Math.max(1, Math.round(months)));
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** The request in one line — for logs, the broker and the writer's prompt. */
+export function describeRequest(r: ClientRequest): string {
+  const parts: string[] = [];
+  if (r.bedroomsMin !== null) {
+    parts.push(
+      r.bedroomsAtLeast
+        ? `${r.bedroomsMin}+ bedrooms`
+        : r.bedroomsMax !== null
+          ? `${r.bedroomsMin}-${r.bedroomsMax} bedrooms`
+          : `${r.bedroomsMin} bedroom${r.bedroomsMin === 1 ? "" : "s"}`,
+    );
+  }
+  if (r.areas.length > 0) parts.push(`${r.areas.join(" / ")}${r.nearbyOk ? " or nearby" : ""}${r.releaseArea ? " (area released by the broker)" : ""}`);
+  if (r.budgetMaxIdr !== null) {
+    parts.push(
+      r.budgetMinIdr
+        ? `${millions(r.budgetMinIdr)} to ${millions(r.budgetMaxIdr).replace(/^Rp /, "")} a month`
+        : `up to ${millions(r.budgetMaxIdr)} a month`,
+    );
+  }
+  if (r.moveIn) parts.push(`move-in ${dayLabel(r.moveIn)}`);
+  if (r.stayMonths) parts.push(`${r.stayMonths}-month stay`);
+  return parts.join(", ") || "no stated criteria";
+}
+
+const PROPERTY_URL = /https?:\/\/\S*\/property\/[A-Za-z0-9-]+\S*/gi;
+
+/** The client's own words: a quoted message of ours is cut off when WhatsApp's line break survived, links are removed. */
+function clientWords(text: string): string {
+  let t = String(text ?? "");
+  if (t.startsWith(">>")) {
+    // A WhatsApp reply quoting OUR message: everything before the line break is
+    // our text. When the break did not survive, quote and reply cannot be told
+    // apart, so the message is left out — reading it whole turned our own
+    // "Rp 66 million/month" into the client's budget (23335045).
+    // Our quoted message can itself span several lines; the client's reply is
+    // what follows the LAST break.
+    const nl = t.lastIndexOf("\n");
+    if (nl < 0) return "";
+    t = t.slice(nl + 1);
+  }
+  return t.replace(PROPERTY_URL, " ").replace(/\s+/g, " ").trim();
+}
+
+/** Card notes minus our own markers ("Ad enquiry: R-X — <villa title>" carries a size and an area that are the villa's, not the client's). */
+function requestNotes(notes: string | null | undefined): string {
+  const t = String(notes ?? "")
+    .replace(/Ad enquiry:[^\n]*/gi, " ")
+    .replace(/Link to the villa:[^\n]*/gi, " ")
+    .replace(PROPERTY_URL, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return t.length >= 12 ? t : "";
+}
+
+const BEDROOM_WORDS = /\d\s*\+?\s*(?:-|–|to|or|или|\/)?\s*\d?\s*(?:br\b|bed|bdr|bedroom|kamar|спал)|bedroom|спальн|kamar tidur/i;
+const MONEY_WORDS = /budget|бюджет|harga|\$\s?\d|usd|idr|\brp\b|rupiah|juta|\bjt\b|million|\bmill?\b|\bmio\b|\bmln\b|млн|\d\s*m\b|per month|a month|\/mo\b|per year|\/year|в месяц/i;
+const NEARBY_WORDS = /nearby|near by|around there|surrounding|neighbou?r|flexible on (the )?(area|location)|any area|рядом|поблизости|окрестност|sekitar/i;
+const BROKER_RELEASES_AREA_WIDE = /whole island|anywhere|по всему острову|другие районы|других районах/i;
+
+function titleCaseWords(s: string): string {
+  return s
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => (w ? w[0]!.toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+const requestCache = new Map<string, { at: number; value: ClientRequest }>();
+const REQUEST_TTL_MS = 10 * 60 * 1000;
+
+function copyRequest(r: ClientRequest): ClientRequest {
+  return { ...r, areas: [...r.areas], sources: { ...r.sources } };
+}
 
 /**
- * The candidate list and the money facts, without any AI in the loop.
- *
- * Split out of matchProperties so the combined "write the message AND choose the
- * links" call can work from exactly the same filtered pool — one place deciding
- * what is even eligible, instead of a second copy that drifts.
+ * What this client asked for — bedrooms, area, budget, move-in, stay — from the
+ * sources a person actually stated it in, most authoritative first: the broker's
+ * edit instruction, the client's own messages (newest statement wins), the ad
+ * form, the scout's summary of their post, and only then — for size and area,
+ * never money — the villa they clicked. Never from a villa or a price WE sent.
+ */
+export async function resolveClientRequest(inp: RequestInputs): Promise<ClientRequest> {
+  const broker = (inp.brokerInstructions ?? [])
+    .map((t) => String(t ?? "").replace(PROPERTY_URL, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  const client = (inp.leadMessages ?? []).map(clientWords).filter(Boolean).slice(0, 25);
+  const answers = inp.cardAnswers ?? null;
+  const formLines = answers
+    ? ([
+        ["bedrooms", answers.bedrooms],
+        ["area", answers.areas],
+        ["budget", answers.budget],
+        ["move-in", answers.moveIn],
+        ["notes", answers.notes],
+      ] as Array<[string, string | null]>)
+        .filter(([, v]) => v && String(v).trim())
+        .map(([k, v]) => `${k}: ${String(v).trim()}`)
+    : [];
+  const notes = requestNotes(inp.leadNotes);
+  const today = baliTodayIso();
+  const key = JSON.stringify([inp.listingType, broker, client, formLines, inp.cardCriteria ?? null, inp.cardBudgetTexts ?? [], notes, inp.clickedListingId ?? null, today]);
+  const hit = requestCache.get(key);
+  if (hit && Date.now() - hit.at < REQUEST_TTL_MS) return copyRequest(hit.value);
+
+  const all = await fetchAllProperties().catch(() => [] as SupabaseProperty[]);
+  const vocab = [...new Set([...allAreaNames(), ...all.map((p) => (p.area ?? "").trim())])].filter(Boolean);
+
+  const r: ClientRequest = {
+    bedroomsMin: null,
+    bedroomsMax: null,
+    bedroomsAtLeast: false,
+    areas: [],
+    nearbyOk: false,
+    releaseArea: broker.some((t) => BROKER_RELEASES_AREA.test(t) || BROKER_RELEASES_AREA_WIDE.test(t)),
+    budgetMaxIdr: null,
+    budgetMinIdr: null,
+    moveIn: null,
+    stayMonths: null,
+    sources: { bedrooms: null, areas: null, budget: null, moveIn: null, stay: null },
+  };
+
+  const sections = [
+    broker.length ? `BROKER (edit instruction, newest first):\n${broker.map((t) => `- ${t}`).join("\n")}` : "",
+    client.length ? `CLIENT (their own messages, newest first):\n${client.map((t) => `- ${t.slice(0, 600)}`).join("\n")}` : "",
+    formLines.length ? `FORM (what the client typed into the ad form):\n${formLines.join("\n")}` : "",
+    notes ? `NOTES (our scout's summary of the client's own post):\n${notes.slice(0, 1200)}` : "",
+  ].filter(Boolean);
+  const allText = [...broker, ...client, ...formLines, notes].join("\n");
+  const lowerAll = allText.toLowerCase();
+  const src = (v: unknown): RequestSource =>
+    v === "broker" || v === "client" || v === "form" || v === "notes" ? v : null;
+
+  type AiRequest = {
+    bedrooms_min?: number | null;
+    bedrooms_max?: number | null;
+    bedrooms_at_least?: boolean;
+    bedrooms_source?: string | null;
+    areas?: string[];
+    other_places?: string[];
+    areas_source?: string | null;
+    nearby_ok?: boolean;
+    budget_max_idr_monthly?: number | null;
+    budget_min_idr_monthly?: number | null;
+    budget_source?: string | null;
+    move_in?: string | null;
+    move_in_source?: string | null;
+    stay_months?: number | null;
+    stay_source?: string | null;
+  };
+  let ai: AiRequest | null = null;
+  if (sections.length > 0) {
+    try {
+      ai = await chatCompletionJSON<AiRequest>({
+        model: HELPER_MODEL,
+        label: "client-request",
+        system: `You read what a client of a Bali villa agency (rental or purchase) has asked for, and return it as a filter. Today is ${today}.
+
+Sources, most authoritative first. For EACH field take the value from the most authoritative source that states it; inside one source the NEWEST statement wins ("actually 3 bedrooms" overrides an earlier "2 bedrooms"):
+1. BROKER — the broker's instruction while editing a draft (only when present).
+2. CLIENT — the client's own messages, newest first. A line starting with ">>" quotes OUR earlier message: use what that quote says only when the client's reply after it confirms it ("Yes", "correct").
+3. FORM — the client's answers in the ad form. "Other", "-", "No", "Any" or a lone symbol are no answer.
+4. NOTES — our scout's summary of the client's own post.
+Never take a value from a villa WE described or offered, from a listing's title, or from a link the client clicked. Never fill in a typical value — null when nobody stated it.
+
+Valid area names (use exactly these spellings in "areas"):
+${vocab.join(", ")}
+
+Return JSON with exactly these keys:
+- "bedrooms_min": integer or null. A range ("2-3BR", "2 or 3 bedrooms") -> the lower end. "minimum 3", "3+", "at least 3", "3 or more" -> 3.
+- "bedrooms_max": the upper end of a stated range ("also open to 4-5BR" after "minimum 3" -> 5); null for a single number or an open-ended minimum.
+- "bedrooms_at_least": true only for an open-ended minimum with no upper end.
+- "bedrooms_source": "broker" | "client" | "form" | "notes" | null.
+- "areas": names from the list above that the request names — every area they would accept ("Canggu, also open to Uluwatu" -> both).
+- "other_places": places the request names that are NOT on the list, spelled as written (e.g. "Kedungu"). A place named only as a limit or a landmark ("no further inland than X", "near Y beach", "close to Z cafe") is not an area. [] when none.
+- "areas_source": as above.
+- "nearby_ok": true only when they say nearby / surrounding areas / anywhere around also work.
+- "budget_max_idr_monthly": monthly ceiling in rupiah as an integer. "40 million"/"40jt" -> 40000000; a yearly figure divided by 12; USD x 16000; a range -> its upper end; different budgets for different sizes -> the largest. Null when no budget was stated.
+- "budget_min_idr_monthly": the lower end of a stated range, else null.
+- "budget_source": as above.
+- "move_in": the move-in date as YYYY-MM-DD. "asap", "now", "immediately" -> today; "tomorrow" -> tomorrow; "this month" -> the last day of this month; "next month" -> the 1st of next month; "in 1-2 months" -> today plus one month; a month name -> the 1st of its next occurrence; a range of dates -> its start. Null when unstated.
+- "move_in_source": as above.
+- "stay_months": integer. "3 months" -> 3; "21 Sep - 18 Dec" -> 3; "a year", "yearly contract", "12 months" -> 12; "6-12 months" -> 6. "long term" alone -> null. Null when unstated.
+- "stay_source": as above.`,
+        messages: [{ role: "user", content: sections.join("\n\n").slice(0, 6000) }],
+        max_tokens: 400,
+        temperature: 0,
+      });
+    } catch (err) {
+      logger.warn({ err }, "resolveClientRequest: AI read failed — falling back to patterns and the form");
+      ai = null;
+    }
+  }
+
+  // Bedrooms — evidence required: a count nobody wrote next to a bedroom word is a guess.
+  if (ai && typeof ai.bedrooms_min === "number" && ai.bedrooms_min > 0 && ai.bedrooms_min < 15 && BEDROOM_WORDS.test(allText)) {
+    r.bedroomsMin = Math.round(ai.bedrooms_min);
+    const max = typeof ai.bedrooms_max === "number" ? Math.round(ai.bedrooms_max) : null;
+    r.bedroomsMax = max !== null && max > r.bedroomsMin ? max : null;
+    r.bedroomsAtLeast = r.bedroomsMax === null && ai.bedrooms_at_least === true;
+    r.sources.bedrooms = src(ai.bedrooms_source) ?? "client";
+  } else if (!ai) {
+    for (const [s, texts] of [["broker", broker], ["client", client], ["notes", notes ? [notes] : []]] as Array<[RequestSource, string[]]>) {
+      if (!texts.length) continue;
+      const found = extractLeadCriteriaRegex(texts, all);
+      if (found.bedrooms !== null) {
+        r.bedroomsMin = found.bedrooms;
+        r.bedroomsMax = found.bedroomsMax;
+        r.sources.bedrooms = s;
+        break;
+      }
+    }
+  }
+  if (r.bedroomsMin === null && inp.cardCriteria?.bedrooms) {
+    r.bedroomsMin = inp.cardCriteria.bedrooms;
+    r.sources.bedrooms = "form";
+  }
+
+  // Areas — every name must actually appear in what a person wrote.
+  if (ai) {
+    const named = new Set(areaNamesInText(allText).map((a) => a.toLowerCase()));
+    const fromList = (ai.areas ?? [])
+      .map((a) => vocab.find((k) => k.toLowerCase() === String(a).trim().toLowerCase()))
+      .filter((a): a is string => !!a && (lowerAll.includes(a.toLowerCase()) || named.has(a.toLowerCase())));
+    const others = (ai.other_places ?? [])
+      .map((p) => String(p ?? "").trim())
+      .filter((p) => p.length > 2 && lowerAll.includes(p.toLowerCase()))
+      .map((p) => vocab.find((k) => k.toLowerCase() === p.toLowerCase()) ?? titleCaseWords(p));
+    const areas = [...new Set([...fromList, ...others])];
+    if (areas.length > 0) {
+      r.areas = areas;
+      r.sources.areas = src(ai.areas_source) ?? "client";
+    }
+    r.nearbyOk = ai.nearby_ok === true && NEARBY_WORDS.test(allText);
+  } else {
+    for (const [s, texts] of [["broker", broker], ["client", client], ["notes", notes ? [notes] : []]] as Array<[RequestSource, string[]]>) {
+      if (!texts.length) continue;
+      const found = extractLeadCriteriaRegex(texts, all);
+      if (found.areas.length > 0) {
+        r.areas = found.areas;
+        r.sources.areas = s;
+        break;
+      }
+    }
+  }
+  if (r.areas.length === 0 && (inp.cardCriteria?.areas?.length ?? 0) > 0) {
+    r.areas = [...inp.cardCriteria!.areas];
+    r.sources.areas = "form";
+  }
+
+  // Budget — rentals only. The deterministic parser reads each source in order
+  // of authority (it has years of phrasing fixes: yearly figures, raw digits,
+  // "M" shorthand); the model's reading is the fallback, and only when money
+  // was actually mentioned. Never a price of a villa, never with headroom.
+  if (inp.listingType === "rent") {
+    const formTexts = (inp.cardBudgetTexts ?? []).map((t) => (/^\s*\d{1,4}([.,]\d+)?\s*$/.test(t) ? `${t.trim()} million` : t));
+    for (const [s, texts] of [["broker", broker], ["client", client], ["form", formTexts], ["notes", notes ? [notes] : []]] as Array<[RequestSource, string[]]>) {
+      if (!texts.length) continue;
+      const max = extractBudgetIdr(texts);
+      if (!max) continue;
+      r.budgetMaxIdr = max;
+      const floor = extractBudgetFloorIdr(texts);
+      r.budgetMinIdr = floor && floor < max ? floor : null;
+      r.sources.budget = s;
+      break;
+    }
+    if (r.budgetMaxIdr === null && inp.cardCriteria?.budgetIdrMonthly) {
+      r.budgetMaxIdr = inp.cardCriteria.budgetIdrMonthly;
+      r.sources.budget = "form";
+    }
+    const aiMax = Number(ai?.budget_max_idr_monthly);
+    if (r.budgetMaxIdr === null && Number.isFinite(aiMax) && aiMax >= 1_000_000 && aiMax < 2_000_000_000 && MONEY_WORDS.test(allText)) {
+      r.budgetMaxIdr = Math.round(aiMax);
+      const aiMin = Number(ai?.budget_min_idr_monthly);
+      r.budgetMinIdr = Number.isFinite(aiMin) && aiMin >= 1_000_000 && aiMin < aiMax ? Math.round(aiMin) : null;
+      r.sources.budget = src(ai?.budget_source) ?? "client";
+    }
+
+    if (ai?.move_in && /^\d{4}-\d{2}-\d{2}$/.test(ai.move_in) && !Number.isNaN(Date.parse(ai.move_in))) {
+      r.moveIn = ai.move_in < today ? today : ai.move_in;
+      r.sources.moveIn = src(ai.move_in_source) ?? "client";
+    }
+    const stay = Number(ai?.stay_months);
+    if (Number.isFinite(stay) && stay >= 1 && stay <= 60) {
+      r.stayMonths = Math.round(stay);
+      r.sources.stay = src(ai?.stay_source) ?? "client";
+    }
+  }
+
+  // The villa an ad lead clicked: what they have shown us without words. Size
+  // as a floor, its district — and nothing about money.
+  const clicked = inp.clickedListingId
+    ? all.find((p) => p.id.toUpperCase() === inp.clickedListingId!.trim().toUpperCase())
+    : undefined;
+  if (clicked) {
+    if (r.bedroomsMin === null && clicked.bedrooms) {
+      r.bedroomsMin = clicked.bedrooms;
+      r.bedroomsAtLeast = true;
+      r.sources.bedrooms = "clicked";
+    }
+    if (r.areas.length === 0 && clicked.area) {
+      const parent = parentAreaOf(clicked.area.split(",")[0]);
+      if (parent) {
+        r.areas = [parent];
+        r.sources.areas = "clicked";
+      }
+    }
+  }
+
+  if (requestCache.size > 300) requestCache.clear();
+  requestCache.set(key, { at: Date.now(), value: copyRequest(r) });
+  logger.info({ request: describeRequest(r), sources: r.sources }, "client request resolved");
+  return r;
+}
+
+export type Misfit = { dim: "bedrooms" | "area" | "budget" | "dates"; why: string };
+
+function requestAreaSet(r: ClientRequest): string[] {
+  if (r.releaseArea || r.areas.length === 0) return [];
+  return r.nearbyOk ? [...new Set([...r.areas, ...r.areas.flatMap((a) => neighbourAreas(a))])] : r.areas;
+}
+
+/**
+ * Why this villa is NOT inside the request — empty when it is. The one judge:
+ * bedrooms exactly as asked (a range / "at least" as stated, never ±1), the
+ * named areas only (neighbours only when the client said nearby is fine), the
+ * published monthly price at or under the ceiling with no headroom, free on the
+ * move-in date and for the whole stay, a minimum stay no longer than theirs.
+ */
+export function requestMisfitDims(p: SupabaseProperty, r: ClientRequest, now: Date = new Date()): Misfit[] {
+  const out: Misfit[] = [];
+  if (r.bedroomsMin !== null) {
+    const b = p.bedrooms;
+    const ok =
+      typeof b === "number" &&
+      (r.bedroomsAtLeast
+        ? b >= r.bedroomsMin
+        : r.bedroomsMax !== null
+          ? b >= r.bedroomsMin && b <= r.bedroomsMax
+          : b === r.bedroomsMin);
+    if (!ok) out.push({ dim: "bedrooms", why: typeof b === "number" ? `${b}BR` : "bedrooms unknown" });
+  }
+  const areas = requestAreaSet(r);
+  if (areas.length > 0 && !areaMatches(p.area, areas)) out.push({ dim: "area", why: `in ${p.area ?? "an unknown area"}` });
+  if (p.listing_type === "rent") {
+    const price = priceOf(p);
+    if (r.budgetMaxIdr !== null) {
+      if (price <= 0) out.push({ dim: "budget", why: "no published price" });
+      else if (price > r.budgetMaxIdr) out.push({ dim: "budget", why: `${millions(price)} is over ${millions(r.budgetMaxIdr)}` });
+    }
+    if (r.budgetMinIdr !== null && price > 0 && price < Math.round(r.budgetMinIdr * 0.85)) {
+      out.push({ dim: "budget", why: `${millions(price)} is well below their range` });
+    }
+    if (r.stayMonths !== null) {
+      const minStay = Number(p.min_stay_months ?? 0);
+      const monthly = Number(p.monthly_price_idr ?? 0) > 0 || Number(p.monthly_price_usd ?? 0) > 0;
+      const yearly = Number(p.yearly_price_idr ?? 0) > 0 || Number(p.yearly_price_usd ?? 0) > 0;
+      if (minStay > r.stayMonths) out.push({ dim: "dates", why: `minimum stay ${minStay} months` });
+      else if (!monthly && yearly && r.stayMonths < 12) out.push({ dim: "dates", why: "yearly contract only" });
+    }
+    if (r.moveIn) {
+      if (p.free_from && p.free_from > r.moveIn) {
+        out.push({ dim: "dates", why: `free only from ${p.free_from}` });
+      } else {
+        const end = addMonthsIso(r.moveIn, r.stayMonths ?? 1);
+        const clash = (p.busy ?? []).find((b) => b.start <= end && b.end >= r.moveIn!);
+        if (clash) out.push({ dim: "dates", why: `booked ${clash.start}..${clash.end}` });
+      }
+      return out;
+    }
+  }
+  if (!offerableNow(p, now)) out.push({ dim: "dates", why: `free only from ${p.free_from}` });
+  return out;
+}
+
+export function requestMisfits(p: SupabaseProperty, r: ClientRequest, now: Date = new Date()): string[] {
+  return requestMisfitDims(p, r, now).map((m) => m.why);
+}
+
+/** The one dimension whose loosening would open the most villas — the question to ask when nothing fits. */
+export type RelaxHint = { dim: "area" | "budget" | "bedrooms" | "dates"; count: number; suggestion: string };
+
+function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m: Misfit[] }>): RelaxHint | null {
+  const byDim = new Map<Misfit["dim"], SupabaseProperty[]>();
+  for (const j of judged) {
+    const dims = new Set(j.m.map((x) => x.dim));
+    if (dims.size !== 1) continue;
+    const d = j.m[0]!.dim;
+    byDim.set(d, [...(byDim.get(d) ?? []), j.p]);
+  }
+  const hints: RelaxHint[] = [];
+  const mostCommon = (vals: string[]): string[] => {
+    const counts = new Map<string, number>();
+    for (const v of vals) counts.set(v, (counts.get(v) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([v]) => v);
+  };
+  const near = (byDim.get("area") ?? []).filter((p) =>
+    r.areas.some((a) => neighbourAreas(a).some((n) => areaMatches(p.area, [n]))),
+  );
+  if (near.length > 0) {
+    const names = mostCommon(near.map((p) => parentAreaOf((p.area ?? "").split(",")[0]) ?? p.area ?? "")).filter(Boolean).slice(0, 2);
+    hints.push({ dim: "area", count: near.length, suggestion: `nearby ${names.join(" or ")}` });
+  }
+  const over = (byDim.get("budget") ?? []).filter((p) => r.budgetMaxIdr !== null && priceOf(p) > r.budgetMaxIdr && priceOf(p) <= r.budgetMaxIdr * 1.3);
+  if (over.length > 0) {
+    const cheapest = Math.min(...over.map(priceOf));
+    hints.push({ dim: "budget", count: over.length, suggestion: `a budget of about ${millions(cheapest)} a month` });
+  }
+  const beds = byDim.get("bedrooms") ?? [];
+  if (beds.length > 0 && r.bedroomsMin !== null) {
+    const target = r.bedroomsAtLeast || r.bedroomsMax === null ? r.bedroomsMin : r.bedroomsMin;
+    const nearest = [...new Set(beds.map((p) => p.bedrooms).filter((b): b is number => typeof b === "number"))]
+      .sort((a, b) => Math.abs(a - target) - Math.abs(b - target) || a - b)[0];
+    // Only an adjacent size is a fair question — a 1BR client is not asked about 3 bedrooms.
+    if (nearest !== undefined && Math.abs(nearest - target) <= 1) {
+      hints.push({ dim: "bedrooms", count: beds.filter((p) => p.bedrooms === nearest).length, suggestion: `${nearest} bedroom${nearest === 1 ? "" : "s"}` });
+    }
+  }
+  const dates = byDim.get("dates") ?? [];
+  if (dates.length > 0) {
+    const earliest = dates.map((p) => p.free_from).filter((d): d is string => !!d).sort()[0];
+    hints.push({
+      dim: "dates",
+      count: dates.length,
+      suggestion: earliest && (!r.moveIn || earliest > r.moveIn) ? `moving in from ${dayLabel(earliest)}` : "a longer contract",
+    });
+  }
+  hints.sort((a, b) => b.count - a.count);
+  return hints[0] ?? null;
+}
+
+/**
+ * Every villa inside the request, best first — the ONLY candidate list any
+ * shortlist is drawn from. `fitsInclSent` counts fits the client already has,
+ * so an empty list can tell "nothing exists" from "you have seen it all".
+ */
+export async function strictShortlistPool(
+  r: ClientRequest,
+  opts: { listingType: ListingType; excludeIds?: string[] },
+): Promise<{ fits: SupabaseProperty[]; fitsInclSent: number; poolSize: number; hint: RelaxHint | null }> {
+  const all = await fetchAllProperties();
+  const exclude = new Set((opts.excludeIds ?? []).map((id) => id.toUpperCase()));
+  const typed = all.filter((p) => p.listing_type === opts.listingType);
+  const now = new Date();
+  const judged = typed.map((p) => ({ p, m: requestMisfitDims(p, r, now) }));
+  const fitAll = judged.filter((j) => j.m.length === 0).map((j) => j.p);
+  let fits = fitAll.filter((p) => !exclude.has(p.id.toUpperCase()));
+  // Priced stock first — an unpriced villa can't be judged by the client; it
+  // only appears when there is no real choice without it (never when a budget
+  // was stated: requestMisfits already refused it).
+  const priced = fits.filter(hasPrice);
+  if (priced.length >= MIN_SHORTLIST) fits = priced;
+  const floor = r.budgetMinIdr;
+  fits = dedupeByTitle(
+    [...fits].sort((a, b) => {
+      if (floor) {
+        const aIn = priceOf(a) >= floor ? 0 : 1;
+        const bIn = priceOf(b) >= floor ? 0 : 1;
+        if (aIn !== bIn) return aIn - bIn;
+      }
+      return rankForShortlist(a, b);
+    }),
+  );
+  const hint = fits.length === 0 ? relaxationHint(r, judged.filter((j) => !exclude.has(j.p.id.toUpperCase()))) : null;
+  return { fits, fitsInclSent: fitAll.length, poolSize: typed.length, hint };
+}
+
+/** What a shortlist decision knew — handed to the writer's prompt and to the final check on the draft. */
+export type ShortlistOutcome = {
+  request: ClientRequest;
+  hasCore: boolean;
+  /** Villas inside the request the client has NOT been sent yet. */
+  fitCount: number;
+  fitCountInclSent: number;
+  hint: RelaxHint | null;
+  /** Everything already sent to this lead. */
+  excludeIds: string[];
+  /** Villas fit, but the matcher decided this message carries none (the lead is on a viewing, etc.). */
+  declined: boolean;
+  /** Villas already sent that are outside the request, with the reasons — never to be called a match. */
+  sentOutside: OutsideVilla[];
+  /** The villa the client named or clicked, when it is outside their own request. */
+  namedOutside: OutsideVilla[];
+};
+
+export type OutsideVilla = { id: string; title: string; why: string[] };
+
+/**
+ * The request's outcome without any AI choice: the strict pool, the question
+ * to ask when it is empty, and which villas the client already has (or asked
+ * about) that are outside it. Used by the matcher and by drafts that carry no
+ * new links by design, so the writer never calls an outside villa a match.
+ */
+export async function shortlistOutcomeFor(
+  request: ClientRequest,
+  opts: { listingType: ListingType; excludeIds?: string[]; namedIds?: string[] },
+): Promise<{ outcome: ShortlistOutcome; fits: SupabaseProperty[] }> {
+  const excludeIds = opts.excludeIds ?? [];
+  const pool = await strictShortlistPool(request, { listingType: opts.listingType, excludeIds });
+  const hasCore = requestHasCore(request);
+  const all = await fetchAllProperties();
+  const byId = new Map(all.map((p) => [p.id.toUpperCase(), p]));
+  const sent = new Set(excludeIds.map((i) => i.toUpperCase()));
+  const outside = (ids: string[]): OutsideVilla[] =>
+    [...new Set(ids.map((i) => i.toUpperCase()))]
+      .map((id) => byId.get(id))
+      .filter((p): p is SupabaseProperty => !!p && p.listing_type === opts.listingType)
+      .map((p) => ({ id: p.id, title: p.title, why: requestMisfits(p, request) }))
+      .filter((v) => v.why.length > 0);
+  return {
+    fits: pool.fits,
+    outcome: {
+      request,
+      hasCore,
+      fitCount: pool.fits.length,
+      fitCountInclSent: pool.fitsInclSent,
+      hint: pool.hint,
+      excludeIds,
+      declined: false,
+      sentOutside: hasCore ? outside(excludeIds).slice(0, 6) : [],
+      namedOutside: hasCore ? outside((opts.namedIds ?? []).filter((i) => !sent.has(i.toUpperCase()))).slice(0, 3) : [],
+    },
+  };
+}
+
+
+
+/**
+ * The candidate list and the money facts for the EDIT path's composer, drawn
+ * from the same strict pool as every bot draft (strictShortlistPool). The
+ * broker's instructions of this editing session are the most authoritative
+ * source of the request; a hand-curated panel or a villa the broker names is
+ * handled by the caller and never comes from here.
  */
 export async function candidatesForLead(opts: {
   listingType: ListingType;
@@ -1091,139 +1553,48 @@ export async function candidatesForLead(opts: {
    * back to the card's 1BR-in-Canggu and came back EMPTY under a text that
    * described two villas (Githaa, 08.09.2026). */
   priorInstructions?: string[];
-  /** Core criteria from the lead CARD (the ad form filled them) — lowest
-   * precedence, they only fill what the client never said themselves. */
   cardCriteria?: { bedrooms: number | null; areas: string[]; budgetIdrMonthly: number | null } | null;
+  cardAnswers?: RequestInputs["cardAnswers"];
+  cardBudgetTexts?: string[];
+  leadNotes?: string | null;
+  clickedListingId?: string | null;
 }): Promise<{
   candidates: SupabaseProperty[];
+  request: ClientRequest;
+  /** The stated ceiling — no headroom (kept under the old names for the callers). */
   budgetIdr: number | null;
   budgetCeiling: number | null;
-  /** The bottom of a stated range ("40-50 million" -> 40M), null when the lead
-   * gave a single figure. affordableIds below is ordered around it, but a
-   * caller enforcing the ceiling in code needs the number itself to also
-   * enforce the floor — a model picking villas UNDER it is not "over budget"
-   * and slips straight past a ceiling-only check. */
   budgetFloorIdr: number | null;
   lines: Array<{ id: string; line: string }>;
-  /** Priced candidates inside the ceiling (or simply priced, when no budget),
-   * in shortlist order — the composer's minimum-choice top-up draws from here. */
+  /** Priced candidates, in shortlist order — every one inside the request. */
   affordableIds: string[];
 }> {
-  const all = await fetchAllProperties();
-  const exclude = new Set((opts.excludeIds ?? []).map((id) => id.toUpperCase()));
-  // offerableNow: a villa free only beyond the horizon never enters a shortlist.
-  const pool = all.filter(
-    (p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()) && offerableNow(p),
-  );
-
   const instructions = [opts.brokerInstruction ?? "", ...(opts.priorInstructions ?? [])].filter((t) => (t ?? "").trim());
-  const criteriaSource = [...instructions, ...(opts.recentLeadMessages ?? [])].filter(Boolean);
-  const criteria = await extractLeadCriteria(criteriaSource, pool);
-  // The owner's rule: the client's own words, then the FORM, then the villa
-  // they clicked. The form used to come last, after inheritCriteriaFromAnchor,
-  // and the anchor is found in the enquiry WE seeded ("I saw this villa:
-  // .../R-YUD-066") — so a 2BR-in-Seseh click filled bedrooms and area before
-  // the form's "3BR, Umalas" was ever consulted. Alena wrote a paragraph
-  // correcting us; Dylan asked for Uluwatu three times (2026-09-03). The form
-  // is what they typed with their own hands; the click is only what caught
-  // their eye. Fill from the form first, let the click cover what is left.
-  if (opts.cardCriteria) {
-    if (criteria.bedrooms === null && opts.cardCriteria.bedrooms) {
-      criteria.bedrooms = opts.cardCriteria.bedrooms;
-    }
-    if (criteria.areas.length === 0 && opts.cardCriteria.areas.length > 0) {
-      criteria.areas = [...opts.cardCriteria.areas];
-    }
-  }
-  inheritCriteriaFromAnchor(criteria, opts.recentLeadMessages ?? [], pool);
-
-  let candidates = pool;
-  // STRICT, same as matchProperties (owner, 2026-09-04): the request's area and
-  // bedroom count are filters, not preferences. The one exception is the
-  // broker's own instruction to look beyond the area — theirs to give.
-  const releaseArea = /elsewhere|other areas?|another area|different area|widen|beyond|whole island|anywhere|другой район|других районах|не только|шире|по всему острову/i.test(
-    instructions.join("\n"),
-  );
-  if (criteria.areas.length > 0 && !releaseArea) {
-    candidates = candidates.filter((p) => areaMatches(p.area, criteria.areas));
-  }
-  if (criteria.bedrooms !== null) {
-    const min = criteria.bedrooms;
-    const max = criteria.bedroomsMax ?? null;
-    candidates =
-      max !== null
-        ? candidates.filter((p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= max)
-        : candidates.filter((p) => p.bedrooms === min);
-  }
-
-  const priced = candidates.filter(hasPrice);
-  if (priced.length >= MIN_SHORTLIST) candidates = priced;
-
-  const afterAreaBedrooms = candidates.length;
-  const budgetIdr =
-    opts.listingType === "rent"
-      ? extractBudgetIdr(criteriaSource) ?? opts.cardCriteria?.budgetIdrMonthly ?? null
-      : null;
-  const budgetCeiling = budgetIdr ? Math.round(budgetIdr * 1.15) : null;
-  // Same gap as matchProperties: a stated range's bottom half was invisible
-  // here too, and this is the pool the EDIT path's composer actually sees —
-  // so a broker's own "stay in that 40-50 range" instruction had nothing
-  // correctly ordered to draw from.
-  const budgetFloorRaw = opts.listingType === "rent" ? extractBudgetFloorIdr(criteriaSource) : null;
-  // A floor above the ceiling cannot be a real range — it is a parse error
-  // (a yearly range read as monthly), and enforcing it empties the pool. The
-  // ceiling is the number the whole system trusts; the floor is a refinement
-  // of it and never outranks it.
-  const budgetFloorIdr = budgetFloorRaw && budgetIdr && budgetFloorRaw > budgetIdr ? null : budgetFloorRaw;
-  if (budgetFloorRaw && budgetIdr && budgetFloorRaw > budgetIdr) {
-    logger.warn({ budgetFloorRaw, budgetIdr }, "candidatesForLead: floor above ceiling — floor ignored");
-  }
-  // Same 15% headroom as the ceiling, mirrored downward — see matchProperties.
-  const budgetFloorFloor = budgetFloorIdr ? Math.round(budgetFloorIdr * 0.85) : null;
-  if (budgetCeiling) {
-    // Strict: inside the ceiling and not below the floor (both with the 15%
-    // headroom); no "closest above", no price-less villas.
-    const within = candidates.filter(
-      (p) =>
-        priceOf(p) > 0 &&
-        priceOf(p) <= budgetCeiling &&
-        (!budgetFloorFloor || priceOf(p) >= budgetFloorFloor),
-    );
-    candidates = budgetFloorIdr
-      ? [...within].sort((a, b) => {
-          const aIn = priceOf(a) >= budgetFloorIdr ? 0 : 1;
-          const bIn = priceOf(b) >= budgetFloorIdr ? 0 : 1;
-          return aIn !== bIn ? aIn - bIn : rankForShortlist(a, b);
-        })
-      : within.sort(rankForShortlist);
-  } else {
-    candidates = [...candidates].sort(rankForShortlist);
-  }
-  candidates = dedupeByTitle(candidates);
-
-  // Empty-pool forensics: six broker edits on one lead came back with a text
-  // describing villas and zero links, because this pool was empty while the
-  // catalog held three villas that fit. Which filter emptied it was invisible.
+  const request = await resolveClientRequest({
+    listingType: opts.listingType,
+    leadMessages: opts.recentLeadMessages ?? [],
+    brokerInstructions: instructions,
+    cardCriteria: opts.cardCriteria ?? null,
+    cardAnswers: opts.cardAnswers ?? null,
+    cardBudgetTexts: opts.cardBudgetTexts ?? [],
+    leadNotes: opts.leadNotes ?? null,
+    clickedListingId: opts.clickedListingId ?? null,
+  });
+  const pool = await strictShortlistPool(request, { listingType: opts.listingType, excludeIds: opts.excludeIds });
+  const candidates = pool.fits;
   if (candidates.length === 0) {
     logger.warn(
-      {
-        areas: criteria.areas, bedrooms: criteria.bedrooms, bedroomsMax: criteria.bedroomsMax ?? null,
-        budgetIdr, budgetCeiling, budgetFloorIdr, budgetFloorFloor,
-        poolOfferable: pool.length, afterAreaBedrooms,
-        sample: criteriaSource.map((t) => t.slice(0, 80)),
-      },
+      { request: describeRequest(request), sources: request.sources, poolSize: pool.poolSize, fitsInclSent: pool.fitsInclSent, hint: pool.hint },
       "candidatesForLead: pool is EMPTY after filters",
     );
   }
-
   return {
     candidates,
-    budgetIdr,
-    budgetCeiling,
-    budgetFloorIdr,
-    affordableIds: candidates
-      .filter((p) => priceOf(p) > 0 && (!budgetCeiling || priceOf(p) <= budgetCeiling))
-      .map((p) => p.id),
+    request,
+    budgetIdr: request.budgetMaxIdr,
+    budgetCeiling: request.budgetMaxIdr,
+    budgetFloorIdr: request.budgetMinIdr,
+    affordableIds: candidates.filter((p) => priceOf(p) > 0).map((p) => p.id),
     lines: candidates.slice(0, 40).map((p) => {
       const style = styleHint(p);
       return { id: p.id, line: style ? `${summaryLine(p)} | ${style}` : summaryLine(p) };
@@ -1245,372 +1616,123 @@ export function finaliseListingIds(
   const wanted = new Set(ids.map((i) => i.toUpperCase()));
   let picked = candidates.filter((p) => wanted.has(p.id.toUpperCase()));
   if (picked.length === 0) return [];
-
-  if (budgetCeiling) {
-    const affordable = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
-    if (affordable.length > 0) {
-      const over = picked.filter((p) => priceOf(p) > budgetCeiling);
-      if (over.length > 0) {
-        const keep = picked.filter((p) => priceOf(p) <= budgetCeiling);
-        for (const p of affordable) {
-          if (keep.length >= picked.length) break;
-          if (!keep.some((k) => k.id === p.id)) keep.push(p);
-        }
-        logger.info(
-          { dropped: over.map((p) => p.id), ceiling: budgetCeiling },
-          "finaliseListingIds: enforced the budget on the chosen links",
-        );
-        picked = keep;
-      }
-    }
-  }
-
+  if (budgetCeiling) picked = picked.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
   return dedupeByTitle(picked).slice(0, limit).map(toPick);
 }
 
-export async function matchProperties(opts: {
+export type MatchOptions = {
   listingType: ListingType;
   conversationText: string;
   brokerId?: string | null;
   limit?: number;
-  /** Property IDs already sent to this lead — excluded so a re-match after an
-   * objection surfaces DIFFERENT listings instead of repeating rejected ones. */
+  /** Property IDs already sent to this lead — never offered again. */
   excludeIds?: string[];
-  /** How many listings this lead has already seen — drives the "give them
-   * something genuinely different" instruction on follow-up shortlists. */
   seenCount?: number;
-  /** The lead's most recent message, weighted above the rest of the history.
-   * A revision ("actually, 3 bedrooms in Uluwatu") is one line against a long
-   * conversation about the old criteria, and the matcher used to be outvoted
-   * by the bulk — attaching Pererenan 2BRs to a reply that correctly said
-   * "switching gears to Uluwatu, 3 bedrooms". */
+  /** The lead's most recent message, weighted above the rest of the history. */
   latestLeadMessage?: string | null;
-  /** The lead's own recent messages, NEWEST FIRST — used to hard-filter the
-   * candidate list by their current area / bedroom requirements. */
+  /** The lead's own recent messages, NEWEST FIRST. */
   recentLeadMessages?: string[];
-  /** What the BROKER just said while revising the draft ("these are too
-   * expensive, show me something around 40jt"). Editing the text used to leave
-   * the links untouched, which made the broker fix them by hand. Read first, so
-   * a price or area they name overrides what the lead said earlier. */
+  /** What the BROKER just said while revising the draft. */
   brokerInstruction?: string | null;
-  /** Listings currently attached to the draft the broker is revising. */
   currentAttachmentIds?: string[];
-  /** Already-parsed instruction, when the caller has decided on it — avoids
-   * classifying the same sentence twice in one request. */
   brokerIntent?: BrokerIntent | null;
-  /** Core criteria taken from the lead CARD (the ad form filled them). Lowest
-   * precedence: they fill only what the client never said themselves. */
   cardCriteria?: { bedrooms: number | null; areas: string[]; budgetIdrMonthly: number | null } | null;
-}): Promise<PropertyPick[]> {
-  // A shortlist of one isn't a choice, and two is thin. Three is what a broker
-  // would actually send; the matcher may still return fewer if stock is short.
-  const limit = opts.limit ?? 3;
-  const all = await fetchAllProperties();
-  const exclude = new Set((opts.excludeIds ?? []).map((id) => id.toUpperCase()));
-  // offerableNow: a villa free only beyond the horizon never enters a shortlist.
-  const pool = all.filter(
-    (p) => p.listing_type === opts.listingType && !exclude.has(p.id.toUpperCase()) && offerableNow(p),
-  );
-  if (pool.length === 0) return [];
+  cardAnswers?: RequestInputs["cardAnswers"];
+  cardBudgetTexts?: string[];
+  leadNotes?: string | null;
+  clickedListingId?: string | null;
+};
 
-  // The broker's instruction is read first: whether it moves the search matters
-  // to the anchor decision below, not just to the filters further down.
+export async function matchProperties(opts: MatchOptions): Promise<PropertyPick[]> {
+  return (await matchPropertiesDetailed(opts)).picks;
+}
+
+/**
+ * The bot's shortlist for one draft. The request decides what is eligible
+ * (strictShortlistPool — nothing outside bedrooms, area, budget, dates); the
+ * model only chooses AMONG eligible villas on style and fit, or decides the
+ * message carries none. Nothing is ever added to make up numbers.
+ */
+export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ picks: PropertyPick[]; outcome: ShortlistOutcome }> {
+  const limit = opts.limit ?? 3;
+  const excludeIds = opts.excludeIds ?? [];
+  const exclude = new Set(excludeIds.map((id) => id.toUpperCase()));
+
   let brokerIntent: BrokerIntent | null = opts.brokerIntent ?? null;
   if (!brokerIntent && opts.brokerInstruction) {
-    const vocab = [...new Set([...allAreaNames(), ...pool.map((p) => (p.area ?? "").trim())])].filter(Boolean);
-    brokerIntent = await parseBrokerIntent(opts.brokerInstruction, vocab);
+    brokerIntent = await parseBrokerIntent(opts.brokerInstruction, await allAreaVocabulary());
   }
-  // Only a revision that actually moves the search drops the anchor. Killing it
-  // for ANY broker instruction meant a wording edit ("make it warmer") lost the
-  // villa the lead had come in on — the link vanished from the draft and the bot
-  // could only paste the URL into the text afterwards, never restore it.
+  const request = await resolveClientRequest({
+    listingType: opts.listingType,
+    leadMessages: opts.recentLeadMessages ?? [],
+    brokerInstructions: opts.brokerInstruction ? [opts.brokerInstruction] : [],
+    cardCriteria: opts.cardCriteria ?? null,
+    cardAnswers: opts.cardAnswers ?? null,
+    cardBudgetTexts: opts.cardBudgetTexts ?? [],
+    leadNotes: opts.leadNotes ?? null,
+    clickedListingId: opts.clickedListingId ?? null,
+  });
+  if (brokerIntent?.releaseArea) request.releaseArea = true;
+
+  const namedInThread = (opts.recentLeadMessages ?? []).flatMap((m) =>
+    Array.from(m.matchAll(PROPERTY_ID_REGEX)).map((x) => x[1]!.toUpperCase()),
+  );
+  const { outcome, fits: poolFits } = await shortlistOutcomeFor(request, {
+    listingType: opts.listingType,
+    excludeIds,
+    namedIds: [...namedInThread, ...(opts.clickedListingId ? [opts.clickedListingId.toUpperCase()] : [])],
+  });
+  const done = (picks: SupabaseProperty[]) => ({ picks: picks.map(toPick), outcome });
+
+  // 1. The villa the lead named themselves — answered alone, but ONLY when it
+  // is inside their own request. A villa they clicked that is over their
+  // budget, the wrong size, the wrong area or let past their move-in is not
+  // attached (owner, 14.09: offer only inside the request) — the strict
+  // shortlist answers instead.
   const revisionMovesSearch =
     !!brokerIntent && (brokerIntent.releaseArea || brokerIntent.areas.length > 0 || !!brokerIntent.bedrooms);
+  if (!revisionMovesSearch) {
+    const anchorIds = new Set(
+      (opts.recentLeadMessages ?? []).flatMap((m) => Array.from(m.matchAll(PROPERTY_ID_REGEX)).map((x) => x[1]!.toUpperCase())),
+    );
+    if (anchorIds.size > 0) {
+      const all = await fetchAllProperties();
+      const anchor = all.find(
+        (p) => p.listing_type === opts.listingType && anchorIds.has(p.id.toUpperCase()) && !exclude.has(p.id.toUpperCase()),
+      );
+      if (anchor) {
+        const misfits = requestMisfits(anchor, request);
+        if (misfits.length === 0) {
+          logger.info({ anchor: anchor.id, request: describeRequest(request) }, "matchProperties: the lead named one villa inside their request — answering about that villa alone");
+          return done([anchor]);
+        }
+        logger.info(
+          { anchor: anchor.id, misfits, request: describeRequest(request) },
+          "matchProperties: the villa the lead named is outside their own request — not attached",
+        );
+      }
+    }
+  }
 
-  // 1. Anchor listing — the lead arrived FROM a specific listing (clicked its ad)
-  // or named one themselves. Read only from what the LEAD wrote: matching any
-  // mention in the whole conversation meant our own previously sent links came
-  // straight back as "the answer". Anything already sent is out of `pool`, so a
-  // lead quoting a link we sent cannot become an anchor either.
-  const anchorIds = revisionMovesSearch ? new Set<string>() : new Set(
-    (opts.recentLeadMessages ?? [])
-      .flatMap((m) => Array.from(m.matchAll(PROPERTY_ID_REGEX)).map((x) => x[1].toUpperCase())),
+  const candidates = poolFits;
+  if (candidates.length === 0) {
+    logger.info(
+      { request: describeRequest(request), sources: request.sources, fitsInclSent: outcome.fitCountInclSent, hint: outcome.hint },
+      "matchProperties: nothing inside the client's request — attaching nothing",
+    );
+    return done([]);
+  }
+  // Too little conversation to know anything, and no stated request either.
+  if (!outcome.hasCore && opts.conversationText.trim().length < 20) return done([]);
+
+  logger.info(
+    { request: describeRequest(request), sources: request.sources, fitting: candidates.length },
+    "matchProperties: shortlist drawn only from villas inside the request",
   );
-  const anchors = anchorIds.size > 0 ? pool.filter((p) => anchorIds.has(p.id.toUpperCase())) : [];
-  if (anchors.length > 0) {
-    // Their own pick tells us the criteria better than any question would. Send
-    // it back WITH comparable alternatives, so they still get a real choice.
-    const anchor = anchors[0]!;
 
-    // THE DOUBLE CHECK. Clicking an ad is one signal; the budget they typed into
-    // the form is another, and they disagree more often than you'd think —
-    // people click a villa they cannot actually afford. The anchor used to be
-    // returned before any budget test, so a client who wrote "30 million" got
-    // the 60-million villa they clicked as the answer. When the two disagree,
-    // their MONEY wins: the villa they can't afford stops leading the shortlist.
-    const anchorBudget =
-      opts.listingType === "rent"
-        ? extractBudgetIdr(
-            [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean),
-          ) ?? opts.cardCriteria?.budgetIdrMonthly ?? null
-        : null;
-    const anchorPrice = priceOf(anchor);
-    const anchorTooExpensive =
-      !!anchorBudget && anchorPrice > 0 && anchorPrice > Math.round(anchorBudget * 1.15);
-
-    const affordable = (p: SupabaseProperty) =>
-      !anchorBudget || priceOf(p) === 0 || priceOf(p) <= Math.round(anchorBudget * 1.15);
-
-    const similar = pool
-      .filter(
-        (p) =>
-          !anchorIds.has(p.id.toUpperCase()) &&
-          (anchor.bedrooms === null || p.bedrooms === null || Math.abs((p.bedrooms ?? 0) - anchor.bedrooms) <= 1),
-      )
-      .sort((a, b) => {
-        // Within budget first when the two signals disagree, then same area.
-        const byMoney = (affordable(a) ? 0 : 1) - (affordable(b) ? 0 : 1);
-        if (anchorTooExpensive && byMoney !== 0) return byMoney;
-        const sameArea = (x: SupabaseProperty) => (areaMatches(x.area, [anchor.area ?? ""]) ? 0 : 1);
-        const byArea = sameArea(a) - sameArea(b);
-        return byArea !== 0 ? byArea : rankForShortlist(a, b);
-      });
-
-    // A client who names ONE villa gets an answer about THAT villa.
-    //
-    // This branch used to always append "comparable alternatives", on the logic
-    // that everyone deserves a real choice. On an ad lead that reads as not
-    // listening: "Hi! I saw your ad for R-YUD-038 — 3BR near Seseh Beach, Rp
-    // 79.2M/month" came back with the villa they asked about plus a 2BR at
-    // Rp 28.6M and a 3BR in Balangan — a different size and the opposite end of
-    // the island — because ±1 bedroom is allowed and, with no stated budget, the
-    // rest of the order falls to whatever ranks well (804 views won). The owner's
-    // words: "client applied for one specific option, why suggest three?"
-    // (2026-08-19, lead 23279935).
-    //
-    // Alternatives are for when we must move them OFF that villa — it costs more
-    // than the budget they stated (the DOUBLE CHECK above), or it is not
-    // offerable. Otherwise: the villa they asked about, and the reply qualifies
-    // them instead of guessing. This is the deliberate exception to
-    // "always 2-3 listings, never one".
-    const anchorAlone = !anchorTooExpensive && offerableNow(anchor);
-    if (anchorAlone) {
-      logger.info(
-        { anchor: anchor.id },
-        "matchProperties: the lead named one villa — answering about that villa alone",
-      );
-      return [toPick(anchor)];
-    }
-
-    const ordered = anchorTooExpensive ? [...similar, ...anchors] : [...anchors, ...similar];
-    const shortlist = dedupeByTitle(ordered).slice(0, limit);
-    logger.info(
-      {
-        anchor: anchor.id,
-        total: shortlist.length,
-        budgetIdr: anchorBudget,
-        anchorPrice,
-        mismatch: anchorTooExpensive,
-      },
-      anchorTooExpensive
-        ? "matchProperties: DOUBLE CHECK — the clicked villa costs more than the budget they stated, leading with what fits"
-        : "matchProperties: built the shortlist around the listing the lead came in on",
-    );
-    return shortlist.map(toPick);
-  }
-
-  // Too little conversation to infer real criteria from — skip the AI call.
-  if (opts.conversationText.trim().length < 20) return [];
-
-  // ── Hard filter on the lead's CURRENT requirements ────────────────────────
-  // Applied before the model sees anything, so an outdated area or bedroom
-  // count is not even on the menu. Each filter is skipped when it would leave
-  // nothing — an imperfect suggestion beats an empty one.
-  // The broker's revision comes first: it is the newest and most authoritative
-  // statement of what should be attached.
-  const criteriaSource = [opts.brokerInstruction ?? "", ...(opts.recentLeadMessages ?? [])].filter(Boolean);
-  const criteria = await extractLeadCriteria(criteriaSource, pool);
-  // The ad form's answers fill whatever the conversation left unknown — never
-  // override, the client's own words always win.
-  //
-  // This merge existed only in candidatesForLead, the OTHER shortlist builder;
-  // here the card was accepted as a parameter and then read for its budget
-  // alone. An ad lead states its area and size on the FORM, not in the chat, so
-  // criteria.areas came out empty, the area filter below was skipped entirely,
-  // and the whole island stayed in play — at which point ranking decides, and
-  // ranking likes view count. One villa (3BR Balangan, Rp 77M, 813 views) was
-  // therefore attached to nine of the last ten drafts that carried a Balangan
-  // link, to clients asking for Pererenan, Canggu and Seminyak, several of them
-  // wanting 2 bedrooms under Rp 50M. Amelia read it as the bot pushing Balangan
-  // and asked for the listing to be deleted; the listing was never the problem.
-  if (opts.cardCriteria) {
-    if (criteria.bedrooms === null && opts.cardCriteria.bedrooms) {
-      criteria.bedrooms = opts.cardCriteria.bedrooms;
-    }
-    if (criteria.areas.length === 0 && opts.cardCriteria.areas.length > 0) {
-      criteria.areas = [...opts.cardCriteria.areas];
-    }
-  }
-
-  // The broker's own instruction, parsed rather than pattern-matched, and applied
-  // over the criteria taken from the lead. Their words win for this one message.
-  const releaseArea = brokerIntent
-    ? brokerIntent.releaseArea
-    : !!opts.brokerInstruction && BROKER_RELEASES_AREA.test(opts.brokerInstruction);
-
-  if (brokerIntent?.areas.length) {
-    logger.info(
-      { was: criteria.areas, now: brokerIntent.areas },
-      "matchProperties: broker named the areas — replacing the lead's",
-    );
-    criteria.areas = brokerIntent.areas;
-  } else if (releaseArea && criteria.areas.length > 0) {
-    logger.info(
-      { droppedAreas: criteria.areas, instruction: opts.brokerInstruction!.slice(0, 80) },
-      "matchProperties: broker asked to look beyond that area — area filter released",
-    );
-    criteria.areas = [];
-  }
-  // Overwriting bedrooms alone and leaving bedroomsMax as whatever extractLeadCriteria
-  // found would mismatch the two if the broker names a single count while the
-  // lead had stated a range (or vice versa) — always set both together.
-  if (brokerIntent?.bedrooms) {
-    criteria.bedrooms = brokerIntent.bedrooms;
-    criteria.bedroomsMax = brokerIntent.bedroomsMax;
-  }
-  let candidates = pool;
-  // STRICT — the owner's rule (2026-09-04): bedrooms, area and budget must match
-  // the request. Nothing from another district, another size or another price
-  // rides along because the right one was missing. An empty shortlist is a real
-  // answer: the reply says so and offers what is honestly nearby, in words.
-  // «Человек говорит направо, ты ему даёшь налево — так не надо.»
-  // (Before: an empty area silently fell back to the whole island, bedrooms
-  // widened ±1, and a 1BR-in-Nusa-Dua request went out with a 2BR in Pererenan.)
-  if (criteria.areas.length > 0) {
-    const byArea = candidates.filter((p) => areaMatches(p.area, criteria.areas));
-    if (byArea.length === 0) {
-      logger.info(
-        { areas: criteria.areas, poolSize: pool.length },
-        "matchProperties: nothing in the client's area — attaching nothing from elsewhere",
-      );
-      return [];
-    }
-    candidates = byArea;
-  }
-  if (criteria.bedrooms !== null) {
-    const min = criteria.bedrooms;
-    const max = criteria.bedroomsMax ?? null;
-    // A stated range ("3 or 4 bedrooms") filters to the range as given; a single
-    // count is exact. No ±1.
-    const fit =
-      max !== null
-        ? candidates.filter((p) => p.bedrooms !== null && p.bedrooms >= min && p.bedrooms <= max)
-        : candidates.filter((p) => p.bedrooms === min);
-    if (fit.length === 0) {
-      logger.info(
-        { areas: criteria.areas, bedrooms: min, bedroomsMax: max, inArea: candidates.length },
-        "matchProperties: nothing at the client's bedroom count — attaching nothing of another size",
-      );
-      return [];
-    }
-    candidates = fit;
-  }
-  // Priced stock first — see hasPrice. Dropped only while a real choice remains.
-  const priced = candidates.filter(hasPrice);
-  if (priced.length >= MIN_SHORTLIST) {
-    if (priced.length < candidates.length) {
-      logger.info(
-        { dropped: candidates.length - priced.length, kept: priced.length },
-        "matchProperties: held back listings with no price",
-      );
-    }
-    candidates = priced;
-  }
-  // Their budget, now that there is a rupiah price to hold it against. A little
-  // headroom, because a villa slightly over budget is still worth showing — one
-  // at double is not, and that is what went out before.
-  const budgetIdr =
-    opts.listingType === "rent"
-      ? brokerIntent?.budgetIdrMonthly ??
-        extractBudgetIdr(criteriaSource) ??
-        opts.cardCriteria?.budgetIdrMonthly ??
-        null
-      : null;
-  const budgetCeiling = budgetIdr ? Math.round(budgetIdr * 1.15) : null;
-  // A stated RANGE ("40-50 million") has a bottom too. extractBudgetIdr only
-  // ever reads the top of it — correct for the ceiling above, useless for
-  // telling a 23-million villa apart from a 48-million one, both of which
-  // pass "under the ceiling" equally. Ani Vit's request said 40-50; the
-  // shortlist filled two of three slots with villas at 23 and 28.6, and a
-  // broker edit repeating "stay in that range" still didn't move them,
-  // because nothing downstream had ever been told where the range started.
-  const budgetFloorRaw = opts.listingType === "rent" ? extractBudgetFloorIdr(criteriaSource) : null;
-  // Same invariant as candidatesForLead: a floor above the ceiling is a parse
-  // error, never a range, and enforcing it empties the shortlist.
-  const budgetFloorIdr = budgetFloorRaw && budgetIdr && budgetFloorRaw > budgetIdr ? null : budgetFloorRaw;
-  if (budgetFloorRaw && budgetIdr && budgetFloorRaw > budgetIdr) {
-    logger.warn({ budgetFloorRaw, budgetIdr }, "matchProperties: floor above ceiling — floor ignored");
-  }
-  // Same 15% the ceiling gets, mirrored downward: a villa just under the stated
-  // floor is still a real answer to "60-65 million" — the owner's own read of
-  // one at 55 was "that one's right". One at 39.8 (well past the headroom) is
-  // the actual complaint. Without this, only a floor-exact catalog ever
-  // satisfies a range, which one thin area rarely has.
-  const budgetFloorFloor = budgetFloorIdr ? Math.round(budgetFloorIdr * 0.85) : null;
-  if (budgetCeiling) {
-    // Strict: inside the ceiling (15% headroom) and, when they named a range,
-    // not below its floor (the same 15%, mirrored). A villa with no price
-    // cannot be judged against a budget, so it is not "inside" it. Nothing
-    // above the budget is offered as "the closest" any more — the reply says
-    // the budget holds nothing here and asks what else could work.
-    const within = candidates.filter(
-      (p) =>
-        priceOf(p) > 0 &&
-        priceOf(p) <= budgetCeiling &&
-        (!budgetFloorFloor || priceOf(p) >= budgetFloorFloor),
-    );
-    if (within.length === 0) {
-      logger.info(
-        { budgetIdr, budgetFloorIdr, of: candidates.length },
-        "matchProperties: nothing inside the client's budget — attaching nothing above it",
-      );
-      return [];
-    }
-    // In-range first when a floor is known, THEN the general ranking — a villa
-    // just under the stated floor is still a real answer, but not a better one.
-    candidates = budgetFloorIdr
-      ? [...within].sort((a, b) => {
-          const aIn = priceOf(a) >= budgetFloorIdr ? 0 : 1;
-          const bIn = priceOf(b) >= budgetFloorIdr ? 0 : 1;
-          return aIn !== bIn ? aIn - bIn : rankForShortlist(a, b);
-        })
-      : within.sort(rankForShortlist);
-    logger.info(
-      { budgetIdr, budgetFloorIdr, within: within.length },
-      "matchProperties: shortlist held to the lead's budget",
-    );
-  }
-
-  // Best first — priced, then most-viewed — and never the same villa name twice.
-  // This line was lost in an earlier edit to the block above, which is how two
-  // identically named Canggu villas at 33 and 45 jt went out as a "choice".
-  candidates = dedupeByTitle(budgetCeiling ? candidates : [...candidates].sort(rankForShortlist));
-
-  if (criteria.areas.length > 0 || criteria.bedrooms !== null) {
-    logger.info(
-      { areas: criteria.areas, bedrooms: criteria.bedrooms, poolSize: pool.length, candidates: candidates.length },
-      "matchProperties: filtered to the lead's current criteria",
-    );
-  }
-
-  const budgetKnown = mentionsBudget(criteriaSource);
-
+  const budgetKnown = request.budgetMaxIdr !== null;
   try {
-    const brokerTop = opts.brokerId
-      ? await getTopPicksForBroker(opts.brokerId, candidates.map((p) => p.id))
-      : [];
-    // Style goes to the MODEL only. Appending it inside summaryLine put it into
-    // the attachment label the broker and the client see ("style: Private Pool, …").
+    const brokerTop = opts.brokerId ? await getTopPicksForBroker(opts.brokerId, candidates.map((p) => p.id)) : [];
     const catalogBlock = candidates
       .slice(0, 60)
       .map((p) => {
@@ -1618,20 +1740,7 @@ export async function matchProperties(opts: {
         return style ? `${summaryLine(p)} | ${style}` : summaryLine(p);
       })
       .join("\n");
-    // Deliberately weak wording: this hint kept resurfacing the same two
-    // listings regardless of what the lead asked for.
     const brokerBlock = brokerTop.length > 0 ? `\n\nFYI, this broker has used these before: ${brokerTop.join(", ")}. Only pick one if it fits the lead's CURRENT criteria as well as any other candidate — never as a tie-breaker against a better fit.` : "";
-
-    const budgetBlock = budgetCeiling
-      ? `\n\nTHEIR BUDGET IS ${Math.round(budgetIdr! / 1_000_000)} MILLION RUPIAH PER MONTH${
-          budgetFloorIdr ? ` (they named a range starting at ${Math.round(budgetFloorIdr / 1_000_000)})` : ""
-        }. Every listing below is already inside it, ordered affordable-first — pick from these only.`
-      : "";
-
-    const areaReleaseNote = releaseArea
-      ? `\n\nThe broker has told you to look BEYOND the area the lead named — the whole island is on the table now, so choose on price and fit and name the area each villa is actually in.`
-      : "";
-
     const brokerRevision = opts.brokerInstruction
       ? `\n\nTHE BROKER IS REVISING THIS DRAFT AND SAID: "${opts.brokerInstruction.slice(0, 400)}"\nThis outranks everything else. It is feedback on the listings currently attached${
           opts.currentAttachmentIds?.length ? ` (${opts.currentAttachmentIds.join(", ")})` : ""
@@ -1648,22 +1757,16 @@ Return an EMPTY list when sending listings would be the wrong move:
 - The lead is arranging a viewing, negotiating terms, or discussing a property they've already chosen.
 - The conversation gives truly nothing to go on (e.g. only a greeting).
 
-CORE CRITERIA, IN PRIORITY ORDER: bedrooms, area, budget. A candidate that violates a stated core criterion is the wrong pick no matter how good it looks — style, features and views are secondary and only break ties among candidates that satisfy the core.
+EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. Choose among them on style, features and fit. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously.
 
-STYLE COUNTS AS A CRITERION. Each catalog line carries a "style:" part — the villa's features and a slice of its description. When the lead describes how they want it to look or feel (modern, luxury, minimalist, traditional, jungle, bright, quiet, family), match that against those words as seriously as you match area and bedrooms. Two villas of the right size in the right area are not interchangeable if only one is the style they asked for.
-
-CRITERIA CAN CHANGE MID-CONVERSATION. When the lead revises what they want ("actually", "I wanna change my request", a new area, a different bedroom count), their NEWEST statement is the only one that counts — match against that and treat the earlier criteria as void, however much of the conversation was spent on them.
-
-Otherwise pick up to ${limit} listing IDs. EVERY listing in the catalog below already satisfies the client's stated bedrooms, area and budget — the code filtered it — so choose among them on style, features and fit, and prefer ${MIN_SHORTLIST}-${limit} so the lead has something to compare. Never pad: if only one genuinely fits, return one. The code never adds a villa of another size, district or price to make up numbers, and neither do you. A missing detail (style, purpose, move-in date) is no reason to hold back — one or two known criteria are enough.${
+Pick up to ${limit} listing IDs, preferring ${MIN_SHORTLIST}-${limit} so the lead has something to compare. Never pad: if only one genuinely fits, return one.${
         (opts.seenCount ?? 0) > 0
-          ? `\n\nThis lead has already been shown ${opts.seenCount} listing(s) and those are excluded from the catalog below. Anything you pick is new to them — favour genuine variety (different areas, price points, layouts) over near-duplicates of what they already saw.`
+          ? `\n\nThis lead has already been shown ${opts.seenCount} listing(s) and those are excluded from the catalog below.`
           : ""
-      }${brokerBlock}
-
-${
+      }${brokerBlock}${brokerRevision}${
         budgetKnown
           ? ""
-          : `\n\nTHE LEAD HAS NOT NAMED A BUDGET. Deliberately spread the shortlist across clearly different price points — one affordable, one mid, one premium — so their reaction tells us the budget without having to ask. The catalog is ordered cheapest-fit first, newest listings ahead of older ones at the same price; everything in it already matches the client's area and size.`
+          : `\n\nTHE LEAD HAS NOT NAMED A BUDGET. Spread the shortlist across clearly different price points so their reaction tells us the budget.`
       }
 
 Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
@@ -1672,97 +1775,35 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
           role: "user",
           content: `${
             opts.latestLeadMessage
-              ? `LEAD'S LATEST MESSAGE — their current criteria, this overrides anything older:\n"${opts.latestLeadMessage.slice(0, 500)}"\n\n`
+              ? `LEAD'S LATEST MESSAGE:\n"${opts.latestLeadMessage.slice(0, 500)}"\n\n`
               : ""
           }Conversation (background):\n${conversationWindow(opts.conversationText)}\n\nCatalog:\n${catalogBlock}`,
         },
       ],
-      // Room for three IDs plus whatever reasoning the model writes first —
-      // at 80 the answer was cut off mid-array and the shortlist came back empty.
       max_tokens: 400,
       temperature: 0,
     });
 
     const ids = new Set((result.ids ?? []).map((id) => id.toUpperCase()));
     const picked = candidates.filter((p) => ids.has(p.id.toUpperCase()));
-
-    // An empty list is a real decision (the lead already chose a villa, or is
-    // arranging a viewing) — respect it. But once the model has decided to send
-    // options at all, one is never enough: top the shortlist up to the floor
-    // from the same filtered candidates, closest bedroom count first.
-    if (picked.length > 0 && picked.length < MIN_SHORTLIST) {
-      // Top up ONLY from the filtered candidates — every one of them fits the
-      // request. The old fill reached into the whole island's priced stock,
-      // which is how a 1BR-in-Nusa-Dua request went out with a 2BR in
-      // Pererenan. If the fitting stock is one villa, one villa goes out.
+    if (picked.length === 0) {
+      outcome.declined = true;
+      logger.info({ fitting: candidates.length }, "matchProperties: the model chose to attach nothing to this message");
+      return done([]);
+    }
+    // Top up to two from the SAME strict pool — every candidate is inside the request.
+    if (picked.length < MIN_SHORTLIST) {
       const chosenTitles = new Set(picked.map((p) => (p.title ?? p.id).trim().toLowerCase()));
-      const rest = dedupeByTitle(candidates)
-        .filter(
-          (p) => !ids.has(p.id.toUpperCase()) && !chosenTitles.has((p.title ?? p.id).trim().toLowerCase()),
-        )
-        .sort(rankForShortlist);
-      const before = picked.length;
-      picked.push(...rest.slice(0, MIN_SHORTLIST - picked.length));
-      logger.info(
-        { requested: ids.size, final: picked.length, fittingStock: candidates.length },
-        picked.length > before
-          ? "matchProperties: topped the shortlist up from the fitting candidates"
-          : "matchProperties: only this many fit — sending fewer than the usual minimum rather than padding",
+      const rest = candidates.filter(
+        (p) => !ids.has(p.id.toUpperCase()) && !chosenTitles.has((p.title ?? p.id).trim().toLowerCase()),
       );
+      picked.push(...rest.slice(0, MIN_SHORTLIST - picked.length));
     }
-    // Enforced, not requested. Two separate failures made this necessary: the
-    // model was handed an affordable-first catalog and still picked villas at
-    // nearly double the figure, and when told the broker objected to the current
-    // links it dropped ALL of them — including the one that was cheapest. Price
-    // is not a preference the model gets to trade away, so it is applied here.
-    if (budgetCeiling) {
-      const affordable = candidates.filter((p) => priceOf(p) > 0 && priceOf(p) <= budgetCeiling);
-      const target = Math.min(limit, Math.max(MIN_SHORTLIST, picked.length));
-      const keep = affordable.length > 0 ? picked.filter((p) => priceOf(p) <= budgetCeiling) : [];
-      const chosen = new Set(keep.map((p) => p.id));
-      // `candidates` is already ordered affordable-first, then cheapest-above, so
-      // this fills with the best available answer either way.
-      for (const p of affordable.length > 0 ? affordable : candidates) {
-        if (keep.length >= target) break;
-        if (!chosen.has(p.id)) {
-          keep.push(p);
-          chosen.add(p.id);
-        }
-      }
-      // Affordable stock can run out before there is a choice to offer — then the
-      // closest above budget completes it rather than the client getting a single
-      // link. Enforcing the ceiling first had cut a shortlist of two back to one.
-      if (keep.length < MIN_SHORTLIST) {
-        for (const p of candidates) {
-          if (keep.length >= MIN_SHORTLIST) break;
-          if (!chosen.has(p.id)) {
-            keep.push(p);
-            chosen.add(p.id);
-          }
-        }
-      }
-      const changed =
-        keep.length !== picked.length || keep.some((p, i) => p.id !== picked[i]?.id);
-      if (keep.length > 0 && changed) {
-        logger.info(
-          {
-            ceiling: budgetCeiling,
-            affordableStock: affordable.length,
-            before: picked.map((p) => `${p.id}:${priceOf(p)}`),
-            after: keep.map((p) => `${p.id}:${priceOf(p)}`),
-          },
-          "matchProperties: enforced the budget on the final shortlist",
-        );
-        picked.length = 0;
-        picked.push(...keep);
-      }
-    }
-
     const final = budgetKnown ? picked : spreadByPrice(picked.slice(0, limit), candidates);
-    return final.slice(0, limit).map(toPick);
+    return done(final.slice(0, limit));
   } catch (err) {
     logger.error({ err }, "matchProperties: AI matching failed (non-fatal)");
-    return [];
+    return done([]);
   }
 }
 
@@ -1785,33 +1826,6 @@ export type DescribedProperty = {
   url: string;
   priceIdr: number;
 };
-
-/**
- * What a listing tells us about the person who clicked its ad.
- *
- * A paid ad lead who never filled the Meta form has still said something by
- * clicking: this many bedrooms, this area, roughly this money. Without it the
- * matcher had nothing to search on — the only "client message" is the seeded
- * link, which carries no criteria — so the broker's opening promised a
- * shortlist and attached none (2026-08-21).
- */
-export async function criteriaFromListing(
-  id: string,
-): Promise<{ bedrooms: number | null; areas: string[]; budgetIdrMonthly: number | null } | null> {
-  const want = id.trim().toUpperCase();
-  if (!want) return null;
-  const all = await fetchAllProperties().catch(() => [] as SupabaseProperty[]);
-  const p = all.find((x) => x.id.toUpperCase() === want);
-  if (!p) return null;
-  const price = priceOf(p);
-  return {
-    bedrooms: typeof p.bedrooms === "number" && p.bedrooms > 0 ? p.bedrooms : null,
-    areas: p.area ? [p.area] : [],
-    // Their ceiling is unknown; what they clicked is the one figure they have
-    // shown willingness to pay, so search around it rather than under it.
-    budgetIdrMonthly: price > 0 ? Math.round(price * 1.15) : null,
-  };
-}
 
 export async function describePropertiesByIds(
   ids: string[],

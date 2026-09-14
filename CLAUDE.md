@@ -163,17 +163,81 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
   path: first the attachment picker, then the client's name, then the inventory
   check. Anything that shapes the prompt goes in **`buildPromptAdditions`**, which
   both call.
+- **One request, one filter, one final check (owner, 2026-09-14: «количество
+  комнат, бюджет и район — это основа запроса, и предлагать нужно только в
+  нём»).** Ten days after the rule below, a thread-by-thread read of 86
+  "Options sent" cards still found villas outside the request in September,
+  because the rule lived in five copies that disagreed: matchProperties added
+  +15% to every budget and, for a villa the lead named, offered ±1-bedroom
+  alternatives from any area; candidatesForLead had its own filter;
+  availabilityForCriteria counted stock a third way for the prompt;
+  criteriaFromListing turned the clicked ad villa's price × 1.15 into the
+  client's "budget"; and pickPropertyAttachments attached the clicked villa
+  "fit or not" (R-YUD-066, let until Oct 2027, to a client moving in
+  tomorrow; R-YUD-050, 3BR at 66M, to 2BR-under-50M and Ubud-only clients).
+  Nothing read the move-in date, the stay length or a listing's minimum stay;
+  "minimum 3 bedrooms" was read as exactly 3; a place the site does not list
+  (Kedungu) was silently dropped, so the area filter vanished; and a scout
+  lead's request in the card notes never reached the matcher at all. Now, in
+  `property-catalog.ts`:
+  - `resolveClientRequest` is the ONLY reader of the request: broker edit
+    instruction > client's own messages (newest wins) > form answers > scout
+    notes; the clicked villa fills only bedrooms (as a floor) and area when
+    nobody stated them — never money. Never our own messages. Budget goes
+    through `extractBudgetIdr`/`extractBudgetFloorIdr` source by source; one
+    Haiku call reads the rest (`client-request` label), cached 10 min.
+    `lead-profile.ts` stores `req_bedrooms/req_areas/req_budget_idr_monthly`
+    from it too (they had stored villas WE sent as the client's request).
+  - `requestMisfits` is the ONLY judge: bedrooms exactly as asked (range /
+    "at least" as stated, no ±1); only the named areas (neighbours only when the
+    client said nearby is fine; an unlisted place matches nothing); the
+    published monthly price ≤ the stated ceiling with NO headroom (a range's
+    floor keeps its ×0.85); free on the move-in date and not booked during the
+    stay (`busy` periods); `min_stay_months` ≤ their stay, no yearly-only for a
+    short stay.
+  - `strictShortlistPool` is the ONLY candidate list: `matchPropertiesDetailed`
+    (every bot draft, via `pickPropertyAttachmentsDetailed`) and
+    `candidatesForLead` (the edit path's composer) both draw from it. The model
+    only chooses among fits; top-ups come from fits; nothing is added to make
+    up numbers. A named/clicked villa rides along only if it fits.
+  - Nothing fits → nothing attached, and `shortlistPromptBlock` tells the
+    writer to say honestly that nothing is exactly within the request right
+    now and ask ONE question about the dimension that would open the most real
+    options (`relaxationHint`: nearby area / budget / bedrooms / dates).
+    Everything fitting already sent → no new links, refer back.
+  - `enforceRequestOnDraft` (generate-suggestion.ts) is the final check every
+    generator runs — both generateSuggestion copies, generateFollowup,
+    generatePushFollowup: drops attachments that are unpublished or outside the
+    request; forces the rewrite when the text misses an attached villa, gives a
+    different NUMBER of villas ("two more options" over three links), or names a
+    villa neither attached nor already sent; removes "links below" with no link.
+    `approve.ts` drops links to unpublished listings before sending
+    (`dropUnpublishedAttachments`; R-AME-028 went back to draft while a
+    follow-up carrying it waited).
+  - Edit path: outside the pool only what a PERSON chose may go out — links
+    the broker hand-curated and villas the broker named. A `keep_current`
+    link that is outside the (possibly instruction-updated) request is
+    replaced from the pool.
+  Call sites covered through the shared picker: lib `generateSuggestion`
+  (unanswered-live pass, ad-lead opening, handover, viewing-report
+  `shortlistAfterViewing`, timeline-sync, retouch), the webhook copy (live
+  webhook, regen, upload, bulk import), `generateFollowup`,
+  `generatePushFollowup`, suggest.ts split path (`pickPropertyAttachments`)
+  and composer (`candidatesForLead`). There is no separate "new listings"
+  sender. Before touching any of it: replay real leads through the bundle
+  harness (see Working conventions) and look at request + attachments + text
+  together.
 - **A shortlist is 2-3 listings when 2-3 FIT — never padded (owner, 2026-09-04).**
   Bedrooms, area and budget are filters, not preferences: nothing of another
   size, district or price rides along because the right one was missing. One
-  fitting villa goes out alone; none means an EMPTY shortlist, and the reply
-  says so and OFFERS adjacent districts (`neighbourAreas` in bali-areas.ts) in
-  words — no links. Before this the empty area silently fell back to the whole
+  fitting villa goes out alone; none means an EMPTY shortlist (since 14.09 the
+  reply asks ONE flexibility question, see above; neighbours are named only as
+  that question). Before this the empty area silently fell back to the whole
   island, bedrooms widened ±1, the model was told to "pick the closest areas",
   and the top-up drew from all priced stock — a 1BR-in-Nusa-Dua request went
   out with a 2BR in Pererenan. The owner's words: «человек говорит направо, ты
   ему даёшь налево — так не надо». The broker's own "look elsewhere" still
-  releases the area (brokerIntent.release_area / the regex in candidatesForLead).
+  releases the area (brokerIntent.release_area / BROKER_RELEASES_AREA).
 - **Text and links are ONE message (owner, 2026-09-04: "текст и ссылки это одно
   и то же").** The writer used to run concurrently with the matcher and could
   not know what got attached; prompt wording alone never fixed it. Now every
@@ -236,8 +300,9 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
   as having no price at all. Never convert a currency: read the rupiah column.
   The site already renders rupiah by default, so property links carry no
   `?currency` parameter (verified on a bare URL: "Rp 88M / month").
-- **The lead's stated budget filters the shortlist** (`extractBudgetIdr`, +15%
-  headroom; a range's floor with the same headroom mirrored down). When nothing
+- **The lead's stated budget filters the shortlist** (`extractBudgetIdr`; since
+  2026-09-14 with NO headroom — the stated maximum is the maximum; a range's
+  floor keeps its ×0.85). When nothing
   fits, NOTHING is attached (since 2026-09-04) — the reply says the budget holds
   nothing here and asks what else could work; it never pretends the budget was met.
 - **Each property link is sent as its own WhatsApp message** — glued together,
@@ -423,7 +488,9 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
 - **A stated budget is enforced in code, not asked of the model.** Handed an
   affordable-first catalog it still picked villas at double the figure; told the
   broker objected to the current links it dropped even the cheapest. The ceiling
-  is applied to the final shortlist, and it may not cut it below two.
+  is applied to the final shortlist — and since 2026-09-14 it may cut it to one
+  or to none (`requestMisfits`, `enforceRequestOnDraft`); "at least two" never
+  outranks the request.
 - **The rental budget gate (owner's explicit exception to "never auto-close").**
   `lib/budget-filter.ts`: Rental leads whose own stated budget (or ad/scout form
   note) parses below the broker-set threshold are closed to Lost BEFORE any
@@ -1841,6 +1908,19 @@ swallows the real one.
   was cut before ~22 commits landed and re-implemented push, deep-linking and
   stage advance that already existed, with rules contradicting the owner's
   decisions. It was not merged; only its conversation auto-scroll was taken.
+- **Replay the matcher and the generators on real leads before deploying them**
+  (read-only). Push the branch to GitHub (not master), check it out in a
+  server worktree with prod's node_modules linked (as
+  `scripts/typecheck-worktree.sh` does), write a TS entry that parses
+  `/opt/whatcan/.env` into `process.env` and then `await import()`s
+  `./lib/generate-suggestion` etc., bundle with `esbuild --bundle
+  --platform=node --format=cjs --alias:@workspace/db=<worktree>/lib/db/src/index.ts
+  --external:pg-native --external:sharp`, write the bundle INSIDE
+  `/opt/whatcan/artifacts/api-server/`, run `NODE_ENV=production node`, delete
+  it. Call `pickPropertyAttachmentsDetailed`, `generateSuggestion`,
+  `generatePushFollowup` — none of them writes a queue row, sends or writes
+  amoCRM (only `ai_usage` rows). Print the resolved request, each attached
+  villa's bedrooms/area/price/availability with `requestMisfits`, and the text.
 - **Do not run synthetic tests against live leads.** Injecting fake messages
   into lead 22962823 put invented client requirements into a real WhatsApp
   conversation. Test the prompts/classifiers standalone instead.

@@ -19,7 +19,7 @@ import {
 } from "../../lib/outbound-send.js";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL, followupClockAfterReply } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
-import { reconcileTextWithAttachments, allAttachmentsNamed, villasNamedInText, textNamesVilla } from "../../lib/generate-suggestion";
+import { reconcileTextWithAttachments, allAttachmentsNamed, villasNamedInText, textNamesVilla, dropUnpublishedAttachments } from "../../lib/generate-suggestion";
 import { fetchAllPropertiesForPriceLookup, describePropertiesByIds } from "../../lib/property-catalog";
 import { recordCommitment } from "../../lib/commitment-scheduler.js";
 
@@ -331,6 +331,9 @@ router.post("/approve", async (req, res) => {
     return;
   }
   if (!skipMessage) {
+    // A link to a listing that is no longer published opens nothing or shows no
+    // price; it never leaves, whoever attached it (R-AME-028, 14.09.2026).
+    effectiveAttachments = await dropUnpublishedAttachments(effectiveAttachments, sug.leadId);
     const norm = (t: string) => (t ?? "").replace(/\s+/g, " ").trim().toLowerCase();
     const textEdited = norm(finalMessage) !== norm(sug.suggestionText ?? "");
     const urlSet = (arr: Array<{ url?: string | null }>) => new Set(arr.map((a) => (a.url ?? "").toLowerCase()));
