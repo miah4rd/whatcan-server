@@ -1963,6 +1963,13 @@ were both answered within an hour. **Regulation now — automatic, no approval:*
 - Cadence check: `select lead_id, count(*) from sent_messages where kind =
   'weekly-availability' and webhook_status = 200 and created_at > now() -
   interval '7 days' group by 1 having count(*) > 1;` must return nothing.
+- **Verified 14.09.2026:** dry plan 22 cards → 2 send, 20 skip (5 live cards
+  without a site link, 5 never talked to the owner, Villa Markisa written to
+  5 days ago, 8 closed/co-broke/lost). Mode on 15:59 Bali; Villa Lani
+  (23389399) EN 16:01:58 and Bumbak Dream Villa (23462321) ID 16:16:30, both on
+  59537, type-90 events in the timeline, amoCRM live → Weekly Check Sent. The 3
+  still-pending approval drafts of 27.08 (899eb618, 4dc6fdbe, b731bce4) set
+  skipped. The owner-answer path had no reply yet at deploy.
 
 ### Construction nearby: the one structured red flag (2026-09-10)
 
