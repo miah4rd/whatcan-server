@@ -33,6 +33,7 @@ import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { isUndeliverableNotice } from "./undeliverable";
 import { amoStageFor } from "./stage-classifier";
 import { LISTINGS_PIPELINE_ID, LISTING_STAGE, LISTING_STAGE_NAME } from "./listing-status-week";
+import { queueInspectionCalendarSync } from "./inspection-calendar";
 
 const BALI = "Asia/Makassar";
 const MIN = 60_000;
@@ -514,6 +515,7 @@ export async function applyForwardPath(
                    VALUES (${leadId}, ${o.visit.visitAt.toISOString()}, ${o.visit.timeKnown}, ${o.visit.agreedAt ? o.visit.agreedAt.toISOString() : null}, ${o.visit.quote}, ${o.source})
                    ON CONFLICT (lead_id, visit_at) DO NOTHING`)
       .catch((err) => logger.warn({ err, leadId }, "listing-progress: slot not recorded"));
+    queueInspectionCalendarSync(`slot recorded for ${leadId}`);
   }
   if (o.evidenceNote) lines.push(o.evidenceNote);
   const text =

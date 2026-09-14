@@ -18,6 +18,7 @@ import { startAiWatchdog } from "./lib/ai-watchdog";
 import { startReportScheduler } from "./lib/report-scheduler";
 import { startVideoCompressScheduler } from "./lib/video-compress";
 import { startListingStatusPass } from "./lib/listing-status-pass";
+import { startInspectionCalendarSync } from "./lib/inspection-calendar";
 import { startStageSyncCheckScheduler } from "./lib/stage-sync-check";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
@@ -87,6 +88,8 @@ startStageSyncCheckScheduler();
 startPhotoVariantScheduler();
 // The site's Pre-listed / Listed switch moves the villa's Rental Listings card to live; see lib/listing-status-pass.ts.
 startListingStatusPass();
+// Agreed villa inspections → the shared Brokers Google Calendar; see lib/inspection-calendar.ts.
+startInspectionCalendarSync();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
 // When a rental is free from — asked in the intake chat, written to Supabase's

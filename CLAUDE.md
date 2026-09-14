@@ -1721,6 +1721,51 @@ exact names), `LISTING_STAGE_NAME` (listing-status-week, fallback labels),
 autopilot `up_to_stage_name` (resolved by name through the live list), the
 stage-options cache (10 minutes), the prompt and the extension. New code: ids.
 
+### Agreed inspections are notes in the Brokers Google Calendar (2026-09-14)
+
+Owner, 14.09: once a villa visit is agreed, the bot writes a short note into the Unicorn
+Property Google Calendar ("вилла такая-то, время такое-то, инспекция") so Yudi opens the
+calendar and sees today's visits. Through the Google Calendar API, not a person.
+
+- **What is synced** (`lib/inspection-calendar.ts`): the latest `listing_inspection_slots` row
+  per card whose visit is in the future or at most a day past, while the card sits in
+  Inspection sceduled or further (live, Weekly Check Sent, Update Availability Received, won).
+  One event per villa: key `prop:<R-code>` (site `listing_crm_link`, else exactly one site code
+  in the card's name/notes) or `lead:<id>`; duplicate cards of one villa share the event.
+- **Event**: `Inspection — <villa> (<R-code>)`, 60 minutes, explicit `+08:00` /
+  `Asia/Makassar`; villa = the card name's first segment (the name Yudi uses — the site title is
+  a sales headline, it goes into the description), else the site title. Location = the site's
+  `google_maps_url`, else `exact_address`, else area. Description (English): listing title and
+  site link, owner/manager name, area, address, map, amoCRM card link(s), the agreeing quote.
+  Popups 60 and 15 minutes. A slot with `time_known = false` is an all-day note
+  "— time not fixed" (popup 17:00 the day before). No attendees; every write sends
+  `sendUpdates=none`.
+- **Pass**: every 5 minutes (`startInspectionCalendarSync`) and 8 s after
+  `applyForwardPath` records a slot (`queueInspectionCalendarSync`). Missing → create; content
+  changed (sha1 of the body) → patch; card went back / lost / parked / left the funnel, or the
+  slot is gone → delete; visit more than a day past → row `retired`, event kept as history.
+  Idempotent: table `inspection_calendar_events` (sync_key → event_id, hash, status, last_error;
+  created at boot), and before any create the calendar is searched by the private extended
+  property `whatcanKey` and an existing event is adopted (extra copies deleted). A failed amoCRM
+  or site read aborts the pass — nothing is deleted on a bad read. An event deleted by hand is
+  written again only when the visit changes.
+- **Fail soft**: `lib/google-calendar.ts` returns `{ ok:false, reason }`, never throws, never
+  logs a credential; the stage pass is never blocked. Without credentials the pass logs
+  "Google Calendar not configured" (at most every 6 h) and does nothing.
+- **Env** (values only in `/opt/whatcan/.env`): `GOOGLE_CALENDAR_CLIENT_ID`,
+  `GOOGLE_CALENDAR_CLIENT_SECRET`, `GOOGLE_CALENDAR_REFRESH_TOKEN` (scopes `calendar.events` +
+  `calendar.readonly`, consent as info@unicorn-property.com), `GOOGLE_CALENDAR_ID` = the shared
+  "Brokers" calendar. New values need `deploy.sh` (it restarts with `--update-env`).
+- **Token revoked / expired** (log reason `invalid_grant`; an OAuth client in "Testing" mode
+  expires refresh tokens after 7 days — publish the consent screen to avoid it): redo the
+  one-time consent as info@unicorn-property.com with the same client and scopes, replace
+  `GOOGLE_CALENDAR_REFRESH_TOKEN` in `.env` (the file has duplicate keys elsewhere — last value
+  wins, edit only this line), run `deploy.sh`, then `POST /api/admin/inspection-calendar/test`.
+- Tools: `POST /api/admin/inspection-calendar` (dry plan; `?apply=1` runs the pass),
+  `GET /api/admin/inspection-calendar/events` (what the calendar holds, from the API),
+  `POST /api/admin/inspection-calendar/test` ([TEST] event: create → read back → delete).
+  Log line: `inspection calendar: <action>`.
+
 ### Inspection. done: the agent has been to the villa (2026-09-09) — superseded 14.09, see above
 
 The owner renamed "agreement" to "Inspection. done" in amoCRM (same stage,
