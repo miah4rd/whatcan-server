@@ -964,32 +964,70 @@ currently in Bali to do some viewings?", "which day suits?", offers to check
 the owner's availability for a day, and
 gives a concrete time only once the owner confirmed it. Her 09.09 lesson says
 exactly that ("replace 'tomorrow' with an open question about preference").
-Now (`generate-suggestion.ts`):
-- `viewingPushDue(messages, stage)` — deterministic: Rental, links already in
-  the thread, the card before Viewing scheduled, and the client's last reply
-  (if any) is not a hard no (`HARD_NO`: found a place, not interested, stop).
-  Silence after links counts; "too expensive" counts.
-- `viewingPushBlock(broker, examples)` in `buildPromptAdditions`, so BOTH
-  generators get it. `brokerViewingExamples` reads the broker's OWN viewing
+Now — ONE shared point in `generate-suggestion.ts`, asked by EVERY generator
+of a client-facing Rental draft through a `ViewingPushContext` (lead id,
+pipeline, stage, merged thread, broker, kind):
+- `viewingPushApplies(ctx)` — the one gate. Rental, and
+  `viewingPushDue(messages, stage)`: links already in the thread, the card
+  before Viewing scheduled, the client's last reply (if any) not a hard no
+  (`HARD_NO`: found a place, not interested, stop). Silence after links
+  counts; "too expensive" counts. And not the villa itself
+  (`isVillaSideContact`, below).
+- `viewingPushPromptBlock(ctx)` — the prompt half: `viewingPushBlock(broker,
+  examples)` or "". `brokerViewingExamples` reads the broker's OWN viewing
   invitations (lead_messages `sender_type='broker'`, their Rental leads, 90
-  days, cached 15 min) and puts them in the block as the style; the block
-  lists the moves (ask if in Bali / which day / check the owner's
-  availability / "I'll check with the owner", never a
-  booking) and carries no example sentence of its own. The broker's lessons
-  **No video tours or virtual viewings (owner, 10.09: "не стоит пока про
-  видео тур")** — 7 villas in the whole catalog carry a video_url and the
-  generator does not read it. Off-island client: ask when they arrive, line
-  up the viewings for those days. The rental rulebook says the same, and
-  the broker's own "virtual viewing" lines are filtered out of the examples.
-  come after it in the prompt and win.
-- `enforceViewingProposal` at the tail of BOTH `generateSuggestion` copies:
-  `proposesViewingSlot` (a viewing word AND a time, a time-bound question or
-  a direct ask; "whenever you like" is not a move) or ONE Sonnet insertion —
-  one sentence in the broker's voice, with their lessons and their examples
-  in the prompt, the rest of the draft verbatim (rejected if it shrinks the
-  draft). A second miss goes out as written and is logged (`viewing push:`).
-  The first shortlist message is not pushed — the push starts with the next
-  message.
+  days, cached 15 min, villa-side threads skipped) and puts them in the block
+  as the style; the block lists the moves (ask if in Bali / which day / check
+  the owner's availability / "I'll check with the owner", never a booking)
+  and carries no example sentence of its own. The broker's lessons come after
+  it in the prompt and win. **No video tours or virtual viewings (owner,
+  10.09: "не стоит пока про видео тур")** — off-island client: ask when they
+  arrive, line up the viewings for those days; the broker's own "virtual
+  viewing" lines are filtered out of the examples.
+- `applyViewingPush(text, attachments, ctx)` — the text half, on the finished
+  draft after the attachment reconciliation: `proposesViewingSlot` (a viewing
+  word AND a time, a time-bound question or a direct ask; "whenever you like"
+  is not a move) or ONE Sonnet insertion via `enforceViewingProposal` — one
+  sentence in the broker's voice, their lessons and examples in the prompt,
+  the rest verbatim (rejected if it shrinks the draft). A second miss goes out
+  as written and is logged (`viewing push:`). The first shortlist message is
+  not pushed — the push starts with the next message.
+
+Who calls it (14.09): both `generateSuggestion` copies (lib and
+`routes/amocrm-webhook.ts` — through `buildPromptAdditions` and their tails,
+so every caller of either copy: webhook LIVE/regen, timeline sync, the
+unanswered-live pass, ad-lead opening, handover, viewing-report shortlist,
+upload/skip/bulk-import, retouch), `generateFollowup` (warmup, Rental
+follow-ups, admin force-push) and `generatePushFollowup` in
+`followup-scheduler.ts`, and the viewing report's plain client draft. Not
+pushed on purpose: templates that no model writes (the ad-lead welcome, the
+"how did the viewing go?" placeholder), the broker's own edit path
+(`/suggest` — the instruction is law), and Rental Listings (owners). **A new
+generator of Rental client drafts builds a `ViewingPushContext` and calls
+both halves — never a copy of the gate.** Until 14.09 the gate lived only in
+the two `generateSuggestion` copies, and the follow-up scheduler — 35 of the
+45 post-shortlist drafts from 10.09 to 14.09 — asked for a viewing in 10 of 35
+(29%, unchanged from before), against 9 of 10 from `generateSuggestion`.
+
+**The villa is not a client (14.09).** Amelia writes to a villa from her
+phone to book a client's viewing and sends it its own link; amoCRM opens a
+Rental card on the reply, and the thread reads exactly like "options sent,
+no viewing". The bot asked Mireia (R-YUD-065's contact, 23543021) "are you
+currently in Bali … so we can line up some viewings for you?" and drafted an
+Indonesian "how did the viewing go?" to Bu Nia (R-YUD-054, 23528767). No
+Rental-side counterpart signal existed (no Rental Listings card for either
+number), so the signal is the site's Internal data: the card's phone
+(`leadPhone`, amoCRM) equals a listing's `property_private.owner_phone`
+(`villaContactPhoneKeys` in property-flags.ts, last 9 digits, 10-minute
+cache, digits only in memory). Cached per lead 6 h; an unreadable phone or
+list means "not the villa" and the push stays. A villa staffer whose number
+is not in Internal data is not recognised — fill the owner phone.
+
+**"view" is a viewing word (14.09).** Amelia's most frequent line is "Are you
+currently in Bali to view some properties?"; `VIEW_WORDS` had no "view", so
+her examples never reached the prompt and a draft that already asked could
+get a second insertion. The verb only (`to view`, `view some/the/it…`), not
+"ocean view".
 Anything that shapes what a broker sends gets the same two halves: the
 trigger in code, the wording from the broker's own messages and lessons.
 
@@ -1169,6 +1207,13 @@ responsible user, it is field 967477, and it is decided at the send:
   changes. Run on 23549075, 23555637, 23549071, 23537919. Arrives from 59537 →
   line 2 misreports and needs fixing in WAhelp; notice again → the scout picks
   numbers without WhatsApp.
+  **Result 14.09 10:13:** both are true. Mai Villa (23549075) and Villa Putih
+  Berawa (23555637) got the notice again from 59537 — no WhatsApp. Villa Oasis
+  (23537919) was DELIVERED from 59537 (`delivery_status` 1) — Yudi 2's notice
+  was false. Tahuri Villa (23549071): no notice, still `delivery_status` 0 after
+  5 min — undecided. Read type-90 `data.delivery_status`: 0 sent, 1 delivered,
+  2 read (line 1's first contacts of 13.09: 19 read, 8 delivered). 62585 stays
+  held for new contacts until WAhelp explains the false notices.
 - Two traps that made the second line reply from the first: the timeline sync
   wrote the line NAME into 967477 and `mapNameToSourceId` prefix-matched
   "Yudi 2" as "Yudi"; and the reassignment guard compared names, so "Yudi 2"

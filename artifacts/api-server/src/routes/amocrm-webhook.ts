@@ -18,7 +18,7 @@ import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
 import { isHosTrackedPipeline } from "../lib/adaptive-followup";
 import { movesStageOnReply } from "../lib/pipelines";
-import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments, attachedVillasBlock, allAttachmentsNamed, enforceViewingProposal, viewingPushDue } from "../lib/generate-suggestion";
+import { pickPropertyAttachments, buildPromptAdditions, reconcileTextWithAttachments, attachedVillasBlock, allAttachmentsNamed, applyViewingPush } from "../lib/generate-suggestion";
 import { getMergedDialog } from "../lib/merged-conversation";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
@@ -204,13 +204,14 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   const named = allAttachmentsNamed(draft, attachments);
   if (!named) logger.warn({ leadId: opts.leadId }, "webhook draft did not name every attached villa — forcing rewrite");
   let text = await reconcileTextWithAttachments(draft, attachments, !named);
-  text = await enforceViewingProposal(text, attachments, {
+  text = await applyViewingPush(text, attachments, {
     leadId: opts.leadId,
-    due: isRental && viewingPushDue(dialog.messages, opts.leadStage),
-    lastLeadText,
+    pipeline: opts.pipeline,
+    leadStage: opts.leadStage,
+    messages: dialog.messages,
     responsibleUser: opts.responsibleUser,
     kind: opts.kind,
-    leadStage: opts.leadStage,
+    lastLeadText,
   });
 
   return { text, attachments };

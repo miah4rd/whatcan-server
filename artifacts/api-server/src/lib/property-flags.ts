@@ -54,6 +54,61 @@ export async function propertyFlagsById(): Promise<Map<string, PropertyFlags>> {
   }
 }
 
+/**
+ * The last nine digits of every villa-side phone the site's Internal data
+ * holds (`property_private.owner_phone`: the owner, or whoever the broker
+ * recorded as the villa's contact).
+ *
+ * A Rental card whose number is one of these is the villa talking, not a
+ * client: Amelia writes to the villa from her phone to book a client's
+ * viewing, sends it its own link, and amoCRM opens a Rental card on the reply
+ * (23528767 Bu Nia / R-YUD-054, 23543021 Mireia / R-YUD-065, 14.09 — both
+ * numbers are exactly the listing's owner_phone). Such a thread must not be
+ * pushed toward a viewing ("are you currently in Bali?" to the villa's staff).
+ *
+ * Only digit keys are kept, in memory; nothing here is logged or returned to a
+ * surface. A failed read keeps the last good set (empty on a cold start:
+ * nothing is recognised, so the push behaves as before rather than stopping).
+ */
+const VILLA_PHONES_TTL_MS = 10 * 60 * 1000;
+let villaPhones: { at: number; keys: Set<string> } | null = null;
+
+export function phoneKey(raw: string | null | undefined): string {
+  const digits = String(raw ?? "").replace(/\D+/g, "");
+  return digits.length >= 9 ? digits.slice(-9) : "";
+}
+
+export async function villaContactPhoneKeys(): Promise<Set<string>> {
+  if (villaPhones && Date.now() - villaPhones.at < VILLA_PHONES_TTL_MS) return villaPhones.keys;
+  const url = process.env["SUPABASE_URL"] ?? "";
+  const key = process.env["SUPABASE_SERVICE_ROLE_KEY"] ?? "";
+  if (!url || !key) return villaPhones?.keys ?? new Set();
+  try {
+    const res = await fetch(`${url}/rest/v1/property_private?select=owner_phone&owner_phone=not.is.null`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      logger.warn({ status: res.status }, "villa contact phones fetch failed — villa-side threads not recognised");
+      return villaPhones?.keys ?? new Set();
+    }
+    const rows = (await res.json()) as Array<{ owner_phone: string | null }>;
+    const keys = new Set<string>();
+    for (const r of rows) {
+      // A field can hold two numbers ("+62 811… / +62 812…").
+      for (const part of String(r.owner_phone ?? "").split(/[\/,;]| or /i)) {
+        const k = phoneKey(part);
+        if (k) keys.add(k);
+      }
+    }
+    villaPhones = { at: Date.now(), keys };
+    return keys;
+  } catch (err) {
+    logger.warn({ err }, "villa contact phones fetch threw — villa-side threads not recognised");
+    return villaPhones?.keys ?? new Set();
+  }
+}
+
 /** "https://…/property/R-YUD-054?x=1" → "R-YUD-054" (upper-cased), or null. */
 export function propertyIdFromUrl(url: string | null | undefined): string | null {
   const m = /\/property\/([^/?#\s]+)/i.exec(url ?? "");

@@ -15,6 +15,8 @@ import { matchProperties, availabilityForCriteria, describePropertiesByIds, type
 import { getMergedDialog } from "./merged-conversation";
 import { db, pendingSuggestionsTable } from "@workspace/db";
 import { viewingReportPromptBlock } from "./viewing-report-context";
+import { leadPhone } from "./phone-dedupe";
+import { villaContactPhoneKeys, phoneKey } from "./property-flags";
 import { eq, inArray, and, sql } from "drizzle-orm";
 
 /**
@@ -942,7 +944,11 @@ const SLOT_WORDS = /(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|fr
 const TIME_ASK = /((which|what) (day|date|time)|when (do|will|would|could)? ?you (arrive|be|land|come|get)|(are|will) you (currently |already |still )?(in bali|on the island|here|around)|you'?(re| are) (currently |already |still )?(in bali|on the island|here)|once you('re| are) (here|in bali|on the island)|(today|tomorrow|this week)'?s? availability|check (for )?(the |their |owner'?s? )?availability|earliest|as soon as|asap|before your arrival|on arrival|your arrival|those (days|dates)|your dates|this week)/i;
 const DIRECT_ASK = /(would you (like|want|prefer) (that|to|me|us|a|the)|shall (i|we)|do you (want|plan|prefer)|want me to (check|arrange|book|schedule|set)|(can|could) (i|we) (arrange|schedule|book|set up|line up|pencil)|(i|we) (can|could|will|'ll) (arrange|schedule|book|set up|line up|pencil|organi[sz]e)|(set|line|setting|lining) up (the |a |some )?(viewing|visit)|would you still like|could you confirm)/i;
 const PASSIVE_ONLY = /(whenever (you|it)('re| are)? (like|free|ready|suits?|want)|any ?time|let me know (when|if) you('re| are|'d| would)? ?(like|want|free|ready|keen))/i;
-const VIEW_WORDS = /(viewing|visit|\bsee (it|them|the|this|that|both|either|one|villa|you (there|at|on))|show (you|it|them)|check (it|them) out|come (and|to) see|walk-?through|video (tour|call|walk)|\btour\b|meet (you )?(at|there)|take you (to|around|through))/i;
+// "view" as a verb is Amelia's own most common line ("Are you currently in Bali
+// to view some properties?") and was missing until 14.09: her examples never
+// reached the prompt and a draft that already asked got a second insertion.
+// Only the verb — "ocean view" / "rice field view" is not a viewing.
+const VIEW_WORDS = /(viewing|visit|\b(to|and|can|could|come|go) view\b|\bview (some|the|it|them|this|that|these|those|both|either|a|any|one|properties|property|villas?|options?)\b|\bsee (it|them|the|this|that|both|either|one|villa|you (there|at|on))|show (you|it|them)|check (it|them) out|come (and|to) see|walk-?through|video (tour|call|walk)|\btour\b|meet (you )?(at|there)|take you (to|around|through))/i;
 
 /**
  * Does this message move the client toward a viewing? A viewing word plus
@@ -976,6 +982,58 @@ export function viewingPushDue(
   return true;
 }
 
+/**
+ * Is this "lead" actually the villa? Amelia writes to a villa from her phone
+ * to book a client's viewing and sends it its own link; amoCRM opens a Rental
+ * card on the reply, and the thread then looks exactly like "options sent, no
+ * viewing yet" (23528767 Bu Nia, 23543021 Mireia — the bot asked the villa's
+ * staff "are you currently in Bali?"). The signal is structured data, not the
+ * language or the wording: the card's phone is the owner_phone the brokers
+ * entered for a listing in the site's Internal data. Cached per lead; an
+ * unreadable phone or phone list counts as "not the villa" (the push stays).
+ */
+const villaSideCache = new Map<string, { at: number; ttl: number; villa: boolean }>();
+export async function isVillaSideContact(leadId: string | null | undefined): Promise<boolean> {
+  const id = String(leadId ?? "").trim();
+  if (!id) return false;
+  const hit = villaSideCache.get(id);
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.villa;
+  const [phone, keys] = await Promise.all([leadPhone(id).catch(() => ""), villaContactPhoneKeys()]);
+  const k = phoneKey(phone);
+  const villa = Boolean(k && keys.has(k));
+  // A real answer holds for hours; a failed read is retried in ten minutes.
+  villaSideCache.set(id, { at: Date.now(), ttl: k && keys.size ? 6 * 3_600_000 : 10 * 60_000, villa });
+  return villa;
+}
+
+/**
+ * Everything the viewing push needs to know about the draft being written.
+ * Every generator of a client-facing Rental draft builds one of these and asks
+ * the three functions below — the gate, the prompt block and the check on the
+ * finished text live HERE and nowhere else (14.09: the follow-up scheduler
+ * wrote 35 of 45 post-shortlist drafts and had none of the three).
+ */
+export type ViewingPushContext = {
+  leadId: string;
+  pipeline: string | null | undefined;
+  leadStage: string | null | undefined;
+  messages: ReturnType<typeof parseDialogContent>["messages"];
+  responsibleUser: string | null | undefined;
+  kind?: string | null;
+  lastLeadText?: string | null;
+};
+
+/** The ONE gate: Rental, options out, no viewing on the books, not a hard no, not the villa itself. */
+export async function viewingPushApplies(ctx: ViewingPushContext): Promise<boolean> {
+  if ((ctx.pipeline ?? "").trim().toLowerCase() !== "rental") return false;
+  if (!viewingPushDue(ctx.messages, ctx.leadStage)) return false;
+  if (await isVillaSideContact(ctx.leadId)) {
+    logger.info({ leadId: ctx.leadId }, "viewing push: this number is a villa's own contact (Internal data) — no push");
+    return false;
+  }
+  return true;
+}
+
 function baliToday(): string {
   return new Date().toLocaleDateString("en-GB", { timeZone: "Asia/Makassar", weekday: "long", day: "numeric", month: "long" });
 }
@@ -995,7 +1053,7 @@ export async function brokerViewingExamples(responsibleUser: string | null | und
   const lines: string[] = [];
   try {
     const res = await db.execute(sql`
-      SELECT m.text FROM lead_messages m
+      SELECT m.text, m.lead_id FROM lead_messages m
       JOIN leads_sync l ON l.lead_id = m.lead_id
       WHERE m.sender_type = 'broker'
         AND lower(coalesce(l.pipeline, '')) = 'rental'
@@ -1004,7 +1062,7 @@ export async function brokerViewingExamples(responsibleUser: string | null | und
         AND length(m.text) BETWEEN 30 AND 420
       ORDER BY m.sent_at DESC
       LIMIT 300`);
-    for (const r of (res.rows ?? []) as Array<{ text: string | null }>) {
+    for (const r of (res.rows ?? []) as Array<{ text: string | null; lead_id: string | null }>) {
       const t = (r.text ?? "").replace(/\s+/g, " ").trim();
       if (!t || /https?:\/\//i.test(t) || t.startsWith(">>")) continue;
       if (!proposesViewingSlot(t)) continue;
@@ -1016,6 +1074,9 @@ export async function brokerViewingExamples(responsibleUser: string | null | und
       // passes the detector but teaches nothing about the move.
       if (t.length > 220 || (!/\?/.test(t) && !TIME_ASK.test(t))) continue;
       if (lines.some((x) => x.slice(0, 40) === t.slice(0, 40))) continue;
+      // A line written to a villa ("is the villa available to visit today?")
+      // is not how the broker invites a client.
+      if (await isVillaSideContact(r.lead_id)) continue;
       lines.push(t);
       if (lines.length >= 5) break;
     }
@@ -1034,7 +1095,7 @@ function examplesBlock(broker: string, examples: string[]): string {
 export function viewingPushBlock(broker: string, examples: string[]): string {
   return `
 
-VIEWING PUSH. Options are out and the client is still talking; the next step is a viewing, not another link. This message moves them toward one — the way ${broker} does it, never as a template.${examplesBlock(broker, examples)}
+VIEWING PUSH. Options are out and no viewing is on the books yet; the next step is a viewing, not another link. This message moves them toward one — the way ${broker} does it, never as a template.${examplesBlock(broker, examples)}
 Today is ${baliToday()} (Bali). What the message has to do, in ${broker}'s own words:
 - name the villa(s) worth seeing — the ones they reacted to, else the best fit already sent;
 - if the thread does not say whether they are in Bali or when they arrive, ask — the viewing is planned around it;
@@ -1095,6 +1156,34 @@ Return the full message and nothing else.${attachments.length ? ` Villas attache
     logger.warn({ err, leadId: opts.leadId }, "viewing push: insertion failed (non-fatal)");
     return text;
   }
+}
+
+/** The prompt half: the block in the broker's voice, or "" when the gate says no. */
+export async function viewingPushPromptBlock(ctx: ViewingPushContext): Promise<string> {
+  if (!(await viewingPushApplies(ctx))) return "";
+  return viewingPushBlock(brokerDisplayName(ctx.responsibleUser) || "the broker", await brokerViewingExamples(ctx.responsibleUser));
+}
+
+/**
+ * The text half, called on the FINISHED draft (after the attachment
+ * reconciliation) by every generator: the move toward a viewing is there, or
+ * one sentence in the broker's voice is inserted.
+ */
+export async function applyViewingPush(
+  text: string,
+  attachments: GeneratedSuggestion["attachments"],
+  ctx: ViewingPushContext,
+): Promise<string> {
+  if (!text.trim()) return text;
+  const lastLeadText = ctx.lastLeadText ?? [...ctx.messages].reverse().find((m) => m.from === "lead")?.text ?? "";
+  return enforceViewingProposal(text, attachments, {
+    leadId: ctx.leadId,
+    due: await viewingPushApplies(ctx),
+    lastLeadText,
+    responsibleUser: ctx.responsibleUser,
+    kind: ctx.kind,
+    leadStage: ctx.leadStage,
+  });
 }
 
 export async function buildPromptAdditions(opts: {
@@ -1230,10 +1319,16 @@ export async function buildPromptAdditions(opts: {
   const viewingBlock = opts.isRental && opts.leadId ? await viewingReportPromptBlock(opts.leadId) : "";
   // Options out, no viewing yet: this message moves toward one, in the
   // broker's own voice — their real invitations are the style guide.
-  const pushBlock =
-    opts.isRental && viewingPushDue(opts.dialogMessages, opts.leadStage)
-      ? viewingPushBlock(brokerDisplayName(opts.responsibleUser) || "the broker", await brokerViewingExamples(opts.responsibleUser))
-      : "";
+  // Same gate and block as the follow-up scheduler (viewingPushPromptBlock).
+  const pushBlock = await viewingPushPromptBlock({
+    leadId: opts.leadId ?? "",
+    pipeline: opts.isRental ? "rental" : null,
+    leadStage: opts.leadStage,
+    messages: opts.dialogMessages,
+    responsibleUser: opts.responsibleUser,
+    kind: opts.kind,
+    lastLeadText: opts.lastLeadText,
+  });
 
   return buildLeadNameRule(opts.dialogMessages) + attachedRule + anchorLine + stockLine + currencyRule + adRule + identityRule + viewingBlock + pushBlock + learned;
 }
@@ -1460,13 +1555,14 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   const named = allAttachmentsNamed(written, attachments);
   if (!named) logger.warn({ leadId: opts.leadId, attached: attachments.map((a) => a.label) }, "draft did not name every attached villa — forcing rewrite");
   let text = await reconcileTextWithAttachments(written, attachments, !named);
-  text = await enforceViewingProposal(text, attachments, {
+  text = await applyViewingPush(text, attachments, {
     leadId: opts.leadId,
-    due: isRental && viewingPushDue(dialog.messages, opts.leadStage),
-    lastLeadText,
+    pipeline: opts.pipeline,
+    leadStage: opts.leadStage,
+    messages: dialog.messages,
     responsibleUser: opts.responsibleUser,
     kind: opts.kind,
-    leadStage: opts.leadStage,
+    lastLeadText,
   });
 
   return { text, attachments };
