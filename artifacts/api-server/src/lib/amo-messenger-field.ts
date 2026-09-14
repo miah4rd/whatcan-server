@@ -95,7 +95,10 @@ const BROKER_LINES: Record<string, number[]> = {
   // (three sends at 13:20 were lost). The owner added the block, wired to the
   // bot's "None of the conditions" exit — which is why resolveSendChannel
   // refuses any source outside SOURCE_MAP.
-  yudi: [59537, 62585],
+  // PROJECT PAUSED by the owner 14.09: "пока как было, один номер". 62585
+  // gave false "WhatsApp not installed" notices (see CLAUDE.md "One broker,
+  // two WhatsApp numbers"). The per-line code stays; re-enable = [59537, 62585].
+  yudi: [59537],
   saif: [59893],
   kristo: [61161],
   ferdian: [61191],
