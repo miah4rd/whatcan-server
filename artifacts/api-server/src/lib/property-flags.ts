@@ -20,6 +20,52 @@ export type PropertyFlags = {
   constructionNearby: boolean;
 };
 
+/**
+ * What a broker weighs between two villas that BOTH fit a request
+ * (rankShortlistFits in property-catalog.ts, 14.09.2026): construction or a
+ * red flag against the villa, and whether its photos are a temporary set taken
+ * from its booking page or own website until our shoot. Notes are read only to
+ * that one boolean and dropped here — nothing else is kept, nothing reaches a
+ * client or a log.
+ */
+export type ListingQuality = { constructionNearby: boolean; redFlag: boolean; photosTemporary: boolean };
+
+const QUALITY_TTL_MS = 10 * 60 * 1000;
+let quality: { at: number; byId: Map<string, ListingQuality> } | null = null;
+/** "PHOTOS: 18 frames from the Booking.com listing — temporary", "Temporary - to be replaced by our own set". */
+const TEMPORARY_PHOTOS = /temporar\w*[^.\n]{0,80}(photo|frame|image|set|shoot)|(photo|frame|image)s?\b[^.\n]{0,160}temporar/i;
+
+export async function listingQualityById(): Promise<Map<string, ListingQuality>> {
+  if (quality && Date.now() - quality.at < QUALITY_TTL_MS) return quality.byId;
+  const url = process.env["SUPABASE_URL"] ?? "";
+  const key = process.env["SUPABASE_SERVICE_ROLE_KEY"] ?? "";
+  if (!url || !key) return quality?.byId ?? new Map();
+  try {
+    const res = await fetch(`${url}/rest/v1/property_private?select=property_id,construction_nearby,red_flag,notes`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      logger.warn({ status: res.status }, "listing quality fetch failed — shortlist ranks without internal data");
+      return quality?.byId ?? new Map();
+    }
+    const rows = (await res.json()) as Array<{ property_id: string; construction_nearby: boolean | null; red_flag: boolean | null; notes: string | null }>;
+    const byId = new Map<string, ListingQuality>();
+    for (const r of rows) {
+      byId.set(String(r.property_id).toUpperCase(), {
+        constructionNearby: r.construction_nearby === true,
+        redFlag: r.red_flag === true,
+        photosTemporary: TEMPORARY_PHOTOS.test(r.notes ?? ""),
+      });
+    }
+    quality = { at: Date.now(), byId };
+    return byId;
+  } catch (err) {
+    logger.warn({ err }, "listing quality fetch threw — shortlist ranks without internal data");
+    return quality?.byId ?? new Map();
+  }
+}
+
 /** Short enough that a flag ticked on the site shows up on the next inbox refresh or two. */
 const TTL_MS = 3 * 60 * 1000;
 let cache: { at: number; byId: Map<string, PropertyFlags> } | null = null;

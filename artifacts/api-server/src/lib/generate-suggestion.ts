@@ -16,7 +16,7 @@ import { db, pendingSuggestionsTable } from "@workspace/db";
 import { viewingReportPromptBlock } from "./viewing-report-context";
 import { leadPhone } from "./phone-dedupe";
 import { villaContactPhoneKeys, phoneKey } from "./property-flags";
-import { eq, inArray, and, sql } from "drizzle-orm";
+import { eq, inArray, and, gte, sql } from "drizzle-orm";
 
 /**
  * Every property this lead has ALREADY been shown, so a follow-up shortlist
@@ -171,14 +171,51 @@ export type PickedAttachments = {
   /** The lead is discussing villas already sent — no new ones by design. */
   skipped: boolean;
   excludeIds: string[];
+  /** Villas offered to this lead in drafts the broker skipped (last 21 days) — ranked lower, not removed. */
+  proposedIds?: string[];
 };
 
 export async function pickPropertyAttachments(opts: PickOptions): Promise<GeneratedSuggestion["attachments"]> {
   return (await pickPropertyAttachmentsDetailed(opts)).attachments;
 }
 
+/**
+ * Villas the bot put in a draft for this lead that the broker SKIPPED in the
+ * last 21 days and that never went out. Not excluded — a skip can be about
+ * timing — but ranked lower (rankShortlistFits), so the next follow-up does not
+ * re-propose the same set while other fits sit unsent (23398487: R-YUD-048 in a
+ * push skipped on 01.09, proposed again on 14.09).
+ */
+async function skippedDraftPropertyIds(leadId: string, sentIds: string[]): Promise<string[]> {
+  try {
+    const since = new Date(Date.now() - 21 * 24 * 60 * 60 * 1000);
+    const rows = await db
+      .select({ attachments: pendingSuggestionsTable.attachments })
+      .from(pendingSuggestionsTable)
+      .where(
+        and(
+          eq(pendingSuggestionsTable.leadId, leadId),
+          eq(pendingSuggestionsTable.status, "skipped"),
+          gte(pendingSuggestionsTable.createdAt, since),
+        ),
+      );
+    const sent = new Set(sentIds.map((i) => i.toUpperCase()));
+    const ids = new Set<string>();
+    for (const r of rows) {
+      for (const att of r.attachments ?? []) {
+        const m = att.url?.match(/\/property\/([A-Za-z0-9-]+)/i);
+        if (m?.[1] && !sent.has(m[1].toUpperCase())) ids.add(m[1].toUpperCase());
+      }
+    }
+    return [...ids];
+  } catch {
+    return [];
+  }
+}
+
 export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promise<PickedAttachments> {
   let excludeIds: string[] = [];
+  let proposedIds: string[] = [];
   try {
     excludeIds = await alreadySentPropertyIds(
       opts.leadId,
@@ -192,6 +229,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
         .map((m) => m.text)
         .join("\n"),
     );
+    proposedIds = await skippedDraftPropertyIds(opts.leadId, excludeIds);
     // A broker asking for different links has overruled the "don't send more
     // options" gate; so has the broker's opening on an ad lead, whose seeded
     // enquiry names a villa the gate would otherwise read as one we sent
@@ -236,7 +274,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
       } catch (err) {
         logger.warn({ err, leadId: opts.leadId }, "request read on a skipped shortlist failed (non-fatal)");
       }
-      return { attachments: [], outcome, skipped: true, excludeIds };
+      return { attachments: [], outcome, skipped: true, excludeIds, proposedIds };
     }
 
     const { picks, outcome } = await matchPropertiesDetailed({
@@ -244,6 +282,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
       conversationText: `${opts.formattedDialog}\n${opts.lastLeadText}`,
       brokerId: opts.brokerId,
       excludeIds,
+      proposedIds,
       seenCount: excludeIds.length,
       latestLeadMessage: opts.lastLeadText,
       brokerInstruction: opts.brokerInstruction ?? null,
@@ -278,10 +317,10 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
       }
     }
     if (out.length === 0) logger.info({ leadId: opts.leadId, request: describeRequest(outcome.request) }, "property matcher returned nothing to attach");
-    return { attachments: out, outcome, skipped: false, excludeIds };
+    return { attachments: out, outcome, skipped: false, excludeIds, proposedIds };
   } catch (err) {
     logger.warn({ err, leadId: opts.leadId }, "property matcher threw — sending the draft with no attachments");
-    return { attachments: [], outcome: null, skipped: false, excludeIds };
+    return { attachments: [], outcome: null, skipped: false, excludeIds, proposedIds };
   }
 }
 
@@ -466,7 +505,7 @@ ${
           : ""
       }
 
-Properties you may attach (pick by ID; attaching NONE is a normal answer):
+Properties you may attach (pick by ID; attaching NONE is a normal answer). They are ranked best match first — prefer the top unless the broker's instruction or the client's own words point to a lower one:
 ${opts.candidates.map((c) => c.line).join("\n")}
 
 First decide attachments_decision — ONE of exactly these three, by MEANING, not keywords:

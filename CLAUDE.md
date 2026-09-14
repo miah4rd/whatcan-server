@@ -227,6 +227,33 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
   sender. Before touching any of it: replay real leads through the bundle
   harness (see Working conventions) and look at request + attachments + text
   together.
+- **Among villas that fit, ONE ranking decides the order (Amelia, 14.09.2026:
+  "the bot only sends earliest options added while there is a better option
+  added").** The strict pool was sorted cheapest-first, and among 2BR fits the
+  cheapest were the oldest stock (R-YUD-074 22.5M with 7 photos, R-DESTI-003
+  24.2M minimum 12 months, R-MER-040 28.6M). Every matcher line also showed
+  "N views", and the prompt added "this broker has used these before" from
+  `broker_property_picks`, a counter bumped by every approve of the bot's OWN
+  picks: a third closed loop after views. Over 01-14.09 on Rental leads the
+  bot's drafts attached villas with a median listing age of 11 days (push) / 17
+  (live), Amelia's own phone links 7; R-YUD-074 sat in bot drafts for 34 leads.
+  Now `rankShortlistFits` (property-catalog.ts) scores every fit inside
+  `strictShortlistPool` BEFORE anything is cut, each point with its reason:
+  price vs the stated ceiling (≥80% +3, ≥65% +2, ≥50% +1); a named area over an
+  allowed neighbour +1; free now +0.5, free-from with no move-in −1; dates
+  confirmed within 21 days (newest property_availability row) +0.5; stay unknown
+  and minimum 12 months −0.5 (6: −0.25) or yearly-only −1; under 8 photos −1,
+  temporary OTA photo set (property_private.notes via `listingQualityById`)
+  −0.5, 10+ photos +0.5; video +1; Listed +1; construction nearby −1.5; red flag
+  −2; on the site 14 days or less +1; offered to this lead in a draft the broker
+  SKIPPED in the last 21 days −1.5 (`skippedDraftPropertyIds`; lower, not out).
+  Ties: closer to the ceiling, then newer. Never views, never pick counts (the
+  read side was deleted; the counter is history only). The matcher sees the top
+  12 with `why:`; the edit composer the top 20 with client-safe reasons only
+  (price, area, dates, stay, video, new), never Listed/photos/construction. A
+  weight changes there, followed by a replay; no other sort anywhere. Replay
+  14.09, 23398487 (2BR Canggu/Berawa/Umalas ≤60M): old top R-YUD-098/053/095
+  (33-39M), new top R-YUD-088 (video, 7 days), R-YUD-059 (Listed), R-YUD-103.
 - **A shortlist is 2-3 listings when 2-3 FIT — never padded (owner, 2026-09-04).**
   Bedrooms, area and budget are filters, not preferences: nothing of another
   size, district or price rides along because the right one was missing. One
@@ -253,7 +280,7 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
   JSON object cut off by `max_tokens` — the matcher explained its reasoning first,
   ran out of room mid-array, and three chosen villas became an empty shortlist.
 - **A listing with no price is held back from the first shortlist** — the client
-  can't judge it. Priced and most-viewed rank first. If the lead's own area holds
+  can't judge it. Priced stock ranks first, never by views (`rankShortlistFits`). If the lead's own area holds
   fewer than two priced villas of that size, the map widens; unpriced stock is not
   what fills the gap.
 - **Two listings with the same title are not a choice** — the catalog holds

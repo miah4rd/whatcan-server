@@ -1,27 +1,12 @@
 import { db, brokerPropertyPicksTable } from "@workspace/db";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { logger } from "./logger";
 
-/**
- * Returns this broker's most-used property IDs, restricted to the given
- * candidate pool (so a broker's sale history never leaks into rent matching
- * or vice versa — the caller already filtered the pool by listing_type).
- */
-export async function getTopPicksForBroker(brokerId: string, candidateIds: string[], limit = 10): Promise<string[]> {
-  if (candidateIds.length === 0) return [];
-  try {
-    const rows = await db
-      .select({ propertyId: brokerPropertyPicksTable.propertyId })
-      .from(brokerPropertyPicksTable)
-      .where(and(eq(brokerPropertyPicksTable.brokerId, brokerId), inArray(brokerPropertyPicksTable.propertyId, candidateIds)))
-      .orderBy(desc(brokerPropertyPicksTable.useCount))
-      .limit(limit);
-    return rows.map((r) => r.propertyId);
-  } catch (err) {
-    logger.error({ err, brokerId }, "getTopPicksForBroker failed (non-fatal)");
-    return [];
-  }
-}
+// The read side ("this broker has used these before", getTopPicksForBroker) was
+// removed on 14.09.2026: the count is bumped by every approve of the BOT'S OWN
+// picks, so handing it back to the matcher fed the oldest villas into every new
+// shortlist (R-DESTI-003 at 27 uses). The counter stays as history only — never
+// read it into ranking (rankShortlistFits in property-catalog.ts).
 
 /** Called after a broker approves a suggestion that included property attachments. */
 export async function incrementBrokerPick(brokerId: string, propertyId: string, listingType: string | null): Promise<void> {
