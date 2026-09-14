@@ -1615,9 +1615,9 @@ in `suggested_stage` and approve applied it at send time. Canon now:
 | TAKEN TO WORK → QUALIFIED | `promoteIfQualified` (`meetsQualified`: owner, bedrooms, price with commission position, min stay, earliest viewing, ≥33M client-facing) |
 | TAKEN TO WORK → co-broke / long term / Closed-lost | `routeUnqualified` (floor first, then counterpart, then occupied, then not-our-format with second opinion) |
 | long term / co-broke → TAKEN TO WORK | `releaseFromLongTerm`, `releaseFromCoBroke` |
-| QUALIFIED → Details ased (id 87763166) | `listing-progress.ts` `findDetailsAsk`: our message since qualification asks for listing details (2026-09-14) |
-| QUALIFIED / Details ased → Inspection sceduled (id 87763170) | `listing-progress.ts` `extractAgreedVisit`: a visit to the villa agreed for a concrete day (2026-09-14) |
-| TAKEN TO WORK / QUALIFIED / Details ased → Inspection sceduled → live; Inspection sceduled → live | the site's Pre-listed → Listed switch (a person's act), applied by `listing-status-pass` (2026-09-14) |
+| QUALIFIED → Inspection sceduled (id 87763170) | `listing-progress.ts` `extractAgreedVisit`: a visit to the villa agreed for a concrete day (2026-09-14; the ask for it is `inspection-booking.ts`, drafts for Yudi) |
+| TAKEN TO WORK / QUALIFIED → Inspection sceduled → live; Inspection sceduled → live | the site's Pre-listed → Listed switch (a person's act), applied by `listing-status-pass` (2026-09-14) |
+| ~~QUALIFIED → Details ased (87763166)~~ | the stage was DELETED by the owner on 14.09.2026 15:02; nothing sets it; old events alias to QUALIFIED |
 | anything else into live, every exit from live, every move back | a person |
 
 The classifier on this funnel may only pick Initial Contact / TAKEN TO WORK and
@@ -1627,44 +1627,53 @@ refuses a classified rule-owned stage even from an old draft
 `/api/v4/events?filter[type]=lead_status_changed` is the audit trail — our
 `stage_events` misses the bot's own closes.
 
-### Details asked and Inspection scheduled follow the thread (2026-09-14)
+### Inspection scheduled follows the thread (2026-09-14; Details asked removed the same day)
 
 Owner, 14.09: two metrics, Pre-listed and live; Yudi takes qualified cards to
 live; inspections happen offline and what the thread shows is enough. He
-renamed the stages the same day: **87763166 "Details" → "Details ased"**,
-**87763170 "Inspection. done" → "Inspection sceduled"** (his spelling; read
-names from `GET /api/v4/leads/pipelines/11180334`, never assume them). The
-section below ("Inspection. done: the agent has been to the villa") is
-SUPERSEDED: that stage now means a visit is agreed, not held.
+renamed the stages the same day: **87763166 "Details" → "Details ased"**
+(DELETED at 15:02, see below), **87763170 "Inspection. done" → "Inspection
+sceduled"** (his spelling; read names from `GET /api/v4/leads/pipelines/11180334`,
+never assume them). The section "Inspection. done: the agent has been to the
+villa" is SUPERSEDED: that stage now means a visit is agreed, not held.
 
 **One rule, `lib/listing-progress.ts`** (`advanceListingProgress`), called from
 `syncStageFromThread` for a listing card whose stored stage reads qualified /
-details — so every path `onThreadChanged` covers: approve and autopilot sends,
+inspection — so every path `onThreadChanged` covers: approve and autopilot sends,
 the timeline sweep (phone), amo-sync's outgoing feed, incoming detection, quick
 poll, the webhook. Their gate is `threadWatched(pipeline)` (Rental + Rental
 Listings); `threadDrivesStage` keeps its Rental meaning. Also once a day after
-the listing audit (`auditListingProgress` in `maybeRunDailyListingAudit`).
-Stages are ids (`LISTING_STAGE.DETAILS_ASKED` / `INSPECTION_SCHEDULED` in
-listing-status-week.ts), the card's status is read from amoCRM, never leads_sync.
+the listing audit (`auditListingProgress` in `maybeRunDailyListingAudit`, QUALIFIED
+and Inspection sceduled cards). Stages are ids (`LISTING_STAGE.INSPECTION_SCHEDULED`
+in listing-status-week.ts; `DELETED_DETAILS_STAGE_ID` only labels and ranks old
+events), the card's status is read from amoCRM, never leads_sync.
 - **Window.** "Since qualification" = the first arrival in QUALIFIED at or after
   07.09 12:00 Bali (the engine era; before it QUALIFIED was set loosely and
   flapped), else the latest arrival, minus 5 minutes (the qualifying reply and
   the move land in the same minute). From amoCRM events.
-- **Details asked** (`findDetailsAsk`): one of OUR messages (bot or broker) in
-  the window, with the quoted owner text removed (`ownWords`), has a sentence
-  naming a listing item (photos, video, size/luas, documents/perjanjian/kontrak,
-  pin/lokasi, inspection/survey/visit/kunjungan/datang, watermark, double check)
-  AND a request cue (?, could you, please, mohon, boleh, bisa, minta, kirim…).
-  Weak items (availability, dates, details) go to one yes/no Haiku check,
-  fail-closed. The automatic nudges count.
+- ~~Details asked (`findDetailsAsk`)~~ — removed with the stage (14.09, evening).
 - **Inspection scheduled** (`extractAgreedVisit`): only when the thread mentions a
   visit or a time; one Haiku call for the most recent visit to the villa by our
   side (Yudi, Amelia, with or without a client) that BOTH sides agreed for a
   concrete day; open offers ("any time", "from 13 Sept"), ranges ("around the
   21st"), unanswered requests and cancelled visits are null. The quote must be
   found in the thread; a visit held before the window is ignored. Scheduled is
-  enough — a held visit counts too. QUALIFIED with a Details ask walks
-  QUALIFIED → Details ased → Inspection sceduled (4 s apart, two events).
+  enough — a held visit counts too. QUALIFIED goes straight to Inspection sceduled.
+- **The date is computed in code, not by the model (14.09, evening).** 23555645:
+  the owner wrote "You can visit the property on wednesday pm" on Monday 14.09, the
+  model returned Thursday 17.09, the second opinion said no, and the card stayed in
+  QUALIFIED. The transcript lines are numbered; the model returns only `day_line`
+  + `day_words` (verbatim), `settle_line`, and the time; `resolveDayWords` turns
+  the words into a date against the Bali date of their line — explicit dates
+  ("15 September", "tgl 13", "13/9", "the 21st"), then today / hari ini, besok /
+  tomorrow, lusa, then weekdays EN/ID (next one on or after that day; "next" /
+  "depan" skips the same day; "minggu depan" = next week, not Sunday → no date).
+  Words not found in their line or not resolving → no visit.
+- **A changed time on a card already in Inspection sceduled** (a reading settled
+  after the slot on record and ≥ 30 minutes away, or a clock time where there was
+  none, confirmed by `confirmAgreedVisit`): a new `listing_inspection_slots` row,
+  the old one `status = 'rescheduled'` + `superseded_at`, a note on the card, the
+  calendar pass queued. No stage move.
 - **Forward only.** A card a person moved back (amoCRM event from a later stage
   into the current one) is not moved again on evidence older than that move.
   TAKEN TO WORK, parked, closed and live cards are never touched (TTW with an
@@ -1676,21 +1685,22 @@ listing-status-week.ts), the card's status is read from amoCRM, never leads_sync
   the same day), `leads_sync`, a note with the evidence, and for a visit a
   `listing_inspection_slots` row (created at boot).
 - Tools: `POST /api/admin/listing-progress` (dry; `?apply=1`, `?lead=`,
-  `?taken=1`); `POST /api/admin/listing-progress/move?lead=&to=details|inspection&evidence=&visitAt=&apply=1`
-  for a hand-checked move the thread rule cannot see (a duplicate card).
-  Log line: `listing-progress decision`.
+  `?taken=1`); `POST /api/admin/listing-progress/move?lead=&to=inspection&evidence=&visitAt=&apply=1`
+  for a hand-checked move the thread rule cannot see (a duplicate card;
+  `to=details` answers 410). Log line: `listing-progress decision`.
 - **What reads the stages now:** the reply generator reads the amoCRM status id
   — on Inspection sceduled it says a visit is SCHEDULED (with the slot), talk
   about time/access, never re-ask what the owner gave, never imply we have been
   there (until 14.09 it said "OUR AGENT HAS ALREADY INSPECTED THIS VILLA"); on
-  Details ased: ask only what is missing, and agree a day AND time when a visit
-  comes up. The daily report's `inspections` = arrivals at 87763170, label
-  "Inspections scheduled"; `STAGE_ALIASES` gives old names the same position.
+  QUALIFIED it carries the inspection booking block (next section). The daily
+  report's `inspections` = arrivals at 87763170, label "Inspections scheduled";
+  `STAGE_ALIASES` maps "details" / "details asked" / "details ased" to
+  "qualified" (a move into or out of the deleted stage scores as none).
   `/api/public/inspections` finds the stage by id, returns `meaning` per arrival
   (agreement / inspection done / inspection scheduled) and the agreed slot.
-  Owner nudges still run on Details ased (`"details"` substring) and skip
-  Inspection sceduled. Autopilot is unaffected: its threshold is QUALIFIED
-  (exclusive), so QUALIFIED and everything after were already the broker's.
+  Owner nudges run only on Initial Contact / TAKEN TO WORK (since 14.09 evening).
+  Autopilot is unaffected: its threshold is QUALIFIED (exclusive), so QUALIFIED
+  and everything after were already the broker's.
 
 **Dry replay before deploy (14.09).** The first version read 13 agreed visits
 and 6 were wrong: open offers ("U can come to check before 13tg", "visit on 15
@@ -1747,6 +1757,138 @@ rename grep for the old AND new name and the id in: `STAGE_ORDER` /
 exact names), `LISTING_STAGE_NAME` (listing-status-week, fallback labels),
 autopilot `up_to_stage_name` (resolved by name through the live list), the
 stage-options cache (10 minutes), the prompt and the extension. New code: ids.
+
+### Booking the inspection on QUALIFIED: drafts in Yudi's own words (2026-09-14)
+
+**The funnel (owner, 14.09, after a call with Yudi):** Initial Contact → TAKEN
+TO WORK → QUALIFIED (Pre-listed) → Inspection sceduled → live → Weekly Check Sent
+→ Update Availability Received. "Details ased" was deleted at 15:02.
+QUALIFIED = the bot qualified the villa and it is Pre-listed on the site. The
+next step is an OFFLINE inspection: Yudi goes to the villa, walks it, takes his
+own photos, video and notes. Yudi, same day: the bottleneck is "scheduling the
+visit with owners … push on inspection questions/request and once it confirmed
+by owners put it into my calendar". The flow: the bot drafts the ask →
+Yudi approves / edits → the owner agrees a time → `listing-progress` moves the
+card to Inspection sceduled and records the slot → the calendar pass writes the
+note (next section) → Yudi inspects and switches the listing to Listed →
+`listing-status-pass` moves the card to live. **Drafts only**: QUALIFIED is past
+the autopilot threshold (exclusive); nothing here sends.
+
+**Yudi's style, read from his phone** (`lead_messages` sender_type `broker`,
+11.08–14.09, his Rental Listings cards). He asks permission as a question and
+usually names the day himself (today / besok / "tgl 13" / Monday), sometimes a
+constraint ("saya bisa sebelum jam 11 pagi"); greeting by time of day + name +
+honorific (kak / pak / bu), often "maaf baru balas"; the reason, when given, is
+his own video / photos for clients ("I'd like to record a video for our remote
+clients and understand the villa situation better in person 🙏"); Indonesian
+with Indonesian owners, English with foreigners; 1–3 short lines; only a plain 🙏.
+What got a yes: short Indonesian asks with a concrete day (Ma'Wa, Tilu, Villa
+Daze, Casa Emilia, 23462321 — all within hours). What got silence: the long
+English ones ending "let me know what time would be convenient" (Suku House,
+Salt, Luna Kedungu, Yoshi). Owners' conditions: 24 h notice, tenant or guests in
+the villa, "with guest?".
+
+**`lib/yudi-voice.ts` — the one source of his words** (pushed first so the
+owner-facing style work reuses it): `yudiPhoneLines` (his cards, 60 days, the
+quoted owner text removed — `stripQuote` before `ownWords`, because an owner's
+own quote-reply is not an exact earlier message), `yudiInspectionAskExamples`
+(`isInspectionAsk`: a visit / inspection / own photos-video word AND a real ask
+cue; client viewings are Amelia's move), `yudiStyleExamples`,
+`ownerThreadLanguage`, `yudiExamplesBlock`. **Amelia writes to the same cards
+from her phone through the same WAhelp account (same sender_id)**: her lines are
+filtered by text — her name, a skin-toned emoji (🙏🏻 👍🏻; Yudi types 🙏), and
+every line on that card for 36 h after a line naming her unless a later line
+names Yudi. The team chat card 23499347, "bots" / "auto send" apologies skipped.
+
+**The trigger is code, `lib/inspection-booking.ts` `bookingPlan`:**
+- card in QUALIFIED (amoCRM id); a linked site listing (`listing_crm_link`, else a
+  code in the card name) that is published, or a draft `listing_publish_blockers`
+  finds nothing against, and still Pre-listed; no `listing_inspection_slots` row;
+- the villa side's stance on a visit (`ownerVisitStance`: one Haiku call, only when
+  a visit was talked about in 21 days, cached until a new message, fail-closed):
+  agreed → settle, declined → hold, deferred (until a date) → hold until then,
+  open → ask with a concrete time;
+- the ladder: our asks for a visit since the villa side last wrote (bot or Yudi's
+  phone). One ask, then at most two follow-ups, each ≥ 2 days after the last ask;
+  three unanswered → hold, Yudi's call;
+- **PUSH** only when we spoke last: 12 h quiet, not bot-excluded, no future amoCRM
+  task on the card (`next_followup_at`; amo-sync Pass 0 deletes PUSH drafts there),
+  no booking draft in 2 days and ≤ 3 in 14 days (`listing_inspection_asks`, the
+  loop guard — whatever happened to the drafts), no pending draft that already
+  asks. Drafts are written 08:00–18:00 Bali, every 30 minutes, ≤ 6 per pass; Yudi
+  gets a push "Inspection asks ready".
+- **LIVE**: when the villa side wrote last, the reply generator
+  (`listing-acquisition-prompt.ts`, which the handover draft on arrival at
+  QUALIFIED also uses) carries `inspectionBookingPromptBlock` — nothing about the
+  villa is asked again (no "STILL MISSING" on QUALIFIED), the next step is Yudi's
+  visit; ask / settle a time / hold as the plan says — and `applyInspectionAsk`
+  inserts one sentence in his voice when an ask is due and the reply lacks it.
+
+**Times** (`proposeInspectionTimes`): his usual hours and weekdays from the slots
+on record (10:00–14:00; Mon–Fri plus days he did visit, Sunday included), from
+tomorrow over five days, ≥ 90 minutes from any other scheduled inspection, ≤ 3 a
+day (Yudi: "usually 1-3"), a day he is already inspecting within 3 km (or in the
+same area) first. Two options, offered as a question; the draft is Yudi's to
+approve, so no time is promised.
+
+**The words**: `writeInspectionAskDraft` (Sonnet, JSON) — his examples, his
+`owner_intake` lessons, the thread (30 lines), the owner's language, the round
+(follow-ups open like a new message and are shorter). Checks, one retry:
+`isInspectionAsk`, no re-ask (price, commission, bedrooms, dates, min stay,
+photos / video / pin to be sent, documents), no link / code, no dash, the owner's
+language, ≤ 480 chars. **Lesson conflict:** Yudi's lesson "After confirming deal
+details, always request any missing assets (photos, documents)" contradicts the
+owner's 14.09 rule on QUALIFIED; the prompt states the booking message wins. The
+lesson is still live — the owner decides whether to retire it.
+
+**Where it lands**: `pending_suggestions` kind `push`, `followup_level` NULL
+(amo-sync deletes level 0 pushes), `autopilot_skipped_reason` =
+`inspection booking ask · round N/3` (`INSPECTION_ASK_VERDICT`, listing-progress.ts).
+Queuing retires the card's other pending drafts (owner nudges, answered LIVE
+drafts, old handover drafts that asked for photos). A move to Inspection
+sceduled retires a pending booking draft. Owner nudges (`listing-owner-followup`)
+no longer run on QUALIFIED.
+
+**Tables.** `listing_inspection_slots`: id, lead_id, visit_at, time_known,
+agreed_at, quote, source, created_at, status (`scheduled` | `rescheduled`),
+superseded_at. `listing_inspection_asks`: id, lead_id, round, suggestion_id,
+text, times (jsonb), lang, created_at.
+
+**Calendar hook.** One calendar implementation, `lib/inspection-calendar.ts` (next
+section): listing-progress calls `queueInspectionCalendarSync` whenever a slot is
+recorded or rescheduled; the pass reads the latest `status = 'scheduled'` slot per
+card. Read side: `GET /api/public/inspections/upcoming?days=14` —
+`upcomingInspectionEvents` from the same plan the calendar writes: villa, code,
+listing title / URL, area, owner / manager name (site Internal data), visitAt +
+Bali label, timeKnown, agreedAt, quote, map URL, exact address, amoCRM card(s).
+No phone numbers.
+
+**Tools.** `POST /api/admin/inspection-booking` (dry: every QUALIFIED card —
+mode, PUSH due or why not, stance, our asks, proposed times; `?lead=a,b`;
+`?generate=1` writes drafts without queuing; `?apply=1` queues like the pass).
+Log lines: `inspection booking: <lead> <mode> — <reason>`, `inspection booking
+pass complete`.
+
+**Replayed before deploy (14.09, dry, from the typechecked branch on the VPS).**
+Visit reading: 23555645 → Inspection sceduled, Wed 16.09 13:00, settled 14.09
+15:10 ("Perfect, Wednesday afternoon works great"); the six cards already in
+Inspection sceduled (23299197, 23528515, 23426747, 23541159, 23305115, 23549891):
+no change. With the date right, the second opinion still said no — "the villa side
+names a day, we accept it" read as an open offer — hence that sentence in
+`confirmAgreedVisit`. Booking plan over the 25 QUALIFIED cards: PUSH due 4
+(23361369, 23299227, 23378953, 23339527); ask inside the LIVE reply 3 (23497771,
+23481615, 23388973); waiting on Yudi's amoCRM task 2 (23528517, 23260811); villa
+side deferred 7 (23509251, 23518853 until 30.09, 23389387 from 2.10, 23434747 until
+12.10, 23426777, 23497759, 23283693 ~21.09); reads as agreed but not recorded, so
+settle / Yudi's call 3 (23519133 "Oct 13 at 2", 23426759 Salt "the 16th", 23550763
+"15 Sept"); draft listing blocked 1 (23462331, no Drive folder); no site listing
+linked 5 (23204741, 23223641, 23263701, 23555649, 23555645). The first drafts
+offered every card the same two hours (→ offered times are tentatively taken), one
+opened "Baik ka, terima kasih…" days late, one "selamat pagi", one said "before we
+start marketing it" (→ three prompt lines). **Harness trap:** `/opt/whatcan/.env`
+has duplicate keys and the last one wins; a test loader that keeps the first value
+got stale Supabase / Anthropic keys, and every site read and model call failed
+into "no listing linked" and empty drafts. Load last-wins.
 
 ### Agreed inspections are notes in the Brokers Google Calendar (2026-09-14)
 

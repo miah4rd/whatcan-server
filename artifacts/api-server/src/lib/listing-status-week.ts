@@ -28,8 +28,6 @@ export const LISTING_STAGE = {
   INITIAL_CONTACT: 87738346,
   TAKEN_TO_WORK: 87795530,
   QUALIFIED: 87763162,
-  /** "Details" until 14.09.2026, then "Details ased" (owner's spelling): we asked for the listing details. */
-  DETAILS_ASKED: 87763166,
   /** "agreement" → "Inspection. done" (09.09) → "Inspection sceduled" (14.09): a visit is agreed. */
   INSPECTION_SCHEDULED: 87763170,
   LIVE: 87763174,
@@ -40,12 +38,18 @@ export const LISTING_STAGE = {
   WON: 142,
   LOST: 143,
 } as const;
+/**
+ * "Details" → "Details ased" (87763166): the owner DELETED this stage at 15:02 on 14.09.2026. Nothing
+ * moves a card into it or reads it as a current stage; the id stays only so amoCRM events from before
+ * the deletion still get a label and a position (between QUALIFIED and Inspection sceduled).
+ */
+export const DELETED_DETAILS_STAGE_ID = 87763166;
 export const LISTING_STAGE_NAME: Record<number, string> = {
   [LISTING_STAGE.INITIAL_CONTACT]: "Initial Contact",
   [LISTING_STAGE.TAKEN_TO_WORK]: "TAKEN TO WORK",
   [LISTING_STAGE.QUALIFIED]: "QUALIFIED (Pre-listed)",
   // Fallback labels only — code reads amoCRM's live names where it can (the owner renames stages).
-  [LISTING_STAGE.DETAILS_ASKED]: "Details ased",
+  [DELETED_DETAILS_STAGE_ID]: "Details ased (deleted 14.09.2026)",
   [LISTING_STAGE.INSPECTION_SCHEDULED]: "Inspection sceduled",
   [LISTING_STAGE.LIVE]: "live",
   [LISTING_STAGE.WEEKLY_CHECK_SENT]: "Weekly Check Sent",

@@ -578,12 +578,13 @@ export async function syncStageFromThread(
   if (!row) return nothing("no leads_sync row");
   if (isListingAcquisition(row.pipeline)) {
     // Rental Listings: the stage engine owns everything up to QUALIFIED; after it,
-    // "Details asked" and "Inspection scheduled" follow the thread through ONE rule
-    // (listing-progress.ts). Runs for bot-excluded cards too — a person typing on
-    // the phone is evidence all the same. Pre-filtered by the stored name so the
-    // ~200 cards before qualification cost no amoCRM call per message.
+    // "Inspection scheduled" (and a changed time on a card already there) follows
+    // the thread through ONE rule (listing-progress.ts). Runs for bot-excluded
+    // cards too — a person typing on the phone is evidence all the same.
+    // Pre-filtered by the stored name so the ~200 cards before qualification cost
+    // no amoCRM call per message. ("Details ased" was deleted on 14.09.2026.)
     const asOf = new Date();
-    if (!/qualified|detail/i.test(row.leadStage ?? "") && !o.sources.includes("backfill")) {
+    if (!/qualified|inspection|sceduled|scheduled/i.test(row.leadStage ?? "") && !o.sources.includes("backfill")) {
       return nothing(`listing funnel, "${row.leadStage}" — the stage engine's, nothing after qualification to decide`);
     }
     if (o.refresh !== false) {
