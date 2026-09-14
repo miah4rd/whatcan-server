@@ -122,6 +122,12 @@ export function baliWeekStart(at = new Date()): string {
 
 const liveCache = new Map<string, { at: number; value: { count: number; leadIds: number[] } }>();
 
+/**
+ * Throwaway cards that really went through live for a test and must not count as villas:
+ * 23561499 "TEST listed-switch check" (14.09.2026, closed lost the same minute).
+ */
+const TEST_LEADS = new Set<number>([23561499]);
+
 /** Distinct Rental Listings cards that ARRIVED in live in [from, to), from amoCRM's own event log. */
 export async function cardsReachedLive(fromSec: number, toSec: number): Promise<{ count: number; leadIds: number[] }> {
   const key = `${fromSec}-${toSec}`;
@@ -135,7 +141,7 @@ export async function cardsReachedLive(fromSec: number, toSec: number): Promise<
         `&filter[value_after][leads_statuses][0][status_id]=${LISTING_STAGE.LIVE}&limit=100&page=${page}`,
     );
     const events = d?._embedded?.events ?? [];
-    for (const e of events) ids.add(e.entity_id);
+    for (const e of events) if (!TEST_LEADS.has(e.entity_id)) ids.add(e.entity_id);
     if (events.length < 100) break;
   }
   const value = { count: ids.size, leadIds: [...ids] };
