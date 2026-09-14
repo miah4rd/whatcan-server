@@ -104,13 +104,13 @@ const STAGE_MEANINGS: Array<{ match: RegExp; meaning: string }> = [
  * area)", when in this funnel it means "we have confirmed we are talking to the
  * real owner and they are open to working with us".
  *
- * Deliberately absent: "Inspection. done", "live" and "RENTED". Those describe
- * OUR work and the world — the agent has been to the villa and taken our own
- * photos, video and notes (09.09.2026, the stage that replaced "agreement",
- * same id 87763170), the listing is published on the site, a tenant has moved
- * in — and none of it is knowable from a WhatsApp thread with the owner.
- * Leaving them out keeps them broker-set, the same principle that keeps
- * Mailing and Long-Term Cycle out of the classifier's hands.
+ * Deliberately absent: "Inspection sceduled", "live" and "RENTED". A visit
+ * agreed (id 87763170 — "agreement" until 09.09, "Inspection. done" until
+ * 14.09.2026) and "Details ased" (id 87763166) are set by ONE rule,
+ * lib/listing-progress.ts, from the thread; live by the site's Listed switch;
+ * a tenant moving in by a person. The classifier sets none of them (see
+ * RULE_OWNED_ACQUISITION_STAGES) — the same principle that keeps Mailing and
+ * Long-Term Cycle out of its hands.
  */
 const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = [
   { match: /closed[-\s]*won|выигран/i,
@@ -118,7 +118,7 @@ const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = 
   { match: /closed[-\s]*lost|проигран|отказ/i,
     meaning: "Dead: the contact turned out to be an agent or middleman we cannot work through, the owner refused, or the villa is already committed elsewhere. Only on an unambiguous statement, NEVER on mere silence." },
   { match: /details|детал|информац/i,
-    meaning: "The owner is on board enough to be handing over what we need to publish the villa: photos, exact address or pin, available dates, prices, size, documents." },
+    meaning: "The villa is qualified and we have asked the owner's side for what completes the listing: photos, video, exact pin, available dates, size, documents, a visit. Set only by the listing-progress rule, never by this classifier." },
   // NOTE: "qualified" is deliberately ABSENT from this table, and so are the
   // stages beyond it — see RULE_OWNED_ACQUISITION_STAGES below. The meaning that
   // used to sit here said to choose it "the moment [ownership] is confirmed,
@@ -147,7 +147,9 @@ const LISTING_ACQUISITION_MEANINGS: Array<{ match: RegExp; meaning: string }> = 
  * A human moving a card by hand is unaffected: this only constrains what the
  * model may choose on our behalf.
  */
-const RULE_OWNED_ACQUISITION_STAGES = /qualified|квалифиц|details|детал|информац|inspection|инспекц|agreement|договор|соглашен|long term|co-broke/i;
+// Names drift (14.09.2026: "Details ased", "Inspection sceduled"): each stage is
+// matched by more than one word so a rename or a typo fix still lands here.
+const RULE_OWNED_ACQUISITION_STAGES = /qualified|квалифиц|details|ased|asked|детал|информац|inspection|sceduled|scheduled|инспекц|agreement|договор|соглашен|live|long term|co-broke|weekly check|update availability/i;
 
 /**
  * True when a stage on a listing-acquisition funnel may only be set by the

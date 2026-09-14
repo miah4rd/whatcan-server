@@ -42,13 +42,15 @@ const OPEN_STAGES = [
   "initial contact",
   "taken to work",
   "qualified",
-  "details",
+  "details", // matches "Details ased" (id 87763166, renamed 14.09.2026) and "Details asked"
 ];
-// NOT here: "Inspection. done" (the stage that replaced "agreement" on
-// 09.09.2026). The agent has been to that villa — a nudge asking the owner for
-// bedrooms and a price reads as amnesia, and closing the card after three
-// silent nudges would throw away a visit. Past the inspection the card is the
-// broker's conversation; the bot only answers what the owner writes.
+// NOT here: "Inspection sceduled" (id 87763170 — "agreement" until 09.09,
+// "Inspection. done" until 14.09.2026). A visit to the villa is agreed: a nudge
+// asking the owner for bedrooms and a price reads as amnesia, and closing the
+// card after three silent nudges would throw away a planned visit. The card is
+// the broker's conversation there; the bot only answers what the owner writes.
+// A new stage name must not contain "details", "qualified" or "taken to work"
+// by accident — `isOpenStage` matches by substring.
 
 /**
  * How long a card must have been quiet before each round, counted from OUR last

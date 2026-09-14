@@ -41,6 +41,7 @@ import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { undeliverableVerdict, closeUndeliverable, isUndeliverableNotice } from "./undeliverable";
 import { shouldSuppressPush } from "./stage-routing";
 import { refreshLeadMessages } from "./amo-timeline-sync";
+import { advanceListingProgress } from "./listing-progress";
 
 const BALI = "Asia/Makassar";
 const MIN = 60_000;
@@ -95,6 +96,15 @@ function propertyCodes(text: string | null | undefined): string[] {
 /** Rental's stages follow every message; other client funnels only the broker's own replies. */
 export function threadDrivesStage(pipeline: string | null | undefined): boolean {
   return pipelineKind(pipeline) === "rental";
+}
+
+/**
+ * Funnels whose every message (the villa side's, the bot's, the phone's) goes to onThreadChanged:
+ * Rental, and Rental Listings, whose Details asked / Inspection scheduled follow the thread since
+ * 14.09.2026 (listing-progress.ts). Only the detectors' gate — threadDrivesStage keeps its meaning.
+ */
+export function threadWatched(pipeline: string | null | undefined): boolean {
+  return threadDrivesStage(pipeline) || isListingAcquisition(pipeline);
 }
 
 /** The thread as the models read it: one line per message, oldest first, the integration's notices left out. */
@@ -566,8 +576,42 @@ export async function syncStageFromThread(
     .where(eq(leadsSyncTable.leadId, leadId))
     .limit(1);
   if (!row) return nothing("no leads_sync row");
+  if (isListingAcquisition(row.pipeline)) {
+    // Rental Listings: the stage engine owns everything up to QUALIFIED; after it,
+    // "Details asked" and "Inspection scheduled" follow the thread through ONE rule
+    // (listing-progress.ts). Runs for bot-excluded cards too — a person typing on
+    // the phone is evidence all the same. Pre-filtered by the stored name so the
+    // ~200 cards before qualification cost no amoCRM call per message.
+    const asOf = new Date();
+    if (!/qualified|detail/i.test(row.leadStage ?? "") && !o.sources.includes("backfill")) {
+      return nothing(`listing funnel, "${row.leadStage}" — the stage engine's, nothing after qualification to decide`);
+    }
+    if (o.refresh !== false) {
+      await refreshLeadMessages(leadId).catch((err) => logger.warn({ err, leadId }, "listing-progress: timeline refresh failed — judging what is stored"));
+    }
+    const p = await advanceListingProgress(leadId, {
+      source: source || "thread",
+      apply,
+      full: o.sources.includes("backfill"),
+      checkedAt: row.stageCheckedAt,
+    });
+    if (apply) {
+      const [n] = await db
+        .select({ at: sql<number | null>`(extract(epoch from max(${leadMessagesTable.sentAt})) * 1000)::float8` })
+        .from(leadMessagesTable)
+        .where(and(eq(leadMessagesTable.leadId, leadId), lte(leadMessagesTable.sentAt, asOf)));
+      if (n?.at) {
+        const newest = new Date(Number(n.at));
+        await db
+          .update(leadsSyncTable)
+          .set({ stageCheckedAt: newest })
+          .where(and(eq(leadsSyncTable.leadId, leadId), sql`(${leadsSyncTable.stageCheckedAt} IS NULL OR ${leadsSyncTable.stageCheckedAt} < ${newest})`));
+        lastChecked.set(leadId, newest.getTime());
+      }
+    }
+    return nothing(`listing funnel → listing-progress: ${p.moved ? `moved to ${p.to}` : "stays"} (${p.reason})`);
+  }
   if (row.botExcluded) return nothing("excluded from the bot");
-  if (isListingAcquisition(row.pipeline)) return nothing("listing funnel — the stage engine owns its stages");
   if (!isConversationalPipeline(row.pipeline)) return nothing(`funnel "${row.pipeline}" is not worked by the bot`);
 
   if (o.refresh !== false) {

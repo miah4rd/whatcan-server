@@ -9,7 +9,7 @@ import { HELPER_MODEL, chatCompletionJSON } from "../../lib/ai-client.js";
 import { updateLeadStatus, closeAmoTasksForLead, createAmoTask, getAmoLead, closeLeadAsLost } from "../../lib/amo-client.js";
 import { classifyStage, safeStageIdForLead, isRuleOwnedAcquisitionStage } from "../../lib/stage-classifier";
 import { viewingCanons } from "../../lib/stage-on-reply";
-import { onThreadChanged, recordViewingSlot, threadDrivesStage } from "../../lib/thread-stage-sync";
+import { onThreadChanged, recordViewingSlot, threadDrivesStage, threadWatched } from "../../lib/thread-stage-sync";
 import { reconcileListingStage } from "../../lib/listing-stage-engine";
 import {
   resolveSendChannel,
@@ -753,7 +753,8 @@ router.post("/approve", async (req, res) => {
 
     // Rental's stage follows the thread: judged once this text and its links
     // are in amoCRM, by the same decision a reply typed on the phone gets.
-    if (chatSent && threadDrivesStage(prevSyncRow?.pipeline)) {
+    // Rental Listings too: a Details ask or an agreed visit sent from Copilot moves the card (listing-progress).
+    if (chatSent && threadWatched(prevSyncRow?.pipeline)) {
       onThreadChanged(sug.leadId, { source: "approve" });
     }
 
@@ -871,9 +872,9 @@ router.post("/approve", async (req, res) => {
   // paths above). If a false "Options sent" jump shows up again, the fix is in
   // the classifier's judgement (lib/stage-classifier.ts) or its guards here —
   // not disabling auto-apply again, which just leaves leads stuck in New LEAD.
-  // Listing funnel: QUALIFIED / Details / agreement are earned by data (the
-  // qualification rule) or chosen by a person — never applied from a
-  // classification, however old the draft that carries it.
+  // Listing funnel: QUALIFIED (engine), Details asked / Inspection scheduled
+  // (listing-progress) and live (site switch) are earned by data or chosen by a
+  // person — never applied from a classification, however old the draft.
   const [stageCtx] = autoStage || explicitNewStage
     ? await db
         .select({ pipeline: leadsSyncTable.pipeline, leadStage: leadsSyncTable.leadStage, viewingAt: leadsSyncTable.viewingAt })

@@ -23,7 +23,7 @@ import { scheduleLiveReply } from "./live-reply-debounce.js";
 import { shouldSuppressPush } from "./stage-routing";
 import { followupClockAfterReply } from "./rental-followup";
 import { reconcileTasksAfterManualReply } from "./manual-reply-followup";
-import { onThreadChanged, threadDrivesStage } from "./thread-stage-sync";
+import { onThreadChanged, threadWatched } from "./thread-stage-sync";
 import { enforceBudgetFilter } from "./budget-filter";
 import { recordCommitment } from "./commitment-scheduler";
 import { getAccessToken } from "./amo-client";
@@ -340,7 +340,7 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
       // check under this one used to `continue` first, so a phone reply
       // amo-sync had already stamped never reached the stage logic.
       if (
-        (threadDrivesStage(row.pipeline) || newest.senderType === "broker") &&
+        (threadWatched(row.pipeline) || newest.senderType === "broker") &&
         (!row.stageCheckedAt || newest.sentAt.getTime() > row.stageCheckedAt.getTime())
       ) {
         onThreadChanged(leadId, { source: newest.senderType === "broker" ? "phone" : "timeline", messageAt: newest.sentAt });
@@ -780,7 +780,7 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
             });
           }
 
-          if (threadDrivesStage(lead.pipeline)) {
+          if (threadWatched(lead.pipeline)) {
             onThreadChanged(lead.leadId, { source: "inbound", messageAt: incomingAt });
           }
 
@@ -1073,7 +1073,7 @@ async function processQuickPollLead(
     });
   }
 
-  if (threadDrivesStage(leadRow.pipeline)) {
+  if (threadWatched(leadRow.pipeline)) {
     onThreadChanged(leadId, { source: "inbound", messageAt: incomingAt });
   }
 

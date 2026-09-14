@@ -28,8 +28,10 @@ export const LISTING_STAGE = {
   INITIAL_CONTACT: 87738346,
   TAKEN_TO_WORK: 87795530,
   QUALIFIED: 87763162,
-  DETAILS: 87763166,
-  INSPECTION_DONE: 87763170,
+  /** "Details" until 14.09.2026, then "Details ased" (owner's spelling): we asked for the listing details. */
+  DETAILS_ASKED: 87763166,
+  /** "agreement" → "Inspection. done" (09.09) → "Inspection sceduled" (14.09): a visit is agreed. */
+  INSPECTION_SCHEDULED: 87763170,
   LIVE: 87763174,
   WEEKLY_CHECK_SENT: 87763178,
   AVAILABILITY_RECEIVED: 88109158,
@@ -42,8 +44,9 @@ export const LISTING_STAGE_NAME: Record<number, string> = {
   [LISTING_STAGE.INITIAL_CONTACT]: "Initial Contact",
   [LISTING_STAGE.TAKEN_TO_WORK]: "TAKEN TO WORK",
   [LISTING_STAGE.QUALIFIED]: "QUALIFIED (Pre-listed)",
-  [LISTING_STAGE.DETAILS]: "Details",
-  [LISTING_STAGE.INSPECTION_DONE]: "Inspection. done",
+  // Fallback labels only — code reads amoCRM's live names where it can (the owner renames stages).
+  [LISTING_STAGE.DETAILS_ASKED]: "Details ased",
+  [LISTING_STAGE.INSPECTION_SCHEDULED]: "Inspection sceduled",
   [LISTING_STAGE.LIVE]: "live",
   [LISTING_STAGE.WEEKLY_CHECK_SENT]: "Weekly Check Sent",
   [LISTING_STAGE.AVAILABILITY_RECEIVED]: "Update Availability Received",

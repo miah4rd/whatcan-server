@@ -26,7 +26,8 @@ const router = Router();
 /**
  * QUALIFIED only, and deliberately nothing beyond it.
  *
- * Details and agreement are past the autopilot handover, which means a person
+ * Details asked and Inspection scheduled (ids 87763166 / 87763170, renamed
+ * 14.09.2026) are past the autopilot handover, which means a person
  * is already working those cards — the owner's instruction: "не трогай всё что
  * дальше qualified, там уже человек работает". Pulling a card out from under a
  * broker mid-conversation is worse than a stage label that overstates what we
