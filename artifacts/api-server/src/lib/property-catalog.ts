@@ -1,7 +1,7 @@
 import { logger } from "./logger";
 import { conversationWindow } from "./dialog-parser";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
-import { getTopPicksForBroker } from "./broker-picks-tracker";
+import { listingQualityById, type ListingQuality } from "./property-flags";
 import { allAreaNames, areaMatches, areaNamesInText, parentAreaOf, neighbourAreas } from "./bali-areas";
 import { publicBaseUrl } from "./public-url";
 
@@ -40,8 +40,15 @@ export type ListingType = "sale" | "rent";
 export type SupabaseProperty = {
   id: string;
   title: string;
-  /** ISO timestamp; the freshness tie-break in rankForShortlist. */
+  /** ISO timestamp — when the listing went on the site (rankShortlistFits: new is never a penalty). */
   created_at?: string | null;
+  /** false once we inspected the villa ("Listed"); true while it is Pre-listed. */
+  pre_listed?: boolean | null;
+  video_url?: string | null;
+  /** How many photos the listing has on the site (the image URLs themselves are not kept). */
+  image_count?: number;
+  /** When a property_availability row was last written — someone confirmed the dates then. */
+  availability_checked_at?: string | null;
   area: string | null;
   type: string | null;
   bedrooms: number | null;
@@ -126,7 +133,7 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
 
   const url =
     `${SUPABASE_URL}/rest/v1/properties` +
-    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,created_at,min_stay_months` +
+    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,created_at,min_stay_months,pre_listed,video_url,images` +
     `&is_draft=eq.false` +
     `&status=neq.sold` +
     `&order=created_at.desc`;
@@ -143,7 +150,8 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
     return _cache ?? [];
   }
 
-  const data = (await res.json()) as SupabaseProperty[];
+  const raw = (await res.json()) as Array<SupabaseProperty & { images?: unknown }>;
+  const data: SupabaseProperty[] = raw.map(({ images, ...row }) => ({ ...row, image_count: Array.isArray(images) ? images.length : 0 }));
   const withAvailability = await applyAvailability(data);
   _cache = withAvailability;
   _cacheAt = now;
@@ -170,7 +178,7 @@ const FREE_FROM_HORIZON_DAYS = 92;
  * reads the database. So the same rule has to live here too, or the bot keeps
  * offering what the website already refuses to show.
  */
-type AvailabilityRow = { property_id: string; status: string | null; start_date: string | null; end_date: string | null };
+type AvailabilityRow = { property_id: string; status: string | null; start_date: string | null; end_date: string | null; created_at?: string | null };
 
 /**
  * A villa's first free day (ISO date), or null when it is free today.
@@ -206,7 +214,7 @@ async function applyAvailability(rows: SupabaseProperty[]): Promise<SupabaseProp
   let periods: AvailabilityRow[] = [];
   try {
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/property_availability?select=property_id,status,start_date,end_date`,
+      `${SUPABASE_URL}/rest/v1/property_availability?select=property_id,status,start_date,end_date,created_at`,
       { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } },
     );
     if (res.ok) periods = (await res.json()) as typeof periods;
@@ -238,7 +246,8 @@ async function applyAvailability(rows: SupabaseProperty[]): Promise<SupabaseProp
     const busy = periods
       .filter((p) => (p.status === "occupied" || p.status === "rented") && p.start_date && p.end_date && (p.end_date as string) >= todayIso)
       .map((p) => ({ start: p.start_date as string, end: p.end_date as string }));
-    return { ...row, ...(free ? { free_from: free } : {}), ...(busy.length ? { busy } : {}) };
+    const checked = periods.map((p) => p.created_at ?? "").filter(Boolean).sort().pop() ?? null;
+    return { ...row, ...(free ? { free_from: free } : {}), ...(busy.length ? { busy } : {}), availability_checked_at: checked };
   });
 }
 
@@ -337,7 +346,7 @@ function summaryLine(p: SupabaseProperty): string {
     p.ownership ?? "",
     priceStr ?? "",
     p.purpose ? `(${p.purpose})` : "",
-    p.views ? `${p.views} views` : "",
+    // No view count: popularity is not fit, and on a matcher line it was read as one.
     propertyUrlById(p.id),
   ].filter(Boolean);
   return parts.join(" | ");
@@ -492,8 +501,8 @@ export function toPickPublic(p: SupabaseProperty): PropertyPick {
 /**
  * Picks 0-limit best-fitting properties for a lead, in priority order:
  * 1. A specific listing already mentioned in the conversation (explicit signal — no AI needed).
- * 2. AI-assisted semantic match against the lead's stated needs, softly boosted by
- *    this broker's historically frequent picks (personalization, not a hard override).
+ * 2. AI-assisted choice among the ranked fits (rankShortlistFits) — never by
+ *    views or by how often a broker approved a villa before.
  * Never mixes listing_type — sale and rent are filtered apart before any matching.
  */
 
@@ -586,24 +595,110 @@ export function priceOf(p: SupabaseProperty): number {
 }
 
 /**
- * Priced first, then cheapest first, then newest first. NOT by views.
+ * Once villas FIT the request, which goes first — THE order every shortlist
+ * path shows (strictShortlistPool → matchPropertiesDetailed for every bot
+ * draft and follow-up, candidatesForLead for the edit composer). Points a
+ * broker would give, each with its reason; never views, never how often a
+ * villa was sent before.
  *
- * Views used to be the tie-break, and it turned the catalog into a closed
- * loop: a villa gets sent, gets viewed, ranks higher, gets sent again. Eleven
- * 2BR villas in Pererenan and Seseh went live on 2026-09-02 — the exact brief
- * thirteen leads gave that week — and the matcher put them at the bottom of
- * every shortlist while a 3BR in Balangan at Rp 77M (814 views) went out ten
- * times to people who had asked for Pererenan under 50. Popularity is not fit.
- * By the time this ranks, candidates are already filtered to the client's
- * area, bedrooms and budget, so price order is the honest order: the cheapest
- * fit first, and among equals the villa the client has not been shown yet.
+ * History. Views were the tie-break until 02.09 and made a closed loop (a villa
+ * gets sent, viewed, ranks higher, gets sent again: a 3BR in Balangan with 814
+ * views went to ten Pererenan-under-50 leads). Its replacement, "cheapest
+ * first, newest among equals", made a second loop with the same effect
+ * (Amelia, 14.09.2026: "the bot only sends earliest options added while there
+ * is a better option added"): among 2BR fits the cheapest were the oldest
+ * stock — R-YUD-074 at 22.5M (7 photos, yearly only), R-DESTI-003 at 24.2M
+ * (minimum 12 months), R-MER-040 at 28.6M — so they topped every list for a
+ * 40-50M client, while each matcher line still said "N views" and the prompt
+ * added "this broker has used these before" (broker_property_picks, bumped by
+ * every approve of the bot's own picks). Over 01-14.09 Rental bot drafts
+ * attached villas with a median age of 11 (push) / 17 (live) days; Amelia's own
+ * phone links, 7. 23485903 (Canggu/Berawa, 35M): the bot drafted R-AME-003 +
+ * R-DESTI-003, she sent R-YUD-071/075/076 by hand.
  */
-function rankForShortlist(a: SupabaseProperty, b: SupabaseProperty): number {
-  const byPrice = (hasPrice(a) ? 0 : 1) - (hasPrice(b) ? 0 : 1);
-  if (byPrice !== 0) return byPrice;
-  const pa = priceOf(a), pb = priceOf(b);
-  if (pa > 0 && pb > 0 && pa !== pb) return pa - pb;
-  return (b.created_at ?? "").localeCompare(a.created_at ?? "");
+export type RankContext = {
+  quality?: Map<string, ListingQuality>;
+  /** Villas this lead was already offered in a draft the broker SKIPPED. */
+  proposedIds?: string[];
+  now?: Date;
+};
+/** `why` is for the matcher (internal facts); `whyClient` only what a client may hear. */
+export type RankedFit = { p: SupabaseProperty; score: number; why: string[]; whyClient: string[] };
+
+const RANK_DAY_MS = 24 * 60 * 60 * 1000;
+
+export function rankShortlistFits(fits: SupabaseProperty[], r: ClientRequest, ctx: RankContext = {}): RankedFit[] {
+  const now = (ctx.now ?? new Date()).getTime();
+  const proposed = new Set((ctx.proposedIds ?? []).map((i) => i.toUpperCase()));
+  const named = r.releaseArea ? [] : r.areas;
+  const ageDays = (iso: string | null | undefined): number | null => {
+    const t = Date.parse(iso ?? "");
+    return Number.isNaN(t) ? null : (now - t) / RANK_DAY_MS;
+  };
+  const out = fits.map((p): RankedFit => {
+    let score = 0;
+    const why: string[] = [];
+    const whyClient: string[] = [];
+    const add = (points: number, note: string | null, clientSafe = false) => {
+      score += points;
+      if (!note) return;
+      why.push(note);
+      if (clientSafe) whyClient.push(note);
+    };
+    const price = priceOf(p);
+    // 1. Money: close to what the client said they would spend, never over it
+    //    (the filter already refused over). A 24M villa for a 50M client is
+    //    rarely what they pictured.
+    if (price <= 0) add(-3, "no published price");
+    else if (r.budgetMaxIdr) {
+      const use = price / r.budgetMaxIdr;
+      const note = `${millions(price)} of their ${millions(r.budgetMaxIdr)}`;
+      add(use >= 0.8 ? 3 : use >= 0.65 ? 2 : use >= 0.5 ? 1 : 0, use < 0.5 ? `${note} (far under it)` : note, true);
+    }
+    // 2. An area they named beats a neighbour they only allowed.
+    if (named.length > 0) {
+      if (areaMatches(p.area, named)) add(1, null);
+      else add(0, `nearby ${p.area ?? "area"}`, true);
+    }
+    // 3. Dates: free now, or confirmed recently.
+    if (!p.free_from) add(0.5, "free now", true);
+    else if (!r.moveIn) add(-1, `free only from ${dayLabel(p.free_from)}`, true);
+    const checked = ageDays(p.availability_checked_at);
+    if (checked !== null && checked <= 21) add(0.5, `dates confirmed ${dayLabel(p.availability_checked_at!.slice(0, 10))}`);
+    // 4. Stay unknown: a long minimum is a likely no.
+    if (r.stayMonths === null) {
+      const minStay = Number(p.min_stay_months ?? 0);
+      const monthly = (p.monthly_price_idr ?? 0) > 0 || (p.monthly_price_usd ?? 0) > 0;
+      if (price > 0 && !monthly) add(-1, "yearly contract only", true);
+      else if (minStay >= 12) add(-0.5, `minimum stay ${minStay} months`, true);
+      else if (minStay >= 6) add(-0.25, `minimum stay ${minStay} months`, true);
+    }
+    // 5. What the client can judge from the link.
+    const q = ctx.quality?.get(p.id.toUpperCase());
+    const photos = p.image_count ?? 0;
+    if (photos > 0 && photos < 8) add(-1, `only ${photos} photos`);
+    else if (q?.photosTemporary) add(-0.5, "temporary photos from its booking page");
+    else if (photos >= 10) add(0.5, "full photo set");
+    if (p.video_url) add(1, "video tour", true);
+    // 6. What we know first-hand.
+    if (p.pre_listed === false) add(1, "inspected (Listed)");
+    if (q?.constructionNearby) add(-1.5, "construction nearby");
+    if (q?.redFlag) add(-2, "red flag in internal data");
+    // 7. New stock is never a penalty: its owner was spoken to days ago.
+    const age = ageDays(p.created_at);
+    if (age !== null && age <= 14) add(1, `new on the site ${dayLabel(p.created_at!.slice(0, 10))}`, true);
+    // 8. Variety: what the broker already skipped for this lead goes down, not out.
+    if (proposed.has(p.id.toUpperCase())) add(-1.5, "already proposed to this lead in a draft the broker skipped");
+    return { p, score: Math.round(score * 100) / 100, why, whyClient };
+  });
+  const budget = r.budgetMaxIdr;
+  return out.sort(
+    (a, b) =>
+      b.score - a.score ||
+      (budget ? priceOf(b.p) - priceOf(a.p) : 0) ||
+      (b.p.created_at ?? "").localeCompare(a.p.created_at ?? "") ||
+      a.p.id.localeCompare(b.p.id),
+  );
 }
 
 /**
@@ -889,9 +984,10 @@ function spreadByPrice(
   const only = [...tiers][0]!;
   const chosen = new Set(picked.map((p) => p.id));
   const farthest = only === 0 ? 2 : 0; // cheapest picks → show a premium one, and vice versa
+  // Candidates arrive ranked (rankShortlistFits): the best-ranked villa of the tier swaps in.
   const swapIn =
-    priced.filter((p) => !chosen.has(p.id) && tierOf(p) === farthest).sort(rankForShortlist)[0] ??
-    priced.filter((p) => !chosen.has(p.id) && tierOf(p) === 1).sort(rankForShortlist)[0];
+    candidates.find((p) => priceOf(p) > 0 && !chosen.has(p.id) && tierOf(p) === farthest) ??
+    candidates.find((p) => priceOf(p) > 0 && !chosen.has(p.id) && tierOf(p) === 1);
   if (!swapIn) return picked;
 
   logger.info(
@@ -1446,8 +1542,8 @@ function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m
  */
 export async function strictShortlistPool(
   r: ClientRequest,
-  opts: { listingType: ListingType; excludeIds?: string[] },
-): Promise<{ fits: SupabaseProperty[]; fitsInclSent: number; poolSize: number; hint: RelaxHint | null }> {
+  opts: { listingType: ListingType; excludeIds?: string[]; proposedIds?: string[] },
+): Promise<{ fits: SupabaseProperty[]; ranked: RankedFit[]; fitsInclSent: number; poolSize: number; hint: RelaxHint | null }> {
   const all = await fetchAllProperties();
   const exclude = new Set((opts.excludeIds ?? []).map((id) => id.toUpperCase()));
   const typed = all.filter((p) => p.listing_type === opts.listingType);
@@ -1460,19 +1556,17 @@ export async function strictShortlistPool(
   // was stated: requestMisfits already refused it).
   const priced = fits.filter(hasPrice);
   if (priced.length >= MIN_SHORTLIST) fits = priced;
+  // Ranked BEFORE anything is cut or shown (rankShortlistFits). A stated
+  // range's floor still comes first; the stable sort keeps the rank inside.
+  const quality = await listingQualityById().catch(() => new Map<string, ListingQuality>());
   const floor = r.budgetMinIdr;
-  fits = dedupeByTitle(
-    [...fits].sort((a, b) => {
-      if (floor) {
-        const aIn = priceOf(a) >= floor ? 0 : 1;
-        const bIn = priceOf(b) >= floor ? 0 : 1;
-        if (aIn !== bIn) return aIn - bIn;
-      }
-      return rankForShortlist(a, b);
-    }),
-  );
+  const scored = rankShortlistFits(fits, r, { quality, proposedIds: opts.proposedIds, now });
+  if (floor) scored.sort((a, b) => (priceOf(a.p) >= floor ? 0 : 1) - (priceOf(b.p) >= floor ? 0 : 1));
+  const keep = new Set(dedupeByTitle(scored.map((x) => x.p)).map((p) => p.id));
+  const ranked = scored.filter((x) => keep.has(x.p.id));
+  fits = ranked.map((x) => x.p);
   const hint = fits.length === 0 ? relaxationHint(r, judged.filter((j) => !exclude.has(j.p.id.toUpperCase()))) : null;
-  return { fits, fitsInclSent: fitAll.length, poolSize: typed.length, hint };
+  return { fits, ranked, fitsInclSent: fitAll.length, poolSize: typed.length, hint };
 }
 
 /** What a shortlist decision knew — handed to the writer's prompt and to the final check on the draft. */
@@ -1503,10 +1597,10 @@ export type OutsideVilla = { id: string; title: string; why: string[] };
  */
 export async function shortlistOutcomeFor(
   request: ClientRequest,
-  opts: { listingType: ListingType; excludeIds?: string[]; namedIds?: string[] },
-): Promise<{ outcome: ShortlistOutcome; fits: SupabaseProperty[] }> {
+  opts: { listingType: ListingType; excludeIds?: string[]; namedIds?: string[]; proposedIds?: string[] },
+): Promise<{ outcome: ShortlistOutcome; fits: SupabaseProperty[]; ranked: RankedFit[] }> {
   const excludeIds = opts.excludeIds ?? [];
-  const pool = await strictShortlistPool(request, { listingType: opts.listingType, excludeIds });
+  const pool = await strictShortlistPool(request, { listingType: opts.listingType, excludeIds, proposedIds: opts.proposedIds });
   const hasCore = requestHasCore(request);
   const all = await fetchAllProperties();
   const byId = new Map(all.map((p) => [p.id.toUpperCase(), p]));
@@ -1519,6 +1613,7 @@ export async function shortlistOutcomeFor(
       .filter((v) => v.why.length > 0);
   return {
     fits: pool.fits,
+    ranked: pool.ranked,
     outcome: {
       request,
       hasCore,
@@ -1595,9 +1690,12 @@ export async function candidatesForLead(opts: {
     budgetCeiling: request.budgetMaxIdr,
     budgetFloorIdr: request.budgetMinIdr,
     affordableIds: candidates.filter((p) => priceOf(p) > 0).map((p) => p.id),
-    lines: candidates.slice(0, 40).map((p) => {
+    // Ranked best first (rankShortlistFits). Only reasons a client may hear:
+    // the composer writes the client's text from these lines.
+    lines: pool.ranked.slice(0, 20).map(({ p, whyClient }) => {
       const style = styleHint(p);
-      return { id: p.id, line: style ? `${summaryLine(p)} | ${style}` : summaryLine(p) };
+      const why = whyClient.length ? ` | why: ${whyClient.join("; ")}` : "";
+      return { id: p.id, line: `${summaryLine(p)}${why}${style ? ` | ${style}` : ""}` };
     }),
   };
 }
@@ -1641,7 +1739,12 @@ export type MatchOptions = {
   cardBudgetTexts?: string[];
   leadNotes?: string | null;
   clickedListingId?: string | null;
+  /** Villas offered to this lead in drafts the broker skipped — ranked lower, not removed. */
+  proposedIds?: string[];
 };
+
+/** How many ranked fits the matching model sees. Enough for choice, short enough to read the reasons. */
+const SHOWN_TO_MATCHER = 12;
 
 export async function matchProperties(opts: MatchOptions): Promise<PropertyPick[]> {
   return (await matchPropertiesDetailed(opts)).picks;
@@ -1677,9 +1780,10 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
   const namedInThread = (opts.recentLeadMessages ?? []).flatMap((m) =>
     Array.from(m.matchAll(PROPERTY_ID_REGEX)).map((x) => x[1]!.toUpperCase()),
   );
-  const { outcome, fits: poolFits } = await shortlistOutcomeFor(request, {
+  const { outcome, fits: poolFits, ranked } = await shortlistOutcomeFor(request, {
     listingType: opts.listingType,
     excludeIds,
+    proposedIds: opts.proposedIds ?? [],
     namedIds: [...namedInThread, ...(opts.clickedListingId ? [opts.clickedListingId.toUpperCase()] : [])],
   });
   const done = (picks: SupabaseProperty[]) => ({ picks: picks.map(toPick), outcome });
@@ -1726,21 +1830,24 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
   if (!outcome.hasCore && opts.conversationText.trim().length < 20) return done([]);
 
   logger.info(
-    { request: describeRequest(request), sources: request.sources, fitting: candidates.length },
+    { request: describeRequest(request), sources: request.sources, fitting: candidates.length, ranked: ranked.slice(0, 8).map((x) => `${x.p.id}:${x.score}`) },
     "matchProperties: shortlist drawn only from villas inside the request",
   );
 
   const budgetKnown = request.budgetMaxIdr !== null;
   try {
-    const brokerTop = opts.brokerId ? await getTopPicksForBroker(opts.brokerId, candidates.map((p) => p.id)) : [];
+    // The top of the ranked pool, each with its reasons. No "this broker has used
+    // these before" block any more: broker_property_picks is bumped by every
+    // approve of the bot's OWN picks, so it fed the oldest villas back in.
+    const whyOf = new Map(ranked.map((x) => [x.p.id, x.why]));
     const catalogBlock = candidates
-      .slice(0, 60)
-      .map((p) => {
+      .slice(0, SHOWN_TO_MATCHER)
+      .map((p, i) => {
         const style = styleHint(p);
-        return style ? `${summaryLine(p)} | ${style}` : summaryLine(p);
+        const why = (whyOf.get(p.id) ?? []).join("; ");
+        return `${i + 1}. ${summaryLine(p)}${why ? ` | why: ${why}` : ""}${style ? ` | ${style}` : ""}`;
       })
       .join("\n");
-    const brokerBlock = brokerTop.length > 0 ? `\n\nFYI, this broker has used these before: ${brokerTop.join(", ")}. Only pick one if it fits the lead's CURRENT criteria as well as any other candidate — never as a tie-breaker against a better fit.` : "";
     const brokerRevision = opts.brokerInstruction
       ? `\n\nTHE BROKER IS REVISING THIS DRAFT AND SAID: "${opts.brokerInstruction.slice(0, 400)}"\nThis outranks everything else. It is feedback on the listings currently attached${
           opts.currentAttachmentIds?.length ? ` (${opts.currentAttachmentIds.join(", ")})` : ""
@@ -1757,13 +1864,13 @@ Return an EMPTY list when sending listings would be the wrong move:
 - The lead is arranging a viewing, negotiating terms, or discussing a property they've already chosen.
 - The conversation gives truly nothing to go on (e.g. only a greeting).
 
-EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. Choose among them on style, features and fit. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously.
+EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first on what the broker weighs once a villa fits: a price close to the client's budget without going over it, inspected (Listed), a video tour, a full photo set rather than a temporary one, dates confirmed recently, a minimum stay that suits them, nothing like construction next door. Each line gives its reasons after "why:". A new listing is never a risk — it ranks on the same facts. Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, and never because it is cheaper, older or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously.
 
 Pick up to ${limit} listing IDs, preferring ${MIN_SHORTLIST}-${limit} so the lead has something to compare. Never pad: if only one genuinely fits, return one.${
         (opts.seenCount ?? 0) > 0
           ? `\n\nThis lead has already been shown ${opts.seenCount} listing(s) and those are excluded from the catalog below.`
           : ""
-      }${brokerBlock}${brokerRevision}${
+      }${brokerRevision}${
         budgetKnown
           ? ""
           : `\n\nTHE LEAD HAS NOT NAMED A BUDGET. Spread the shortlist across clearly different price points so their reaction tells us the budget.`
