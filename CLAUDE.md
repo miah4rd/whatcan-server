@@ -1642,9 +1642,12 @@ listing-status-week.ts), the card's status is read from amoCRM, never leads_sync
   into the current one) is not moved again on evidence older than that move.
   TAKEN TO WORK, parked, closed and live cards are never touched (TTW with an
   agreed visit is only reported: `?taken=1`).
-- **Writes** amoCRM status first; then `stage_events`
-  (`engine:listing-progress:<source>`), `leads_sync`, a note with the evidence,
-  and for a visit a `listing_inspection_slots` row (created at boot).
+- **Writes** amoCRM status first; then `stage_events` (responsible_user = the
+  card's broker from leads_sync, like Rental's thread sync — the daily report
+  counts `responsible_user = <broker>`, so the first rows, written as
+  `engine:listing-progress:*`, showed Yudi 0 inspections and were re-attributed
+  the same day), `leads_sync`, a note with the evidence, and for a visit a
+  `listing_inspection_slots` row (created at boot).
 - Tools: `POST /api/admin/listing-progress` (dry; `?apply=1`, `?lead=`,
   `?taken=1`); `POST /api/admin/listing-progress/move?lead=&to=details|inspection&evidence=&visitAt=&apply=1`
   for a hand-checked move the thread rule cannot see (a duplicate card).
@@ -1661,6 +1664,31 @@ listing-status-week.ts), the card's status is read from amoCRM, never leads_sync
   Owner nudges still run on Details ased (`"details"` substring) and skip
   Inspection sceduled. Autopilot is unaffected: its threshold is QUALIFIED
   (exclusive), so QUALIFIED and everything after were already the broker's.
+
+**Dry replay before deploy (14.09).** The first version read 13 agreed visits
+and 6 were wrong: open offers ("U can come to check before 13tg", "visit on 15
+September is possible", "Bsk bisa di cek"), the owner's own photoshoot, "around
+the 21st", an unaccepted "October 13 at 2", a client viewing held before
+qualification. Hence the guards: visit at or after the window, a settling line
+no older than a day before it, and `confirmAgreedVisit` (one yes/no, fail-closed).
+A sentence about price that names a visit goes to the model, not the rule.
+
+**Backfill 14.09.2026, applied 14:56–14:57 Bali** (amoCRM events confirm each):
+QUALIFIED → Details ased: 23299227 Namaste, 23388973 Sunny Village, 23497759
+Yoshi, 23263701 Adels, 23481615 Menuai, 23260811 Tatkala, 23550763 Aquamarine
+III, 23434747 Di Villa, 23528517 Castillo, 23283693 Forest Bloom, 23426777 Luna
+Kedungu. QUALIFIED → Details ased → Inspection sceduled: 23299197 Uma Avaya
+(09.09 13:00), 23528515 Ma'Wa (11.09 12:00), 23426747 Tilu (13.09 after 14:00),
+23541159 Umbala (14.09 11:00). By hand through `/move` (the rule said Details
+only): 23549891 Villa Daze (15.09 before 11:00 — the second opinion rejected
+"besok saya ke lokasi sebelum jam 11" + "betul nggih") and 23305115 Umbala (the
+visit was agreed on its duplicate 23541159). Live, right after the deploy:
+23555649 The Cahaya Villa → Details ased (source phone+amo-outgoing-event).
+Stayed QUALIFIED: 23378953, 23204741, 23509251, 23223641, 23518853, 23519133,
+23389387, 23426759 (Salt: "the 16th works" answered by the bot on 11.09, before
+qualification; no ask since), and the Details cards 23361369, 23462331, 23339527,
+23497771 (no agreed visit). TAKEN TO WORK with a visit, not moved: 23347975
+Aquamarine (25.09), 23550771 ("visit kosong tgl 15 Oktober", reads as an offer).
 
 **The rename trap, again.** A stage rename keeps the id and silently breaks
 every string match: 09.09 ("agreement" → "Inspection. done") and 14.09. On a

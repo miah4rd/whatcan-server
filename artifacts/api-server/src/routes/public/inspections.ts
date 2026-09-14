@@ -69,7 +69,7 @@ router.get("/public/inspections", async (req, res) => {
         at: h.at,
         atBali: baliFmt(t),
         by: h.by === 0 ? "system" : (userName.get(h.by ?? -1) ?? String(h.by)),
-        meaning: t < new Date("2026-09-09T00:00:00+08:00") ? "agreement" : t < new Date("2026-09-14T15:00:00+08:00") ? "inspection done" : "inspection scheduled",
+        meaning: t < new Date("2026-09-09T00:00:00+08:00") ? "agreement" : t < new Date("2026-09-14T14:50:00+08:00") ? "inspection done" : "inspection scheduled", // the listing-progress deploy
         visitAtBali: slot ? baliFmt(slot.visitAt) : null,
         card: `https://unicornproperty.amocrm.ru/leads/detail/${h.leadId}`,
       });

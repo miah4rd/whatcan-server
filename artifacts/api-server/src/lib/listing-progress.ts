@@ -469,6 +469,14 @@ export async function applyForwardPath(
   o: { source: string; all?: Array<{ id: number; name: string }>; detailsAsk?: DetailsAsk | null; visit?: Visit | null; evidenceNote?: string },
 ): Promise<{ ok: boolean; detail: string }> {
   let from = current;
+  // stage_events carry the card's broker, as Rental's thread sync does: the daily report counts a
+  // broker's moves by `responsible_user = <broker>`, and Yudi's Inspection-scheduled arrivals are his
+  // metric whoever typed the message. The mechanism is in the log line and the card's note.
+  const owner = await db
+    .execute(sql`SELECT responsible_user FROM leads_sync WHERE lead_id = ${leadId} LIMIT 1`)
+    .then((r) => ((r.rows?.[0] as { responsible_user?: string | null } | undefined)?.responsible_user ?? "").trim())
+    .catch(() => "");
+  const responsible = owner || `engine:listing-progress:${o.source}`;
   for (let i = 0; i < path.length; i++) {
     const to = path[i]!;
     if (rank(to) <= rank(from)) return { ok: i > 0, detail: `refused: ${stageLabel(to, o.all)} is not ahead of ${stageLabel(from, o.all)}` };
@@ -478,7 +486,7 @@ export async function applyForwardPath(
     }
     await db
       .execute(sql`INSERT INTO stage_events (lead_id, from_stage, to_stage, pipeline, responsible_user)
-                   VALUES (${leadId}, ${stageLabel(from, o.all)}, ${stageLabel(to, o.all)}, 'Rental Listings', ${`engine:listing-progress:${o.source}`})`)
+                   VALUES (${leadId}, ${stageLabel(from, o.all)}, ${stageLabel(to, o.all)}, 'Rental Listings', ${responsible})`)
       .catch(() => undefined);
     await db
       .execute(sql`UPDATE leads_sync SET lead_stage = ${stageLabel(to, o.all)}, lead_stage_id = ${String(to)}, updated_at = now() WHERE lead_id = ${leadId}`)
