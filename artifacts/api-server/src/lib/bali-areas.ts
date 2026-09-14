@@ -206,3 +206,122 @@ export function neighbourAreas(spoken: string): string[] {
   const key = Object.keys(NEIGHBOUR_AREAS).find((k) => k.toLowerCase() === parent.toLowerCase());
   return key ? [...NEIGHBOUR_AREAS[key]!] : [];
 }
+
+// ── Misspelled and voice-typed area names (owner, 14.09.2026) ───────────────
+// Luke dictated "also cannot, berewa, pad on an, seseh are also suitable" —
+// Canggu, Berawa, Padonan, Seseh. An area had to appear LITERALLY, so three of
+// the four were dropped and he got Umalas only. A misspelling is read only
+// inside a LIST of places (two or more place-like items in one message) and
+// only on a short item, so ordinary words are never turned into districts.
+
+/** What phone voice typing makes of a name — too far for an edit distance. */
+const VOICE_AREA_ALIASES: Record<string, string> = {
+  cannot: "Canggu",
+  "can go": "Canggu",
+  "chang gu": "Canggu",
+  changgu: "Canggu",
+  chango: "Canggu",
+  kangu: "Canggu",
+  "uma las": "Umalas",
+  "see say": "Seseh",
+  sesay: "Seseh",
+  "pere renan": "Pererenan",
+  "berry wa": "Berawa",
+};
+
+/** English words that sit one letter from a district ("loving" → Lovina). */
+const FUZZY_STOPWORDS = new Set(["loving", "living", "lovin", "being", "bingo", "sanity", "pecan", "beware"]);
+
+const LIST_FILLER = /\b(also|the|in|at|near|around|area|areas|are|is|suitable|fine|ok|okay|good|too|maybe|like|prefer|would|be|we|i|im|with|sure|yes|all|those|these|both|either|work|works|possible|options?)\b/g;
+
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length]!;
+}
+
+function closestAreaName(phrase: string, names: string[]): string | null {
+  const joined = phrase.replace(/\s+/g, "");
+  if (joined.length < 5 || FUZZY_STOPWORDS.has(joined)) return null;
+  let best: { name: string; d: number } | null = null;
+  for (const name of names) {
+    const target = name.toLowerCase().replace(/[^a-z]/g, "");
+    if (target.length < 5) continue;
+    const d = editDistance(joined, target);
+    const allowed = target.length >= 7 ? 2 : 1;
+    if (d <= allowed && (!best || d < best.d)) best = { name, d };
+  }
+  return best?.name ?? null;
+}
+
+/**
+ * Area names the text MEANS but misspells, in the valid spelling — only from a
+ * list of places, never a lone word. Exact names are areaNamesInText's job and
+ * are not repeated here. `extraNames` adds the catalog's own area spellings.
+ */
+export function fuzzyAreaNamesInText(text: string, extraNames: string[] = []): string[] {
+  const names = [...new Set([...allAreaNames(), ...extraNames.map((n) => n.trim())])].filter(Boolean);
+  const segments = String(text ?? "")
+    .toLowerCase()
+    .split(/[,;\/\n&+]|\s(?:and|or|plus)\s/)
+    .map((s) => s.replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const exact = new Set<string>();
+  const fuzzy = new Set<string>();
+  let placeItems = 0;
+  for (const seg of segments) {
+    const exactHere = names.filter((n) => new RegExp(`\\b${n.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(seg));
+    if (exactHere.length > 0) {
+      exactHere.forEach((n) => exact.add(n));
+      placeItems++;
+      continue;
+    }
+    const core = seg.replace(LIST_FILLER, " ").replace(/\s+/g, " ").trim();
+    const words = core ? core.split(" ") : [];
+    if (words.length === 0 || words.length > 3) continue;
+    let hit: string | null = VOICE_AREA_ALIASES[core] ?? null;
+    for (let n = Math.min(3, words.length); !hit && n >= 1; n--) {
+      for (let i = 0; !hit && i + n <= words.length; i++) {
+        const gram = words.slice(i, i + n).join(" ");
+        hit = VOICE_AREA_ALIASES[gram] ?? closestAreaName(gram, names);
+      }
+    }
+    if (hit) {
+      fuzzy.add(hit);
+      placeItems++;
+    }
+  }
+  if (fuzzy.size === 0 || placeItems < 2) return [];
+  return [...fuzzy].filter((n) => !exact.has(n));
+}
+
+/**
+ * A landmark is not an area, but it says where the client wants to be. Sophie
+ * asked "do you have something near the Nuanu?" (14.09): Nuanu matched no
+ * district, so the request kept a place no villa is tagged with and the
+ * neighbouring Seseh, Cemagi and Tabanan villas were never opened. Only
+ * places whose surroundings are not in doubt are listed; the caller keeps the
+ * areas that exist in its vocabulary.
+ */
+const LANDMARK_AREAS: Array<{ rx: RegExp; landmark: string; areas: string[] }> = [
+  { rx: /\bnuanu\b/i, landmark: "Nuanu", areas: ["Seseh", "Cemagi", "Tabanan", "Kedungu", "Nyanyi", "Beraban"] },
+  { rx: /\btanah\s*lot\b/i, landmark: "Tanah Lot", areas: ["Tabanan", "Cemagi", "Kedungu", "Beraban"] },
+  { rx: /\bfinn'?s\s+(beach|club)/i, landmark: "Finns Beach Club", areas: ["Berawa", "Canggu"] },
+  { rx: /\batlas\s+(beach|club)/i, landmark: "Atlas Beach Club", areas: ["Berawa", "Canggu"] },
+  { rx: /\bpotato\s+head\b/i, landmark: "Potato Head", areas: ["Seminyak", "Kerobokan"] },
+  { rx: /\bold\s+man'?s\b/i, landmark: "Old Man's", areas: ["Batu Bolong", "Canggu"] },
+];
+
+export function landmarkAreasInText(text: string): Array<{ landmark: string; areas: string[] }> {
+  const t = String(text ?? "");
+  return LANDMARK_AREAS.filter((l) => l.rx.test(t)).map((l) => ({ landmark: l.landmark, areas: [...l.areas] }));
+}

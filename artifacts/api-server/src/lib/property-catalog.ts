@@ -1210,21 +1210,61 @@ export function describeRequest(r: ClientRequest): string {
 
 const PROPERTY_URL = /https?:\/\/\S*\/property\/[A-Za-z0-9-]+\S*/gi;
 
-/** The client's own words: a quoted message of ours is cut off when WhatsApp's line break survived, links are removed. */
-function clientWords(text: string): string {
+function normWs(s: string): string {
+  return String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** What follows the first `normLen` characters of `original`, counted the way normWs counts them. */
+function afterNormalizedPrefix(original: string, normLen: number): string {
+  const s = original.replace(/^\s+/, "");
+  let n = 0;
+  let i = 0;
+  let inSpace = false;
+  for (; i < s.length && n < normLen; i++) {
+    if (/\s/.test(s[i]!)) {
+      if (!inSpace) n++;
+      inSpace = true;
+    } else {
+      n++;
+      inSpace = false;
+    }
+  }
+  return s.slice(i);
+}
+
+/**
+ * The client's OWN words in one message. A WhatsApp reply arrives as ">> <our
+ * message> <their reply>"; the quote is cut by matching it against what WE
+ * actually sent, so it works whether or not the line breaks survived (content
+ * renders every message on one line). With no matching message of ours, the
+ * old rule stays: the reply is what follows the LAST line break, and with no
+ * break the message is left out — reading it whole turned our own "Rp 66
+ * million/month" into the client's budget (23335045). Links are removed.
+ */
+export function clientOwnWords(text: string, ourMessages: string[] = []): string {
   let t = String(text ?? "");
   if (t.startsWith(">>")) {
-    // A WhatsApp reply quoting OUR message: everything before the line break is
-    // our text. When the break did not survive, quote and reply cannot be told
-    // apart, so the message is left out — reading it whole turned our own
-    // "Rp 66 million/month" into the client's budget (23335045).
-    // Our quoted message can itself span several lines; the client's reply is
-    // what follows the LAST break.
-    const nl = t.lastIndexOf("\n");
-    if (nl < 0) return "";
-    t = t.slice(nl + 1);
+    const body = t.replace(/^>>\s*/, "");
+    const nb = normWs(body);
+    let cut = -1;
+    for (const ours of ourMessages) {
+      const no = normWs(ours);
+      if (no.length >= 8 && no.length > cut && nb.startsWith(no)) cut = no.length;
+    }
+    if (cut >= 0) {
+      t = afterNormalizedPrefix(body, cut);
+    } else {
+      const nl = t.lastIndexOf("\n");
+      if (nl < 0) return "";
+      t = t.slice(nl + 1);
+    }
   }
   return t.replace(PROPERTY_URL, " ").replace(/\s+/g, " ").trim();
+}
+
+/** The request reader's view of one client message (unchanged: no quote matching here yet). */
+function clientWords(text: string): string {
+  return clientOwnWords(text);
 }
 
 /** Card notes minus our own markers ("Ad enquiry: R-X — <villa title>" carries a size and an area that are the villa's, not the client's). */
@@ -1834,7 +1874,21 @@ export type MatchOptions = {
   proposedIds?: string[];
   /** Villas equal on everything take turns between leads (rankShortlistFits). */
   leadId?: string | null;
+  /**
+   * The shortlist gate already decided this message carries options
+   * (decideShortlistGate). The model then only chooses AMONG the fits; an
+   * empty choice or a failed call falls back to the top ranked ones — the
+   * owner's "when unsure, send the shortlist" (14.09.2026).
+   */
+  mustAttach?: boolean;
 };
+
+const DECLINE_RULES = `Return an EMPTY list when sending listings would be the wrong move:
+- The lead has just expressed interest in a SPECIFIC listing they were already shown ("I like this one", "this looks good", quoting one link approvingly). The conversation should now move toward a viewing or the practical next step on THAT property — pushing a fresh batch talks over them.
+- The lead is arranging a viewing, negotiating terms, or discussing a property they've already chosen.
+- The conversation gives truly nothing to go on (e.g. only a greeting).`;
+
+const MUST_ATTACH_RULE = `THIS MESSAGE CARRIES OPTIONS — that is already decided in code: the client asked for more, turned down what they have, gave new criteria, or is still choosing. People rarely say "I don't like it"; "let's see more", "I've seen these", "keep sending", "hopefully something comes up" mean exactly that. Do not return an empty list. Pick the best fits for what the client said most recently.`;
 
 /** How many ranked fits the matching model sees. Enough for choice, short enough to read the reasons. */
 const SHOWN_TO_MATCHER = 12;
@@ -1953,10 +2007,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
       label: "listing-match",
       system: `You decide whether to attach property listings to a broker's next reply, and if so which ones.
 
-Return an EMPTY list when sending listings would be the wrong move:
-- The lead has just expressed interest in a SPECIFIC listing they were already shown ("I like this one", "this looks good", quoting one link approvingly). The conversation should now move toward a viewing or the practical next step on THAT property — pushing a fresh batch talks over them.
-- The lead is arranging a viewing, negotiating terms, or discussing a property they've already chosen.
-- The conversation gives truly nothing to go on (e.g. only a greeting).
+${opts.mustAttach ? MUST_ATTACH_RULE : DECLINE_RULES}
 
 EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first: first by how closely the villa matches the request (an area they named over a neighbour, a price close to their budget without going over it, free on their dates, a minimum stay that suits them), then, only between villas that match equally, by what we know about the villa (red and green flags from our inspection, construction nearby, inspected (Listed), a video tour, a full photo set, dates confirmed recently). How long a listing has been on the site plays no part: rentals come free again and again. Each line gives its reasons after "why:". Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, never because it is cheaper, older, newer or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously.
 
@@ -1988,9 +2039,13 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
     const ids = new Set((result.ids ?? []).map((id) => id.toUpperCase()));
     const picked = candidates.filter((p) => ids.has(p.id.toUpperCase()));
     if (picked.length === 0) {
-      outcome.declined = true;
-      logger.info({ fitting: candidates.length }, "matchProperties: the model chose to attach nothing to this message");
-      return done([]);
+      if (!opts.mustAttach) {
+        outcome.declined = true;
+        logger.info({ fitting: candidates.length }, "matchProperties: the model chose to attach nothing to this message");
+        return done([]);
+      }
+      picked.push(...candidates.slice(0, Math.min(limit, candidates.length)));
+      logger.info({ fitting: candidates.length, attached: picked.map((p) => p.id) }, "matchProperties: the model chose none, but this message carries options — the top ranked fits go");
     }
     // Top up to two from the SAME strict pool — every candidate is inside the request.
     if (picked.length < MIN_SHORTLIST) {
@@ -2003,8 +2058,9 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
     const final = budgetKnown ? picked : spreadByPrice(picked.slice(0, limit), candidates);
     return done(final.slice(0, limit));
   } catch (err) {
-    logger.error({ err }, "matchProperties: AI matching failed (non-fatal)");
-    return done([]);
+    logger.error({ err, mustAttach: !!opts.mustAttach }, "matchProperties: AI matching failed (non-fatal)");
+    // Fail toward sending: the gate already decided this message carries options.
+    return done(opts.mustAttach ? candidates.slice(0, limit) : []);
   }
 }
 

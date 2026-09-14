@@ -19,7 +19,7 @@ import { queueSuggestion } from "../routes/amocrm-webhook.js";
 import { getLastMessengerFieldId, updateLastMessengerField, isKnownWhatsappLine } from "./amo-messenger-field.js";
 // Coalesces this detection with the real-time webhook's — both can fire for
 // the same burst of WhatsApp messages, so both route through the same debounce.
-import { scheduleLiveReply } from "./live-reply-debounce.js";
+import { scheduleLiveReply, liveReplyInFlight } from "./live-reply-debounce.js";
 import { shouldSuppressPush } from "./stage-routing";
 import { followupClockAfterReply } from "./rental-followup";
 import { reconcileTasksAfterManualReply } from "./manual-reply-followup";
@@ -889,6 +889,38 @@ export async function refreshLeadFromTimeline(
   }
 }
 
+/**
+ * The lead row calls this client message known — but was it ever answered?
+ * The webhook stores the message time even when it decides "not a reply", and
+ * this poll then skipped the message as old news: Lance answered the ad
+ * welcome at 11:24 on 12.09 and no LIVE draft was written at all (the parser
+ * half is fixed in dialog-parser.ts; this is the net under it). True only for
+ * a client message from the last 15 minutes that the row still has as the
+ * last word, with no draft of any status and no reply of ours after it, and
+ * no LIVE reply already waiting or being written.
+ */
+async function knownIncomingNeverAnswered(leadId: string, incomingTs: number): Promise<boolean> {
+  const incomingAt = new Date(incomingTs * 1000);
+  if (Date.now() - incomingAt.getTime() > 15 * 60_000) return false;
+  if (liveReplyInFlight(leadId)) return false;
+  try {
+    const res = await db.execute(sql`
+      SELECT
+        (SELECT last_message_from FROM leads_sync WHERE lead_id = ${leadId}) AS last_from,
+        (SELECT last_our_message_at FROM leads_sync WHERE lead_id = ${leadId}) AS our_at,
+        (SELECT count(*)::int FROM pending_suggestions WHERE lead_id = ${leadId} AND created_at >= ${incomingAt.toISOString()}::timestamptz) AS drafts,
+        (SELECT count(*)::int FROM lead_messages WHERE lead_id = ${leadId} AND sender_type <> 'lead' AND sent_at > ${incomingAt.toISOString()}::timestamptz) AS answered`);
+    const row = ((res as unknown as { rows?: unknown[] }).rows ?? [])[0] as
+      | { last_from: string | null; our_at: string | Date | null; drafts: number; answered: number }
+      | undefined;
+    if (!row || row.last_from !== "lead") return false;
+    if (row.our_at && new Date(row.our_at).getTime() >= incomingAt.getTime()) return false;
+    return Number(row.drafts) === 0 && Number(row.answered) === 0;
+  } catch {
+    return false;
+  }
+}
+
 async function processQuickPollLead(
   authHeader: string,
   leadId: string,
@@ -950,7 +982,10 @@ async function processQuickPollLead(
   const lastOurAt = leadRow.lastOurMessageAt?.getTime() ?? 0;
   const knownAt = Math.max(lastMsgAt, lastOurAt);
   const knownTs = Math.floor(knownAt / 1000);
-  if (knownTs > 0 && latestIncoming <= knownTs) return { stored, detected: false, liveCreated: false };
+  if (knownTs > 0 && latestIncoming <= knownTs) {
+    if (!(await knownIncomingNeverAnswered(leadId, latestIncoming))) return { stored, detected: false, liveCreated: false };
+    logger.warn({ leadId, incomingAt: new Date(latestIncoming * 1000).toISOString() }, "quick poll: a client message already marked known never got a LIVE draft — writing one now");
+  }
 
   // New incoming detected! Update DB
   const incomingAt = new Date(latestIncoming * 1000);
