@@ -1685,6 +1685,18 @@ deploy, thread from `lead_messages` before each, and grep the log for
 "autopilot: owner draft re-asked", "a question the thread already answers was
 cut" and "nothing left to ask".
 
+**A deferred price is an answer (14.09, the third live message).** Petr
+(23519703, Casa Petak) wrote on 09.09 "rates depend of duration and saison"
+and on 13.09 "Once you have real client - dates - and decided Villa we can
+talk about rates", after "You send me the message alredy twice". The first
+deploy's reply at 11:23 still asked "monthly and yearly pricing for the three
+options including our 10% commission": the strict judge called it no repeat
+(no price was ever given), the owner would not. `PRICE_DEFERRED` now marks
+price and commission known on such a line; the broker asks again by hand.
+Replayed read-only before the second deploy: the reply became "Whenever it's
+free next month, let me know so we can arrange the inspection", the Villa
+Yoshi and Villa Tapeni controls unchanged.
+
 ### A stage a card can neither enter nor leave (2026-09-10)
 
 The owner: "что с нашим автопилотом, где мои листинги?" Nothing had reached
