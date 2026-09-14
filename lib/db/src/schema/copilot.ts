@@ -152,6 +152,11 @@ export const leadsSyncTable = pgTable("leads_sync", {
    * "Viewing scheduled"; the outcome pass reads it to move the card on to
    * "Viewing done" or to hand the broker a "how did it go?" draft. */
   viewingAt: timestamp("viewing_at", { withTimezone: true }),
+  /** The newest thread message the stage sync has judged (lib/thread-stage-sync.ts).
+   *  Its own watermark on purpose: last_our_message_at is moved by three
+   *  detectors, and whichever ran first hid a phone reply from the other two,
+   *  so the stage never followed it (12.09, six cards). */
+  stageCheckedAt: timestamp("stage_checked_at", { withTimezone: true }),
   /** The last extracted-and-merged listing facts, and the moment they were
    *  read. A thread with no message newer than this is not read again:
    *  the daily audit costs one model call per CHANGED card, not per card. */
@@ -376,5 +381,50 @@ export const viewingReportsTable = pgTable("viewing_reports", {
   rescheduledTo: timestamp("rescheduled_to", { withTimezone: true }),
   filedBy: text("filed_by"),
   filedAt: timestamp("filed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Every viewing slot agreed in a thread, one row per slot — what the report
+ * pass works from. leads_sync.viewing_at holds only the CURRENT slot, so a
+ * second viewing on the same card overwrote the first, and a slot agreed from
+ * the phone or on a closed card was never owed a report (2 of 5 held viewings
+ * got one, week of 07.09). Unique on (lead_id, viewing_at), created at boot.
+ * status: scheduled → reported | rescheduled | cancelled.
+ */
+export const viewingSlotsTable = pgTable("viewing_slots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  leadId: text("lead_id").notNull(),
+  viewingAt: timestamp("viewing_at", { withTimezone: true }).notNull(),
+  propertyCode: text("property_code"),
+  agreedAt: timestamp("agreed_at", { withTimezone: true }),
+  source: text("source"),
+  status: text("status").notNull().default("scheduled"),
+  reportId: uuid("report_id"),
+  /** The card the report went to: the open card of the same client when the
+   *  slot was agreed in a closed card's thread. */
+  reportLeadId: text("report_lead_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * One row per stage-sync run (lib/thread-stage-sync.ts), next to its log line.
+ * The daily sync check (lib/stage-sync-check.ts) proves from here that every
+ * reply typed on the broker's phone reached the stage decision — a log file
+ * rotates, and a check that cannot see last night is a check nobody trusts.
+ */
+export const stageSyncDecisionsTable = pgTable("stage_sync_decisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  leadId: text("lead_id").notNull(),
+  source: text("source"),
+  fromStage: text("from_stage"),
+  toStage: text("to_stage"),
+  action: text("action").notNull(),
+  direction: text("direction"),
+  moved: boolean("moved").notNull().default(false),
+  applied: text("applied"),
+  reason: text("reason"),
+  newestAt: timestamp("newest_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

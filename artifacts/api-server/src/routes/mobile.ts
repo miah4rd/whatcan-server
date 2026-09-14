@@ -1516,7 +1516,10 @@ const PAGE_HTML = `<!doctype html>
           attachments: (item.attachments || []).filter(function (a) { return a.type === "link" && a.url; }),
           attachmentsCurated: !!item._attachmentsCurated,
           newStage: (item.lead_stage && item.lead_stage !== item._originalStage) ? item.lead_stage : undefined,
-          stageId: (item.lead_stage && item.lead_stage !== item._originalStage) ? (stageIdForName(item.lead_stage) || item.lead_stage_id || undefined) : (item.lead_stage_id || undefined),
+          // Only a stage the broker picked travels with the send. The stored id
+          // went along on every approve and outranked the server's own choice,
+          // so a stale id won over the new stage name (12.09).
+          stageId: (item.lead_stage && item.lead_stage !== item._originalStage) ? (stageIdForName(item.lead_stage) || undefined) : undefined,
         }),
       });
       var json = await res.json().catch(function () { return {}; });
@@ -2459,6 +2462,11 @@ const PAGE_HTML = `<!doctype html>
     if (!vr) return "";
     var h = '<div class="vr" id="vr">';
     h += '<div class="vr-head">&#x1F4CB; Viewing report' + (vr.property_code ? ' &middot; <b>' + esc(vr.property_code) + '</b>' : '') + ' &middot; ' + esc(vrFmt(vr.viewing_at)) + '</div>';
+    if (!vr.property_code) {
+      // The villa comes from the messages that agreed the slot; when they do
+      // not make it clear, the broker names it here instead of us guessing.
+      h += '<div class="vr-row"><input type="text" id="vr-code" placeholder="Villa code, e.g. R-YUD-071" autocapitalize="characters" style="background:#0f1320;color:#e6e8ee;border:1px solid #2a3146;border-radius:8px;padding:7px 10px;font-size:16px;font-family:inherit;max-width:100%"><span class="vr-status">which villa was viewed?</span></div>';
+    }
     h += '<label class="section">1 &middot; Outcome</label>';
     h += '<div class="vr-opts" id="vr-outcome">';
     h += '<span class="vr-opt" data-v="go">&#x1F7E2; Going ahead</span>';
@@ -2523,6 +2531,7 @@ const PAGE_HTML = `<!doctype html>
             feedback: ($("#vr-feedback").value || ""), nextSteps: steps,
             nextBy: ($("#vr-by").value || null),
             rescheduledTo: (outcome === "rescheduled" && $("#vr-resched").value) ? new Date($("#vr-resched").value).toISOString() : null,
+            propertyCode: ($("#vr-code") && $("#vr-code").value) ? $("#vr-code").value.trim().toUpperCase() : null,
             brokerId: activeBroker(),
           }),
         });

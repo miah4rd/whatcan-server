@@ -18,31 +18,34 @@
  *
  * It is also the one place every live reply passes through, which is why the
  * "there is no WhatsApp on this number" check lives HERE rather than in each of
- * the three callers. Put it in the callers and it lands in two of them, which
- * is how every drift bug in this project has started.
+ * the three callers. Whether the card is then CLOSED is decided by
+ * undeliverableVerdict — the same verdict the stage sync uses, so a notice
+ * that arrives as an echo of our own send closes the card too.
  */
 import { db, leadMessagesTable } from "@workspace/db";
-import { and, desc, eq } from "drizzle-orm";
-import { isUndeliverableNotice, closeUndeliverable } from "./undeliverable";
+import { desc, eq } from "drizzle-orm";
+import { isUndeliverableNotice, closeUndeliverable, undeliverableVerdict } from "./undeliverable";
 
 const timers = new Map<string, NodeJS.Timeout>();
 
 /**
- * True when the newest thing "the lead said" is the integration reporting an
- * unreachable number. Answering that produces a message nobody can receive.
+ * Is the newest thing "the lead said" the integration reporting an unreachable
+ * number (answering it produces a message nobody can receive), and does the
+ * shared verdict close the card?
  */
-async function lastIncomingIsUndeliverable(leadId: string): Promise<boolean> {
+async function undeliverableState(leadId: string): Promise<{ lastIsNotice: boolean; close: boolean }> {
   try {
-    const [newest] = await db
-      .select({ text: leadMessagesTable.text })
+    const rows = await db
+      .select({ senderType: leadMessagesTable.senderType, text: leadMessagesTable.text, sentAt: leadMessagesTable.sentAt })
       .from(leadMessagesTable)
-      .where(and(eq(leadMessagesTable.leadId, leadId), eq(leadMessagesTable.senderType, "lead")))
+      .where(eq(leadMessagesTable.leadId, leadId))
       .orderBy(desc(leadMessagesTable.sentAt))
-      .limit(1);
-    return isUndeliverableNotice(newest?.text);
+      .limit(200);
+    const lastFromLead = rows.find((m) => m.senderType === "lead");
+    return { lastIsNotice: isUndeliverableNotice(lastFromLead?.text), close: undeliverableVerdict(rows.reverse()).close };
   } catch {
     // Fail OPEN: a failed lookup must not silence a real conversation.
-    return false;
+    return { lastIsNotice: false, close: false };
   }
 }
 
@@ -56,8 +59,9 @@ export function scheduleLiveReply(
   const timer = setTimeout(() => {
     timers.delete(leadId);
     void (async () => {
-      if (await lastIncomingIsUndeliverable(leadId)) {
-        await closeUndeliverable(leadId);
+      const u = await undeliverableState(leadId);
+      if (u.lastIsNotice) {
+        if (u.close) await closeUndeliverable(leadId);
         return;
       }
       await Promise.resolve(run()).catch(() => {});

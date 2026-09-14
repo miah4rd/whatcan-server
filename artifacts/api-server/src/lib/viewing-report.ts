@@ -14,18 +14,31 @@
  * Without a report for 24 hours the generic "how did the viewing go?" goes out
  * and the task turns overdue. Viewings are counted from reports only.
  */
-import { db, viewingReportsTable, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
+import { db, viewingReportsTable, viewingSlotsTable, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { getAmoLead, getOpenAmoTasks, createAmoTask, amoPatch, amoPost, amoFetch } from "./amo-client";
+import {
+  getAmoLead,
+  getOpenAmoTasks,
+  createAmoTask,
+  amoPatch,
+  amoPost,
+  amoFetch,
+  VIEWING_REPORT_TASK_PREFIX,
+  NEXT_STEP_TASK_PREFIX,
+  LISTING_STEP_TASK_PREFIX,
+} from "./amo-client";
 import { notifyBroker } from "./push-notifications";
 import { brokerKey } from "./broker-identity";
 import { chatCompletion, WRITER_MODEL } from "./ai-client";
 import { generateSuggestion, applyViewingPush } from "./generate-suggestion";
 import { getMergedDialog } from "./merged-conversation";
 import { correctionsPromptBlock, deriveSituation } from "./broker-corrections";
+import { leadPhone, siblingLeadIds } from "./phone-dedupe";
+import { propertyForSlot, recordViewingSlot } from "./thread-stage-sync";
 
-export const REPORT_TASK_PREFIX = "Fill the viewing report";
+/** The task texts live in amo-client, where closeAmoTasksForLead protects them. */
+export const REPORT_TASK_PREFIX = VIEWING_REPORT_TASK_PREFIX;
 export const REPORT_FILED_VERDICT = "viewing report filed";
 /** The verdict on the placeholder push draft that carries the form in PUSH. */
 export const VIEWING_FOLLOWUP_VERDICT = "viewing follow-up due";
@@ -62,23 +75,102 @@ async function clientName(leadId: string): Promise<string> {
   return firstName(row?.name);
 }
 
-/** The villa shown: the last property code we sent before the slot. */
-async function shownProperty(leadId: string, before: Date): Promise<string | null> {
-  const rows = await db
-    .select({ text: leadMessagesTable.text })
-    .from(leadMessagesTable)
-    .where(and(eq(leadMessagesTable.leadId, leadId), sql`${leadMessagesTable.sentAt} <= ${before}`, sql`${leadMessagesTable.text} ~* '(R-[A-Z]+-[0-9]+|YUDR-[0-9]+)'`))
-    .orderBy(desc(leadMessagesTable.sentAt))
-    .limit(1);
-  const m = /(R-[A-Z]+-\d+|YUDR-\d+)/i.exec(rows[0]?.text ?? "");
-  return m ? m[1]!.toUpperCase() : null;
+const CLOSED_STATUS_IDS = new Set([142, 143]);
+
+/**
+ * Which card carries the report for a slot agreed in this card's thread.
+ *
+ * Remi's viewing (10.09 14:00) was agreed and held in the thread of 23489993, a
+ * card closed automatically on 07.09 while he was still writing; his open card
+ * is 23528439. A report on the closed card is a task nobody opens. So: the
+ * thread's own card when it is open; otherwise the client's OPEN card in the
+ * same funnel (same contact, or the same phone on a duplicate contact); when
+ * there is none, the closed card itself with a "reopen?" line — a card is never
+ * reopened automatically, closing and reopening are the broker's taps.
+ */
+export async function reportCardFor(threadLeadId: string): Promise<{ leadId: string; closedCard: boolean }> {
+  const lead = await amoFetch<{ id: number; status_id: number; pipeline_id: number; _embedded?: { contacts?: Array<{ id: number }> } }>(
+    `/api/v4/leads/${threadLeadId}?with=contacts`,
+  ).catch(() => null);
+  if (!lead || !CLOSED_STATUS_IDS.has(lead.status_id)) return { leadId: threadLeadId, closedCard: false };
+  const ids = new Set<string>();
+  for (const c of lead._embedded?.contacts ?? []) {
+    const contact = await amoFetch<{ _embedded?: { leads?: Array<{ id: number }> } }>(`/api/v4/contacts/${c.id}?with=leads`).catch(() => null);
+    for (const l of contact?._embedded?.leads ?? []) ids.add(String(l.id));
+  }
+  const phone = await leadPhone(threadLeadId).catch(() => "");
+  if (phone) for (const id of await siblingLeadIds(threadLeadId, phone).catch(() => [] as string[])) ids.add(id);
+  ids.delete(threadLeadId);
+  if (ids.size > 0) {
+    const q = [...ids].slice(0, 40).map((id) => `filter[id][]=${id}`).join("&");
+    const found = await amoFetch<{ _embedded?: { leads?: Array<{ id: number; status_id: number; pipeline_id: number; updated_at: number }> } }>(
+      `/api/v4/leads?${q}&limit=50`,
+    ).catch(() => null);
+    const open = (found?._embedded?.leads ?? [])
+      .filter((l) => l.pipeline_id === lead.pipeline_id && !CLOSED_STATUS_IDS.has(l.status_id))
+      .sort((a, b) => b.updated_at - a.updated_at);
+    if (open[0]) return { leadId: String(open[0].id), closedCard: false };
+  }
+  return { leadId: threadLeadId, closedCard: true };
 }
 
 /**
- * One report per viewing slot. Called three hours after the slot by the
- * viewing-outcome pass; safe to call again — an existing row is returned.
+ * The report owed for a slot agreed in `threadLeadId`'s thread: created on the
+ * card reportCardFor picks, the slot marked reported. Idempotent. `propertyCode`
+ * undefined means "not known yet — read it from the thread".
  */
-export async function ensureDueReport(leadId: string, viewingAt: Date): Promise<{ id: string; created: boolean }> {
+export async function ensureSlotReport(
+  threadLeadId: string,
+  viewingAt: Date,
+  propertyCode: string | null | undefined,
+  source: string,
+): Promise<{ id: string; created: boolean; leadId: string; closedCard: boolean }> {
+  const target = await reportCardFor(threadLeadId);
+  const code = propertyCode !== undefined ? propertyCode : await propertyForSlot(threadLeadId, viewingAt).catch(() => null);
+  const r = await ensureDueReport(target.leadId, viewingAt, { propertyCode: code, threadLeadId, closedCard: target.closedCard });
+  await recordViewingSlot(threadLeadId, { viewingAt, propertyCode: code }, source).catch(() => undefined);
+  await db
+    .update(viewingSlotsTable)
+    .set({ status: "reported", reportId: r.id, reportLeadId: target.leadId, updatedAt: new Date() })
+    .where(and(eq(viewingSlotsTable.leadId, threadLeadId), eq(viewingSlotsTable.viewingAt, viewingAt)));
+  return { ...r, leadId: target.leadId, closedCard: target.closedCard };
+}
+
+/**
+ * Re-create the report task for a report still due. Before 14.09 any message
+ * closed every open task on the card, the report task included (Lorenzo,
+ * viewing 09.09: "Closed automatically" 10.09 12:40, report still due).
+ */
+export async function retaskDueReport(leadId: string, viewingAt: Date): Promise<{ ok: boolean; reason: string }> {
+  const [rep] = await db
+    .select({ propertyCode: viewingReportsTable.propertyCode, status: viewingReportsTable.status })
+    .from(viewingReportsTable)
+    .where(and(eq(viewingReportsTable.leadId, leadId), eq(viewingReportsTable.viewingAt, viewingAt)))
+    .limit(1);
+  if (!rep) return { ok: false, reason: "no report for this card and slot" };
+  if (rep.status !== "due") return { ok: false, reason: `the report is ${rep.status}` };
+  const open = await getOpenAmoTasks(leadId);
+  if (open.some((t) => (t.text ?? "").startsWith(REPORT_TASK_PREFIX))) return { ok: false, reason: "an open report task already exists" };
+  const name = await clientName(leadId);
+  const lead = await getAmoLead(leadId);
+  const ok = await createAmoTask(
+    leadId,
+    `${REPORT_TASK_PREFIX}: ${name || "the client"}${rep.propertyCode ? ` · ${rep.propertyCode}` : ""} (viewing ${fmt(viewingAt)}). Open the card in Copilot — outcome, the client's feedback, next steps.`,
+    new Date(Date.now() + 3 * 3_600_000),
+    lead?.responsible_user_id ?? undefined,
+  );
+  return { ok, reason: ok ? "report task re-created" : "amoCRM refused the task" };
+}
+
+/**
+ * One report per viewing slot, on the card given. Safe to call again — an
+ * existing row is returned.
+ */
+export async function ensureDueReport(
+  leadId: string,
+  viewingAt: Date,
+  opts: { propertyCode?: string | null; threadLeadId?: string; closedCard?: boolean } = {},
+): Promise<{ id: string; created: boolean }> {
   const [existing] = await db
     .select({ id: viewingReportsTable.id })
     .from(viewingReportsTable)
@@ -91,12 +183,34 @@ export async function ensureDueReport(leadId: string, viewingAt: Date): Promise<
     .from(leadsSyncTable)
     .where(eq(leadsSyncTable.leadId, leadId))
     .limit(1);
-  const property = await shownProperty(leadId, viewingAt);
-  const name = await clientName(leadId);
+  const threadLeadId = opts.threadLeadId ?? leadId;
+  // The villa comes from the messages that agreed the slot. "The last code
+  // sent before the slot" named the wrong villa in 2 of 3 reports; when the
+  // thread does not make it clear, it stays empty and the form asks.
+  const property =
+    opts.propertyCode !== undefined ? opts.propertyCode : await propertyForSlot(threadLeadId, viewingAt).catch(() => null);
+  const name = (await clientName(leadId)) || (await clientName(threadLeadId));
   const [row] = await db
     .insert(viewingReportsTable)
     .values({ leadId, propertyCode: property, viewingAt, status: "due" })
     .returning({ id: viewingReportsTable.id });
+
+  // One open push per card: a follow-up written before the slot ("we still
+  // have the 5PM visit set up") is wrong once the slot has passed. A draft the
+  // broker asked for herself stays.
+  await db
+    .update(pendingSuggestionsTable)
+    .set({ status: "skipped" })
+    .where(
+      and(
+        eq(pendingSuggestionsTable.leadId, leadId),
+        eq(pendingSuggestionsTable.status, "pending"),
+        eq(pendingSuggestionsTable.kind, "push"),
+        sql`${pendingSuggestionsTable.requestedAt} IS NULL`,
+        sql`${pendingSuggestionsTable.createdAt} < ${viewingAt}`,
+        sql`${pendingSuggestionsTable.autopilotSkippedReason} IS DISTINCT FROM ${VIEWING_FOLLOWUP_VERDICT}`,
+      ),
+    );
 
   // The form lives inside a card, and the inbox lists drafts: without a
   // pending push for this lead there is nothing to open. The placeholder
@@ -121,13 +235,15 @@ export async function ensureDueReport(leadId: string, viewingAt: Date): Promise<
   }
 
   const label = `${name || "the client"}${property ? ` · ${property}` : ""}`;
+  const elsewhere = threadLeadId !== leadId ? ` The viewing was agreed in the chat of card #${threadLeadId}.` : "";
+  const reopen = opts.closedCard ? " This card is closed: if the client is still looking, reopen it." : "";
   // The task is what the broker already works from: it is the "today" /
   // "overdue" badge on the card, the same as every other task.
   try {
     const lead = await getAmoLead(leadId);
     await createAmoTask(
       leadId,
-      `${REPORT_TASK_PREFIX}: ${label} (viewing ${fmt(viewingAt)}). Open the card in Copilot — outcome, the client's feedback, next steps.`,
+      `${REPORT_TASK_PREFIX}: ${label} (viewing ${fmt(viewingAt)}). Open the card in Copilot — outcome, the client's feedback, next steps.${elsewhere}${reopen}`,
       new Date(Date.now() + 3 * 3_600_000),
       lead?.responsible_user_id ?? undefined,
     );
@@ -137,10 +253,10 @@ export async function ensureDueReport(leadId: string, viewingAt: Date): Promise<
   await notifyBroker(
     brokerKey(sync?.responsibleUser),
     `Fill the viewing report · ${name || "client"}`,
-    `${property ?? "Viewing"} at ${fmt(viewingAt)}. Outcome, the client's feedback, next steps — one minute.`,
+    `${property ?? "Viewing"} at ${fmt(viewingAt)}. Outcome, the client's feedback, next steps — one minute.${opts.closedCard ? " The card is closed: reopen it?" : ""}`,
     "/m",
   ).catch(() => 0);
-  logger.info({ leadId, reportId: row!.id, property, viewingAt }, "viewing report: due");
+  logger.info({ leadId, threadLeadId, closedCard: !!opts.closedCard, reportId: row!.id, property, viewingAt }, "viewing report: due");
   return { id: row!.id, created: true };
 }
 
@@ -189,7 +305,23 @@ export type FileReportInput = {
   nextBy: string | null;
   rescheduledTo: string | null;
   brokerId: string | null;
+  /** The villa, when the report carried none: the thread did not make it clear, so the broker named it. */
+  propertyCode?: string | null;
 };
+
+/**
+ * A next step's due time, never in the past. "By today" filed at 13:00 used to
+ * create a task due 10:00 the same day, overdue the moment it appeared.
+ */
+function stepDue(nextBy: string | null): Date {
+  const soon = Date.now() + 30 * 60_000;
+  if (!nextBy) return new Date(Date.now() + 24 * 3_600_000);
+  for (const hour of ["10", "18"]) {
+    const d = new Date(`${nextBy}T${hour}:00:00+08:00`);
+    if (d.getTime() > soon) return d;
+  }
+  return new Date(Date.now() + 3 * 3_600_000);
+}
 
 /**
  * File the report and do everything that follows from it: stage, notes, the
@@ -204,6 +336,8 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
   const nextSteps = input.nextSteps.filter((s) => (NEXT_STEPS as readonly string[]).includes(s));
   const nextBy = input.nextBy && /^\d{4}-\d{2}-\d{2}$/.test(input.nextBy) ? input.nextBy : null;
   const rescheduledTo = input.rescheduledTo && !Number.isNaN(new Date(input.rescheduledTo).getTime()) ? new Date(input.rescheduledTo) : null;
+  const typedCode = (input.propertyCode ?? "").trim().toUpperCase();
+  if (!rep.propertyCode && /^(R-[A-Z]+-\d+|YUDR-\d+)$/.test(typedCode)) rep.propertyCode = typedCode;
 
   await db
     .update(viewingReportsTable)
@@ -214,6 +348,7 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
       nextSteps,
       nextBy,
       rescheduledTo,
+      propertyCode: rep.propertyCode,
       filedBy: input.brokerId,
       filedAt: new Date(),
     })
@@ -230,6 +365,9 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
   //    time. No stage is touched.
   if (input.outcome === "no_show" || input.outcome === "cancelled" || input.outcome === "rescheduled") {
     await db.update(leadsSyncTable).set({ viewingAt: rescheduledTo, updatedAt: new Date() }).where(eq(leadsSyncTable.leadId, leadId)).catch(() => undefined);
+  }
+  if (rescheduledTo) {
+    await recordViewingSlot(leadId, { viewingAt: rescheduledTo, propertyCode: rep.propertyCode }, "report-rescheduled").catch(() => undefined);
   }
 
   // 2. The report as a note on the lead, so amoCRM shows it too.
@@ -249,9 +387,9 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
     const mine = open.filter((t) => (t.text ?? "").startsWith(REPORT_TASK_PREFIX));
     if (mine.length) await amoPatch(`/api/v4/tasks`, mine.map((t) => ({ id: t.id, is_completed: true, result: { text: "Report filed in Copilot" } })));
     if (nextSteps.length && !nextSteps.every((s) => s === "Close")) {
-      const due = nextBy ? new Date(`${nextBy}T10:00:00+08:00`) : new Date(Date.now() + 24 * 3_600_000);
+      const due = stepDue(nextBy);
       const lead = await getAmoLead(leadId);
-      await createAmoTask(leadId, `Next step after the viewing: ${nextSteps.join(", ")}`, due, lead?.responsible_user_id ?? undefined);
+      await createAmoTask(leadId, `${NEXT_STEP_TASK_PREFIX}: ${nextSteps.join(", ")}`, due, lead?.responsible_user_id ?? undefined);
     }
   } catch (err) {
     logger.warn({ err, leadId }, "viewing report: tasks not updated (non-fatal)");
@@ -275,10 +413,10 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
         }
         const ownerSide = nextSteps.filter((s) => s === "Counter-offer to owner" || s === "Deposit to hold it" || s === "Contract");
         if (ownerSide.length) {
-          const due = nextBy ? new Date(`${nextBy}T10:00:00+08:00`) : new Date(Date.now() + 24 * 3_600_000);
+          const due = stepDue(nextBy);
           await createAmoTask(
             String(listing.id),
-            `Client after the viewing of ${rep.propertyCode} (lead #${leadId}): ${ownerSide.join(", ")}. ${input.feedback.trim() ? `Their feedback: ${input.feedback.trim().slice(0, 300)}` : ""}`.trim(),
+            `${LISTING_STEP_TASK_PREFIX} ${rep.propertyCode} (lead #${leadId}): ${ownerSide.join(", ")}. ${input.feedback.trim() ? `Their feedback: ${input.feedback.trim().slice(0, 300)}` : ""}`.trim(),
             due,
             listing.responsible_user_id ?? undefined,
           );

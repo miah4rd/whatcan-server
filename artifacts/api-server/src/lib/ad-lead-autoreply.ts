@@ -56,6 +56,7 @@ import { isNonAnswer, unservedAreasOnCard } from "./area-coverage";
  */
 export { AD_AUTO_KIND } from "./pending-visibility";
 import { AD_AUTO_KIND } from "./pending-visibility";
+import { onThreadChanged } from "./thread-stage-sync";
 
 /** Silence after the welcome before the broker gets a draft to send. */
 const BROKER_OPENING_DELAY_MS = 15 * 60 * 1000;
@@ -382,6 +383,10 @@ export async function sendAdLeadWelcome(opts: {
     .where(eq(leadsSyncTable.leadId, leadId));
 
   logger.info({ leadId, listingId, broker: responsibleUser }, "ad welcome sent automatically — 15-minute draft armed");
+  // The first message floors the card at "need assessed" (Rental's meaning of
+  // that stage: the first outreach went out). Seven cards sat in New LEAD after
+  // their welcome in the week of 07.09 because no path wrote it.
+  onThreadChanged(leadId, { source: "auto-send" });
   return true;
 }
 

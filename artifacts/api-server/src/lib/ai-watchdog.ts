@@ -61,7 +61,8 @@ async function alertRecipients(): Promise<Set<string>> {
   return targeted;
 }
 
-async function alertEveryone(title: string, body: string): Promise<number> {
+/** The owner-alert path (HoS, Admin — AI_ALERT_BROKERS). Also used by the daily stage sync check. */
+export async function alertEveryone(title: string, body: string): Promise<number> {
   const brokers = await alertRecipients();
   if (brokers.size === 0) {
     logger.error({ title, body }, "AI watchdog: nobody has a push subscription — alert reached NO ONE");

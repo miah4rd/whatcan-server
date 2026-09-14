@@ -341,6 +341,23 @@ export async function safeStageIdForLead(opts: {
   return { id: null, corrected: true };
 }
 
+/**
+ * amoCRM's own name for the status a card is on: the stage it is REALLY in.
+ * leads_sync lags behind it and once held "need assessed" with Options sent's
+ * id (23552139, 12.09), so a decision about moving a card starts from here.
+ */
+export async function amoStageFor(
+  pipelineId: number | null | undefined,
+  statusId: number | null | undefined,
+): Promise<{ pipeline: string; stage: string; all: StageDef[] } | null> {
+  if (!pipelineId || !statusId) return null;
+  await loadPipelines();
+  const funnel = cache?.byId.get(pipelineId);
+  const status = funnel?.all.find((s) => s.id === statusId);
+  if (!funnel || !status) return null;
+  return { pipeline: cache?.displayNames.get(funnel.key) ?? funnel.key, stage: status.name, all: funnel.all };
+}
+
 /** The live stage map for one pipeline — autopilot needs the funnel's own order. */
 export async function getPipelineStages(pipeline: string): Promise<PipelineStages | null> {
   return (await loadPipelines()).get(pipeline.trim().toLowerCase()) ?? null;

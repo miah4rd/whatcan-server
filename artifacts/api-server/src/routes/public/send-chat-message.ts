@@ -1,16 +1,17 @@
 /**
  * Send message through amoCRM Chat API + Salesbot.
- * 
+ *
  * Flow:
  * 1. Save message text to custom field "companion_message" on the lead
  * 2. Trigger Salesbot (e.g. "Companion Robert") which reads the field and sends via WhatsApp
- * 
+ *
  * POST /api/public/send-chat-message
  * Body: { leadId: string, message: string, salesbotId?: number }
  */
 import { Router } from "express";
 import { updateLeadCustomField, triggerSalesbot } from "../../lib/amo-chat-client";
 import { logger } from "../../lib/logger";
+import { onThreadChanged } from "../../lib/thread-stage-sync";
 
 const router = Router();
 
@@ -45,6 +46,8 @@ router.post("/public/send-chat-message", async (req, res) => {
     }
 
     logger.info({ leadId, botId, message: message.slice(0, 100) }, "amoChat: message sent via Salesbot");
+    // Every send path tells the stage sync; it decides per funnel.
+    onThreadChanged(String(leadId), { source: "auto-send" });
     res.json({ ok: true, leadId, botId });
   } catch (err) {
     logger.error({ err }, "amoChat: send-chat-message error");

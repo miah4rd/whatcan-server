@@ -26,6 +26,7 @@ router.post("/public/viewing-report", async (req, res) => {
     nextBy: b["nextBy"] ? String(b["nextBy"]) : null,
     rescheduledTo: b["rescheduledTo"] ? String(b["rescheduledTo"]) : null,
     brokerId: b["brokerId"] ? String(b["brokerId"]) : null,
+    propertyCode: b["propertyCode"] ? String(b["propertyCode"]) : null,
   });
   if (!r.ok) { res.status(404).json(r); return; }
   res.json(r);

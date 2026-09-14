@@ -23,7 +23,7 @@ import { scheduleLiveReply } from "./live-reply-debounce.js";
 import { shouldSuppressPush } from "./stage-routing";
 import { followupClockAfterReply } from "./rental-followup";
 import { reconcileTasksAfterManualReply } from "./manual-reply-followup";
-import { classifyAndApplyStage } from "./stage-on-reply";
+import { onThreadChanged, threadDrivesStage } from "./thread-stage-sync";
 import { enforceBudgetFilter } from "./budget-filter";
 import { recordCommitment } from "./commitment-scheduler";
 import { getAccessToken } from "./amo-client";
@@ -247,6 +247,27 @@ export function parseTimelineEvents(leadId: string, events: TimelineEvent[]): Ra
 
 // ── Store messages in DB ───────────────────────────────────────────────────────
 async function storeMessages(messages: RawMessage[]): Promise<number> {
+  const inserted = await upsertMessages(messages);
+  await startFollowupClockForOutgoing(messages);
+  return inserted;
+}
+
+/**
+ * Re-read ONE lead's newest messages from amoCRM into lead_messages, without
+ * any of the detection side effects. The stage sync calls it before judging a
+ * thread: a phone reply or the links following a Salesbot text are in amoCRM
+ * seconds after they leave, but reached lead_messages only on the 30-minute
+ * sweep — classifying before that is how an echo moved cards back (12.09).
+ */
+export async function refreshLeadMessages(leadId: string, limit = 60): Promise<number> {
+  const auth = await getAmoAuth();
+  if (!auth) return 0;
+  const events = await fetchTimeline(auth, leadId, limit);
+  if (events.length === 0) return 0;
+  return upsertMessages(parseTimelineEvents(leadId, events));
+}
+
+async function upsertMessages(messages: RawMessage[]): Promise<number> {
   let inserted = 0;
   for (const msg of messages) {
     try {
@@ -309,11 +330,21 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
           pipeline: leadsSyncTable.pipeline,
           botExcluded: leadsSyncTable.botExcluded,
           responsibleUser: leadsSyncTable.responsibleUser,
+          stageCheckedAt: leadsSyncTable.stageCheckedAt,
         })
         .from(leadsSyncTable)
         .where(eq(leadsSyncTable.leadId, leadId))
         .limit(1);
       if (!row || row.botExcluded) continue;
+      // The stage follows this message whatever the clock below decides. The
+      // check under this one used to `continue` first, so a phone reply
+      // amo-sync had already stamped never reached the stage logic.
+      if (
+        (threadDrivesStage(row.pipeline) || newest.senderType === "broker") &&
+        (!row.stageCheckedAt || newest.sentAt.getTime() > row.stageCheckedAt.getTime())
+      ) {
+        onThreadChanged(leadId, { source: newest.senderType === "broker" ? "phone" : "timeline", messageAt: newest.sentAt });
+      }
       if (row.lastOurMessageAt && row.lastOurMessageAt.getTime() >= newest.sentAt.getTime()) continue;
       if (shouldSuppressPush(row.leadStage ?? "")) continue;
 
@@ -382,12 +413,7 @@ async function startFollowupClockForOutgoing(messages: RawMessage[]): Promise<vo
         } catch (err) {
           logger.warn({ err, leadId }, "timeline: manual-reply task reconcile failed");
         }
-        // The stage must follow a reply written from the phone exactly as it
-        // follows one approved in Copilot — a viewing confirmed by hand moved
-        // nothing for a week.
-        classifyAndApplyStage(leadId, { source: "manual-reply", replyText: newest.text ?? undefined }).catch((err) =>
-          logger.warn({ err, leadId }, "timeline: stage classification after manual reply failed"),
-        );
+        // The stage follows this reply through the stage sync, triggered above.
       }
 
       logger.info(
@@ -754,6 +780,10 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
             });
           }
 
+          if (threadDrivesStage(lead.pipeline)) {
+            onThreadChanged(lead.leadId, { source: "inbound", messageAt: incomingAt });
+          }
+
           logger.info(
             { leadId: lead.leadId, incomingAt, knownTs, liveCreated },
             "incoming detection: client replied detected",
@@ -1041,6 +1071,10 @@ async function processQuickPollLead(
         logger.error({ leadId, err }, "quick poll: LIVE generation failed");
       }
     });
+  }
+
+  if (threadDrivesStage(leadRow.pipeline)) {
+    onThreadChanged(leadId, { source: "inbound", messageAt: incomingAt });
   }
 
   logger.info({ leadId, incomingAt, liveScheduled: liveCreated }, "quick poll: new incoming processed");
