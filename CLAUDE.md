@@ -1034,9 +1034,14 @@ report sent "Not this one" back to Options sent. Canons, enforced in
 - **Viewing done** — the client stood in the villa (or a video walkthrough
   for an off-island client). Set from the thread after the slot
   (viewing-outcome pass, classifier canons) or by the broker. **It stays
-  Viewing done whatever the client's verdict** until the next shortlist goes
-  out — links on send move it to Options sent the ordinary way. The viewing
-  report never moves the card.
+  Viewing done whatever the client's verdict, and a new shortlist does not
+  move it back** (owner, 14.09.2026: "пусть там же остаётся — просто
+  подбирается новая вилла, но этап тот же"; this reverses the 09.09 rule that
+  links on send returned it to Options sent — that rule and the classifier
+  flipped Searra and Alena Viewing done → Options sent → Viewing done within a
+  minute). From Viewing done or later nothing automatic moves the card to a
+  pre-viewing stage; a second viewing is a new cycle (Viewing scheduled). The
+  viewing report never moves the card.
 - **Negotiation done** — from the thread (terms being discussed) or the broker.
 - Every held viewing has a report row; the weekly numbers count reports.
 Audit by hand: `POST /api/admin/reclassify-manual?pipeline=rental` (dry)

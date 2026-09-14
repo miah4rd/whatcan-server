@@ -173,6 +173,14 @@ JSON only: {"viewing_at": "2026-09-07T15:00:00+08:00" | null, "agreed_at": "2026
   if (!at) return null;
   let agreed = parseIso(out?.agreed_at);
   if (agreed && agreed.getTime() > asOf.getTime() + MIN) agreed = null;
+  // Danny 23538877, 14.09: the broker's offer "R-YUD-085 … available to visit
+  // tomorrow" (no time, never accepted) came back as 12.09 00:00 and produced a
+  // report form for a viewing that never happened, and a "how did it go?" PUSH
+  // right after her real message. A slot needs the line that settled it and a
+  // stated time: no agreed_at, or exactly midnight Bali, is not an agreed slot.
+  if (!agreed) return null;
+  const baliMinutes = (at.getUTCHours() * 60 + at.getUTCMinutes() + 8 * 60) % (24 * 60);
+  if (baliMinutes === 0) return null;
   // A slot two months past its agreement, or long before it, is a misread.
   if (at.getTime() > (agreed ?? asOf).getTime() + 60 * DAY) return null;
   if (agreed ? at.getTime() < agreed.getTime() - 12 * HOUR : at.getTime() < asOf.getTime() - 2 * DAY) return null;
@@ -363,13 +371,14 @@ export async function decideStage(i: DecideInput): Promise<StageDecision> {
     else if (anyOurs && NEED >= 0) { floor = NEED; floorWhy = "floor: our first message went out"; }
   }
 
-  // ── Viewing done holds until the next shortlist goes out (canon, 09.09) ────
-  let shortlistAfterViewing = false;
-  if (rental && cur === DONE && OPTIONS >= 0) {
-    const held = known.filter((d) => hasPassed(d)).pop() ?? null;
-    const viewed = new Set(i.slots.map((s) => (s.propertyCode ?? "").toUpperCase()).filter(Boolean));
-    shortlistAfterViewing = !!held && ours.some((m) => m.sentAt.getTime() > held.getTime() && propertyCodes(m.text).some((c) => !viewed.has(c)));
-  }
+  // ── After a held viewing the card never goes back (owner, 14.09) ───────────
+  // The 09.09 canon moved Viewing done back to Options sent when a new
+  // shortlist went out; the owner reversed it: "пусть там же остаётся —
+  // просто подбирается новая вилла, но этап тот же". It also fought the
+  // classifier — Searra and Alena went Viewing done → Options sent → Viewing
+  // done within a minute on 14.09. A new viewing is a new cycle (below); a new
+  // shortlist changes nothing.
+  const pastViewing = rental && DONE >= 0 && cur >= DONE;
 
   // ── The classifier, told what code knows for certain ───────────────────────
   const facts: string[] = [];
@@ -436,15 +445,11 @@ export async function decideStage(i: DecideInput): Promise<StageDecision> {
       viewingAt: slot.viewingAt,
     };
   }
-  if (shortlistAfterViewing) {
-    return {
-      ...base, slot, action: "move", to: all[OPTIONS]!.name, direction: "backward",
-      reason: `a new shortlist went out after the viewing (canon: Viewing done holds until the next shortlist)${tail()}`,
-      viewingAt: null,
-    };
-  }
   if (back) {
     if (echoOnly) return stay(`classifier says "${back.name}", but only our own send is new — an echo never moves a card back${tail()}`);
+    if (pastViewing && all.findIndex((s) => s.id === back!.id) < DONE) {
+      return stay(`classifier says "${back.name}", but a held viewing keeps the card on "${i.stage}" — a new shortlist or a rejection does not move it back (owner, 14.09)${tail()}`);
+    }
     const target = Math.max(all.findIndex((s) => s.id === back!.id), floor);
     if (target >= cur) return stay(`classifier says "${back.name}", held by the floor (${floorWhy})${tail()}`);
     const ev = await backwardEvidence(i.stage ?? "", all[target]!.name, transcriptOf(i.messages, 30));
