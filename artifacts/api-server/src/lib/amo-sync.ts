@@ -4,7 +4,7 @@
  * Runs every 5 minutes in background.
  */
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
-import { eq, and, inArray, isNull, or, ilike } from "drizzle-orm";
+import { eq, and, inArray, isNull, or, ilike, notLike } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch, getAccessToken, getAllOpenLeadTasksPaginated, createAmoTask } from "./amo-client";
 import { shouldSuppressPush } from "./stage-routing";
@@ -426,6 +426,12 @@ export async function syncTaskSchedule(): Promise<void> {
             // just requested, every 5 minutes, so the lead kept vanishing from the
             // app seconds after it appeared.
             isNull(pendingSuggestionsTable.requestedAt),
+            // Yudi's inspection ask checks his real tasks itself (inspection-booking.ts); the future task
+            // here is usually the bot's own "Sent (…)" one, which deleted the ask every 5 minutes.
+            or(
+              isNull(pendingSuggestionsTable.autopilotSkippedReason),
+              notLike(pendingSuggestionsTable.autopilotSkippedReason, "inspection booking ask%"),
+            ),
           ),
         );
     }

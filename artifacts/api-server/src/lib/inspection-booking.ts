@@ -37,7 +37,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { getAmoLead } from "./amo-client";
+import { getAmoLead, getOpenAmoTasks } from "./amo-client";
 import { chatCompletion, chatCompletionJSON, HELPER_MODEL, WRITER_MODEL } from "./ai-client";
 import { correctionsPromptBlock } from "./broker-corrections";
 import { sanitizeSuggestion } from "./sanitize-suggestion";
@@ -413,9 +413,17 @@ export async function bookingPlan(leadId: string, o: { statusId?: number | null;
       plan.pushDue = false;
       plan.reason = `${plan.reason}; no PUSH: ${reason}`;
     };
+    // Yudi's own plan on the card wins. next_followup_at cannot say whose it is: every approved send
+    // leaves the bot's "Sent (live|push): …" task, which blocked the ask on Villa Castillo (14.09.2026)
+    // for a task nobody set. So the open tasks themselves, minus the bot's.
+    const tasks = sync?.bot_excluded ? [] : await getOpenAmoTasks(leadId).catch(() => null);
+    const yudiTask = (tasks ?? [])
+      .filter((t) => (t.complete_till ?? 0) * 1000 > now.getTime() && !/^Sent \((live|push)\)/.test(t.text ?? ""))
+      .sort((a, b) => (a.complete_till ?? 0) - (b.complete_till ?? 0))[0];
     if (sync?.bot_excluded) await block("the card is excluded from the bot");
-    else if (sync?.next_followup_at && new Date(sync.next_followup_at).getTime() > now.getTime()) {
-      await block(`Yudi has an amoCRM task on the card due ${fmtDay(new Date(sync.next_followup_at))}`);
+    else if (!tasks) await block("amoCRM tasks could not be read");
+    else if (yudiTask) {
+      await block(`Yudi has an amoCRM task on the card due ${fmtDay(new Date((yudiTask.complete_till ?? 0) * 1000))}`);
     } else if (last && now.getTime() - last.sentAt.getTime() < QUIET_BEFORE_PUSH_MS) {
       await block(`the last message is ${ago(last.sentAt, now.getTime())} — waits for 12 h of quiet`);
     } else {
