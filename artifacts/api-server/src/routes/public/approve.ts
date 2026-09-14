@@ -42,7 +42,7 @@ const router = Router();
 
 /** The words point at the attachments without naming a villa — "links below",
  * "see the options attached". On the edit path such a text keeps its links. */
-const REFERS_TO_ATTACHED_LINKS = /\blinks?\b|\bbelow\b|\battach(?:ed|ments?)?\b|ссылк|ниже|во вложени|tautan|di bawah/i;
+const REFERS_TO_ATTACHED_LINKS = /\blinks?\b|\bbelow\b|\battach(?:ed|ments?)?\b|\bhere (?:they|it|these|those) (?:are|is)\b|\bhere(?:'s| is| are)\b|\b(?:these|those) (?:two|three|four|five|2|3|4|5|ones?|villas?|options?|places?|houses?|homes?)\b|\b(?:take|have) a look\b|\bcheck (?:them|these|those) out\b|ссылк|ниже|во вложени|вот (?:они|варианты)|tautan|di bawah/i;
 
 /** The text PROMISES links under it — "link below", "options attached". With
  * nothing attached that message must not leave: the client would scroll for
@@ -396,8 +396,20 @@ router.post("/approve", async (req, res) => {
           if (REFERS_TO_ATTACHED_LINKS.test(finalMessage)) {
             req.log.info({ leadId: sug.leadId, kept: labels }, "approve: edited text names no villa but refers to the links — kept as attached");
           } else {
-            req.log.info({ leadId: sug.leadId, dropped: labels }, "approve: edited text mentions none of the attached villas — the links are dropped, the words stand");
-            effectiveAttachments = [];
+            // Never silently (owner, 14.09.2026, E). Dropping the links here
+            // sent Sophie "Here they are:" with nothing under it (12.09 draft,
+            // approved 46 h later with the villa names cut). Keeping them
+            // would put three villas under a text that may say "nothing fits".
+            // Neither guess is safe, so the send is refused and the broker
+            // decides in one tap: mention the villas, or remove the links.
+            const names = labels.map((l) => (l ?? "").replace(/\s*\(.*$/, "").trim()).filter(Boolean);
+            req.log.warn({ leadId: sug.leadId, attached: labels }, "approve: edited text mentions none of the attached villas — send refused, the broker decides");
+            res.status(409).json({
+              ok: false,
+              error: "links_not_named",
+              message: `Your text does not mention the ${names.length === 1 ? "attached villa" : `${names.length} attached villas`} (${names.join("; ")}). Mention them in the text, or remove the links you do not want to send, then approve again.`,
+            });
+            return;
           }
         } else if (kept.length !== effectiveAttachments.length || added.length > 0) {
           req.log.info(
@@ -513,7 +525,11 @@ router.post("/approve", async (req, res) => {
   const claimedStatus = skipMessage ? "skipped" : (body.edited ? "edited" : "approved");
   const [claimed] = await db
     .update(pendingSuggestionsTable)
-    .set({ status: claimedStatus, finalText: finalMessage })
+    // The row keeps the links that actually go out. It kept the ones the bot
+    // generated: Sophie's 12.09 draft left with no links, its row still listed
+    // R-YUD-074 / R-MER-040 / R-YUD-075, and "already sent" (which reads these
+    // rows) then kept those three out of every later shortlist.
+    .set(skipMessage ? { status: claimedStatus, finalText: finalMessage } : { status: claimedStatus, finalText: finalMessage, attachments: effectiveAttachments })
     .where(and(eq(pendingSuggestionsTable.id, body.suggestionId as any), eq(pendingSuggestionsTable.status, "pending")))
     .returning({ id: pendingSuggestionsTable.id });
   if (!claimed) {
