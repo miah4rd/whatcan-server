@@ -1673,6 +1673,18 @@ kapan kami bisa bawa client untuk lihat villanya ya kak? / Terimakasih". Words
 median 65 → 31 on the repeat cases, 48 → 34 on the style cases; "that's
 everything we need" 11 → 0, "clients searching in the area" 10 → 0.
 
+**Live after deploy (9d1cbdf, 14.09 10:52 server time).** In the first 20
+minutes two owner messages went out on their own, both on 23369845 in
+Indonesian, both judged by the same strict check: no repeated question
+("Terima kasih pak fotonya, sudah kami terima ya. / Untuk komisi nanti
+dikonfirmasi lagi oleh tim kami. Ditunggu kabarnya untuk unit yang available
+setelah awal Oktober ya pak 🙏"). They are also two replies a minute apart to
+two photo messages, an older shape this change does not touch. To keep
+checking: auto-sent Rental Listings rows in `pending_suggestions` after the
+deploy, thread from `lead_messages` before each, and grep the log for
+"autopilot: owner draft re-asked", "a question the thread already answers was
+cut" and "nothing left to ask".
+
 ### A stage a card can neither enter nor leave (2026-09-10)
 
 The owner: "что с нашим автопилотом, где мои листинги?" Nothing had reached
