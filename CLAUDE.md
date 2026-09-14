@@ -1384,6 +1384,14 @@ responsible user, it is field 967477, and it is decided at the send:
   5 min — undecided. Read type-90 `data.delivery_status`: 0 sent, 1 delivered,
   2 read (line 1's first contacts of 13.09: 19 read, 8 delivered). 62585 stays
   held for new contacts until WAhelp explains the false notices.
+- **PROJECT PAUSED by the owner (14.09):** "пока как было, один номер" — new
+  technical issues, not a priority now. `BROKER_LINES.yudi = [59537]`; every
+  Yudi send (first contacts and replies) goes from 59537, and a card whose
+  field still says 62585 is switched back to 59537 by the reassignment guard.
+  Kept in place: SOURCE_MAP 62585, per-line budget code, the SOURCE_MAP guard
+  in resolveSendChannel (Salesbot's "None of the conditions" exit still sends
+  via Yudi 2), `line-retest`. To resume: WAhelp explains/fixes the false notices,
+  then `[59537, 62585]` and drop 62585 from `NO_NEW_CONTACTS`.
 - Two traps that made the second line reply from the first: the timeline sync
   wrote the line NAME into 967477 and `mapNameToSourceId` prefix-matched
   "Yudi 2" as "Yudi"; and the reassignment guard compared names, so "Yudi 2"
