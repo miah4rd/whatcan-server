@@ -501,13 +501,14 @@ export async function syncTaskSchedule(): Promise<void> {
       if (!isReachLead) {
         // Active-funnel stages (Contact Established, Needs Assessed, Options Sent):
         //
-        // Age filter — only show leads created within the max age window for their pipeline.
-        // Rental pipeline gets a tighter 7-day window (per broker request); all other
-        // pipelines (e.g. Unicorn) keep the default 3 months.
-        // Older leads are stale pipeline residue and should not flood the PUSH tab.
-        const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+        // Age filter — only show leads created within the last 3 months, every pipeline.
+        // Rental used to get a 7-day window (a broker asked for a shorter PUSH list).
+        // Owner removed it 2026-09-14: it silenced 34 of the 58 Rental clients who had
+        // a shortlist and were due a viewing ask — a client quiet for a week is exactly
+        // who the follow-up exists for. Old leads are spaced out by adaptive-followup
+        // (isStaleOld), not dropped by age here.
         const THREE_MONTHS_MS = 90 * 24 * 60 * 60 * 1000;
-        const maxAgeMs = (lead.pipeline ?? "").toLowerCase() === "rental" ? SEVEN_DAYS_MS : THREE_MONTHS_MS;
+        const maxAgeMs = THREE_MONTHS_MS;
         if (lead.amoCreatedAt && lead.amoCreatedAt < new Date(now.getTime() - maxAgeMs)) {
           await db.update(leadsSyncTable).set({ nextFollowupAt: null }).where(eq(leadsSyncTable.leadId, lead.leadId));
           continue;
