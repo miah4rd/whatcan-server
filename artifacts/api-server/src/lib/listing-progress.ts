@@ -111,6 +111,7 @@ const STRONG_ITEM =
   /\b(photos?|photoshoot|pictures?|pics|foto\w*|gambar|videos?|room ?tour|walk ?through|watermark|sizes?|sqm|m2|m²|luas|land size|building size|dokumen\w*|documents?|docs|perjanjian|agreement|kontrak|contract|sertifikat|certificates?|pin|lokasi\w*|location|google maps|maps link|alamat|address|inspect\w*|inspeksi\w*|survey|survei|visit\w*|kunjung\w*|berkunjung|datang|come (by|and|to|over)|floor ?plan|denah|double check|periksa)\b/i;
 /** Weak items: asked after qualification they usually complete a listing, but a model confirms. */
 const WEAK_ITEM = /\b(availab\w*|tanggal|dates?|details?|detailnya|spesifikasi|specifications?)\b/i;
+const MONEY = /\b(harga|price|pricing|rate|rates|komisi|commission|juta|jt|million|mio|idr|usd|rp)\b/i;
 const ASK_CUE =
   /\?|\b(could|can|would|will) you\b|\b(please|pls|kindly|mohon|boleh|bisa|minta|tolong|kirim\w*|share|send|apakah|dibantu|sekalian|let me know|any chance|is it possible)\b/i;
 
@@ -127,7 +128,7 @@ async function modelConfirmsAsk(ours: string, before: string): Promise<boolean> 
     system: `We list villas for rent. Below is OUR latest message to a villa owner's side, after the lines before it. Answer ONE question: does OUR message ASK the villa side for something that completes the villa's listing — photos, a video, sizes, documents or the listing agreement, availability dates, the location pin, a visit or inspection of the villa, or checking the listing details?
 
 true only when our message requests or asks for one of those.
-false for: thanks or confirmations of what they sent, promises ("I'll get back to you"), questions about who they are, about price or commission, about our client, and anything you are unsure about.
+false for: thanks or confirmations of what they sent, promises ("I'll get back to you"), questions about who they are, about our client, and the qualification questions — price, commission, minimum stay, when the villa is free, the earliest day a CLIENT could view it — and anything you are unsure about.
 
 JSON only: {"asks": true|false, "why": "<8 words>"}`,
     messages: [{ role: "user", content: `${before.slice(-1500)}\n\nOUR MESSAGE:\n${ours.slice(-1200)}` }],
@@ -142,9 +143,11 @@ export async function findDetailsAsk(messages: ThreadMsg[], since: Date): Promis
     if (m.senderType === "lead" || m.sentAt.getTime() < since.getTime() || !(m.text ?? "").trim()) continue;
     if (isUndeliverableNotice(m.text)) continue;
     const words = ownWords(m, messages.slice(Math.max(0, i - 12), i));
-    const strong = sentences(words).find((s) => STRONG_ITEM.test(s) && ASK_CUE.test(s));
+    // "Could you share the monthly rate for the client who will visit on the 9th?" names a visit but
+    // asks a price: a sentence about money is never decided by the rule (replay 14.09, Uma Avaya).
+    const strong = sentences(words).find((s) => STRONG_ITEM.test(s) && ASK_CUE.test(s) && !MONEY.test(s));
     if (strong) return { at: m.sentAt, quote: strong.slice(0, 160), how: "rule" };
-    const weak = sentences(words).find((s) => WEAK_ITEM.test(s) && ASK_CUE.test(s));
+    const weak = sentences(words).find((s) => (WEAK_ITEM.test(s) || STRONG_ITEM.test(s)) && ASK_CUE.test(s));
     if (weak) {
       const before = messages
         .slice(Math.max(0, i - 3), i)
@@ -219,6 +222,34 @@ JSON only: {"visit_at": "2026-09-14T11:00:00+08:00" | null, "time_known": true|f
     return null;
   }
   return { visitAt: at, timeKnown: out?.time_known === true, agreedAt: agreed, quote: quote.slice(0, 200), why: String(out?.why ?? "").slice(0, 120) };
+}
+
+/**
+ * One question about one reading: did both sides really settle that WE come to the villa that day?
+ * The extraction is one field among five in a broad prompt; a move rests on this answer. Fail-closed.
+ */
+export async function confirmAgreedVisit(messages: ThreadMsg[], v: Visit): Promise<boolean> {
+  const day = v.visitAt.toLocaleString("en-GB", { timeZone: BALI, weekday: "long", day: "numeric", month: "long" });
+  const out = await chatCompletionJSON<{ agreed: boolean; why: string }>({
+    model: HELPER_MODEL,
+    label: "listing:visit-confirm",
+    max_tokens: 100,
+    temperature: 0,
+    system: `Lines start with day/month and Bali time. "Us" is our agency (agent Yudi, colleague Amelia, our bot); "Villa side" is the owner, staff or manager. Answer ONE question: is it SETTLED between both sides that someone from OUR side (alone or with a client) comes to the villa on ${day}?
+
+true ONLY when one side named that specific day and the other side accepted it ("ok", "boleh", "bisa", "betul", "aman", "see you", "well noted"), or the villa side is clearly expecting us that day, and nothing later cancelled or moved it.
+
+false for:
+- an open offer or availability ("you can come to check before the 13th", "visit on 15 September is possible", "tomorrow can be checked") that our side never took up with a day of its own
+- the villa side's OWN plans (their photoshoot, their guests)
+- a range or a vague time ("around the 21st", "next week", "later")
+- our request that the villa side did not accept, or answered with another question
+- anything you are unsure about
+
+JSON only: {"agreed": true|false, "why": "<10 words>"}`,
+    messages: [{ role: "user", content: `${transcript(messages, 50).slice(-9000)}\n\nReading to check: a visit on ${day}, settled by "${v.quote}"` }],
+  }).catch(() => null);
+  return !!out && out.agreed === true;
 }
 
 // ── amoCRM history of the card ─────────────────────────────────────────────────
@@ -360,10 +391,27 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
   const cueWindow = messages.filter((m) => m.sentAt.getTime() >= windowStart.getTime() - 7 * DAY);
   const freshCue = fresh.some((m) => VISIT_CUE.test(m.text ?? "")) || (o.full && cueWindow.some((m) => VISIT_CUE.test(m.text ?? "")));
   if (freshCue) {
-    const v = await extractAgreedVisit(cueWindow.length ? cueWindow : messages, new Date());
-    // A visit held before this card qualified was a different chapter (a client viewing months ago).
-    if (v && v.visitAt.getTime() >= windowStart.getTime() - DAY) visit = v;
-    else if (v) logger.info({ leadId, visitAt: v.visitAt, windowStart }, "listing-progress: agreed visit predates qualification — ignored");
+    const thread = cueWindow.length ? cueWindow : messages;
+    const v = await extractAgreedVisit(thread, new Date());
+    // Guards from the dry replay of 14.09 (13 visits read, 6 wrong):
+    // - a visit held before this card qualified was a different chapter (Namaste: a client viewing
+    //   two hours before qualification);
+    // - an offer nobody accepted has no settling line (Mimoza: "earliest Sunday October 13 at 2");
+    // - a day settled long before qualification is the viewability answer, not a planned visit
+    //   (Adels: "Bsk bisa di cek" to "the earliest day a client could view");
+    // - and a separate yes/no on the one reading, fail-closed, for open offers, the owner's own
+    //   photoshoot and "around the 21st" (Yoshi, Aquamarine, Elara, Forest Bloom, Umbala).
+    if (!v) {
+      // nothing agreed
+    } else if (v.visitAt.getTime() < windowStart.getTime()) {
+      logger.info({ leadId, visitAt: v.visitAt, windowStart }, "listing-progress: agreed visit predates qualification — ignored");
+    } else if (!v.agreedAt || v.agreedAt.getTime() < windowStart.getTime() - DAY) {
+      logger.info({ leadId, visitAt: v.visitAt, agreedAt: v.agreedAt, windowStart }, "listing-progress: no settling line after qualification — ignored");
+    } else if (!(await confirmAgreedVisit(thread, v))) {
+      logger.info({ leadId, visitAt: v.visitAt, quote: v.quote }, "listing-progress: second opinion says the visit is not agreed — ignored");
+    } else {
+      visit = v;
+    }
   }
   base.visit = visit;
 
