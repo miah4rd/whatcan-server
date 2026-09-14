@@ -597,9 +597,23 @@ export function priceOf(p: SupabaseProperty): number {
 /**
  * Once villas FIT the request, which goes first — THE order every shortlist
  * path shows (strictShortlistPool → matchPropertiesDetailed for every bot
- * draft and follow-up, candidatesForLead for the edit composer). Points a
- * broker would give, each with its reason; never views, never how often a
- * villa was sent before.
+ * draft and follow-up, candidatesForLead for the edit composer).
+ *
+ * The owner's order (14.09.2026, evening): the request is the base of
+ * everything, and old and new villas mix freely — "у нас аренда, они сдаются,
+ * потом опять свободные". Compared in this order, each step only between
+ * villas equal on the steps before it:
+ *   1. an area the client named over a neighbour they only allowed;
+ *   2. fit (`score`): a price close to their budget (a 50M client sees 45-50
+ *      first), free on their dates, a minimum stay that suits them;
+ *   3. not already skipped by the broker in a draft for this lead;
+ *   4. what we know about the villa (`quality`): red and green flags from the
+ *      inspection, construction nearby, Listed, video, photos, dates confirmed
+ *      recently — it never lifts a villa that fits worse;
+ *   5. a turn per lead: villas equal on everything alternate between leads
+ *      instead of one always going to all of them.
+ * How long a listing has been on the site plays no part, and neither do views
+ * or how often a villa was sent before.
  *
  * History. Views were the tie-break until 02.09 and made a closed loop (a villa
  * gets sent, viewed, ranks higher, gets sent again: a 3BR in Balangan with 814
@@ -615,88 +629,151 @@ export function priceOf(p: SupabaseProperty): number {
  * attached villas with a median age of 11 (push) / 17 (live) days; Amelia's own
  * phone links, 7. 23485903 (Canggu/Berawa, 35M): the bot drafted R-AME-003 +
  * R-DESTI-003, she sent R-YUD-071/075/076 by hand.
+ *
+ * The first replacement (f359a54, 14.09 morning) summed fit and quality into
+ * one score and gave +1 to a listing 14 days old or less: quality could outrank
+ * fit, and "new" became the next bias. It also read the retired `red_flag`
+ * column, so no red flag ever counted. Replaced the same evening by the order
+ * above.
  */
 export type RankContext = {
   quality?: Map<string, ListingQuality>;
   /** Villas this lead was already offered in a draft the broker SKIPPED. */
   proposedIds?: string[];
+  /** The lead id — villas equal on everything take turns between leads. */
+  rotationKey?: string | null;
   now?: Date;
 };
-/** `why` is for the matcher (internal facts); `whyClient` only what a client may hear. */
-export type RankedFit = { p: SupabaseProperty; score: number; why: string[]; whyClient: string[] };
+/**
+ * `score` is fit to the request, `quality` what we know about the villa.
+ * `why` is for the matcher (internal facts); `whyClient` only what a client may hear.
+ */
+export type RankedFit = {
+  p: SupabaseProperty;
+  namedArea: boolean;
+  score: number;
+  skipped: boolean;
+  quality: number;
+  why: string[];
+  whyClient: string[];
+};
 
 const RANK_DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A stable per-lead shuffle position (FNV-1a) — the same lead always sees the same order. */
+function rotationTurn(key: string, id: string): number {
+  const s = `${key}|${id.toUpperCase()}`;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
 
 export function rankShortlistFits(fits: SupabaseProperty[], r: ClientRequest, ctx: RankContext = {}): RankedFit[] {
   const now = (ctx.now ?? new Date()).getTime();
   const proposed = new Set((ctx.proposedIds ?? []).map((i) => i.toUpperCase()));
   const named = r.releaseArea ? [] : r.areas;
-  const ageDays = (iso: string | null | undefined): number | null => {
-    const t = Date.parse(iso ?? "");
-    return Number.isNaN(t) ? null : (now - t) / RANK_DAY_MS;
-  };
   const out = fits.map((p): RankedFit => {
     let score = 0;
+    let quality = 0;
     const why: string[] = [];
     const whyClient: string[] = [];
-    const add = (points: number, note: string | null, clientSafe = false) => {
-      score += points;
-      if (!note) return;
-      why.push(note);
-      if (clientSafe) whyClient.push(note);
+    const note = (text: string, clientSafe = false) => {
+      why.push(text);
+      if (clientSafe) whyClient.push(text);
     };
+
+    // ── Fit: how closely the villa matches what the client asked for ──
+    const namedArea = named.length === 0 || areaMatches(p.area, named);
+    if (!namedArea) note(`nearby ${p.area ?? "area"}`, true);
     const price = priceOf(p);
-    // 1. Money: close to what the client said they would spend, never over it
-    //    (the filter already refused over). A 24M villa for a 50M client is
-    //    rarely what they pictured.
-    if (price <= 0) add(-3, "no published price");
-    else if (r.budgetMaxIdr) {
+    if (price <= 0) {
+      score -= 3;
+      note("no published price");
+    } else if (r.budgetMaxIdr) {
+      // Close to what they said they would spend, never over it (the filter
+      // refused over): a 50M client sees 45-50 first (owner, 14.09).
       const use = price / r.budgetMaxIdr;
-      const note = `${millions(price)} of their ${millions(r.budgetMaxIdr)}`;
-      add(use >= 0.8 ? 3 : use >= 0.65 ? 2 : use >= 0.5 ? 1 : 0, use < 0.5 ? `${note} (far under it)` : note, true);
+      score += use >= 0.9 ? 3 : use >= 0.8 ? 2 : use >= 0.65 ? 1 : 0;
+      note(`${millions(price)} of their ${millions(r.budgetMaxIdr)}${use < 0.5 ? " (far under it)" : ""}`, true);
     }
-    // 2. An area they named beats a neighbour they only allowed.
-    if (named.length > 0) {
-      if (areaMatches(p.area, named)) add(1, null);
-      else add(0, `nearby ${p.area ?? "area"}`, true);
+    // No move-in date stated: free now beats free from a date.
+    if (!p.free_from) note("free now", true);
+    else if (!r.moveIn) {
+      score -= 1;
+      note(`free only from ${dayLabel(p.free_from)}`, true);
     }
-    // 3. Dates: free now, or confirmed recently.
-    if (!p.free_from) add(0.5, "free now", true);
-    else if (!r.moveIn) add(-1, `free only from ${dayLabel(p.free_from)}`, true);
-    const checked = ageDays(p.availability_checked_at);
-    if (checked !== null && checked <= 21) add(0.5, `dates confirmed ${dayLabel(p.availability_checked_at!.slice(0, 10))}`);
-    // 4. Stay unknown: a long minimum is a likely no.
+    // No stay length stated: a long minimum is a likely no.
     if (r.stayMonths === null) {
       const minStay = Number(p.min_stay_months ?? 0);
       const monthly = (p.monthly_price_idr ?? 0) > 0 || (p.monthly_price_usd ?? 0) > 0;
-      if (price > 0 && !monthly) add(-1, "yearly contract only", true);
-      else if (minStay >= 12) add(-0.5, `minimum stay ${minStay} months`, true);
-      else if (minStay >= 6) add(-0.25, `minimum stay ${minStay} months`, true);
+      if (price > 0 && !monthly) {
+        score -= 1;
+        note("yearly contract only", true);
+      } else if (minStay >= 12) {
+        score -= 0.5;
+        note(`minimum stay ${minStay} months`, true);
+      } else if (minStay >= 6) {
+        score -= 0.25;
+        note(`minimum stay ${minStay} months`, true);
+      }
     }
-    // 5. What the client can judge from the link.
+
+    // ── Variety: what the broker already skipped for this lead goes down, not out ──
+    const skipped = proposed.has(p.id.toUpperCase());
+    if (skipped) note("already proposed to this lead in a draft the broker skipped");
+
+    // ── Quality: what we know about the villa, only between equal fits ──
     const q = ctx.quality?.get(p.id.toUpperCase());
+    if (q?.constructionNearby) {
+      quality -= 1.5;
+      note("construction nearby");
+    }
+    if (q?.redFlags) {
+      quality -= Math.min(q.redFlags, 3);
+      note(`${q.redFlags} red flag${q.redFlags === 1 ? "" : "s"} from the inspection`);
+    }
+    if (q?.greenFlags) {
+      quality += Math.min(q.greenFlags, 3) * 0.5;
+      note(`${q.greenFlags} green flag${q.greenFlags === 1 ? "" : "s"} from the inspection`);
+    }
+    if (p.pre_listed === false) {
+      quality += 1;
+      note("inspected (Listed)");
+    }
+    if (p.video_url) {
+      quality += 1;
+      note("video tour", true);
+    }
     const photos = p.image_count ?? 0;
-    if (photos > 0 && photos < 8) add(-1, `only ${photos} photos`);
-    else if (q?.photosTemporary) add(-0.5, "temporary photos from its booking page");
-    else if (photos >= 10) add(0.5, "full photo set");
-    if (p.video_url) add(1, "video tour", true);
-    // 6. What we know first-hand.
-    if (p.pre_listed === false) add(1, "inspected (Listed)");
-    if (q?.constructionNearby) add(-1.5, "construction nearby");
-    if (q?.redFlag) add(-2, "red flag in internal data");
-    // 7. New stock is never a penalty: its owner was spoken to days ago.
-    const age = ageDays(p.created_at);
-    if (age !== null && age <= 14) add(1, `new on the site ${dayLabel(p.created_at!.slice(0, 10))}`, true);
-    // 8. Variety: what the broker already skipped for this lead goes down, not out.
-    if (proposed.has(p.id.toUpperCase())) add(-1.5, "already proposed to this lead in a draft the broker skipped");
-    return { p, score: Math.round(score * 100) / 100, why, whyClient };
+    if (photos > 0 && photos < 8) {
+      quality -= 1;
+      note(`only ${photos} photos`);
+    } else if (q?.photosTemporary) {
+      quality -= 0.5;
+      note("temporary photos from its booking page");
+    } else if (photos >= 10) {
+      quality += 0.5;
+      note("full photo set");
+    }
+    const checked = Date.parse(p.availability_checked_at ?? "");
+    if (!Number.isNaN(checked) && (now - checked) / RANK_DAY_MS <= 21) {
+      quality += 0.5;
+      note(`dates confirmed ${dayLabel(p.availability_checked_at!.slice(0, 10))}`);
+    }
+
+    return { p, namedArea, score, skipped, quality, why, whyClient };
   });
-  const budget = r.budgetMaxIdr;
+  const key = ctx.rotationKey ?? "";
   return out.sort(
     (a, b) =>
+      Number(b.namedArea) - Number(a.namedArea) ||
       b.score - a.score ||
-      (budget ? priceOf(b.p) - priceOf(a.p) : 0) ||
-      (b.p.created_at ?? "").localeCompare(a.p.created_at ?? "") ||
+      Number(a.skipped) - Number(b.skipped) ||
+      b.quality - a.quality ||
+      (key ? rotationTurn(key, a.p.id) - rotationTurn(key, b.p.id) : 0) ||
       a.p.id.localeCompare(b.p.id),
   );
 }
@@ -1542,7 +1619,7 @@ function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m
  */
 export async function strictShortlistPool(
   r: ClientRequest,
-  opts: { listingType: ListingType; excludeIds?: string[]; proposedIds?: string[] },
+  opts: { listingType: ListingType; excludeIds?: string[]; proposedIds?: string[]; rotationKey?: string | null },
 ): Promise<{ fits: SupabaseProperty[]; ranked: RankedFit[]; fitsInclSent: number; poolSize: number; hint: RelaxHint | null }> {
   const all = await fetchAllProperties();
   const exclude = new Set((opts.excludeIds ?? []).map((id) => id.toUpperCase()));
@@ -1560,7 +1637,7 @@ export async function strictShortlistPool(
   // range's floor still comes first; the stable sort keeps the rank inside.
   const quality = await listingQualityById().catch(() => new Map<string, ListingQuality>());
   const floor = r.budgetMinIdr;
-  const scored = rankShortlistFits(fits, r, { quality, proposedIds: opts.proposedIds, now });
+  const scored = rankShortlistFits(fits, r, { quality, proposedIds: opts.proposedIds, rotationKey: opts.rotationKey, now });
   if (floor) scored.sort((a, b) => (priceOf(a.p) >= floor ? 0 : 1) - (priceOf(b.p) >= floor ? 0 : 1));
   const keep = new Set(dedupeByTitle(scored.map((x) => x.p)).map((p) => p.id));
   const ranked = scored.filter((x) => keep.has(x.p.id));
@@ -1597,10 +1674,15 @@ export type OutsideVilla = { id: string; title: string; why: string[] };
  */
 export async function shortlistOutcomeFor(
   request: ClientRequest,
-  opts: { listingType: ListingType; excludeIds?: string[]; namedIds?: string[]; proposedIds?: string[] },
+  opts: { listingType: ListingType; excludeIds?: string[]; namedIds?: string[]; proposedIds?: string[]; rotationKey?: string | null },
 ): Promise<{ outcome: ShortlistOutcome; fits: SupabaseProperty[]; ranked: RankedFit[] }> {
   const excludeIds = opts.excludeIds ?? [];
-  const pool = await strictShortlistPool(request, { listingType: opts.listingType, excludeIds, proposedIds: opts.proposedIds });
+  const pool = await strictShortlistPool(request, {
+    listingType: opts.listingType,
+    excludeIds,
+    proposedIds: opts.proposedIds,
+    rotationKey: opts.rotationKey,
+  });
   const hasCore = requestHasCore(request);
   const all = await fetchAllProperties();
   const byId = new Map(all.map((p) => [p.id.toUpperCase(), p]));
@@ -1653,6 +1735,8 @@ export async function candidatesForLead(opts: {
   cardBudgetTexts?: string[];
   leadNotes?: string | null;
   clickedListingId?: string | null;
+  /** Villas equal on everything take turns between leads (rankShortlistFits). */
+  leadId?: string | null;
 }): Promise<{
   candidates: SupabaseProperty[];
   request: ClientRequest;
@@ -1675,7 +1759,11 @@ export async function candidatesForLead(opts: {
     leadNotes: opts.leadNotes ?? null,
     clickedListingId: opts.clickedListingId ?? null,
   });
-  const pool = await strictShortlistPool(request, { listingType: opts.listingType, excludeIds: opts.excludeIds });
+  const pool = await strictShortlistPool(request, {
+    listingType: opts.listingType,
+    excludeIds: opts.excludeIds,
+    rotationKey: opts.leadId,
+  });
   const candidates = pool.fits;
   if (candidates.length === 0) {
     logger.warn(
@@ -1741,6 +1829,8 @@ export type MatchOptions = {
   clickedListingId?: string | null;
   /** Villas offered to this lead in drafts the broker skipped — ranked lower, not removed. */
   proposedIds?: string[];
+  /** Villas equal on everything take turns between leads (rankShortlistFits). */
+  leadId?: string | null;
 };
 
 /** How many ranked fits the matching model sees. Enough for choice, short enough to read the reasons. */
@@ -1784,6 +1874,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
     listingType: opts.listingType,
     excludeIds,
     proposedIds: opts.proposedIds ?? [],
+    rotationKey: opts.leadId,
     namedIds: [...namedInThread, ...(opts.clickedListingId ? [opts.clickedListingId.toUpperCase()] : [])],
   });
   const done = (picks: SupabaseProperty[]) => ({ picks: picks.map(toPick), outcome });
@@ -1830,7 +1921,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
   if (!outcome.hasCore && opts.conversationText.trim().length < 20) return done([]);
 
   logger.info(
-    { request: describeRequest(request), sources: request.sources, fitting: candidates.length, ranked: ranked.slice(0, 8).map((x) => `${x.p.id}:${x.score}`) },
+    { request: describeRequest(request), sources: request.sources, fitting: candidates.length, ranked: ranked.slice(0, 8).map((x) => `${x.p.id}:${x.namedArea ? "" : "near/"}${x.score}/${x.quality}${x.skipped ? "/skipped" : ""}`) },
     "matchProperties: shortlist drawn only from villas inside the request",
   );
 
@@ -1864,7 +1955,7 @@ Return an EMPTY list when sending listings would be the wrong move:
 - The lead is arranging a viewing, negotiating terms, or discussing a property they've already chosen.
 - The conversation gives truly nothing to go on (e.g. only a greeting).
 
-EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first on what the broker weighs once a villa fits: a price close to the client's budget without going over it, inspected (Listed), a video tour, a full photo set rather than a temporary one, dates confirmed recently, a minimum stay that suits them, nothing like construction next door. Each line gives its reasons after "why:". A new listing is never a risk — it ranks on the same facts. Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, and never because it is cheaper, older or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously.
+EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first: first by how closely the villa matches the request (an area they named over a neighbour, a price close to their budget without going over it, free on their dates, a minimum stay that suits them), then, only between villas that match equally, by what we know about the villa (red and green flags from our inspection, construction nearby, inspected (Listed), a video tour, a full photo set, dates confirmed recently). How long a listing has been on the site plays no part: rentals come free again and again. Each line gives its reasons after "why:". Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, never because it is cheaper, older, newer or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously.
 
 Pick up to ${limit} listing IDs, preferring ${MIN_SHORTLIST}-${limit} so the lead has something to compare. Never pad: if only one genuinely fits, return one.${
         (opts.seenCount ?? 0) > 0

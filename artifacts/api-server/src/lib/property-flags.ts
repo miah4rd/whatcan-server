@@ -21,19 +21,40 @@ export type PropertyFlags = {
 };
 
 /**
- * What a broker weighs between two villas that BOTH fit a request
- * (rankShortlistFits in property-catalog.ts, 14.09.2026): construction or a
- * red flag against the villa, and whether its photos are a temporary set taken
- * from its booking page or own website until our shoot. Notes are read only to
- * that one boolean and dropped here — nothing else is kept, nothing reaches a
- * client or a log.
+ * What a broker weighs between two villas that fit a request EQUALLY
+ * (rankShortlistFits in property-catalog.ts): what the site's Internal data
+ * says about the villa itself. After an inspection Yudi or the listing agent
+ * writes Red flags and Green flags there, one per line
+ * (`property_private.red_flags` / `green_flags`, since 11.09.2026), and ticks
+ * Construction nearby; the notes say whether the photos are a temporary set
+ * taken from its booking page until our shoot. Only counts and booleans are
+ * kept — no flag text, no note; nothing reaches a client or a log.
+ *
+ * The boolean `red_flag` column is NOT read: it was created and retired on
+ * 10.09 and is never set (0 rows on 14.09), so the first ranking, which read
+ * it, never saw a single red flag and ignored every green one.
  */
-export type ListingQuality = { constructionNearby: boolean; redFlag: boolean; photosTemporary: boolean };
+export type ListingQuality = {
+  constructionNearby: boolean;
+  /** Red flag lines, not counting a line that only restates the construction tick. */
+  redFlags: number;
+  greenFlags: number;
+  photosTemporary: boolean;
+};
 
 const QUALITY_TTL_MS = 10 * 60 * 1000;
 let quality: { at: number; byId: Map<string, ListingQuality> } | null = null;
 /** "PHOTOS: 18 frames from the Booking.com listing — temporary", "Temporary - to be replaced by our own set". */
 const TEMPORARY_PHOTOS = /temporar\w*[^.\n]{0,80}(photo|frame|image|set|shoot)|(photo|frame|image)s?\b[^.\n]{0,160}temporar/i;
+const CONSTRUCTION = /construct|building site|bangun|proyek/i;
+
+/** "- heated pool\n• quiet street" → two flags; bullets and numbering are not content. */
+function flagLines(text: string | null): string[] {
+  return String(text ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^[\s\-•*·–—\d.)]+/, "").trim())
+    .filter((l) => l.length > 1);
+}
 
 export async function listingQualityById(): Promise<Map<string, ListingQuality>> {
   if (quality && Date.now() - quality.at < QUALITY_TTL_MS) return quality.byId;
@@ -41,7 +62,7 @@ export async function listingQualityById(): Promise<Map<string, ListingQuality>>
   const key = process.env["SUPABASE_SERVICE_ROLE_KEY"] ?? "";
   if (!url || !key) return quality?.byId ?? new Map();
   try {
-    const res = await fetch(`${url}/rest/v1/property_private?select=property_id,construction_nearby,red_flag,notes`, {
+    const res = await fetch(`${url}/rest/v1/property_private?select=property_id,construction_nearby,red_flags,green_flags,notes`, {
       headers: { apikey: key, Authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(8000),
     });
@@ -49,12 +70,20 @@ export async function listingQualityById(): Promise<Map<string, ListingQuality>>
       logger.warn({ status: res.status }, "listing quality fetch failed — shortlist ranks without internal data");
       return quality?.byId ?? new Map();
     }
-    const rows = (await res.json()) as Array<{ property_id: string; construction_nearby: boolean | null; red_flag: boolean | null; notes: string | null }>;
+    const rows = (await res.json()) as Array<{
+      property_id: string;
+      construction_nearby: boolean | null;
+      red_flags: string | null;
+      green_flags: string | null;
+      notes: string | null;
+    }>;
     const byId = new Map<string, ListingQuality>();
     for (const r of rows) {
+      const construction = r.construction_nearby === true;
       byId.set(String(r.property_id).toUpperCase(), {
-        constructionNearby: r.construction_nearby === true,
-        redFlag: r.red_flag === true,
+        constructionNearby: construction,
+        redFlags: flagLines(r.red_flags).filter((l) => !(construction && CONSTRUCTION.test(l))).length,
+        greenFlags: flagLines(r.green_flags).length,
         photosTemporary: TEMPORARY_PHOTOS.test(r.notes ?? ""),
       });
     }

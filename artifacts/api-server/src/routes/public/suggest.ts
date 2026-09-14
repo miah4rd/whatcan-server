@@ -754,6 +754,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           cardBudgetTexts: cardCrit?.budgetTexts ?? [],
           leadNotes: dbLeadNotes || null,
           clickedListingId: /Ad enquiry:\s*([A-Z0-9-]+)/i.exec(dbLeadNotes)?.[1] ?? null,
+          leadId: body.leadId,
         });
 
         // A curated panel is law only while there is something on it. A panel
