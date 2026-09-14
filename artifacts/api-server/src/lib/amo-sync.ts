@@ -504,12 +504,16 @@ export async function syncTaskSchedule(): Promise<void> {
         //
         // Age filter — only show leads created within the last 3 months, every pipeline.
         // Rental used to get a 7-day window (a broker asked for a shorter PUSH list).
-        // Owner removed it 2026-09-14: it silenced 34 of the 58 Rental clients who had
-        // a shortlist and were due a viewing ask — a client quiet for a week is exactly
-        // who the follow-up exists for. Old leads are spaced out by adaptive-followup
-        // (isStaleOld), not dropped by age here.
+        // Owner removed it 2026-09-14 (it silenced 34 of 58 clients due a viewing ask),
+        // then the same day, when 64 forgotten leads flooded Amelia's PUSH, kept the
+        // removal for NEW leads only: a Rental lead created before 14.09 still stops
+        // getting follow-ups once it is 7 days old; from 14.09 on, no age limit.
+        const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
         const THREE_MONTHS_MS = 90 * 24 * 60 * 60 * 1000;
-        const maxAgeMs = THREE_MONTHS_MS;
+        const RENTAL_NO_AGE_LIMIT_FROM = new Date("2026-09-14T00:00:00+08:00");
+        const isRentalPipeline = (lead.pipeline ?? "").toLowerCase() === "rental";
+        const legacyRental = isRentalPipeline && !!lead.amoCreatedAt && lead.amoCreatedAt < RENTAL_NO_AGE_LIMIT_FROM;
+        const maxAgeMs = legacyRental ? SEVEN_DAYS_MS : THREE_MONTHS_MS;
         if (lead.amoCreatedAt && lead.amoCreatedAt < new Date(now.getTime() - maxAgeMs)) {
           await db.update(leadsSyncTable).set({ nextFollowupAt: null }).where(eq(leadsSyncTable.leadId, lead.leadId));
           continue;
