@@ -150,7 +150,8 @@ function phoneKeys(raw: string | null | undefined): Set<string> {
 const overlaps = (a: Set<string> | undefined, b: Set<string> | undefined) =>
   !!a && !!b && [...a].some((k) => b.has(k));
 
-async function buildResolverContext(): Promise<ResolverContext> {
+/** Exported for replays: `resolveFrom(await buildResolverContext(), id)` over every listing, read-only. */
+export async function buildResolverContext(): Promise<ResolverContext> {
   const leads: AmoLeadRow[] = [];
   for (let page = 1; page <= 20; page++) {
     const d = await amoFetch<{ _embedded?: { leads?: AmoLeadRow[] } }>(
