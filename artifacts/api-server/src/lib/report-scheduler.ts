@@ -55,6 +55,13 @@ function pushBody(card: Awaited<ReturnType<typeof buildReport>>): string {
   if (card.waiting > 0) bits.push(card.waiting + " waiting");
   if (card.overdueFollowups > 0) bits.push(card.overdueFollowups + " follow-ups due");
   if (card.hotStalled > 0) bits.push(card.hotStalled + " warm going cold");
+  if (card.listingWeek) {
+    const w = card.listingWeek;
+    bits.push(
+      "Listed this week " + w.listed + " / " + w.target +
+        (w.needsAttention.length > 0 ? " (" + w.needsAttention.length + " card" + (w.needsAttention.length === 1 ? "" : "s") + " not moved)" : ""),
+    );
+  }
   return bits.length > 0 ? card.headline + "\n" + bits.join(" · ") : card.headline;
 }
 
