@@ -53,6 +53,7 @@ import correctionsDedupeRouter from "./admin/corrections-dedupe";
 import amocrmChatWebhookRouter from "./amocrm-chat-webhook";
 import sendChatMessageRouter from "./public/send-chat-message";
 import listingStatusRouter from "./listing-status";
+import weeklyAvailabilityRouter from "./weekly-availability";
 import rentalStageSyncCheckRouter from "./admin/rental-stage-sync-check";
 import inspectionCalendarRouter from "./admin/inspection-calendar";
 import { adminAuth } from "../lib/admin-auth";
@@ -118,6 +119,7 @@ router.use(syncTimelineRouter);
 router.use(amocrmChatWebhookRouter);
 router.use(sendChatMessageRouter);
 router.use(listingStatusRouter);
+router.use(weeklyAvailabilityRouter);
 router.use(rentalStageSyncCheckRouter);
 router.use(inspectionCalendarRouter);
 
