@@ -11,7 +11,7 @@ import { shouldSuppressPush, isStageWhitelisted } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whitelist";
 import { getMergedConversation, getMergedDialog } from "./merged-conversation";
 import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
-import { generateSuggestion, pickPropertyAttachmentsDetailed, shortlistPromptBlock, enforceRequestOnDraft, type PickedAttachments, type GeneratedSuggestion, applyViewingPush, viewingPushPromptBlock, type ViewingPushContext } from "./generate-suggestion";
+import { generateSuggestion, pickPropertyAttachmentsDetailed, shortlistPromptBlock, enforceRequestOnDraft, nothingInsideRequest, type PickedAttachments, type GeneratedSuggestion, applyViewingPush, viewingPushPromptBlock, type ViewingPushContext } from "./generate-suggestion";
 import { isAdaptiveBroker, isHosTrackedPipeline } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
@@ -246,7 +246,8 @@ export async function generateFollowup(opts: {
     responsibleUser: opts.responsibleUser,
     kind: "push",
   };
-  const pushBlock = await viewingPushPromptBlock(pushCtx);
+  // Nothing inside the request exists at all: no viewing to push, one question only.
+  const pushBlock = nothingInsideRequest(listings.picked) ? "" : await viewingPushPromptBlock(pushCtx);
 
   // Classify objection to decide which attachments to suggest.
   // The classification does NOT dictate the message text — it only selects
@@ -307,7 +308,7 @@ Write the follow-up message.`,
   // The same final check as every LIVE draft: links inside the request and
   // published, the text naming exactly them (count included), nothing else.
   const checked1 = await enforceRequestOnDraft({ leadId: opts.leadId, text: written1, attachments: listings.attachments, picked: listings.picked });
-  const text = await applyViewingPush(checked1.text, checked1.attachments, pushCtx);
+  const text = nothingInsideRequest(listings.picked) ? checked1.text : await applyViewingPush(checked1.text, checked1.attachments, pushCtx);
 
   const rationale = `Follow-up #${opts.followupLevel} — context-aware. Situation tactic: ${entry.label}.`;
 
@@ -366,7 +367,8 @@ export async function generatePushFollowup(opts: {
     responsibleUser: opts.responsibleUser,
     kind: "push",
   };
-  const pushBlock = await viewingPushPromptBlock(pushCtx);
+  // Nothing inside the request exists at all: no viewing to push, one question only.
+  const pushBlock = nothingInsideRequest(listings.picked) ? "" : await viewingPushPromptBlock(pushCtx);
 
   const leadContext = opts.leadNotes?.trim()
     ? `\nLead card notes: ${opts.leadNotes.trim()}`
@@ -420,7 +422,7 @@ STYLE:
 
   const written2 = sanitizeSuggestion(completion.content);
   const checked2 = await enforceRequestOnDraft({ leadId: opts.leadId, text: written2, attachments: listings.attachments, picked: listings.picked });
-  const text = await applyViewingPush(checked2.text, checked2.attachments, pushCtx);
+  const text = nothingInsideRequest(listings.picked) ? checked2.text : await applyViewingPush(checked2.text, checked2.attachments, pushCtx);
   const rationale = isCold
     ? `PUSH — re-engagement (${opts.trailingUnanswered} unanswered touches), stage "${opts.leadStage}".`
     : `PUSH — adaptive follow-up, stage "${opts.leadStage}".`;

@@ -10,7 +10,7 @@ import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestio
 import { buildRentalPromptParts } from "./rental-prompt";
 import { buildSalesPromptParts } from "./sales-prompt";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
-import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, type PropertyPick, type BrokerIntent, type ShortlistOutcome } from "./property-catalog";
+import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, type PropertyPick, type BrokerIntent, type ShortlistOutcome } from "./property-catalog";
 import { getMergedDialog } from "./merged-conversation";
 import { db, pendingSuggestionsTable } from "@workspace/db";
 import { viewingReportPromptBlock } from "./viewing-report-context";
@@ -196,15 +196,6 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
     // options" gate; so has the broker's opening on an ad lead, whose seeded
     // enquiry names a villa the gate would otherwise read as one we sent
     // (23302661, 2026-08-21).
-    if (
-      !opts.brokerInstruction &&
-      !opts.openingAfterWelcome &&
-      shouldSkipNewListings(opts.dialogMessages, excludeIds, opts.leadStage)
-    ) {
-      logger.info({ leadId: opts.leadId }, "property matcher skipped — lead is discussing listings already sent");
-      return { attachments: [], outcome: null, skipped: true, excludeIds };
-    }
-
     // The form's answers as parsed AND as typed, the scout's notes, and the
     // villa an ad lead clicked all go into ONE request (resolveClientRequest);
     // the client's own words always outrank them. The clicked villa fills only
@@ -212,9 +203,44 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
     // criteriaFromListing made it one, times 1.15).
     const card = await getLeadCardCriteria(opts.leadId).catch(() => null);
     const adId = /Ad enquiry:\s*([A-Z0-9-]+)/i.exec(opts.leadNotes ?? "")?.[1]?.toUpperCase() ?? null;
+    // The lead's OWN messages, newest first (a long thread keeps its early
+    // requirements: Josua's 3-4 bedrooms scrolled out of a window of 5).
+    const recentLeadMessages = [
+      opts.lastLeadText,
+      ...opts.dialogMessages.filter((m) => m.from === "lead").slice(-25).reverse().map((m) => m.text),
+    ].filter(Boolean);
+    const listingType = opts.isRental ? ("rent" as const) : ("sale" as const);
+    const cardCriteria = card ? { bedrooms: card.bedrooms, areas: card.areas, budgetIdrMonthly: card.budgetIdrMonthly } : null;
+
+    if (
+      !opts.brokerInstruction &&
+      !opts.openingAfterWelcome &&
+      shouldSkipNewListings(opts.dialogMessages, excludeIds, opts.leadStage)
+    ) {
+      logger.info({ leadId: opts.leadId }, "property matcher skipped — lead is discussing listings already sent");
+      // No new links by design — but the writer still needs the request: a
+      // villa already sent that is outside it must not be called a match.
+      let outcome: ShortlistOutcome | null = null;
+      try {
+        const request = await resolveClientRequest({
+          listingType,
+          leadMessages: recentLeadMessages,
+          cardCriteria,
+          cardAnswers: card?.answers ?? null,
+          cardBudgetTexts: card?.budgetTexts ?? [],
+          leadNotes: opts.leadNotes ?? null,
+          clickedListingId: adId,
+        });
+        const named = [...new Set(recentLeadMessages.flatMap((t) => Array.from(String(t).matchAll(/\/property\/([A-Za-z0-9-]+)|\b(R-[A-Z]{2,6}-[A-Z0-9]+)\b/gi)).map((m) => (m[1] ?? m[2] ?? "").toUpperCase())).filter(Boolean))];
+        outcome = { ...(await shortlistOutcomeFor(request, { listingType, excludeIds, namedIds: named })).outcome, declined: true };
+      } catch (err) {
+        logger.warn({ err, leadId: opts.leadId }, "request read on a skipped shortlist failed (non-fatal)");
+      }
+      return { attachments: [], outcome, skipped: true, excludeIds };
+    }
 
     const { picks, outcome } = await matchPropertiesDetailed({
-      listingType: opts.isRental ? "rent" : "sale",
+      listingType,
       conversationText: `${opts.formattedDialog}\n${opts.lastLeadText}`,
       brokerId: opts.brokerId,
       excludeIds,
@@ -223,17 +249,12 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
       brokerInstruction: opts.brokerInstruction ?? null,
       currentAttachmentIds: opts.currentAttachmentIds ?? [],
       brokerIntent: opts.brokerIntent ?? null,
-      cardCriteria: card ? { bedrooms: card.bedrooms, areas: card.areas, budgetIdrMonthly: card.budgetIdrMonthly } : null,
+      cardCriteria,
       cardAnswers: card?.answers ?? null,
       cardBudgetTexts: card?.budgetTexts ?? [],
       leadNotes: opts.leadNotes ?? null,
       clickedListingId: adId,
-      // The lead's OWN messages, newest first (a long thread keeps its early
-      // requirements: Josua's 3-4 bedrooms scrolled out of a window of 5).
-      recentLeadMessages: [
-        opts.lastLeadText,
-        ...opts.dialogMessages.filter((m) => m.from === "lead").slice(-25).reverse().map((m) => m.text),
-      ].filter(Boolean),
+      recentLeadMessages,
     });
     const out = toAttachments(picks);
 
@@ -905,14 +926,18 @@ Output only the corrected message.${missingNote}`;
  */
 export function shortlistPromptBlock(picked: PickedAttachments | null | undefined): string {
   const o = picked?.outcome;
-  if (!picked || !o || picked.skipped || !o.hasCore) return "";
+  if (!picked || !o || !o.hasCore) return "";
   const req = describeRequest(o.request);
+  const advisory =
+    (o.sentOutside.length > 0
+      ? `\n\nALREADY SENT, BUT OUTSIDE THIS CLIENT'S REQUEST (${req}): ${o.sentOutside.map((v) => `"${v.title}" (${v.why.join("; ")})`).join(", ")}. Never call these a match or say they fit their budget, area, size or dates, and do not push a viewing of them unless the client themselves is asking about one.`
+      : "") +
+    (o.namedOutside.length > 0
+      ? `\n\nTHE VILLA THE CLIENT ASKED ABOUT OR CLICKED IS OUTSIDE THEIR OWN REQUEST: ${o.namedOutside.map((v) => `"${v.title}" (${v.why.join("; ")})`).join(", ")}. If you mention it, give that real reason in plain words (e.g. "it is only free from October 2027"); never invent another one.`
+      : "");
+  if (picked.skipped || o.declined) return advisory;
   if (picked.attachments.length > 0) {
-    return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it. If you give a number of villas, it is exactly ${picked.attachments.length}.`;
-  }
-  if (o.declined) return "";
-  if (o.fitCountInclSent > 0) {
-    return `\n\nEVERYTHING WE HAVE INSIDE THIS CLIENT'S REQUEST (${req}) HAS ALREADY BEEN SENT TO THEM. Nothing new is attached to this message. Do not describe, name or promise any other villa, and do not write "below" or "attached"; refer back to the ones they already have if it helps.`;
+    return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it. If you give a number of villas, it is exactly ${picked.attachments.length}.${advisory}`;
   }
   const h = o.hint;
   const question = !h
@@ -921,10 +946,51 @@ export function shortlistPromptBlock(picked: PickedAttachments | null | undefine
       ? `whether ${h.suggestion} would work for them (that is where the closest real options are)`
       : h.dim === "budget"
         ? `whether they could consider ${h.suggestion}`
-        : h.dim === "bedrooms"
-          ? `whether ${h.suggestion} would work for them`
-          : `whether ${h.suggestion} could work for them`;
-  return `\n\nNOTHING IN OUR CATALOG IS EXACTLY WITHIN THIS CLIENT'S REQUEST RIGHT NOW (${req}). No villa is attached to this message. Say that honestly, in one short sentence in your own voice — never imply we have a match, never name, describe or hint at a specific villa, never write "below" or "attached", and never promise to send options later. Then ask exactly ONE question: ${question}. One question only, and do not re-ask what they already told you.`;
+        : `whether ${h.suggestion} would work for them`;
+  if (o.fitCountInclSent > 0) {
+    return `\n\nEVERYTHING WE HAVE INSIDE THIS CLIENT'S REQUEST (${req}) HAS ALREADY BEEN SENT TO THEM. Nothing new is attached. Say honestly that what they already have is what we have for that brief right now; never promise to find, pull together or send more, never name or describe any other villa, never write "below" or "attached". If they turned those down, ask exactly ONE question: ${question}.${advisory}`;
+  }
+  return `\n\nNOTHING IN OUR CATALOG IS EXACTLY WITHIN THIS CLIENT'S REQUEST RIGHT NOW (${req}). No villa is attached to this message. Say that honestly in one short sentence in your own voice — never imply we have a match, never claim we cover or regularly work in that area, never name, describe or hint at a specific villa, never write "below" or "attached", and never promise to find or send options later. Then ask exactly ONE question: ${question}. One question only — no second question about arrival or viewings — and do not re-ask what they already told you.${advisory}`;
+}
+
+/** Nothing inside the request exists at all (not even among villas sent) — no viewing to push, one question only. */
+export function nothingInsideRequest(picked: PickedAttachments | null | undefined): boolean {
+  const o = picked?.outcome;
+  return !!picked && !picked.skipped && !!o && o.hasCore && !o.declined && o.fitCountInclSent === 0 && picked.attachments.length === 0;
+}
+
+const INTERNAL_CODE = /\b(R-[A-Z]{2,6}-[A-Z0-9]{2,5}|UP-\d{3,5})\b/g;
+
+/** Our catalog codes never reach a client: replaced by the villa's title (links untouched). */
+function replaceInternalCodes(text: string, byId: Map<string, { title: string }>, leadId: string): string {
+  let replaced = 0;
+  const out = String(text ?? "").replace(INTERNAL_CODE, (code: string, _g: string, offset: number, whole: string) => {
+    if (/\/property\/$/i.test(whole.slice(Math.max(0, offset - 10), offset))) return code;
+    replaced++;
+    return byId.get(code.toUpperCase())?.title ?? "the villa";
+  });
+  if (replaced > 0) logger.warn({ leadId, replaced }, "draft check: internal listing codes in the text replaced by villa names");
+  return out;
+}
+
+async function removePromiseOfOptions(text: string, leadId: string): Promise<string> {
+  try {
+    const out = await chatCompletion({
+      model: WRITER_MODEL,
+      label: "draft-check:no-promise",
+      system: `You edit one WhatsApp message a broker is about to send a client. Nothing inside the client's request exists in our catalog right now, so the message must not promise to find, prepare, pull together, shortlist or send villas or options later. Remove only such promises. Keep everything else exactly as written — the greeting, the honest statement, the question, the language and the voice. Output only the message.`,
+      messages: [{ role: "user", content: text }],
+      max_tokens: 500,
+    });
+    const cleaned = sanitizeSuggestion(out.content);
+    if (cleaned.trim().length > 15) {
+      logger.warn({ leadId }, "draft check: removed a promise of options when nothing is inside the request");
+      return cleaned;
+    }
+  } catch (err) {
+    logger.warn({ err, leadId }, "draft check: could not remove the promise of options (non-fatal)");
+  }
+  return text;
 }
 
 const COUNT_WORD: Record<string, number> = {
@@ -1009,6 +1075,7 @@ export async function enforceRequestOnDraft(opts: {
   const alreadySent = new Set((opts.picked?.excludeIds ?? []).map((i) => i.toUpperCase()));
   const catalog = await fetchAllPropertiesForPriceLookup().catch(() => [] as Awaited<ReturnType<typeof fetchAllPropertiesForPriceLookup>>);
   const byId = new Map(catalog.map((p) => [p.id.toUpperCase(), p]));
+  const sourceText = replaceInternalCodes(opts.text, byId, opts.leadId);
   const dropped: string[] = [];
   let attachments = opts.attachments;
   if (catalog.length > 0) {
@@ -1048,19 +1115,23 @@ export async function enforceRequestOnDraft(opts: {
           return !attachedTitles.has(title);
         });
 
-  const count = presentedVillaCount(opts.text);
+  const count = presentedVillaCount(sourceText);
   const countWrong = count !== null && attachments.length > 0 && count !== attachments.length;
-  const strays1 = strays(opts.text);
-  const force = dropped.length > 0 || !allAttachmentsNamed(opts.text, attachments) || countWrong || strays1.length > 0;
+  const strays1 = strays(sourceText);
+  const force = dropped.length > 0 || !allAttachmentsNamed(sourceText, attachments) || countWrong || strays1.length > 0 || sourceText !== opts.text;
   const note = [
     countWrong ? `THE MESSAGE MUST PRESENT EXACTLY ${attachments.length} VILLA(S) — it currently speaks of ${count}. Fix the number.` : "",
     strays1.length > 0 ? `IT ALSO NAMES VILLAS THAT ARE NOT ATTACHED AND WERE NEVER SENT: ${strays1.map((id) => byId.get(id)?.title ?? id).join("; ")}. Remove every mention of them.` : "",
   ].filter(Boolean).join("\n");
-  let text = await reconcileTextWithAttachments(opts.text, attachments, force, null, opts.language ?? null, note || undefined);
+  let text = await reconcileTextWithAttachments(sourceText, attachments, force && attachments.length > 0 ? true : force, null, opts.language ?? null, note || undefined);
 
   const strays2 = strays(text);
   if (strays2.length > 0) text = await removeVillaMentions(text, strays2.map((id) => byId.get(id)?.title ?? id), opts.leadId);
   if (attachments.length === 0) text = stripDanglingLinkPromises(text, opts.leadId);
+  const o = opts.picked?.outcome;
+  if (attachments.length === 0 && o && o.hasCore && o.fitCount === 0 && !o.declined && !opts.picked?.skipped && ASKS_OR_PROMISES_TO_SEND.test(text)) {
+    text = await removePromiseOfOptions(text, opts.leadId);
+  }
   const count2 = presentedVillaCount(text);
   if (count2 !== null && attachments.length > 0 && count2 !== attachments.length) {
     logger.warn({ leadId: opts.leadId, said: count2, attached: attachments.length }, "draft check: the text still gives a different number of villas than attached");
@@ -1477,7 +1548,7 @@ export async function buildPromptAdditions(opts: {
   // Options out, no viewing yet: this message moves toward one, in the
   // broker's own voice — their real invitations are the style guide.
   // Same gate and block as the follow-up scheduler (viewingPushPromptBlock).
-  const pushBlock = await viewingPushPromptBlock({
+  const pushBlock = nothingInsideRequest(opts.shortlist) ? "" : await viewingPushPromptBlock({
     leadId: opts.leadId ?? "",
     pipeline: opts.isRental ? "rental" : null,
     leadStage: opts.leadStage,
@@ -1702,7 +1773,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   const written = sanitizeSuggestion(completion.content);
   const checked = await enforceRequestOnDraft({ leadId: opts.leadId, text: written, attachments: picked.attachments, picked });
-  const text = await applyViewingPush(checked.text, checked.attachments, {
+  const text = nothingInsideRequest(picked) ? checked.text : await applyViewingPush(checked.text, checked.attachments, {
     leadId: opts.leadId,
     pipeline: opts.pipeline,
     leadStage: opts.leadStage,

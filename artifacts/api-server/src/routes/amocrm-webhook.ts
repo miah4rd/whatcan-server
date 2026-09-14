@@ -18,7 +18,7 @@ import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
 import { isHosTrackedPipeline } from "../lib/adaptive-followup";
 import { movesStageOnReply } from "../lib/pipelines";
-import { pickPropertyAttachmentsDetailed, buildPromptAdditions, attachedVillasBlock, applyViewingPush, enforceRequestOnDraft } from "../lib/generate-suggestion";
+import { pickPropertyAttachmentsDetailed, buildPromptAdditions, attachedVillasBlock, applyViewingPush, enforceRequestOnDraft, nothingInsideRequest } from "../lib/generate-suggestion";
 import { getMergedDialog } from "../lib/merged-conversation";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
@@ -202,7 +202,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   const draft = sanitizeSuggestion(completion.content);
   const checked = await enforceRequestOnDraft({ leadId: opts.leadId, text: draft, attachments: picked.attachments, picked });
-  const text = await applyViewingPush(checked.text, checked.attachments, {
+  const text = nothingInsideRequest(picked) ? checked.text : await applyViewingPush(checked.text, checked.attachments, {
     leadId: opts.leadId,
     pipeline: opts.pipeline,
     leadStage: opts.leadStage,

@@ -1038,8 +1038,15 @@ const PROPERTY_URL = /https?:\/\/\S*\/property\/[A-Za-z0-9-]+\S*/gi;
 function clientWords(text: string): string {
   let t = String(text ?? "");
   if (t.startsWith(">>")) {
-    const nl = t.indexOf("\n");
-    if (nl > 0) t = t.slice(nl + 1);
+    // A WhatsApp reply quoting OUR message: everything before the line break is
+    // our text. When the break did not survive, quote and reply cannot be told
+    // apart, so the message is left out — reading it whole turned our own
+    // "Rp 66 million/month" into the client's budget (23335045).
+    // Our quoted message can itself span several lines; the client's reply is
+    // what follows the LAST break.
+    const nl = t.lastIndexOf("\n");
+    if (nl < 0) return "";
+    t = t.slice(nl + 1);
   }
   return t.replace(PROPERTY_URL, " ").replace(/\s+/g, " ").trim();
 }
@@ -1175,7 +1182,7 @@ Return JSON with exactly these keys:
 - "bedrooms_at_least": true only for an open-ended minimum with no upper end.
 - "bedrooms_source": "broker" | "client" | "form" | "notes" | null.
 - "areas": names from the list above that the request names — every area they would accept ("Canggu, also open to Uluwatu" -> both).
-- "other_places": places the request names that are NOT on the list, spelled as written (e.g. "Kedungu"). [] when none.
+- "other_places": places the request names that are NOT on the list, spelled as written (e.g. "Kedungu"). A place named only as a limit or a landmark ("no further inland than X", "near Y beach", "close to Z cafe") is not an area. [] when none.
 - "areas_source": as above.
 - "nearby_ok": true only when they say nearby / surrounding areas / anywhere around also work.
 - "budget_max_idr_monthly": monthly ceiling in rupiah as an integer. "40 million"/"40jt" -> 40000000; a yearly figure divided by 12; USD x 16000; a range -> its upper end; different budgets for different sizes -> the largest. Null when no budget was stated.
@@ -1410,9 +1417,14 @@ function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m
     hints.push({ dim: "budget", count: over.length, suggestion: `a budget of about ${millions(cheapest)} a month` });
   }
   const beds = byDim.get("bedrooms") ?? [];
-  if (beds.length > 0) {
-    const n = mostCommon(beds.map((p) => String(p.bedrooms ?? "")).filter(Boolean))[0];
-    if (n) hints.push({ dim: "bedrooms", count: beds.length, suggestion: `${n} bedrooms` });
+  if (beds.length > 0 && r.bedroomsMin !== null) {
+    const target = r.bedroomsAtLeast || r.bedroomsMax === null ? r.bedroomsMin : r.bedroomsMin;
+    const nearest = [...new Set(beds.map((p) => p.bedrooms).filter((b): b is number => typeof b === "number"))]
+      .sort((a, b) => Math.abs(a - target) - Math.abs(b - target) || a - b)[0];
+    // Only an adjacent size is a fair question — a 1BR client is not asked about 3 bedrooms.
+    if (nearest !== undefined && Math.abs(nearest - target) <= 1) {
+      hints.push({ dim: "bedrooms", count: beds.filter((p) => p.bedrooms === nearest).length, suggestion: `${nearest} bedroom${nearest === 1 ? "" : "s"}` });
+    }
   }
   const dates = byDim.get("dates") ?? [];
   if (dates.length > 0) {
@@ -1475,7 +1487,51 @@ export type ShortlistOutcome = {
   excludeIds: string[];
   /** Villas fit, but the matcher decided this message carries none (the lead is on a viewing, etc.). */
   declined: boolean;
+  /** Villas already sent that are outside the request, with the reasons — never to be called a match. */
+  sentOutside: OutsideVilla[];
+  /** The villa the client named or clicked, when it is outside their own request. */
+  namedOutside: OutsideVilla[];
 };
+
+export type OutsideVilla = { id: string; title: string; why: string[] };
+
+/**
+ * The request's outcome without any AI choice: the strict pool, the question
+ * to ask when it is empty, and which villas the client already has (or asked
+ * about) that are outside it. Used by the matcher and by drafts that carry no
+ * new links by design, so the writer never calls an outside villa a match.
+ */
+export async function shortlistOutcomeFor(
+  request: ClientRequest,
+  opts: { listingType: ListingType; excludeIds?: string[]; namedIds?: string[] },
+): Promise<{ outcome: ShortlistOutcome; fits: SupabaseProperty[] }> {
+  const excludeIds = opts.excludeIds ?? [];
+  const pool = await strictShortlistPool(request, { listingType: opts.listingType, excludeIds });
+  const hasCore = requestHasCore(request);
+  const all = await fetchAllProperties();
+  const byId = new Map(all.map((p) => [p.id.toUpperCase(), p]));
+  const sent = new Set(excludeIds.map((i) => i.toUpperCase()));
+  const outside = (ids: string[]): OutsideVilla[] =>
+    [...new Set(ids.map((i) => i.toUpperCase()))]
+      .map((id) => byId.get(id))
+      .filter((p): p is SupabaseProperty => !!p && p.listing_type === opts.listingType)
+      .map((p) => ({ id: p.id, title: p.title, why: requestMisfits(p, request) }))
+      .filter((v) => v.why.length > 0);
+  return {
+    fits: pool.fits,
+    outcome: {
+      request,
+      hasCore,
+      fitCount: pool.fits.length,
+      fitCountInclSent: pool.fitsInclSent,
+      hint: pool.hint,
+      excludeIds,
+      declined: false,
+      sentOutside: hasCore ? outside(excludeIds).slice(0, 6) : [],
+      namedOutside: hasCore ? outside((opts.namedIds ?? []).filter((i) => !sent.has(i.toUpperCase()))).slice(0, 3) : [],
+    },
+  };
+}
 
 
 
@@ -1618,16 +1674,14 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
   });
   if (brokerIntent?.releaseArea) request.releaseArea = true;
 
-  const pool = await strictShortlistPool(request, { listingType: opts.listingType, excludeIds });
-  const outcome: ShortlistOutcome = {
-    request,
-    hasCore: requestHasCore(request),
-    fitCount: pool.fits.length,
-    fitCountInclSent: pool.fitsInclSent,
-    hint: pool.hint,
+  const namedInThread = (opts.recentLeadMessages ?? []).flatMap((m) =>
+    Array.from(m.matchAll(PROPERTY_ID_REGEX)).map((x) => x[1]!.toUpperCase()),
+  );
+  const { outcome, fits: poolFits } = await shortlistOutcomeFor(request, {
+    listingType: opts.listingType,
     excludeIds,
-    declined: false,
-  };
+    namedIds: [...namedInThread, ...(opts.clickedListingId ? [opts.clickedListingId.toUpperCase()] : [])],
+  });
   const done = (picks: SupabaseProperty[]) => ({ picks: picks.map(toPick), outcome });
 
   // 1. The villa the lead named themselves — answered alone, but ONLY when it
@@ -1660,10 +1714,10 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
     }
   }
 
-  const candidates = pool.fits;
+  const candidates = poolFits;
   if (candidates.length === 0) {
     logger.info(
-      { request: describeRequest(request), sources: request.sources, fitsInclSent: pool.fitsInclSent, hint: pool.hint },
+      { request: describeRequest(request), sources: request.sources, fitsInclSent: outcome.fitCountInclSent, hint: outcome.hint },
       "matchProperties: nothing inside the client's request — attaching nothing",
     );
     return done([]);
@@ -1672,7 +1726,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
   if (!outcome.hasCore && opts.conversationText.trim().length < 20) return done([]);
 
   logger.info(
-    { request: describeRequest(request), sources: request.sources, fitting: candidates.length, poolSize: pool.poolSize },
+    { request: describeRequest(request), sources: request.sources, fitting: candidates.length },
     "matchProperties: shortlist drawn only from villas inside the request",
   );
 
