@@ -28,6 +28,7 @@ import { enforceBudgetFilter } from "../lib/budget-filter";
 import { recordCommitment } from "../lib/commitment-scheduler";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
 import { classifyStage } from "../lib/stage-classifier";
+import { weeklyCheckReplyState } from "../lib/weekly-check-reply";
 import { logger } from "../lib/logger";
 
 const router = Router();
@@ -227,6 +228,19 @@ export async function queueSuggestion(opts: {
   /** True when a broker asked for this draft by hand — see requestedAt on the table. */
   requestedByBroker?: boolean;
 }): Promise<void> {
+  // The owner's answer to a weekly availability check is the autopilot's (owner, 15.09.2026: "пуши не
+  // должны уходить Юди вообще, это же автопилот"): no LIVE draft and no push while it waits to be read
+  // or once the site has it, and no push even when a person has to look (weekly-check-reply.ts).
+  // Bumbak Dream Villa 15.09: two pushes 42 s apart for one "hallo masih kosong kak", one per detector.
+  let weeklyCheckNoPush = false;
+  if (opts.kind === "live") {
+    const weekly = await weeklyCheckReplyState(opts.leadId).catch(() => "none" as const);
+    if (weekly === "awaiting" || weekly === "handled") {
+      logger.info({ leadId: opts.leadId, weekly }, "weekly check: the owner's answer is the autopilot's — no LIVE draft, no push");
+      return;
+    }
+    weeklyCheckNoPush = weekly === "needs_person";
+  }
   const brokerId = brokerKey(opts.responsibleUser);
 
   await db.insert(aiSuggestionsTable).values({
@@ -304,7 +318,7 @@ export async function queueSuggestion(opts: {
     }
     // Notify BEFORE classifying the stage — the broker should hear about the
     // lead's reply the moment it's ready, not after another AI round-trip.
-    notifyBrokerForLead(opts.responsibleUser, opts.leadId, "replied", opts.leadMessageText || opts.text).catch(() => {});
+    if (!weeklyCheckNoPush) notifyBrokerForLead(opts.responsibleUser, opts.leadId, "replied", opts.leadMessageText || opts.text).catch(() => {});
     if (rowId) void classifyStageInBackground(rowId, opts.leadId, opts.text, opts.attachments?.length ?? 0);
   } else {
     // PUSH — only queue if no pending suggestion already exists

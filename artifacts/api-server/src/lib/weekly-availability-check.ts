@@ -10,9 +10,11 @@
  * two he did send on 07.09 both got an owner answer within an hour. Now it sends by itself:
  *
  * WHO (all of them, fail closed):
- * - a Rental Listings card whose amoCRM stage is live / Weekly Check Sent / Update Availability
- *   Received, or that amoCRM's own event log shows went through live and that is not closed, parked
- *   (long term, co-broke) or back in Initial Contact / TAKEN TO WORK now;
+ * - a Rental Listings card whose amoCRM stage is NOW live / Weekly Check Sent / Update Availability
+ *   Received. Until 15.09 the pass also took any card amoCRM's events showed passing live unless it
+ *   sat on one of a list of stages; QUALIFIED was not on the list, so a villa a person moved back to
+ *   Pre-listed (Villa Azul 23204741, Villa Amor 23223641) would have been asked the moment its card got
+ *   a site link. The owner's rule is "only listings that reached live", read as the stage today;
  * - linked to exactly one PUBLISHED rent listing on the site (`listing_crm_link`, not a draft);
  * - an existing conversation with the owner (they have written to us at least once). A weekly check
  *   is never a first contact, so it neither spends nor waits for the 9-a-day new-contact budget.
@@ -21,7 +23,7 @@
  * - nothing of ours (Copilot or the phone) reached the owner in the last 7 days;
  * - the owner has not written in the last 3 days (a live conversation — the reply path has it);
  * - no reply to the owner is waiting in the inbox;
- * - the last two checks were not both left unanswered (then it stops and tells Yudi once);
+ * - the last two checks were not both left unanswered (then it stops and says so on the card);
  * - Bali 10:00–17:00, one send per pass and at least 12 minutes between two checks.
  *
  * WHAT: one fixed sentence, no model, in English or in Bahasa Indonesia when the owner writes in
@@ -32,10 +34,15 @@
  *
  * THE ANSWER: when the owner replies to the newest check, the card moves to Update Availability
  * Received and one focused extraction reads the reply (free now / free from a day / occupied until a
- * day / no longer for rent / unclear). A clear, dated answer is written to the listing's
+ * day / no longer for rent / unclear). A clear answer is written to the listing's
  * property_availability in the admin's own format (status available, start = first free day, end
- * 2099-12-31) and read back; anything else — a month without a day, a range the site cannot hold,
- * "sold", a question back — goes to Yudi as a push with the owner's words. Nothing here unpublishes.
+ * 2099-12-31) over the listing's one row, whatever that row said, and read back; anything else — a
+ * month without a day, a range the site cannot hold, "sold", a question back — is a note on the card
+ * with the owner's words, and the reply draft stays in the inbox. Nothing here unpublishes.
+ *
+ * NOBODY IS PUSHED (owner, 15.09.2026: "пуши не должны уходить Юди вообще, это же автопилот"). What a
+ * person should know goes on the card as a note. The owner's reply to a check raises no LIVE draft and
+ * no push while it is the autopilot's to read — every LIVE writer asks lib/weekly-check-reply.ts.
  *
  * Switch: broker_settings `weekly_availability_mode` = on | dry | off (missing = dry: the scheduler
  * does nothing). Plan without sending: POST /api/admin/weekly-availability?dry=1.
@@ -50,11 +57,11 @@ import { resolveSendChannel, deliverText } from "./outbound-send";
 import { isFirstOutbound } from "./new-contact-budget";
 import { fetchTimeline, getAmoAuth, refreshLeadMessages } from "./amo-timeline-sync";
 import { isUndeliverableNotice } from "./undeliverable";
-import { notifyBroker } from "./push-notifications";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
-import { LISTING_AGENT_BROKER, LISTING_STAGE, LISTING_STAGE_NAME, LISTINGS_PIPELINE_ID, siteGet, siteInsert } from "./listing-status-week";
+import { LISTING_STAGE, LISTING_STAGE_NAME, LISTINGS_PIPELINE_ID, siteGet, siteInsert } from "./listing-status-week";
+import { WEEKLY_CHECK_KIND, weeklyAnswerKey, type WeeklyAnswerMarker } from "./weekly-check-reply";
 
-export const WEEKLY_CHECK_KIND = "weekly-availability";
+export { WEEKLY_CHECK_KIND };
 const MODE_KEY = "weekly_availability_mode";
 const CHECK_EVERY_DAYS = 7;
 const OWNER_ACTIVE_DAYS = 3;
@@ -65,16 +72,13 @@ const MAX_UNANSWERED_IN_A_ROW = 2;
 /** The owner often sends the answer in two or three messages; read them once they are done. */
 const ANSWER_QUIET_MS = 10 * 60_000;
 
+/** The only stages checked: the card is live, or in the check's own two stages after live. */
 const WEEKLY_STAGES = new Set<number>([LISTING_STAGE.LIVE, LISTING_STAGE.WEEKLY_CHECK_SENT, LISTING_STAGE.AVAILABILITY_RECEIVED]);
-/** Went through live and moved on by a person: still ours to check unless one of these now. */
-const NOT_AFTER_LIVE = new Set<number>([
-  LISTING_STAGE.INITIAL_CONTACT,
-  LISTING_STAGE.TAKEN_TO_WORK,
-  LISTING_STAGE.LONG_TERM,
-  LISTING_STAGE.CO_BROKE,
-  LISTING_STAGE.WON,
-  LISTING_STAGE.LOST,
-]);
+
+/** What a person should know goes on the card, never to a phone (owner, 15.09.2026). */
+async function noteOnCard(leadId: string, text: string): Promise<void> {
+  await amoPost(`/api/v4/leads/${leadId}/notes`, [{ note_type: "common", params: { text } }]).catch(() => null);
+}
 
 type Mode = "off" | "dry" | "on";
 
@@ -237,36 +241,6 @@ async function leadsInWeeklyStages(): Promise<AmoLead[]> {
   return out;
 }
 
-let passedLiveCache: { at: number; ids: number[] } | null = null;
-
-/** Cards amoCRM's own event log shows arriving in live, by anyone, ever. */
-async function leadsThatPassedLive(): Promise<number[]> {
-  if (passedLiveCache && Date.now() - passedLiveCache.at < 3600_000) return passedLiveCache.ids;
-  const ids = new Set<number>();
-  for (let page = 1; page <= 20; page++) {
-    const d = await amoFetch<{ _embedded?: { events?: Array<{ entity_id: number }> } }>(
-      `/api/v4/events?filter[type]=lead_status_changed` +
-        `&filter[value_after][leads_statuses][0][pipeline_id]=${LISTINGS_PIPELINE_ID}` +
-        `&filter[value_after][leads_statuses][0][status_id]=${LISTING_STAGE.LIVE}&limit=100&page=${page}`,
-    );
-    const batch = d?._embedded?.events ?? [];
-    for (const e of batch) ids.add(e.entity_id);
-    if (batch.length < 100) break;
-  }
-  passedLiveCache = { at: Date.now(), ids: [...ids] };
-  return passedLiveCache.ids;
-}
-
-async function leadsByIds(ids: number[]): Promise<AmoLead[]> {
-  const out: AmoLead[] = [];
-  for (let i = 0; i < ids.length; i += 50) {
-    const q = ids.slice(i, i + 50).map((id) => `filter[id][]=${id}`).join("&");
-    const d = await amoFetch<{ _embedded?: { leads?: AmoLead[] } }>(`/api/v4/leads?${q}&limit=250`);
-    out.push(...(d?._embedded?.leads ?? []));
-  }
-  return out;
-}
-
 export type WeeklyPlanRow = {
   leadId: string;
   stage: string;
@@ -401,18 +375,14 @@ async function planCard(lead: AmoLead, link: { property_id: string; title: strin
     .orderBy(desc(sentMessagesTable.createdAt))
     .limit(MAX_UNANSWERED_IN_A_ROW);
   if (checks.length >= MAX_UNANSWERED_IN_A_ROW && !(lastIn && lastIn > checks[checks.length - 1]!.at)) {
-    return { ...base, why: `the last ${MAX_UNANSWERED_IN_A_ROW} checks went unanswered — stopped, Yudi told` };
+    return { ...base, why: `the last ${MAX_UNANSWERED_IN_A_ROW} checks went unanswered — stopped, noted on the card` };
   }
-  return { ...base, decision: "send", why: base.stage === "live" || WEEKLY_STAGES.has(lead.status_id) ? `stage ${base.stage}, listing ${base.listing} published` : why };
+  return { ...base, decision: "send", why: `stage ${base.stage}, listing ${base.listing} published` };
 }
 
-/** Every Rental Listings card at or past live, judged. Read-only apart from refreshing lead_messages. */
+/** Every Rental Listings card in live / Weekly Check Sent / Update Availability Received, judged. Read-only apart from refreshing lead_messages. */
 export async function planWeeklyChecks(): Promise<Candidate[]> {
-  const inStages = await leadsInWeeklyStages();
-  const passed = await leadsThatPassedLive();
-  const extraIds = passed.filter((id) => !inStages.some((l) => l.id === id));
-  const extra = (await leadsByIds(extraIds)).filter((l) => l.pipeline_id === LISTINGS_PIPELINE_ID);
-  const cards = [...inStages, ...extra];
+  const cards = await leadsInWeeklyStages();
   if (cards.length === 0) return [];
 
   const ids = cards.map((l) => l.id);
@@ -429,19 +399,16 @@ export async function planWeeklyChecks(): Promise<Candidate[]> {
   const out: Candidate[] = [];
   for (const lead of cards) {
     let why = "";
-    const passedOnly = !WEEKLY_STAGES.has(lead.status_id);
     const mine = links.filter((l) => l.amo_lead_id === lead.id);
     const prop = mine.length === 1 ? props.find((p) => p.id === mine[0]!.property_id) ?? null : null;
-    if (passedOnly && NOT_AFTER_LIVE.has(lead.status_id)) why = `went through live, now ${LISTING_STAGE_NAME[lead.status_id] ?? lead.status_id}`;
+    if (!WEEKLY_STAGES.has(lead.status_id)) why = `stage ${LISTING_STAGE_NAME[lead.status_id] ?? lead.status_id} is not live or after it`;
     else if (mine.length === 0) why = "no site listing linked to this card (listing_crm_link)";
     else if (mine.length > 1) why = `two site listings linked to this card (${mine.map((m) => m.property_id).join(", ")})`;
     else if (!prop) why = `linked listing ${mine[0]!.property_id} not found on the site`;
     else if (prop.is_draft) why = `linked listing ${prop.id} is a draft, not published`;
     else if ((prop.listing_type ?? "rent") !== "rent") why = `linked listing ${prop.id} is not a rental`;
     try {
-      const row = await planCard(lead, prop ? { property_id: prop.id, title: prop.title } : null, why);
-      if (!why && passedOnly && row.decision === "send") row.why = `went through live, now ${row.stage}; listing ${row.listing} published`;
-      out.push(row);
+      out.push(await planCard(lead, prop ? { property_id: prop.id, title: prop.title } : null, why));
     } catch (err) {
       logger.warn({ err, leadId: lead.id }, "weekly-availability: could not judge this card");
     }
@@ -521,7 +488,7 @@ async function sendCheck(c: Candidate): Promise<string> {
       webhookStatus: 409,
       webhookResponse: `not sent: ${channel.error}`,
     });
-    await notifyBroker(LISTING_AGENT_BROKER, `Weekly check not sent: ${c.villa}`, `#${c.leadId}: ${channel.message}`).catch(() => 0);
+    await noteOnCard(c.leadId, `Weekly availability check NOT sent: ${channel.message}`);
     return `refused: ${channel.error}`;
   }
   const sinceSec = Math.floor(Date.now() / 1000);
@@ -574,16 +541,15 @@ async function reconfirmRecentSends(): Promise<void> {
         .where(eq(sentMessagesTable.id, r.id));
       await afterDelivered(r.leadId, r.text);
       logger.info({ leadId: r.leadId, eventId: seen.eventId }, "weekly-availability: delivery confirmed late");
-    } else if (Date.now() - r.at.getTime() > 2 * 3600_000 && !(r.resp ?? "").includes("Yudi told")) {
+    } else if (Date.now() - r.at.getTime() > 2 * 3600_000 && !(r.resp ?? "").includes("still not in the timeline")) {
       await db
         .update(sentMessagesTable)
-        .set({ webhookResponse: `${r.resp} | still not in the timeline after 2h, Yudi told` })
+        .set({ webhookResponse: `${r.resp} | still not in the timeline after 2h, noted on the card` })
         .where(eq(sentMessagesTable.id, r.id));
-      await notifyBroker(
-        LISTING_AGENT_BROKER,
-        "Weekly check may not have arrived",
-        `#${r.leadId}: the availability question is not in the WhatsApp timeline 2h after sending. Check the chat.`,
-      ).catch(() => 0);
+      await noteOnCard(
+        r.leadId,
+        "Weekly availability check: the question is not in the WhatsApp timeline 2 hours after sending — it may not have arrived.",
+      );
     }
   }
 }
@@ -696,8 +662,10 @@ const human = (isoDay: string) =>
 
 /**
  * Write the owner's answer the way the admin does: one `available` row from the first free day to
- * 2099-12-31. Only when the listing's rows leave no room for doubt (none, or a single available row);
- * occupied periods or several rows are Yudi's to reconcile. Read back before claiming success.
+ * 2099-12-31, over the listing's one row whatever it said. An occupied period typed earlier is older
+ * than the owner's answer today (3 published listings carried one on 15.09.2026, and until then the
+ * pass refused them and pushed Yudi). Several rows are not guessed over (none on 15.09). Read back
+ * before claiming success.
  */
 async function writeAvailability(
   propertyId: string,
@@ -709,24 +677,29 @@ async function writeAvailability(
   const rows = await siteGet<AvailRow[]>(
     `property_availability?select=id,start_date,end_date,status,note&property_id=eq.${encodeURIComponent(propertyId)}`,
   );
-  const busy = rows.filter((r) => (r.status === "occupied" || r.status === "rented") && (r.end_date ?? "") >= today);
-  const avail = rows.filter((r) => r.status === "available");
-  if (busy.length > 0 || avail.length > 1 || rows.length > avail.length + busy.length) {
+  if (rows.length > 1) {
     return { written: false, detail: `${propertyId} has ${rows.length} availability rows the pass will not guess over` };
   }
-  const current = avail[0] ?? null;
-  const currentFree = current && (current.start_date ?? "") > today ? current.start_date : null;
-  if ((freeFrom ?? null) === (currentFree ?? null)) {
-    return { written: false, detail: `${propertyId} already shows ${freeFrom ? `free from ${human(freeFrom)}` : "free now"} — nothing to change` };
+  const current = rows[0] ?? null;
+  const wasAvailable = !current || current.status === "available";
+  const currentFree = current && wasAvailable && (current.start_date ?? "") > today ? current.start_date : null;
+  const now = freeFrom ? `free from ${human(freeFrom)}` : "free now";
+  const was = wasAvailable
+    ? currentFree ? `free from ${human(currentFree)}` : "free now"
+    : `${current!.status ?? "no status"}${current!.end_date ? ` until ${human(current!.end_date)}` : ""}`;
+  if (wasAvailable && (freeFrom ?? null) === (currentFree ?? null)) {
+    return { written: false, detail: `${propertyId} already shows ${now} — nothing to change` };
   }
   const start = freeFrom ?? today;
   const fullNote = current?.note ? `${note} Earlier: ${current.note}`.slice(0, 1500) : note;
   if (!apply) {
-    return { written: false, detail: `DRY: would set ${propertyId} ${freeFrom ? `free from ${human(freeFrom)}` : "free now"} (was ${currentFree ? `free from ${human(currentFree)}` : "free now"})` };
+    return { written: false, detail: `DRY: would set ${propertyId} ${now} (was ${was})` };
   }
   if (current) {
     const back = await sitePatchAvailability(current.id, { start_date: start, end_date: "2099-12-31", status: "available", note: fullNote });
-    if (!back || back.start_date !== start) return { written: false, detail: `${propertyId}: the site did not return the new date — NOT saved` };
+    if (!back || back.start_date !== start || back.status !== "available") {
+      return { written: false, detail: `${propertyId}: the site did not return the new date — NOT saved` };
+    }
   } else {
     await siteInsert("property_availability", [{ property_id: propertyId, start_date: start, end_date: "2099-12-31", status: "available", note: fullNote }]);
     const check = await siteGet<AvailRow[]>(
@@ -735,10 +708,7 @@ async function writeAvailability(
     if (check.length === 0) return { written: false, detail: `${propertyId}: the new row is not in the site database — NOT saved` };
   }
   invalidatePropertyCache();
-  return {
-    written: true,
-    detail: `${propertyId} set ${freeFrom ? `free from ${human(freeFrom)}` : "free now"} (was ${currentFree ? `free from ${human(currentFree)}` : "free now"})`,
-  };
+  return { written: true, detail: `${propertyId} set ${now} (was ${was})` };
 }
 
 export type AnswerOutcome = { leadId: string; checkId: string; reply: string; reading: AvailabilityAnswer & { guard?: string }; result: string };
@@ -755,7 +725,7 @@ export async function processAnswers(opts: { apply: boolean }): Promise<AnswerOu
   const out: AnswerOutcome[] = [];
   const today = baliToday();
   for (const c of rows) {
-    const doneKey = `weekly_check:answer:${c.id}`;
+    const doneKey = weeklyAnswerKey(c.id);
     try {
       if (await getKey(doneKey)) continue;
       const since = new Date(c.created_at);
@@ -811,11 +781,11 @@ export async function processAnswers(opts: { apply: boolean }): Promise<AnswerOu
         await amoPost(`/api/v4/leads/${c.lead_id}/notes`, [
           { note_type: "common", params: { text: `Weekly availability check — the owner answered:\n"${reply.slice(0, 500)}"\nRead as: ${reading.answer}${reading.date ? ` ${reading.date}` : ""}.\n${result}` } },
         ]).catch(() => null);
-        if (tellYudi) {
-          await notifyBroker(LISTING_AGENT_BROKER, `Availability: ${villa}`, `#${c.lead_id} owner: "${reply.slice(0, 80)}" — ${tellYudi}`).catch(() => 0);
-        } else {
-          // The answer is on the site: the reply draft the owner's message raised is not Yudi's to approve
-          // (owner, 14.09.2026: the weekly check runs on autopilot). Unclear answers keep theirs.
+        // Nobody is pushed (owner, 15.09.2026). What needs a person is in the note above; its reply draft
+        // stays in the inbox, and weekly-check-reply.ts keeps the LIVE writers from pushing about it.
+        if (!tellYudi) {
+          // The answer is on the site: a reply draft the owner's message raised is not Yudi's to approve.
+          // The LIVE writers no longer raise one (weekly-check-reply.ts); this retires any from before.
           const cleared = await db
             .update(pendingSuggestionsTable)
             .set({ status: "skipped" })
@@ -823,7 +793,8 @@ export async function processAnswers(opts: { apply: boolean }): Promise<AnswerOu
             .returning({ id: pendingSuggestionsTable.id });
           if (cleared.length) result = `${result}; ${cleared.length} reply draft(s) cleared from the inbox`;
         }
-        await setKey(doneKey, JSON.stringify({ at: new Date().toISOString(), answer: reading.answer, date: reading.date, result, moved }));
+        const marker: WeeklyAnswerMarker = { at: new Date().toISOString(), answer: reading.answer, date: reading.date, result, moved, handled: !tellYudi };
+        await setKey(doneKey, JSON.stringify(marker));
       }
       out.push({ leadId: c.lead_id, checkId: c.id, reply, reading, result });
       logger.info({ leadId: c.lead_id, answer: reading.answer, date: reading.date, result, apply: opts.apply }, "weekly-availability: owner answer handled");
@@ -865,7 +836,7 @@ export async function processWeeklyAvailabilityCheck(): Promise<number> {
       const key = `weekly_check:paused:${row.leadId}`;
       if (await getKey(key)) continue;
       await setKey(key, new Date().toISOString());
-      await notifyBroker(LISTING_AGENT_BROKER, `No answer on availability: ${row.villa}`, `#${row.leadId}: two weekly checks unanswered — the bot stopped asking. Call or decide.`).catch(() => 0);
+      await noteOnCard(row.leadId, "Two weekly availability checks in a row went unanswered — the bot stopped asking on this card.");
     }
     const next = plan.filter((r) => r.decision === "send").sort((a, b) => a.lastContactMs - b.lastContactMs)[0];
     if (!next) return 0;
