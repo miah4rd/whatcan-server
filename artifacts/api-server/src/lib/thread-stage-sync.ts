@@ -42,6 +42,7 @@ import { undeliverableVerdict, closeUndeliverable, isUndeliverableNotice } from 
 import { shouldSuppressPush } from "./stage-routing";
 import { refreshLeadMessages } from "./amo-timeline-sync";
 import { advanceListingProgress } from "./listing-progress";
+import { queueViewingCalendarSync } from "./viewing-calendar";
 
 const BALI = "Asia/Makassar";
 const MIN = 60_000;
@@ -502,6 +503,7 @@ export async function recordViewingSlot(
       .set({ status: "rescheduled", updatedAt: new Date() })
       .where(and(eq(viewingSlotsTable.leadId, leadId), eq(viewingSlotsTable.viewingAt, s.replaces), eq(viewingSlotsTable.status, "scheduled")));
   }
+  queueViewingCalendarSync(`viewing slot recorded (${source})`);
 }
 
 export type SyncResult = StageDecision & { leadId: string; source: string; moved: boolean; applied: string };

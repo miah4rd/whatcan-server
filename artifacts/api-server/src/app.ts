@@ -19,6 +19,7 @@ import { startReportScheduler } from "./lib/report-scheduler";
 import { startVideoCompressScheduler } from "./lib/video-compress";
 import { startListingStatusPass } from "./lib/listing-status-pass";
 import { startInspectionCalendarSync } from "./lib/inspection-calendar";
+import { startViewingCalendarSync } from "./lib/viewing-calendar";
 import { startInspectionBookingPass } from "./lib/inspection-booking";
 import { startStageSyncCheckScheduler } from "./lib/stage-sync-check";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
@@ -91,6 +92,8 @@ startPhotoVariantScheduler();
 startListingStatusPass();
 // Agreed villa inspections → the shared Brokers Google Calendar; see lib/inspection-calendar.ts.
 startInspectionCalendarSync();
+// Agreed client viewings (Rental) → the same calendar in green; see lib/viewing-calendar.ts.
+startViewingCalendarSync();
 // QUALIFIED listing cards: a PUSH draft for Yudi asking the owner to let him inspect, in his own words; see lib/inspection-booking.ts.
 startInspectionBookingPass();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
