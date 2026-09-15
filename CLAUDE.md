@@ -1453,7 +1453,55 @@ written for it (unanswered-live pass skips it, autopilot retires anything that
 still lands there), the broker is not prompted. The only exit is the stage
 engine deciding the counterpart is the owner. long term differs: replies to
 the owner go out (a "free now" is answered and the card released); proactive
-drafts there are retired, except the dated availability check.
+drafts there are retired. The dated re-confirm question is written when the
+card leaves for TAKEN TO WORK two weeks before its date (next section).
+
+### long term: the whole card and the owner's own date, or not parked (2026-09-15)
+
+The owner's regulation after reading the 33 cards on the stage: 23 without a
+price, half untouched for 8–12 days, Villa Mei (23369825) parked the minute WE
+asked about availability, SWOI Loft (23298483) through five moves in 40 minutes
+on 07.09. The engine parked on one extracted word, `stopKind: "occupied"`,
+"date unknown" included, and a parked card never came back into the bot's cycle.
+
+- **Entry needs all five** (`longTermBar`, listing-card-fields): lettable long
+  term, the owner side, bedrooms, a price with its commission position, and a
+  free date beyond the 90-day selling window that the villa side named ITSELF.
+  The extraction copies their words (`free_from_quote`, carried across re-reads);
+  `ownerSaidFreeDate` finds them in their own messages with quoted text removed.
+  Short of any of the five, an occupied villa stays in TAKEN TO WORK and
+  `meetsQualified` lists "free date", which the reply and the nudge ask ("Roughly
+  from when will … be free again?" / "Kira-kira … kosong lagi mulai kapan").
+  A far date with no stop word is the same villa. `minimum stay` never parks.
+- **The record goes on BEFORE the move** (`ensureLongTermRecord`): "Listing:
+  available from" (968835) as a date — `1 December 2026 — APPROX of the owner's
+  "after November"` when they gave no day (`availableFromLine`; the card sync
+  writes the same form everywhere) — and a task `Long term: …` due 10:00 Bali
+  two weeks before the date, protected in `isProtectedTask` (a send used to
+  close every task). Either failing, no move. After the move, the English note
+  in the regulation's template with the owner's quote. A parked card whose date
+  moves gets its field and task rewritten in place; a card parked before this
+  gets what it lacks and a "Kept in LONG TERM" note.
+- **Exit two weeks before the date, not at 90 days.** The engine used to release
+  a parked card when its date came inside 90 days, so `long-term-check` almost
+  never found one. Now the card holds until two weeks before; the engine moves it
+  to TAKEN TO WORK, completes the task, and `writeAvailabilityCheckDraft` asks
+  free-from-that-date and same-price, handed to autopilot like a nudge. The card
+  then waits for the owner (`awaitingOwnerAfterLongTerm`) instead of riding
+  months-old facts to QUALIFIED. The owner naming a near date, or "free now",
+  still releases it at once.
+- **One move per owner message**: an engine move is held when the engine already
+  moved the card after their newest message, within 24 h. The date-driven exit
+  is exempt.
+- **Control** `GET /api/admin/long-term-control`: live amoCRM, four lists (no
+  price 968831, no date in 968835, no open task due ahead, untouched 30+ days).
+  Expected empty; the daily audit push carries the counts otherwise.
+- Re-judge the stage: `POST /api/admin/listing-audit?stage=long%20term&refresh=1`
+  (dry), `&apply=1`. `refresh` re-reads threads so old facts get the quote.
+- Kept as it was: the 90-day line between "free soon, sell now" and long term
+  (the regulation does not name one). Listing a long term villa on the site at
+  once (property_availability from the free date to 2099-12-31) is the listing
+  co-worker's step, skill `listing-prelisted-enrichment`, not code.
 
 ### Listing stage engine (2026-09-07, evening)
 

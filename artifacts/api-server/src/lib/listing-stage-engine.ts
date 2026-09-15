@@ -17,7 +17,9 @@
  *   Initial Contact     nothing has gone out yet
  *   TAKEN TO WORK       outreach sent; the owner's answers are still short
  *                       of the bar (or the owner has not replied)
- *   long term           the villa is ours to take but occupied beyond 90 days
+ *   long term           qualified, but occupied beyond 90 days until a date the owner named
+ *                       himself (regulation 15.09.2026: owner side, bedrooms, price with
+ *                       commission, his own date); leaves two weeks before that date
  *   co-broke Agents     the counterpart is a separate business (confirmed)
  *   Closed - lost       below the 33M floor, or not our format (confirmed)
  *   QUALIFIED           every fact on the bar is known — the handover point
@@ -43,7 +45,17 @@
 import { db, leadsSyncTable, leadMessagesTable, sentMessagesTable, stageEventsTable, brokerSettingsTable } from "@workspace/db";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { getAmoLead, updateLeadStatus, closeLeadAsLost, createAmoTask } from "./amo-client";
+import {
+  getAmoLead,
+  updateLeadStatus,
+  closeLeadAsLost,
+  createAmoTask,
+  getOpenAmoTasks,
+  completeAmoTasks,
+  amoPost,
+  LONG_TERM_TASK_PREFIX,
+} from "./amo-client";
+import { longTermControl } from "./long-term-control";
 import { safeStageIdForLead } from "./stage-classifier";
 import { isListingAcquisition } from "./pipelines";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
@@ -60,6 +72,13 @@ import {
   notOurFormatVetoed,
   syncListingFactsToCard,
   MIN_LISTING_MONTHLY_IDR,
+  longTermBar,
+  ownerFreeWords,
+  availableFromLine,
+  dateFromAvailableLine,
+  humanDate,
+  writeListingAvailableFrom,
+  stripQuotedText,
 } from "./listing-card-fields";
 
 export const STAGE = {
@@ -112,6 +131,7 @@ export function emptyFacts(): ListingFacts {
     stopSignal: null,
     stopKind: null,
     freeFromIso: null,
+    freeFromQuote: null,
   };
 }
 
@@ -121,6 +141,8 @@ export type EngineInput = {
   outboundSent: boolean;
   /** Any message from the owner's side in the thread. */
   ownerReplied: boolean;
+  /** The free date is in the villa side's own words, found in their messages. Absent = no. */
+  ownerSaidFreeDate?: boolean;
 };
 
 export type Desired = {
@@ -155,11 +177,18 @@ export function desiredStage(i: EngineInput): Desired {
   if (f.counterpart === "manager" || f.counterpart === "agent") {
     return { stage: STAGE.CO_BROKE, reason: `counterpart is ${f.counterpart}`, confirm: "third_party" };
   }
-  if (f.stopKind === "occupied" && !freeSoon(f)) {
-    return {
-      stage: STAGE.LONG_TERM,
-      reason: f.freeFromIso ? `occupied, free from ${f.freeFromIso}` : "occupied, date unknown",
-    };
+  // long term (regulation 15.09.2026): parked ONLY with the whole card in hand — owner side, bedrooms,
+  // price with commission, and a date the owner named himself (longTermBar). An occupied villa short
+  // of any of them stays in TAKEN TO WORK, where the bot keeps asking: on 15.09, 23 of the 33 parked
+  // cards had no price, because "occupied, date unknown" parked a card for good. A far date with no
+  // stop word is the same villa ("next year" on 23537943 would otherwise have qualified).
+  const freeAt = plausibleFreeDate(f);
+  const occupiedBeyondWindow =
+    !freeSoon(f) && (f.stopKind === "occupied" || (f.stopKind === null && !!freeAt && freeAt.getTime() > Date.now()));
+  if (occupiedBeyondWindow) {
+    const bar = longTermBar(f, i.ownerSaidFreeDate === true);
+    if (bar.ok) return { stage: STAGE.LONG_TERM, reason: `occupied, the owner says free from ${f.freeFromIso}` };
+    return { stage: STAGE.WORK, reason: `occupied, not long term yet: ${bar.missing.join(", ")}` };
   }
   if (f.stopKind === "not_our_format" && !notOurFormatVetoed(f)) {
     return {
@@ -225,6 +254,8 @@ type ReconcileOpts = {
   facts?: ListingFacts | null;
   apply?: boolean;
   source: string;
+  /** Re-read the thread even when the cached facts are current (a new extraction field). */
+  refresh?: boolean;
 };
 
 async function ownerWroteSinceArrival(leadId: string, stage: string): Promise<boolean> {
@@ -259,6 +290,96 @@ async function engineClosedAndOwnerWroteSince(leadId: string): Promise<boolean> 
     .from(leadMessagesTable)
     .where(and(eq(leadMessagesTable.leadId, leadId), eq(leadMessagesTable.senderType, "lead"), sql`${leadMessagesTable.sentAt} > ${last.at}`));
   return (n?.n ?? 0) > 0;
+}
+
+/**
+ * The fifth condition of long term (regulation 15.09.2026): the villa side named the date itself.
+ * The words the extraction copied must be found in one of THEIR messages with quoted text removed.
+ * Our own question about availability, pasted back or not, is not a date: Villa Mei (23369825) was
+ * parked the minute we asked "start 1 October, minimum 12 months, can you check availability?".
+ */
+async function ownerSaidFreeDate(leadId: string, f: ListingFacts): Promise<boolean> {
+  const squash = (s: string | null | undefined): string =>
+    (s ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const said = [f.freeFromQuote, ownerFreeWords(f)].map(squash).filter((s) => s.length >= 4);
+  if (!said.length) return false;
+  const rows = await db
+    .select({ text: leadMessagesTable.text })
+    .from(leadMessagesTable)
+    .where(and(eq(leadMessagesTable.leadId, leadId), eq(leadMessagesTable.senderType, "lead"), sql`${leadMessagesTable.text} IS NOT NULL`));
+  const theirs = rows.map((r) => ` ${squash(stripQuotedText(`lead: ${r.text ?? ""}`))} `);
+  return said.some((s) => theirs.some((t) => t.includes(` ${s} `)));
+}
+
+/** The card's last move was the engine taking it out of long term, and the villa side has not written since. */
+async function awaitingOwnerAfterLongTerm(leadId: string): Promise<boolean> {
+  const [last] = await db
+    .select({ at: stageEventsTable.changedAt, from: stageEventsTable.fromStage, by: stageEventsTable.responsibleUser })
+    .from(stageEventsTable)
+    .where(eq(stageEventsTable.leadId, leadId))
+    .orderBy(desc(stageEventsTable.changedAt))
+    .limit(1);
+  if (!last?.at || norm(last.from) !== norm(STAGE.LONG_TERM) || !String(last.by ?? "").startsWith("engine:")) return false;
+  const [n] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(leadMessagesTable)
+    .where(and(eq(leadMessagesTable.leadId, leadId), eq(leadMessagesTable.senderType, "lead"), sql`${leadMessagesTable.sentAt} > ${last.at}`));
+  return (n?.n ?? 0) === 0;
+}
+
+/** The long term task is due two weeks before the free date, at 10:00 Bali. */
+function longTermTaskDue(freeIso: string): Date {
+  const dayIso = new Date(Date.parse(`${freeIso}T00:00:00Z`) - REMIND_BEFORE_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const due = new Date(`${dayIso}T10:00:00+08:00`);
+  return due.getTime() > Date.now() + 3_600_000 ? due : new Date(Date.now() + 3_600_000);
+}
+
+/**
+ * The record a parked card cannot be without (regulation 15.09.2026, §5): the date in "Listing:
+ * available from" and a task two weeks before it. Idempotent: writes only what is missing or wrong,
+ * and completes a long term task left over from an earlier date.
+ */
+async function ensureLongTermRecord(leadId: string, facts: ListingFacts): Promise<{ ok: boolean; why: string; fixed: string[] }> {
+  if (!facts.freeFromIso || !plausibleFreeDate(facts)) return { ok: false, why: "no usable free date", fixed: [] };
+  const fixed: string[] = [];
+  const field = await writeListingAvailableFrom(leadId, facts);
+  if (field === "failed") return { ok: false, why: `could not write "Listing: available from"`, fixed };
+  if (field === "written") fixed.push("available-from date");
+  const due = longTermTaskDue(facts.freeFromIso);
+  const dueSec = Math.floor(due.getTime() / 1000);
+  const open = await getOpenAmoTasks(leadId).catch(() => []);
+  const ours = open.filter((t) => (t.text ?? "").startsWith(LONG_TERM_TASK_PREFIX));
+  const keep = ours.find((t) => Math.abs((t.complete_till ?? 0) - dueSec) < 86_400);
+  if (!keep) {
+    const text = `${LONG_TERM_TASK_PREFIX} the villa frees up ${humanDate(facts.freeFromIso)}. Ask the owner to confirm the date and the price.`;
+    if (!(await createAmoTask(leadId, text, due).catch(() => false))) return { ok: false, why: "amoCRM refused the task", fixed };
+    fixed.push(`task due ${due.toISOString().slice(0, 10)}`);
+  }
+  const stale = ours.filter((t) => t !== keep).map((t) => t.id);
+  if (stale.length) await completeAmoTasks(stale, "The free date changed: replaced by a new long term task").catch(() => false);
+  return { ok: true, why: "", fixed };
+}
+
+/** The note the regulation asks for, in its own template, with the owner's words. */
+async function postLongTermNote(leadId: string, facts: ListingFacts, verb: "Moved to" | "Kept in"): Promise<void> {
+  const today = humanDate(new Date(Date.now() + 8 * 3_600_000).toISOString().slice(0, 10));
+  const quote = (facts.freeFromQuote ?? ownerFreeWords(facts) ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
+  const exact = (availableFromLine(facts) ?? "").includes("APPROX") ? "APPROX" : "exact";
+  const rate = facts.monthlyIdr
+    ? `IDR ${facts.monthlyIdr.toLocaleString("en-US")}/month`
+    : facts.yearlyIdr
+      ? `IDR ${facts.yearlyIdr.toLocaleString("en-US")}/year`
+      : "not given";
+  const commission = facts.commission === "included" ? "included" : facts.commission === "net" ? "on top" : "not confirmed";
+  const touch = humanDate(longTermTaskDue(facts.freeFromIso!).toISOString().slice(0, 10));
+  const text = [
+    `${verb} LONG TERM on ${today}. Owner quote: "${quote}".`,
+    `Free from ${humanDate(facts.freeFromIso!)} (${exact}). Bedrooms ${facts.bedrooms}, owner rate ${rate},`,
+    `commission ${commission}. Owner side verified: ${facts.counterpart === "owner" ? "the owner or the owner's own staff" : facts.counterpart}.`,
+    `Next touch scheduled for ${touch}.`,
+  ].join("\n");
+  const posted = await amoPost(`/api/v4/leads/${encodeURIComponent(leadId)}/notes`, [{ note_type: "common", params: { text } }]).catch(() => null);
+  if (!posted) logger.error({ leadId }, "long term: the note did not reach amoCRM");
 }
 
 /** A quote under the floor closes the card only once it has stood this long. */
@@ -375,7 +496,7 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
       return { leadId, owner, current, reason: "no facts read yet — a send judges nothing", applied: false };
     }
     facts = known;
-  } else if (cached && typeof cached.counterpart === "string") {
+  } else if (cached && !opts.refresh && typeof cached.counterpart === "string") {
     // Nothing new in the thread since the last read: the facts stand.
     facts = cached;
   } else {
@@ -395,12 +516,23 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
     facts = extracted;
     extractedHere = true;
   }
-  // The free date we stored when parking is a fact too.
-  if (!facts.freeFromIso && row.listingFreeFrom) {
-    facts = { ...facts, freeFromIso: row.listingFreeFrom.toISOString().slice(0, 10) };
+  // The free date we stored when parking is a fact too — unless the owner has since written that it is
+  // free: no date in the read, availability in their own words (not our dated line), not occupied.
+  const parkedIso = row.listingFreeFrom ? row.listingFreeFrom.toISOString().slice(0, 10) : null;
+  const releasedByOwner =
+    norm(current) === norm(STAGE.LONG_TERM) &&
+    !!parkedIso &&
+    !facts.freeFromIso &&
+    facts.stopKind !== "occupied" &&
+    !!facts.availableFrom &&
+    !dateFromAvailableLine(facts.availableFrom) &&
+    (await ownerWroteSinceArrival(leadId, current));
+  if (!facts.freeFromIso && parkedIso && !releasedByOwner) {
+    facts = { ...facts, freeFromIso: parkedIso };
   }
+  const ownerSaid = facts.freeFromIso ? await ownerSaidFreeDate(leadId, facts) : false;
 
-  let desired = desiredStage({ facts, outboundSent, ownerReplied });
+  let desired = desiredStage({ facts, outboundSent, ownerReplied, ownerSaidFreeDate: ownerSaid });
 
   // The floor closes a card only once the quote has stood. The reply prompt
   // counter-offers up to the floor, so a quote under it is usually the START
@@ -423,14 +555,38 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
   // stated since the card was parked. "Alright 🙏" plus one extraction that
   // happened to leave out the tenant is not evidence: Villa Solis (23528529,
   // 11.09) went long term → TAKEN TO WORK on exactly that, and straight back.
-  if (norm(current) === norm(STAGE.LONG_TERM) && desired.stage !== STAGE.LONG_TERM && desired.stage !== STAGE.CLOSED_LOST) {
-    const evidence =
-      freeSoon(facts) ||
-      (facts.stopKind !== "occupied" && !facts.freeFromIso && !!facts.availableFrom && (await ownerWroteSinceArrival(leadId, current)));
-    if (!evidence) desired = { stage: STAGE.LONG_TERM, reason: "parked; no near free date and no availability stated by the owner" };
+  //
+  // Since the long term regulation (15.09.2026, §6) the parking holds until two weeks before the date
+  // the owner named, not until the date merely comes inside the 90-day selling window — leaving at 90
+  // days is why the two-week availability check almost never found a card. What still moves a parked
+  // card: the owner naming another date or saying it is free, a card short of the bar (parked before
+  // the regulation with no price, or on a date nobody on their side said), or the date itself.
+  let exitByDate = false;
+  if (
+    norm(current) === norm(STAGE.LONG_TERM) &&
+    desired.stage !== STAGE.LONG_TERM &&
+    desired.stage !== STAGE.CLOSED_LOST &&
+    desired.stage !== STAGE.CO_BROKE
+  ) {
+    const at = plausibleFreeDate(facts);
+    const sameDate = !!parkedIso && facts.freeFromIso === parkedIso;
+    if (at && sameDate && longTermBar(facts, ownerSaid).ok) {
+      if (at.getTime() - Date.now() <= REMIND_BEFORE_DAYS * 86_400_000) {
+        desired = { stage: STAGE.WORK, reason: `free date ${parkedIso} is two weeks away or less — asking the owner to confirm the date and the price` };
+        exitByDate = true;
+      } else {
+        desired = { stage: STAGE.LONG_TERM, reason: `parked until two weeks before ${parkedIso}` };
+      }
+    }
   }
   if (norm(current) === norm(STAGE.CO_BROKE) && desired.stage !== STAGE.CO_BROKE && desired.stage !== STAGE.CLOSED_LOST) {
     if (facts.counterpart !== "owner") desired = { stage: STAGE.CO_BROKE, reason: "parked; the counterpart is still not established as the owner" };
+  }
+
+  // Back from long term, a card waits in TAKEN TO WORK for the owner's answer on the date and the price
+  // (§6). Facts read months ago do not carry it on to QUALIFIED unasked.
+  if (norm(current) === norm(STAGE.WORK) && desired.stage === STAGE.QUALIFIED && (await awaitingOwnerAfterLongTerm(leadId))) {
+    desired = { stage: STAGE.WORK, reason: "back from long term — waiting for the owner to confirm the date and the price" };
   }
 
   // Outbound is monotonic: a card past Initial Contact whose thread shows no
@@ -439,10 +595,49 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
     desired = { stage: current as EngineStage, reason: "outbound not in the log, stage itself is the evidence" };
   }
   if (norm(desired.stage) === norm(current) || (isTerminalStage(current) && desired.stage === STAGE.CLOSED_LOST)) {
+    // A card that stays parked keeps its record whole (§5): a date the owner moved rewrites the field
+    // and the task; a card parked before the regulation gets the date and the task it never had.
+    if (apply && owner === "engine" && desired.stage === STAGE.LONG_TERM && norm(current) === norm(STAGE.LONG_TERM)) {
+      const rec = await ensureLongTermRecord(leadId, facts);
+      const dateMoved = parkedIso !== facts.freeFromIso;
+      if (rec.ok && dateMoved) {
+        await db
+          .update(leadsSyncTable)
+          .set({ listingFreeFrom: plausibleFreeDate(facts), updatedAt: new Date() })
+          .where(eq(leadsSyncTable.leadId, leadId))
+          .catch(() => undefined);
+      }
+      if (rec.ok && (dateMoved || rec.fixed.length)) await postLongTermNote(leadId, facts, "Kept in");
+      const changes = [dateMoved ? `free date ${parkedIso ?? "none"} → ${facts.freeFromIso}` : "", ...rec.fixed].filter(Boolean);
+      const tail = !rec.ok ? `; record NOT complete: ${rec.why}` : changes.length ? `; record updated: ${changes.join(", ")}` : "";
+      return { leadId, owner, current, desired: desired.stage, reason: `in place: ${desired.reason}${tail}`, applied: false };
+    }
     return { leadId, owner, current, desired: desired.stage, reason: `in place: ${desired.reason}`, applied: false };
   }
   if (owner !== "engine") {
     return { leadId, owner, current, desired: desired.stage, reason: `facts say ${desired.stage} (${desired.reason}) — a person's stage, not moved`, applied: false, confirm: desired.confirm };
+  }
+  // One stage move per new message from the villa side (§8). SWOI Loft (23298483) went TAKEN TO WORK →
+  // long term → co-broke → long term in five minutes on one conversation: the decision followed the
+  // noise of re-reads, not a fact. A second move needs a new message from them. The date-driven exit
+  // from long term is not a message and is exempt.
+  if (ownerReplied && !exitByDate && sig?.theirNewestMs) {
+    const [lastMove] = await db
+      .select({ at: stageEventsTable.changedAt, to: stageEventsTable.toStage })
+      .from(stageEventsTable)
+      .where(and(eq(stageEventsTable.leadId, leadId), sql`${stageEventsTable.responsibleUser} LIKE 'engine:%'`))
+      .orderBy(desc(stageEventsTable.changedAt))
+      .limit(1);
+    if (lastMove?.at && lastMove.at.getTime() > Number(sig.theirNewestMs) && Date.now() - lastMove.at.getTime() < 24 * 3_600_000) {
+      return {
+        leadId,
+        owner,
+        current,
+        desired: desired.stage,
+        reason: `held: already moved to ${lastMove.to} after their last message; the next move waits for a new one (${desired.reason})`,
+        applied: false,
+      };
+    }
   }
   if (!apply) return { leadId, owner, current, desired: desired.stage, reason: `would move: ${desired.reason}`, applied: false };
 
@@ -454,6 +649,13 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
   }
 
   if (extractedHere) await syncListingFactsToCard(leadId, facts).catch(() => undefined);
+
+  // Nothing is parked without its record (§5): the date on the card and the task two weeks before it
+  // are written BEFORE the move, and either failing leaves the card where it is.
+  if (desired.stage === STAGE.LONG_TERM) {
+    const rec = await ensureLongTermRecord(leadId, facts);
+    if (!rec.ok) return { leadId, owner, current, desired: desired.stage, reason: `long term NOT applied: ${rec.why}`, applied: false };
+  }
 
   let ok = false;
   let stageId: string | null = null;
@@ -476,7 +678,7 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
     .set({
       leadStage: desired.stage === STAGE.CLOSED_LOST ? "Closed Lost" : desired.stage,
       leadStageId: stageId ?? undefined,
-      listingFreeFrom: desired.stage === STAGE.LONG_TERM ? freeAt : null,
+      listingFreeFrom: desired.stage === STAGE.LONG_TERM ? freeAt : exitByDate ? row.listingFreeFrom : null,
       ...(desired.stage === STAGE.CLOSED_LOST || desired.stage === STAGE.LONG_TERM || desired.stage === STAGE.CO_BROKE ? { nextFollowupAt: null } : {}),
       updatedAt: new Date(),
     })
@@ -486,14 +688,18 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
     .insert(stageEventsTable)
     .values({ leadId, fromStage: current, toStage: desired.stage, pipeline: row.pipeline, responsibleUser: `engine:${opts.source}` })
     .catch(() => undefined);
-  if (freeAt) {
-    const due = new Date(freeAt.getTime() - REMIND_BEFORE_DAYS * 86_400_000);
-    const soonest = new Date(Date.now() + 7 * 86_400_000);
-    await createAmoTask(
-      leadId,
-      `Villa frees up around ${facts.freeFromIso}. Get back in touch now, before it is re-let.`,
-      due > soonest ? due : soonest,
-    ).catch(() => undefined);
+  if (freeAt) await postLongTermNote(leadId, facts, "Moved to");
+  if (exitByDate && row.listingFreeFrom) {
+    // §6: the task has fired. The card is back in TAKEN TO WORK and the bot asks the two questions.
+    const open = await getOpenAmoTasks(leadId).catch(() => []);
+    await completeAmoTasks(
+      open.filter((t) => (t.text ?? "").startsWith(LONG_TERM_TASK_PREFIX)).map((t) => t.id),
+      "Back in TAKEN TO WORK: the bot asked the owner to confirm the date and the price",
+    ).catch(() => false);
+    const { writeAvailabilityCheckDraft } = await import("./long-term-check");
+    await writeAvailabilityCheckDraft(leadId, row.listingFreeFrom, facts).catch((err) =>
+      logger.error({ err, leadId }, "long term: the re-confirm draft failed"),
+    );
   }
   logger.info({ leadId, from: current, to: desired.stage, reason: desired.reason, source: opts.source }, "listing stage engine: card moved");
   return { leadId, owner, current, desired: desired.stage, reason: desired.reason, applied: true };
@@ -505,7 +711,7 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
  * belong. The daily run of this is how the next drift is seen by a report,
  * not by the owner opening cards.
  */
-export async function auditListingStages(opts: { apply: boolean; limit?: number }): Promise<{
+export async function auditListingStages(opts: { apply: boolean; limit?: number; stage?: string; refresh?: boolean }): Promise<{
   scanned: number;
   moved: ReconcileResult[];
   held: ReconcileResult[];
@@ -522,6 +728,7 @@ export async function auditListingStages(opts: { apply: boolean; limit?: number 
        AND lower(coalesce(lead_stage,'')) NOT LIKE '%closed%'
        AND lower(coalesce(lead_stage,'')) NOT LIKE '%lost%'
        AND lower(coalesce(lead_stage,'')) NOT LIKE '%won%'
+       AND (${opts.stage ?? ""} = '' OR lower(coalesce(lead_stage,'')) = lower(${opts.stage ?? ""}))
      ORDER BY updated_at DESC
      LIMIT ${opts.limit ?? 400}
   `);
@@ -533,7 +740,7 @@ export async function auditListingStages(opts: { apply: boolean; limit?: number 
   let inPlace = 0;
   for (const leadId of ids) {
     try {
-      const r = await reconcileListingStage(leadId, { apply: opts.apply, source: "audit" });
+      const r = await reconcileListingStage(leadId, { apply: opts.apply, source: "audit", refresh: opts.refresh });
       if (r.reason.startsWith("facts unavailable")) { notJudged.push(leadId); continue; }
       if (r.applied) moved.push(r);
       else if (
@@ -593,6 +800,23 @@ export async function maybeRunDailyListingAudit(): Promise<void> {
   });
   logger.info({ scanned: progressed.length, moved: progressed.filter((p) => p.moved).map((p) => `${p.leadId}→${p.to}`) }, "listing progress audit complete");
   const lines = r.forBroker.slice(0, 6).map((x) => `#${x.leadId}: ${x.current} → facts say ${x.desired}`);
-  const body = `Bot moved ${r.moved.length}, held ${r.held.length}${r.notJudged.length ? `, could not read ${r.notJudged.length}` : ""}. ${r.forBroker.length} of your cards disagree with their facts.${lines.length ? "\n" + lines.join("\n") : ""}`;
+  // The long term regulation's standing check (§9), read live after the day's moves. Expected: nothing.
+  const control = await longTermControl().catch((err) => {
+    logger.error({ err }, "long term control failed");
+    return null;
+  });
+  const defects = control ? control.noPrice.length + control.noDate.length + control.noFutureTask.length + control.stale.length : 0;
+  if (control) {
+    const ids = (rows: Array<{ leadId: number }>) => rows.map((x) => x.leadId);
+    const summary = { total: control.total, noPrice: ids(control.noPrice), noDate: ids(control.noDate), noFutureTask: ids(control.noFutureTask), stale: ids(control.stale) };
+    if (defects) logger.warn(summary, "long term control: defects on the stage");
+    else logger.info(summary, "long term control: clean");
+  }
+  const controlLine = !control
+    ? "\nLong term check could not be read."
+    : defects
+      ? `\nLong term check: ${control.noPrice.length} without a price, ${control.noDate.length} without a date, ${control.noFutureTask.length} without a task, ${control.stale.length} untouched 30+ days.`
+      : "";
+  const body = `Bot moved ${r.moved.length}, held ${r.held.length}${r.notJudged.length ? `, could not read ${r.notJudged.length}` : ""}. ${r.forBroker.length} of your cards disagree with their facts.${lines.length ? "\n" + lines.join("\n") : ""}${controlLine}`;
   await notifyBroker("yudi", "Listing stage audit", body, "/m").catch(() => 0);
 }

@@ -181,6 +181,7 @@ const MISSING_POINT: Array<[RegExp, OwnerPoint]> = [
   [/^minimum stay$/, "min_stay"],
   [/^earliest viewing$/, "viewing"],
   [/^not the owner/, "owner"],
+  [/^free date$/, "availability"],
 ];
 
 /** A gap the extraction left `null` but the villa side's own words answer is not a gap. */
