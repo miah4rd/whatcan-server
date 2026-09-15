@@ -25,12 +25,16 @@ const BANNED_PHRASES: Array<[RegExp, string | ((m: string, lead: string | undefi
   filler("just checking in"),
   filler("happy to help"),
   filler("happy to reconnect"),
-  // Only at the start of a sentence. "Let me know if" → "If you'd like" reads
-  // fine there and nowhere else: mid-sentence it produced "could you If you'd
-  // like it can be offered on a 12 month contract?", which went into a draft
-  // queued for a villa owner. A slightly weak phrase is better than broken
-  // English, so a mid-sentence occurrence is left exactly as the model wrote it.
-  [/(^|[.!?]\s+)[Ll]et me know if\b/g, "$1If you'd like"],
+  // "Let me know if" is filler only as an empty closer ("Let me know if you have
+  // any questions"), and that whole sentence goes. Rewriting the phrase itself
+  // broke English every time: mid-sentence "could you If you'd like it can be
+  // offered on a 12 month contract?" (a draft to a villa owner), and at the
+  // start "Let me know if the dates work" → "If you'd like the dates work"
+  // (15.09.2026). A "let me know if" that carries a real question stays as written.
+  [
+    /(^|[.!?]|\n)[^\S\n]*(?:feel free to )?let me know if you (?:have any (?:other |more |further )?questions?|need anything(?: else)?|need any (?:more )?(?:help|info(?:rmation)?))[^.!?\n]*[.!?]?[^\S\n]*/gi,
+    "$1",
+  ],
   [/[Ff]eel free to reach out\b[^.]*\./g, ""],
   [/[Ff]eel free to reach out/g, ""],
 ];
