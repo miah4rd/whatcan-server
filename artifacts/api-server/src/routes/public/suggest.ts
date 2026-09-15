@@ -8,7 +8,7 @@ import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing"
 import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
-import { allAttachmentsNamed, pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment, alreadySentPropertyIds, relaxQuestion } from "../../lib/generate-suggestion";
+import { allAttachmentsNamed, pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment, alreadySentPropertyIds, relaxQuestion, stripUnbackedListingOffer } from "../../lib/generate-suggestion";
 import { brokerDisplayName } from "../../lib/broker-identity";
 import { getLeadCardCriteria } from "../../lib/lead-card-fields";
 import { learnFromRevision, correctionsPromptBlock, deriveSituation } from "../../lib/broker-corrections";
@@ -148,6 +148,9 @@ const REVISION_IS_A_FULL_REDO =
  * holds nothing (candidatesForLead.widenAreaWhenEmpty); the composer still
  * decides the message.
  */
+/** A villa described by size or price ("a 3BR villa", "Rp 65 million/month") — worth a look when no link goes with the text. */
+const DESCRIBES_A_VILLA = /\b\d\s*-?\s*(?:br|bed(?:room)?s?)\b|\brp\.?\s*\d|\b\d+(?:[.,]\d+)?\s*(?:million|mil|jt|juta)\b/i;
+
 const BROKER_ASKS_FOR_OPTIONS =
   /\b(send|attach|share|offer|give|show|find|add|include)\b[^.?!\n]{0,40}\b(options?|villas?|links?|listings?|propert(?:y|ies))\b|(пришли|отправь|скинь|прикрепи|предложи|добавь|покажи)[^.?!\n]{0,30}(вариант|вилл|ссылк|опци)/i;
 
@@ -817,6 +820,9 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           // "new_selection"; a question-message keeps at most the villas the
           // client themselves brought up, and a wording edit keeps the list
           // exactly as it was.
+          // What the model chose, before any rule below narrows it: the text was
+          // written about THESE villas.
+          const modelIds = [...composed.listingIds];
           const leadOwnIds = new Set(
             (body.messages ?? [])
               .filter((m) => m.from === "lead")
@@ -1104,15 +1110,35 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
                 { leadId: body.leadId, idsReturned: composed.listingIds, poolSize: pool.lines.length, curated: curatedDetected, curatedLocked },
                 "suggest: composer chose new_selection with nothing to attach — any offer in the text is removed",
               );
-              finalText = await reconcileTextWithAttachments(
-                composed.text,
-                [],
-                true,
-                pool.budgetIdr,
-                outputLang === "auto" ? null : outputLang,
-              );
+              finalText = await stripUnbackedListingOffer(composed.text, true);
               mustReconcile = false;
             }
+          }
+
+          // Text and links are ONE message, checked in code on every decision
+          // (15.09.2026, Amelia on 23534609): the composer wrote about "a 3BR villa
+          // in Canggu at Rp 65 million and a 3BR in Umalas at Rp 58 million",
+          // picked their ids, the ids were dropped (outside an empty pool, already
+          // sent) — and on "none_this_message" nothing read the text again, so a
+          // message about villas reached the inbox with no link under it. Whenever
+          // the model chose a villa the code did not attach, or nothing is attached
+          // under a text that describes one, the text follows the final links.
+          const finalIds = new Set(chosen.map((c) => (c.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase()));
+          const modelDropped = modelIds.filter((id) => !finalIds.has(id.toUpperCase()));
+          if (modelDropped.length > 0 && chosen.length > 0) {
+            mustReconcile = true;
+          } else if (
+            chosen.length === 0 &&
+            composed.decision !== "new_selection" &&
+            (modelDropped.length > 0 || DESCRIBES_A_VILLA.test(finalText))
+          ) {
+            finalText = await stripUnbackedListingOffer(finalText, true);
+          }
+          if (modelDropped.length > 0) {
+            req.log.info(
+              { leadId: body.leadId, modelDropped, attached: chosen.length, decision: composed.decision },
+              "suggest: villas the composer wrote about were not attached — the text follows the final links",
+            );
           }
 
           if (mustReconcile) {

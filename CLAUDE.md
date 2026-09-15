@@ -229,6 +229,17 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
     composer gets `poolNote` to say plainly where the villas are. The bot's
     own drafts still ask the client first. Log line: "candidatesForLead:
     nothing in the client's area — the broker asked for options".
+  - Edit path, text over dropped villas (same lead, 15.09): the composer wrote
+    "a 3BR villa in Canggu at Rp 65 million, a 3BR in Umalas at Rp 58 million"
+    and picked ids the code then dropped (empty pool, already sent); on
+    `none_this_message` nothing read the text again, and the phrasing
+    pre-filter of `stripUnbackedListingOffer` did not match "worth a look".
+    Now suggest.ts keeps `modelIds` (before any narrowing): a picked villa not
+    attached → the text is reconciled under the final links, or with nothing
+    attached `stripUnbackedListingOffer(text, force=true)` rewrites it; the
+    same with nothing attached under a text that describes a villa by size or
+    price (`DESCRIBES_A_VILLA`). Log line: "villas the composer wrote about
+    were not attached".
   Call sites covered through the shared picker: lib `generateSuggestion`
   (unanswered-live pass, ad-lead opening, handover, viewing-report
   `shortlistAfterViewing`, timeline-sync, retouch), the webhook copy (live

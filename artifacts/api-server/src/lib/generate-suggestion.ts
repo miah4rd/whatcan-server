@@ -973,8 +973,13 @@ const OFFERS_LISTINGS_NOW =
  * is OFFERING villas now (must be repaired) or merely REFERRING BACK to ones the
  * client already has ("the two I sent last week"), which is normal and correct.
  */
-async function stripUnbackedListingOffer(text: string): Promise<string> {
-  if (!text || !OFFERS_LISTINGS_NOW.test(text)) return text;
+export async function stripUnbackedListingOffer(text: string, force = false): Promise<string> {
+  // `force`: the caller already knows the text was written about villas that are
+  // not attached (the edit path dropped the ids). The phrasing pre-filter missed
+  // "Also worth a look: a 3BR villa with private pool in Canggu at Rp 65
+  // million/month" (Amelia, 23534609, 15.09.2026) and the text went to the inbox
+  // with no link under it.
+  if (!text || (!force && !OFFERS_LISTINGS_NOW.test(text))) return text;
   try {
     const fixed = await chatCompletion({
       model: WRITER_MODEL,
@@ -984,7 +989,7 @@ async function stripUnbackedListingOffer(text: string): Promise<string> {
 NO property links are attached to it. Nothing will arrive after it.
 
 First decide which of these the message is doing:
-(A) It presents villas as being HERE — "here are three", "the link below", "any of these?", a numbered list of properties. The client would look for something that never comes.
+(A) It presents villas as being HERE — "here are three", "the link below", "any of these?", a numbered list of properties, or "also worth a look: a 3BR villa in Canggu at Rp 65 million" (a villa described by size, area or price that the message does not say was sent before). The client would look for something that never comes.
 (B) It only refers BACK to villas already sent earlier, or asks a question, or mentions no properties at all. Nothing is missing.
 
 If (B): return the message EXACTLY as given, character for character.
