@@ -2456,12 +2456,19 @@ const PAGE_HTML = `<!doctype html>
   }
   function renderViewingReport(it) {
     if (it._vrFiled) {
-      return '<div class="vr-done">&#x2705; Viewing report filed. Saved as a note on the card; the draft below is being rewritten from it &mdash; pull to refresh in a moment.</div>';
+      // A client with two viewings has two reports; the next one takes this
+      // one's place after the refresh and must not read as the same form
+      // coming back (Amelia, Lorenzo, 15.09).
+      var more = it._vrFiled.more > 0
+        ? ' <b>This client has ' + (it._vrFiled.more === 1 ? 'one more viewing' : it._vrFiled.more + ' more viewings') + ' without a report</b> &mdash; that form opens after the refresh, with its own villa and date.'
+        : '';
+      return '<div class="vr-done">&#x2705; Viewing report filed. Saved as a note on the card; the draft below is being rewritten from it &mdash; pull to refresh in a moment.' + more + '</div>';
     }
     var vr = it.viewing_report;
     if (!vr) return "";
     var h = '<div class="vr" id="vr">';
     h += '<div class="vr-head">&#x1F4CB; Viewing report' + (vr.property_code ? ' &middot; <b>' + esc(vr.property_code) + '</b>' : '') + ' &middot; ' + esc(vrFmt(vr.viewing_at)) + '</div>';
+    if (vr.open_count > 1) h += '<div class="vr-row"><span class="vr-status">' + vr.open_count + ' viewings of this client have no report yet &mdash; this one is the latest; the next opens after you send it.</span></div>';
     if (!vr.property_code) {
       // The villa comes from the messages that agreed the slot; when they do
       // not make it clear, the broker names it here instead of us guessing.
@@ -2537,7 +2544,7 @@ const PAGE_HTML = `<!doctype html>
         });
         var j = await r.json().catch(function () { return {}; });
         if (!r.ok || !j.ok) throw new Error(j.error || ("HTTP " + r.status));
-        it._vrFiled = { stage: j.stage || null };
+        it._vrFiled = { stage: j.stage || null, more: Math.max(0, (it.viewing_report.open_count || 1) - 1) };
         it.viewing_report = null;
         showToast("Viewing report filed");
         renderDetail();

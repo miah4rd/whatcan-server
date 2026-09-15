@@ -42,9 +42,45 @@ export function isNonAnswer(text: string | null | undefined): boolean {
  * "named". Kuta and Legian are deliberately absent — they sit next to
  * Seminyak, where we do have villas, so a client naming them is not asking for
  * somewhere we cannot serve.
+ *
+ * A place missing here is not "unserved", it is "unrecognised", and an
+ * unrecognised request is welcomed. Christine (15.09.2026) wrote "kesiman,
+ * kertalangu, batu bulan, sedap malam" in the notes — East Denpasar and
+ * Batubulan, nowhere near a villa of ours — none of it was on this list, and
+ * she was read her request back. Add the neighbourhoods and villages clients
+ * actually write, not only the district names.
  */
 const OTHER_PLACES =
-  /\b(denpasar|pemogan|renon|sesetan|sidakarya|panjer|mambal|abiansemal|tegal+alang|payangan|penestanan|sayan|gianyar|sukawati|keramas|ketewel|amed|candidasa|sidemen|karangasem|tulamben|munduk|singaraja|bedugul|nusa penida|nusa lembongan|nusa ceningan)\b/gi;
+  /\b(denpasar|pemogan|renon|sesetan|sidakarya|panjer|kesiman|kertalangu|sedap\s*malam|sumerta|penatih|tohpati|serangan|pedungan|pesanggaran|peguyangan|batu\s*bulan|celuk|singapadu|batuan|guwang|mambal|abiansemal|tegal+alang|payangan|penestanan|sayan|singakerta|peliatan|lodtunduh|tampaksiring|gianyar|sukawati|blahbatuh|keramas|ketewel|klungkung|semarapura|padang\s*bai|amed|candidasa|sidemen|karangasem|tulamben|kintamani|munduk|singaraja|bedugul|nusa penida|nusa lembongan|nusa ceningan)\b/gi;
+
+/**
+ * The catalog district a place above sits next to, so that coverage stays read
+ * from the catalog: the day a villa in Sanur is listed, a client asking for
+ * Kesiman or Renon is welcomed again, as a Sanur client is. Only adjacency a
+ * broker would say out loud; a place with no entry is served only by stock in
+ * the place itself.
+ */
+const DISTRICT_OF_PLACE: Record<string, string> = {
+  renon: "Sanur",
+  sesetan: "Sanur",
+  sidakarya: "Sanur",
+  panjer: "Sanur",
+  kesiman: "Sanur",
+  kertalangu: "Sanur",
+  "sedap malam": "Sanur",
+  sumerta: "Sanur",
+  penatih: "Sanur",
+  tohpati: "Sanur",
+  serangan: "Sanur",
+  penestanan: "Ubud",
+  sayan: "Ubud",
+  singakerta: "Ubud",
+  peliatan: "Ubud",
+  lodtunduh: "Ubud",
+  tegalalang: "Ubud",
+  tegallalang: "Ubud",
+  payangan: "Ubud",
+};
 
 function titleCase(s: string): string {
   return s
@@ -78,7 +114,13 @@ export function placesAsked(areaAnswer: string | null | undefined, notes: string
 
 /** Served: an offerable rental in the place itself, its district, or next door. */
 export function isServed(place: string, stockAreas: readonly string[]): boolean {
-  const nearby = [place, parentAreaOf(place) ?? place, ...neighbourAreas(place)];
+  const district = DISTRICT_OF_PLACE[place.toLowerCase().replace(/\s+/g, " ")];
+  const nearby = [
+    place,
+    parentAreaOf(place) ?? place,
+    ...neighbourAreas(place),
+    ...(district ? [district, ...neighbourAreas(district)] : []),
+  ];
   return stockAreas.some((area) => areaMatches(area, nearby));
 }
 
