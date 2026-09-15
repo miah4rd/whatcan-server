@@ -60,6 +60,9 @@ import { isUndeliverableNotice } from "./undeliverable";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { LISTING_STAGE, LISTING_STAGE_NAME, LISTINGS_PIPELINE_ID, siteGet, siteInsert } from "./listing-status-week";
 import { WEEKLY_CHECK_KIND, weeklyAnswerKey, type WeeklyAnswerMarker } from "./weekly-check-reply";
+import { leadContact } from "./phone-dedupe";
+import { phoneKey } from "./property-flags";
+import { brokerDisplayName } from "./broker-identity";
 
 export { WEEKLY_CHECK_KIND };
 const MODE_KEY = "weekly_availability_mode";
@@ -127,6 +130,30 @@ export function composeWeeklyCheck(lang: "en" | "id", ownerName: string, villa: 
   }
   return `Hi${who}, quick weekly check on ${named ? villa : "your villa"}: is it still available? If it's taken, when does it free up?`;
 }
+
+/**
+ * The same check for an owner whose thread is not in amoCRM (owner, 15.09.2026: the live cards imported
+ * from the site on 25.08 carry the owner's name and number from Internal data, but Yudi talked to them
+ * outside Copilot). The owner may not know this number, so it says who writes and which villa.
+ */
+export function composeWeeklyCheckIntro(lang: "en" | "id", ownerName: string, villa: string, broker: string): string {
+  const who = ownerName ? ` ${ownerName}` : "";
+  if (lang === "id") {
+    return `Halo${who}, saya ${broker} dari Unicorn Property. Cek mingguan untuk ${villa}: apakah masih tersedia? Kalau sudah terisi, kosong lagi mulai tanggal berapa?`;
+  }
+  return `Hi${who}, this is ${broker} from Unicorn Property. Quick weekly check on ${villa}: is it still available? If it's taken, when does it free up?`;
+}
+
+/** "your 2BR villa in Umalas" when the card title is only our code. */
+function describeVilla(lang: "en" | "id", villa: string, bedrooms: number | null, area: string | null): string {
+  if (villa && villa !== "your villa") return villa;
+  if (lang === "id") return area ? `villanya di ${area}` : "villanya";
+  const size = bedrooms ? `${bedrooms}BR ` : "";
+  return area ? `your ${size}villa in ${area}` : `your ${size}villa`.replace("  ", " ");
+}
+
+/** Internal data that names no person: the scout's pin placeholder, "not stated", an agency. */
+const PLACEHOLDER_OWNER = /google maps|maps pin|\bpin\b|not stated|unknown|placeholder|agency|agent\b/i;
 
 /**
  * The card title carries the villa, but in two shapes the scout and the site
@@ -261,7 +288,16 @@ type Candidate = WeeklyPlanRow & { responsibleUser: string | null; ownerTexts: s
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
-async function planCard(lead: AmoLead, link: { property_id: string; title: string } | null, why: string): Promise<Candidate> {
+type LinkedListing = {
+  property_id: string;
+  title: string;
+  bedrooms: number | null;
+  area: string | null;
+  /** The listing's Internal data owner, if the site has one. */
+  owner: { owner_name: string | null; owner_phone: string | null } | null;
+};
+
+async function planCard(lead: AmoLead, link: LinkedListing | null, why: string): Promise<Candidate> {
   const leadId = String(lead.id);
   const title = (lead.name ?? "").trim();
   const villa = villaFromLeadName(title);
@@ -325,21 +361,45 @@ async function planCard(lead: AmoLead, link: { property_id: string; title: strin
   base.owner = await fetchOwnerName(leadId, villa);
   base.message = composeWeeklyCheck(base.lang, base.owner, villa);
 
+  const own = brokerLines(sync.responsibleUser);
+  // No thread in amoCRM. Checked anyway when the site knows this owner: the card's contact phone is the
+  // linked listing's Internal data owner phone, and that owner is a person (owner, 15.09.2026: the live
+  // cards imported from the site on 25.08 — Yudi dealt with those owners outside Copilot). Never a scout
+  // card whose Internal data is only the number on the villa's map pin: that would be a cold first contact.
+  let introduce = false;
   if (inbound.length === 0 || (await isFirstOutbound(leadId))) {
-    return { ...base, why: "the owner has never written to us — a weekly check is not a first contact" };
+    const ownerName = (link?.owner?.owner_name ?? "").trim();
+    const ownerKey = phoneKey(link?.owner?.owner_phone);
+    const contact = ownerKey ? await leadContact(leadId) : null;
+    const knownOwner =
+      !!ownerKey && !!contact && phoneKey(contact.phone) === ownerKey && !!ownerName && !PLACEHOLDER_OWNER.test(ownerName);
+    if (!knownOwner) {
+      return { ...base, why: "the owner has never written to us and the site's Internal data does not name a person on this card's number — not a first contact" };
+    }
+    if (talks.length === 0 && own.length !== 1) {
+      return { ...base, why: `no thread in amoCRM and ${sync.responsibleUser ?? "nobody"} does not have exactly one WhatsApp line — the send could land on the wrong number` };
+    }
+    introduce = true;
   }
   // The question goes out on the line the owner is talking to. A thread that lives on another
   // broker's number (Bumbak Dream Villa: the owner talks to Amelia's 56811, the card is Yudi's) would
   // make resolveSendChannel reassign the card to Yudi's line and open a second chat with the owner.
-  const own = brokerLines(sync.responsibleUser);
-  if (talks.length === 0) return { ...base, why: "no WhatsApp conversation visible on this card in amoCRM" };
-  // resolveSendChannel keeps a multi-line broker on a talk that exists on one of their own numbers;
-  // with none, it would reassign the card to the broker's primary line and open a new chat.
-  const ownTalk = talks.find((t) => own.includes(t.sourceId));
-  if (!ownTalk) {
-    return { ...base, why: `the owner's conversation is only on line ${talks[0]!.sourceId}, not ${sync.responsibleUser}'s — would open a second chat` };
+  if (talks.length === 0 && !introduce) return { ...base, why: "no WhatsApp conversation visible on this card in amoCRM" };
+  if (talks.length > 0) {
+    // resolveSendChannel keeps a multi-line broker on a talk that exists on one of their own numbers;
+    // with none, it would reassign the card to the broker's primary line and open a new chat.
+    const ownTalk = talks.find((t) => own.includes(t.sourceId));
+    if (!ownTalk) {
+      return { ...base, why: `the owner's conversation is only on line ${talks[0]!.sourceId}, not ${sync.responsibleUser}'s — would open a second chat` };
+    }
+    base.line = String(ownTalk.sourceId);
+  } else {
+    base.line = String(own[0]);
   }
-  base.line = String(ownTalk.sourceId);
+  if (introduce) {
+    const lang = base.lang ?? "en";
+    base.message = composeWeeklyCheckIntro(lang, base.owner, describeVilla(lang, villa, link?.bedrooms ?? null, link?.area ?? null), brokerDisplayName(sync.responsibleUser));
+  }
   if (lastOut && lastOut > daysAgo(CHECK_EVERY_DAYS)) {
     return { ...base, why: `we wrote to the owner ${lastOut.toISOString().slice(0, 16)} — less than ${CHECK_EVERY_DAYS} days ago` };
   }
@@ -390,9 +450,17 @@ export async function planWeeklyChecks(): Promise<Candidate[]> {
     `listing_crm_link?select=property_id,amo_lead_id&amo_lead_id=in.(${ids.join(",")})`,
   );
   const propIds = [...new Set(links.map((l) => l.property_id))];
+  const inList = propIds.map((p) => `"${p}"`).join(",");
   const props = propIds.length
-    ? await siteGet<{ id: string; title: string; is_draft: boolean | null; listing_type: string | null }[]>(
-        `properties?select=id,title,is_draft,listing_type&id=in.(${propIds.map((p) => `"${p}"`).join(",")})`,
+    ? await siteGet<{ id: string; title: string; is_draft: boolean | null; listing_type: string | null; bedrooms: number | null; area: string | null }[]>(
+        `properties?select=id,title,is_draft,listing_type,bedrooms,area&id=in.(${inList})`,
+      )
+    : [];
+  // The owner as the site knows them (Internal data). A card with no thread in amoCRM is checked only
+  // when its contact's phone is this one (planCard).
+  const owners = propIds.length
+    ? await siteGet<{ property_id: string; owner_name: string | null; owner_phone: string | null }[]>(
+        `property_private?select=property_id,owner_name,owner_phone&property_id=in.(${inList})`,
       )
     : [];
 
@@ -408,7 +476,9 @@ export async function planWeeklyChecks(): Promise<Candidate[]> {
     else if (prop.is_draft) why = `linked listing ${prop.id} is a draft, not published`;
     else if ((prop.listing_type ?? "rent") !== "rent") why = `linked listing ${prop.id} is not a rental`;
     try {
-      out.push(await planCard(lead, prop ? { property_id: prop.id, title: prop.title } : null, why));
+      const owner = prop ? owners.find((o) => o.property_id === prop.id) ?? null : null;
+      const linked = prop ? { property_id: prop.id, title: prop.title, bedrooms: prop.bedrooms, area: prop.area, owner } : null;
+      out.push(await planCard(lead, linked, why));
     } catch (err) {
       logger.warn({ err, leadId: lead.id }, "weekly-availability: could not judge this card");
     }

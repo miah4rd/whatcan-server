@@ -2534,6 +2534,30 @@ were both answered within an hour. **Regulation now — automatic, no approval:*
   published listing but no conversation in amoCRM (R-YUD-018/048/049, Dani
   Villa, The Loft — the last two sit in Weekly Check Sent with nothing ever
   sent).
+- **An owner the site knows is checked without a thread in amoCRM (owner,
+  15.09: "не может такого быть что лайв есть а листингов на сайте нету…
+  на сайте есть internal data… брать в работу на чек авелебилити").** The
+  live cards imported from the site on 25.08 (R-YUD-018 Ahj French, R-YUD-048
+  Bima, R-YUD-049 Bernice, YUDR-011 Fitri) carry the owner's name and number
+  from Internal data but no WhatsApp talk and no message: Yudi dealt with
+  them outside Copilot. `planCard` now lets such a card through when its
+  contact's phone equals the linked listing's `property_private.owner_phone`
+  (last 9 digits) and the owner name is a person, not the scout's pin
+  placeholder (`PLACEHOLDER_OWNER`: Dani Villa and The Loft stay out — their
+  Internal data is "contact from the villa Google Maps pin", never talked to).
+  With no talk the send goes on the broker's single line; a multi-line broker
+  is skipped. The message introduces the sender and names the villa by the
+  listing when the card title is only our code
+  (`composeWeeklyCheckIntro`: "Hi Bima, this is Yudi from Unicorn Property.
+  Quick weekly check on your 2BR villa in Umalas: …"). The import cards whose
+  responsible user was Admin (no WhatsApp line) were given to Yudi, YUDR-011
+  was linked to 23355223, and contact 25174875 on Villa Amor got its Internal
+  data name (Tricia). Left for a person, not checked: 23202383 Double R Villa
+  (same number as R-YUD-049 / 23355219 — a duplicate card), 23355221 (import
+  duplicate of Villa Amor 23223641, which a person moved back to QUALIFIED),
+  23353723 Casa Emilia (the thread is on lost 23170111 with two numbers and
+  "no WhatsApp" notices; two listings R-YUD-046 / R-YUD-060 for the same owner),
+  23541159 (the Umbala coordinator; the owner card 23305115 is checked).
 
 ### Construction nearby: the one structured red flag (2026-09-10)
 
