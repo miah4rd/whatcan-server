@@ -218,6 +218,17 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
     the broker hand-curated and villas the broker named. A `keep_current`
     link that is outside the (possibly instruction-updated) request is
     replaced from the pool.
+  - Edit path, the broker asks for options and only the client's area blocks
+    (owner, 15.09.2026): Amelia asked five times for "options of 3 bedrooms
+    under 70 million" on 23534609, whose form says Denpasar Barat (no villa
+    of ours there); five empty pools, a question about Canggu instead of
+    links. Now `BROKER_ASKS_FOR_OPTIONS` (suggest.ts) sets
+    `candidatesForLead.widenAreaWhenEmpty`: an empty pool whose `RelaxHint`
+    is the area (and whose areas did not come from the broker) is drawn from
+    `hint.areas` (named neighbours, else the area holding most fits), and the
+    composer gets `poolNote` to say plainly where the villas are. The bot's
+    own drafts still ask the client first. Log line: "candidatesForLead:
+    nothing in the client's area — the broker asked for options".
   Call sites covered through the shared picker: lib `generateSuggestion`
   (unanswered-live pass, ad-lead opening, handover, viewing-report
   `shortlistAfterViewing`, timeline-sync, retouch), the webhook copy (live

@@ -1677,7 +1677,14 @@ export function requestMisfits(p: SupabaseProperty, r: ClientRequest, now: Date 
 export type RelaxExample = { id: string; title: string; bedrooms: number | null; area: string | null; priceIdr: number; freeFrom: string | null };
 
 /** The one dimension whose loosening would open the most villas — the question to ask when nothing fits. */
-export type RelaxHint = { dim: "area" | "budget" | "bedrooms" | "dates"; count: number; suggestion: string; example?: RelaxExample | null };
+export type RelaxHint = {
+  dim: "area" | "budget" | "bedrooms" | "dates";
+  count: number;
+  suggestion: string;
+  example?: RelaxExample | null;
+  /** dim "area": the area names the suggestion offers (the edit path draws from them when the broker asks for options). */
+  areas?: string[];
+};
 
 function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m: Misfit[] }>): RelaxHint | null {
   const byDim = new Map<Misfit["dim"], SupabaseProperty[]>();
@@ -1714,7 +1721,7 @@ function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m
   if (areaPool.length > 0) {
     const names = mostCommon(areaPool.map((p) => parentAreaOf((p.area ?? "").split(",")[0]) ?? p.area ?? "")).filter(Boolean).slice(0, near.length > 0 ? 2 : 1);
     const inNamed = areaPool.filter((p) => names.includes(parentAreaOf((p.area ?? "").split(",")[0]) ?? p.area ?? ""));
-    hints.push({ dim: "area", count: areaPool.length, suggestion: near.length > 0 ? `nearby ${names.join(" or ")}` : names.join(" or "), example: exampleOf(inNamed) });
+    hints.push({ dim: "area", count: areaPool.length, suggestion: near.length > 0 ? `nearby ${names.join(" or ")}` : names.join(" or "), example: exampleOf(inNamed), areas: names });
   }
   const over = (byDim.get("budget") ?? []).filter((p) => r.budgetMaxIdr !== null && priceOf(p) > r.budgetMaxIdr && priceOf(p) <= r.budgetMaxIdr * 1.3);
   if (over.length > 0) {
@@ -1873,9 +1880,13 @@ export async function candidatesForLead(opts: {
   leadId?: string | null;
   /** What WE sent — a quoted message of ours is not the client's words. */
   ourMessages?: string[];
+  /** The broker asked for options: when only the client's area stands in the way, draw from the nearest area that has them. */
+  widenAreaWhenEmpty?: boolean;
 }): Promise<{
   candidates: SupabaseProperty[];
   request: ClientRequest;
+  /** Set when the client's own area held nothing and the pool comes from the nearest area instead. */
+  widenedArea: { asked: string[]; used: string[] } | null;
   /** With an empty pool: the one question worth asking, with the closest real option. */
   hint: RelaxHint | null;
   /** Fits including the ones already sent — tells "nothing exists" from "they have it all". */
@@ -1900,11 +1911,42 @@ export async function candidatesForLead(opts: {
     leadNotes: opts.leadNotes ?? null,
     clickedListingId: opts.clickedListingId ?? null,
   });
-  const pool = await strictShortlistPool(request, {
+  let pool = await strictShortlistPool(request, {
     listingType: opts.listingType,
     excludeIds: opts.excludeIds,
     rotationKey: opts.leadId,
   });
+  // Owner, 15.09.2026. Amelia on 23534609: "send her last follow up with options
+  // of 3 bedrooms under 70 million" for a client whose form says Denpasar Barat,
+  // where we have no villa — five edits, five empty pools, and a question about
+  // Canggu instead of the options she asked for. When the BROKER asks for
+  // options and only the client's area stands in the way, the pool comes from
+  // the nearest area that has them, and the composer is told to say where they
+  // are. Never when the broker named the area himself, and never on the bot's
+  // own drafts: there the client is asked first (relaxQuestion).
+  let widenedArea: { asked: string[]; used: string[] } | null = null;
+  if (
+    pool.fits.length === 0 &&
+    opts.widenAreaWhenEmpty &&
+    !request.releaseArea &&
+    request.sources.areas !== "broker" &&
+    pool.hint?.dim === "area" &&
+    (pool.hint.areas ?? []).length > 0
+  ) {
+    const used = pool.hint.areas!;
+    const widened = await strictShortlistPool(
+      { ...request, areas: used, nearbyOk: false },
+      { listingType: opts.listingType, excludeIds: opts.excludeIds, rotationKey: opts.leadId },
+    );
+    if (widened.fits.length > 0) {
+      logger.info(
+        { request: describeRequest(request), asked: request.areas, used, fits: widened.fits.length },
+        "candidatesForLead: nothing in the client's area — the broker asked for options, drawn from the nearest area",
+      );
+      widenedArea = { asked: [...request.areas], used };
+      pool = widened;
+    }
+  }
   const candidates = pool.fits;
   if (candidates.length === 0) {
     logger.warn(
@@ -1919,6 +1961,7 @@ export async function candidatesForLead(opts: {
     budgetCeiling: request.budgetMaxIdr,
     budgetFloorIdr: request.budgetMinIdr,
     affordableIds: candidates.filter((p) => priceOf(p) > 0).map((p) => p.id),
+    widenedArea,
     hint: pool.hint,
     fitsInclSent: pool.fitsInclSent,
     // Ranked best first (rankShortlistFits). Only reasons a client may hear:
