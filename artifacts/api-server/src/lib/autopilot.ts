@@ -365,15 +365,20 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
       .where(eq(leadMessagesTable.leadId, leadId))
       .orderBy(desc(leadMessagesTable.createdAt))
       .limit(1);
-    const [lastSent] = await db
-      .select({ at: sentMessagesTable.createdAt })
+    // Only a send amoCRM accepted is a message the lead has. A failed attempt counted as "went out"
+    // (15.09.2026: five nudges refused with 429), so its draft, back in the queue, would have been
+    // retired as already answered or held for 20 h; a failure only holds a retry back 30 minutes.
+    const recentSends = await db
+      .select({ at: sentMessagesTable.createdAt, status: sentMessagesTable.webhookStatus })
       .from(sentMessagesTable)
       .where(eq(sentMessagesTable.leadId, leadId))
       .orderBy(desc(sentMessagesTable.createdAt))
-      .limit(1);
+      .limit(10);
+    const accepted = (s: number | null | undefined) => s != null && s >= 200 && s < 300;
     const ms = (d: Date | string | null | undefined) => (d ? new Date(d).getTime() : 0);
     const inAt = ms(lastIn?.at);
-    const sentAt = ms(lastSent?.at);
+    const sentAt = ms(recentSends.find((r) => accepted(r.status))?.at);
+    const failedAt = ms(recentSends.find((r) => !accepted(r.status))?.at);
     const lastOursAt = Math.max(sentAt, lastAny && lastAny.direction !== "inbound" ? ms(lastAny.at) : 0);
     const now = Date.now();
     if (sug.kind === "live" && lastOursAt > inAt && now - lastOursAt < 6 * 3600_000) {
@@ -385,6 +390,9 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
     }
     if (sug.kind !== "live" && lastOursAt > 0 && now - lastOursAt < 20 * 3600_000) {
       return decline("cadence: something already went out in the last 20h — waiting");
+    }
+    if (failedAt > sentAt && now - failedAt < 30 * 60_000) {
+      return decline("waiting: the last send to this lead failed under 30 minutes ago — retried after that");
     }
 
     // An owner is never asked twice (14.09.2026). Every writer already asks
@@ -461,13 +469,25 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
         brokerId: sug.responsibleUser ?? undefined,
       }),
     });
-    if (res.ok) {
+    const answer = res.ok ? ((await res.json().catch(() => null)) as { ok?: boolean; hookStatus?: number } | null) : null;
+    if (res.ok && answer?.ok !== false) {
       await db
         .update(pendingSuggestionsTable)
         .set({ autoSent: true })
         .where(eq(pendingSuggestionsTable.id, sug.id));
       logger.info({ leadId, stage: lead.leadStage }, "autopilot: sent without approval (stage is delegated)");
       return { sent: true, reason: "sent" };
+    } else if (res.ok) {
+      // approve answers 200 with ok:false when amoCRM refused the field write or the Salesbot trigger:
+      // nothing left. This used to be logged "sent without approval" and the draft stayed claimed, so
+      // the drain never picked it again (15.09.2026 13:17: five owner nudges lost to 429s). Back to
+      // pending with a "waiting" verdict: the drain retries it once the 30-minute hold above passes.
+      await db
+        .update(pendingSuggestionsTable)
+        .set({ status: "pending", finalText: null, autoSent: false })
+        .where(eq(pendingSuggestionsTable.id, sug.id));
+      logger.warn({ leadId, hookStatus: answer?.hookStatus ?? null }, "autopilot: approve delivered nothing — draft back to pending for a retry");
+      return decline(`waiting: the send failed (${answer?.hookStatus ?? "no status"}) — retried in 30 minutes`);
     } else {
       const body = await res.text().catch(() => "");
       logger.warn(

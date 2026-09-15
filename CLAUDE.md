@@ -767,6 +767,19 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
   lead's last inbound, and declines a proactive draft when anything left in
   the last 20 h. The owner's frame: autopilot inherits the regulation the
   brokers trained by hand; it never gets to invent a cadence of its own.
+- **A send amoCRM refused is not a send (15.09.2026).** At 13:17 the drain
+  approved nine owner nudges in eight seconds while an admin dry plan read
+  amoCRM too; amoCRM answered 429. `deliverText` fired no Salesbot for the four
+  field writes it lost and one trigger failed, so nothing wrong reached anyone,
+  but five messages were lost silently: approve answers HTTP 200 with
+  `{ok:false}` and `maybeAutopilot` read only the HTTP status ("sent without
+  approval"), the draft stayed claimed so the drain never picked it again, and
+  approve still created the "Sent (push)" task and a commitment. Now: approve
+  schedules tasks, commitments and the listing stage only when `chatSent`;
+  autopilot treats `ok:false` as nothing sent, puts the draft back to pending
+  with a "waiting" verdict; its "already answered" and 20 h guards count only
+  2xx `sent_messages`, and a failed send holds a retry back 30 minutes. Do not
+  run dry plans that read amoCRM per card in a burst of sends.
 
 ## The paid ad lead is answered in seconds, and its silence is read in 15 minutes
 

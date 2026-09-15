@@ -747,25 +747,30 @@ router.post("/approve", async (req, res) => {
       }).catch(() => {});
     }
 
-    // ── Auto-create CRM task (close previous, open new) ──────────────────────
-    autoCreateCrmTask(
-      sug.leadId,
-      body.message,
-      sug.kind,
-      sug.followupLevel ?? null,
-      approveNow,
-      req.log,
-      prevLastMessageFrom,
-    ).catch(() => {});
+    // A message that never left is not a follow-up to schedule, a promise to keep or a stage fact.
+    // 15.09.2026 13:17: amoCRM answered 429 to five autopilot nudges, nothing reached the owners, and
+    // each card still got a "Sent (push)" task (and one a commitment) as if the owner had the message.
+    if (chatSent) {
+      // ── Auto-create CRM task (close previous, open new) ────────────────────
+      autoCreateCrmTask(
+        sug.leadId,
+        body.message,
+        sug.kind,
+        sug.followupLevel ?? null,
+        approveNow,
+        req.log,
+        prevLastMessageFrom,
+      ).catch(() => {});
 
-    // ── Detect "I'll check and get back to you" promises — the client is
-    // waiting on US here, so the normal wait-for-reply clock never fires.
-    recordCommitment(sug.leadId, currentResponsibleUser, body.message).catch(() => {});
+      // ── Detect "I'll check and get back to you" promises — the client is
+      // waiting on US here, so the normal wait-for-reply clock never fires.
+      recordCommitment(sug.leadId, currentResponsibleUser, body.message).catch(() => {});
 
-    // Listing funnel: a message going out is a fact the stage depends on
-    // (Initial Contact → TAKEN TO WORK). Signals only, no model call; the
-    // engine returns at once for every other funnel.
-    reconcileListingStage(sug.leadId, { facts: null, apply: true, source: "send" }).catch(() => undefined);
+      // Listing funnel: a message going out is a fact the stage depends on
+      // (Initial Contact → TAKEN TO WORK). Signals only, no model call; the
+      // engine returns at once for every other funnel.
+      reconcileListingStage(sug.leadId, { facts: null, apply: true, source: "send" }).catch(() => undefined);
+    }
 
     // Rental's stage follows the thread: judged once this text and its links
     // are in amoCRM, by the same decision a reply typed on the phone gets.
