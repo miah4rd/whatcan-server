@@ -370,7 +370,16 @@ async function postLongTermNote(leadId: string, facts: ListingFacts, verb: "Move
     : facts.yearlyIdr
       ? `IDR ${facts.yearlyIdr.toLocaleString("en-US")}/year`
       : "not given";
-  const commission = facts.commission === "included" ? "included" : facts.commission === "net" ? "on top" : "not confirmed";
+  // A rate of their own is the position to report, not our reading of "net" (Ersanea: "our standard
+  // fee is 5%, which is the maximum").
+  const commission =
+    facts.theirCommissionPct !== null && facts.theirCommissionPct !== 10
+      ? `their offer ${facts.theirCommissionPct}%, not yet agreed`
+      : facts.commission === "included"
+        ? "included"
+        : facts.commission === "net"
+          ? "on top"
+          : "not confirmed";
   const touch = humanDate(longTermTaskDue(facts.freeFromIso!).toISOString().slice(0, 10));
   const text = [
     `${verb} LONG TERM on ${today}. Owner quote: "${quote}".`,
@@ -621,7 +630,13 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
   // long term → co-broke → long term in five minutes on one conversation: the decision followed the
   // noise of re-reads, not a fact. A second move needs a new message from them. The date-driven exit
   // from long term is not a message and is exempt.
-  if (ownerReplied && !exitByDate && sig?.theirNewestMs) {
+  // Nor is taking a card OUT of long term because it falls short of the bar: that corrects a parking,
+  // it is not noise. At 13:11 on 15.09 a person moved ten cards from long term to TAKEN TO WORK by the
+  // regulation; at 13:17 the old engine re-parked three of them on a send, and without this the guard
+  // would have protected that wrong move for a day.
+  const correctsParking =
+    norm(current) === norm(STAGE.LONG_TERM) && desired.stage === STAGE.WORK && !longTermBar(facts, ownerSaid).ok;
+  if (ownerReplied && !exitByDate && !correctsParking && sig?.theirNewestMs) {
     const [lastMove] = await db
       .select({ at: stageEventsTable.changedAt, to: stageEventsTable.toStage })
       .from(stageEventsTable)
@@ -645,7 +660,13 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
     return { leadId, owner, current, desired: desired.stage, reason: "not our format NOT confirmed by the second opinion — stays", applied: false };
   }
   if (desired.confirm === "third_party" && !(await confirmsThirdParty(leadId))) {
-    return { leadId, owner, current, desired: desired.stage, reason: "third party NOT confirmed by the second opinion — stays", applied: false };
+    if (norm(current) !== norm(STAGE.LONG_TERM)) {
+      return { leadId, owner, current, desired: desired.stage, reason: "third party NOT confirmed by the second opinion — stays", applied: false };
+    }
+    // long term needs the owner side established (regulation 15.09.2026, §3). Not a confirmed third
+    // party is not a confirmed owner either: the card goes back to asking who they are, instead of
+    // staying parked on a question nobody answered (Villa Mei 23369825, Villa Wabu 23434733).
+    desired = { stage: STAGE.WORK, reason: "not long term: the owner side is not established, and no third party is confirmed" };
   }
 
   if (extractedHere) await syncListingFactsToCard(leadId, facts).catch(() => undefined);
