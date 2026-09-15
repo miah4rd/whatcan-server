@@ -260,11 +260,17 @@ export async function ensureDueReport(
   return { id: row!.id, created: true };
 }
 
-/** Due reports for a set of leads — for the inbox payload, one query. */
+/**
+ * Due reports for a set of leads — for the inbox payload, one query. The card
+ * shows the newest; `openCount` says how many are due on it. Lorenzo had two
+ * viewings (09.09, 12.09): Amelia filed the 12.09 report, the 09.09 one took
+ * its place in the same form, and she read it as her report "still appearing"
+ * (15.09.2026).
+ */
 export async function dueReportsForLeads(
   leadIds: string[],
-): Promise<Map<string, { id: string; viewingAt: Date; propertyCode: string | null; createdAt: Date }>> {
-  const out = new Map<string, { id: string; viewingAt: Date; propertyCode: string | null; createdAt: Date }>();
+): Promise<Map<string, { id: string; viewingAt: Date; propertyCode: string | null; createdAt: Date; openCount: number }>> {
+  const out = new Map<string, { id: string; viewingAt: Date; propertyCode: string | null; createdAt: Date; openCount: number }>();
   if (leadIds.length === 0) return out;
   const rows = await db
     .select({
@@ -277,7 +283,11 @@ export async function dueReportsForLeads(
     .from(viewingReportsTable)
     .where(and(inArray(viewingReportsTable.leadId, leadIds), eq(viewingReportsTable.status, "due")))
     .orderBy(desc(viewingReportsTable.viewingAt));
-  for (const r of rows) if (!out.has(r.leadId)) out.set(r.leadId, r);
+  for (const r of rows) {
+    const seen = out.get(r.leadId);
+    if (seen) seen.openCount++;
+    else out.set(r.leadId, { ...r, openCount: 1 });
+  }
   return out;
 }
 

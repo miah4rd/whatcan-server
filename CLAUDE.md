@@ -891,6 +891,19 @@ recognisable named, or the catalog unreadable, and the welcome goes as before.
 days before: Pemogan and Ubud were welcomed and no conversation followed;
 Megan (Sanur) answered "West side is ok" — which is why the lead is flagged,
 not closed.
+**An unrecognised place is welcomed, so the place list is the rule (15.09).**
+Christine wrote "kesiman, kertalangu, batu bulan, sedap malam" (East Denpasar,
+Batubulan) and got "Got your request: …, kesiman, kertalangu, batu bulan, sedap
+malam. Did I get that right?" — none of the four was in `OTHER_PLACES`, so
+nothing was recognised and the welcome went. The list now carries the
+neighbourhoods and villages clients write (East Denpasar, Batubulan / Sukawati,
+the Ubud villages, the east and north), and `DISTRICT_OF_PLACE` ties the ones
+next to a catalog district to it (Renon, Kesiman, Sedap Malam… → Sanur;
+Penestanan, Sayan, Singakerta… → Ubud), so a first villa in Sanur still
+re-enables them with no code change. Kuta, Legian, Tuban, Benoa stay off the
+list on purpose (next to served stock). When a client names a place and gets
+a welcome we cannot back, add the place; replay `placesAsked` over the logged
+"lead card fields read from amoCRM" answers before deploying.
 
 **Catalog-form leads get the ad-lead mechanics; duplicate cards go to the bin
 (owner, 2026-09-12).** Lance filled the catalog form at 03:26 ("Catalog Lead -
@@ -1419,7 +1432,14 @@ other three had none, and what holds now:
   `viewing-report-due?lead=&at=&retask=1` re-creates a wrongly closed one;
 - the villa is read from the messages that agreed the slot; "the last code sent
   before the slot" named the wrong villa in 2 of 3 reports. Unclear → empty,
-  and the form asks for the code;
+  and the form asks for the code. Lorenzo's 09.09 report (created 10.09, before
+  this) still said R-YUD-074, the Seseh villa he never saw; he viewed Uma
+  Avaya, R-YUD-071 — corrected by hand 15.09;
+- two viewings, two reports, one form (15.09): the card shows the newest due
+  report, so filing Lorenzo's 12.09 report put the 09.09 one in the same place
+  and Amelia read it as "the report I sent is still appearing". The payload
+  carries `open_count`; the form says how many are open and the "filed" note
+  says another one opens after the refresh;
 - a next step "by today" filed after 10:00 was due in the past: `stepDue` puts
   it at 10:00 or 18:00 that day if still ahead, else three hours from now. mobile.ts trap, again: strings inside the page literal are written by
 hand — a Python heredoc collapsed `\\'` to `\'` and the bare quote took the

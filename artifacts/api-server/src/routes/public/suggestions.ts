@@ -273,7 +273,9 @@ router.get("/suggestions", async (req, res) => {
         lead_stage_id: sync?.leadStageId ?? null,
         viewing_report: (() => {
           const r = dueReports.get(i.leadId);
-          return r ? { id: r.id, viewing_at: r.viewingAt.toISOString(), property_code: r.propertyCode, due_since: r.createdAt.toISOString() } : null;
+          return r
+            ? { id: r.id, viewing_at: r.viewingAt.toISOString(), property_code: r.propertyCode, due_since: r.createdAt.toISOString(), open_count: r.openCount }
+            : null;
         })(),
         pipeline: sync?.pipeline ?? null,
         last_message_at: sync?.lastMessageAt?.toISOString() ?? null,
