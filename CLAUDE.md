@@ -2489,6 +2489,19 @@ were both answered within an hour. **Regulation now — automatic, no approval:*
   59537, type-90 events in the timeline, amoCRM live → Weekly Check Sent. The 3
   still-pending approval drafts of 27.08 (899eb618, 4dc6fdbe, b731bce4) set
   skipped. The owner-answer path had no reply yet at deploy.
+- **Verified 15.09.2026 (25998db):** before deploy, `weeklyCheckReplyState`
+  read on the live database: Bumbak `handled`, Villa Lani / Umbala / Dani Villa
+  `none`. After deploy the Bumbak "minimum stay?" draft was retired and did not
+  come back over the next unanswered-live passes; dry plan 16 cards, all in the
+  three weekly stages (the 2 QUALIFIED and 7 closed/co-broke gone). Villa Ra
+  (23389577) linked to R-YUD-065 by hand (owner Mireia, 2BR Seseh 55M, folder
+  "Ra - Seseh"; approved by Nikita) and checked automatically at 13:27:19,
+  type-90 in the timeline, live → Weekly Check Sent. Not covered and not the
+  pass's to fix: 5 live cards with no site link (Casa Emilia, 23355221,
+  23355223, Double R Villa, the Umbala coordinator card 23541159) and 5 with a
+  published listing but no conversation in amoCRM (R-YUD-018/048/049, Dani
+  Villa, The Loft — the last two sit in Weekly Check Sent with nothing ever
+  sent).
 
 ### Construction nearby: the one structured red flag (2026-09-10)
 
