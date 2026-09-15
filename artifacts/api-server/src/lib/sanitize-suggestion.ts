@@ -1,4 +1,17 @@
-const BANNED_PHRASES: [RegExp, string][] = [
+/**
+ * A filler phrase removed WITH the punctuation after it, and the next word
+ * capitalised when the phrase opened a sentence or a line. The plain removal
+ * left the comma behind: "Just checking in, where are you at with the search?"
+ * became ", where are you at with the search?" (Amelia, 23548815, 15.09.2026).
+ */
+function filler(phrase: string): [RegExp, (m: string, lead: string | undefined, next: string | undefined) => string] {
+  return [
+    new RegExp(`(^|[.!?][^\\S\\n]+|\\n)?${phrase}[,!.;:]?[^\\S\\n]*([a-z])?`, "gi"),
+    (_m, lead, next) => (lead ?? "") + (next ? (lead !== undefined ? next.toUpperCase() : next) : ""),
+  ];
+}
+
+const BANNED_PHRASES: Array<[RegExp, string | ((m: string, lead: string | undefined, next: string | undefined) => string)]> = [
   // A dash is the single loudest tell that a machine wrote the message. People
   // writing on WhatsApp use commas and full stops; a model reaches for a dash in
   // every second sentence, and the owner's brokers can spot it across the room.
@@ -7,11 +20,11 @@ const BANNED_PHRASES: [RegExp, string][] = [
   // Guarded on both sides against digits so a price range ("Rp 30 - 50 million")
   // survives, and requiring spaces so compounds ("long-term", "3-4BR") do too.
   [/(?<=[^\d\s])\s+[–-]\s+(?=[^\d\s])/g, ", "],
-  [/Hope you('re| are) doing well[!.]?\s*/gi, ""],
-  [/Hope you('re| are) well[!.]?\s*/gi, ""],
-  [/[Jj]ust checking in[!.]?\s*/g, ""],
-  [/[Hh]appy to help[!.]?\s*/g, ""],
-  [/[Hh]appy to reconnect[!.]?\s*/g, ""],
+  filler("hope you(?:'re|’re| are) doing well"),
+  filler("hope you(?:'re|’re| are) well"),
+  filler("just checking in"),
+  filler("happy to help"),
+  filler("happy to reconnect"),
   // Only at the start of a sentence. "Let me know if" → "If you'd like" reads
   // fine there and nowhere else: mid-sentence it produced "could you If you'd
   // like it can be offered on a 12 month contract?", which went into a draft
@@ -41,8 +54,12 @@ export function sanitizeSuggestion(text: string): string {
   out = out.replace(PREAMBLE_LABEL_LINE, "").trim();
 
   for (const [pattern, replacement] of BANNED_PHRASES) {
-    out = out.replace(pattern, replacement);
+    out = typeof replacement === "string"
+      ? out.replace(pattern, replacement)
+      : out.replace(pattern, (m: string, lead?: string, next?: string) => replacement(m, lead, next));
   }
+  // Whatever removal left a line opening with a comma or semicolon, it goes.
+  out = out.replace(/(^|\n)[^\S\n]*[,;][^\S\n]*/g, "$1");
   // Collapse double commas; collapse multiple spaces on a single line
   // but PRESERVE newlines so property blocks stay separated
   out = out.replace(/,\s*,/g, ",");
