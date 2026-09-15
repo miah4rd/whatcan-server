@@ -20,6 +20,7 @@ import { processSourcedLeadOutreach } from "./sourced-lead-outreach";
 import { processAdLeadBrokerOpening } from "./ad-lead-autoreply";
 import { processListingAcquisitionOutreach } from "./listing-acquisition-outreach";
 import { processWeeklyAvailabilityCheck } from "./weekly-availability-check";
+import { weeklyCheckReplyState } from "./weekly-check-reply";
 import { processListingOwnerFollowup } from "./listing-owner-followup";
 import { processHandoverDrafts, HANDOVER_VERDICT } from "./handover-draft";
 import { processLongTermAvailabilityChecks } from "./long-term-check";
@@ -1507,8 +1508,25 @@ export async function processUnansweredLive(): Promise<void> {
   });
   if (toProcess.length === 0) return;
 
+  // An owner's answer to the weekly availability check is the autopilot's to read: no draft while it
+  // waits to be read or once it is on the site, and never a push (owner, 15.09.2026: "пуши не должны
+  // уходить Юди вообще"). processAnswers retired the draft and this pass wrote it again five minutes
+  // later, push included (Villa Lani 14.09, Bumbak Dream Villa 15.09). Filtered BEFORE the cap of 10,
+  // or cards held here would take the batch every run. See weekly-check-reply.ts.
+  const noPush = new Set<string>();
+  const unansweredReady: typeof toProcess = [];
+  for (const l of toProcess) {
+    if (isListingAcquisitionPipeline(l.pipeline)) {
+      const state = await weeklyCheckReplyState(l.leadId).catch(() => "none" as const);
+      if (state === "awaiting" || state === "handled") continue;
+      if (state === "needs_person") noPush.add(l.leadId);
+    }
+    unansweredReady.push(l);
+  }
+  if (unansweredReady.length === 0) return;
+
   // Cap at 10 per scheduler run to avoid OpenAI overload and inbox flooding.
-  const batch = toProcess.slice(0, 10);
+  const batch = unansweredReady.slice(0, 10);
 
   for (const lead of batch) {
     try {
@@ -1593,10 +1611,12 @@ export async function processUnansweredLive(): Promise<void> {
           .returning({ id: pendingSuggestionsTable.id });
         rowId = inserted!.id;
       }
-      notifyBrokerForLead(lead.responsibleUser, lead.leadId, "replied", lastLeadMessage, {
-        content: lead.content,
-        leadStage: lead.leadStage,
-      }).catch(() => {});
+      if (!noPush.has(lead.leadId)) {
+        notifyBrokerForLead(lead.responsibleUser, lead.leadId, "replied", lastLeadMessage, {
+          content: lead.content,
+          leadStage: lead.leadStage,
+        }).catch(() => {});
+      }
 
       // This path (a separate, independent generator from the webhook's own
       // queueSuggestion) never called the stage classifier at all — every ad

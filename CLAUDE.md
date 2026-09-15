@@ -2358,9 +2358,11 @@ Owner: "Когда листинг попал в лайв, то 1 раз в не�
 раньше." Until then `weekly-availability-check.ts` wrote a push DRAFT for Yudi
 on Weekly Check Sent only: 6 from 27.08 never approved; the 2 sent on 07.09
 were both answered within an hour. **Regulation now — automatic, no approval:**
-- **Who:** a Rental Listings card in live / Weekly Check Sent / Update
-  Availability Received, or one amoCRM events show went through live and is not
-  Initial Contact / TAKEN TO WORK / long term / co-broke / closed now; linked
+- **Who:** a Rental Listings card NOW in live / Weekly Check Sent / Update
+  Availability Received — nothing else since 15.09 (the "went through live by
+  amoCRM events" branch excluded a list of stages that did not contain
+  QUALIFIED, so Villa Azul 23204741 and Villa Amor 23223641, moved back to
+  Pre-listed, would have been asked once linked); linked
   (`listing_crm_link`) to exactly one published rent listing; the owner has
   written to us at least once. Never earlier stages, never a first contact —
   so the 9-a-day new-contact budget is neither spent nor waited for.
@@ -2371,8 +2373,8 @@ were both answered within an hour. **Regulation now — automatic, no approval:*
 - **When:** nothing of ours (Copilot or phone) in 7 days, owner quiet 3 days, no
   LIVE reply younger than 3 days pending in the inbox (an older forgotten draft
   does not block), not two unanswered checks in a row (then it
-  stops and pushes Yudi once), Bali 10:00–17:00, one send per 5-minute pass and
-  ≥12 minutes between checks.
+  stops and says so in a note on the card), Bali 10:00–17:00, one send per
+  5-minute pass and ≥12 minutes between checks.
 - **What:** one fixed sentence, no model, English or Indonesian by the owner's
   own words (`threadLanguage`), villa name from the card title, never the R-code:
   "Hi <name>, quick weekly check on <villa>: is it still available? If it's
@@ -2382,17 +2384,37 @@ were both answered within an hour. **Regulation now — automatic, no approval:*
   conversation's own line), `sent_messages.kind = 'weekly-availability'`. The
   card moves to Weekly Check Sent only when the type-90 event is in the lead's
   timeline (`delivery_status` stamped into `webhook_response`); not seen in 45 s
-  → re-checked every pass, Yudi pushed after 2 h.
+  → re-checked every pass, a note on the card after 2 h.
 - **Answer:** owner replies to the newest check, quiet 10 min → card to Update
   Availability Received, note with the owner's words, one Haiku reading
   (free_now / free_from / occupied_until / not_for_rent / unclear) behind code
   guards (`guardAnswer`: a date needs an exact day in the owner's own words; a
   month, "soon", a range with gaps is unclear). Clear → `property_availability`
-  in the admin format (status available, start = first free day, end 2099-12-31),
-  only when the listing has no row or one available row, read back before it
-  counts. Everything else, and "no longer for rent", → push to Yudi with the
-  owner's words; nothing is unpublished automatically. Marker per check:
-  `broker_settings` `weekly_check:answer:<sent id>`.
+  in the admin format (status available, start = first free day, end 2099-12-31)
+  over the listing's one row, whatever it said (an occupied row too: 3 published
+  listings had one on 15.09, and the owner's answer today is newer), read back
+  before it counts; several rows are not guessed over (none on 15.09).
+  Everything else, and "no longer for rent", → a note on the card with the
+  owner's words, and the reply draft stays in the inbox; nothing is unpublished
+  automatically. Marker per check: `broker_settings`
+  `weekly_check:answer:<sent id>`, `handled` = the site has the answer.
+- **Nobody is pushed (owner, 15.09: "пуши не должны уходить Юди вообще, это же
+  автопилот").** On 14–15.09 every answer still reached Yudi: the LIVE path
+  drafted a reply and pushed (twice for one message — one push per detector),
+  processAnswers retired the draft, and five minutes later the unanswered-live
+  pass wrote it again with another push (Villa Lani 17:15 → 17:16; Bumbak Dream
+  Villa 09:28 → 09:33, asking a live villa's owner for the minimum stay). Now
+  every LIVE writer asks `weeklyCheckReplyState` (`lib/weekly-check-reply.ts`):
+  `awaiting` (nothing of ours after the newest check, under 10 days, not read
+  yet) and `handled` → no draft, no push; `needs_person` → the draft, no push;
+  `none` (anything of ours after the check, or the owner writing after the
+  reading) → the ordinary path. Asked in `queueSuggestion` and in
+  `processUnansweredLive` BEFORE its cap of 10. The pass's own "not sent", "not
+  in the timeline after 2 h" and "two unanswered in a row" are card notes.
+  amo-sync's outgoing-event feed skips a `weekly-availability` send within ±3
+  min: it had taken the check for a manual reply on Villa Lani (a follow-up
+  clock and a "Replied to the client by hand" task), a race the check lost
+  depending on which write landed first.
 - **Switch:** `broker_settings.weekly_availability_mode` on | dry | off (missing =
   dry = the scheduler does nothing). Plan without sending:
   `POST /api/admin/weekly-availability?dry=1[&answers=1]`; a pass now: `?run=1`.

@@ -3,8 +3,9 @@
  * Fetches ALL leads from amoCRM API and updates lead_stage + pipeline + responsible_user.
  * Runs every 5 minutes in background.
  */
-import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
-import { eq, and, inArray, isNull, or, ilike, notLike } from "drizzle-orm";
+import { db, leadsSyncTable, pendingSuggestionsTable, sentMessagesTable } from "@workspace/db";
+import { eq, and, inArray, isNull, or, ilike, notLike, gte, lte } from "drizzle-orm";
+import { WEEKLY_CHECK_KIND } from "./weekly-check-reply";
 import { logger } from "./logger";
 import { amoFetch, getAccessToken, getAllOpenLeadTasksPaginated, createAmoTask } from "./amo-client";
 import { shouldSuppressPush } from "./stage-routing";
@@ -678,6 +679,27 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
 
     // Skip if we already know about a more recent broker message
     if (knownOurAt && knownOurAt.getTime() >= eventAt.getTime()) continue;
+
+    // Our own weekly availability check is not a broker replying by hand. Taken for one, it started a
+    // follow-up clock and put a "Replied to the client by hand… follow up" task on Villa Lani (14.09):
+    // the check stamps last_our_message_at a moment after Salesbot sends, so whether this feed saw it
+    // first was a race (Bumbak Dream Villa, the same afternoon, was skipped).
+    const [weeklyCheck] = await db
+      .select({ at: sentMessagesTable.createdAt })
+      .from(sentMessagesTable)
+      .where(
+        and(
+          eq(sentMessagesTable.leadId, leadId),
+          eq(sentMessagesTable.kind, WEEKLY_CHECK_KIND),
+          gte(sentMessagesTable.createdAt, new Date(eventAt.getTime() - 3 * 60_000)),
+          lte(sentMessagesTable.createdAt, new Date(eventAt.getTime() + 3 * 60_000)),
+        ),
+      )
+      .limit(1);
+    if (weeklyCheck) {
+      await db.update(leadsSyncTable).set({ lastOurMessageAt: eventAt }).where(eq(leadsSyncTable.leadId, leadId));
+      continue;
+    }
 
     // THE LEAD MAY HAVE ANSWERED SINCE. This feed looks 30 minutes back, so it
     // routinely re-reports a message the client has ALREADY replied to. Acting
