@@ -141,6 +141,16 @@ class SkipRepick extends Error {}
 const REVISION_IS_A_FULL_REDO =
   /переделай|переделать|перепиш|заново|по-друг|по друг|иначе|redo|rewrite|do it again|start over|from scratch|another version/i;
 
+/**
+ * The broker wants villas to go out with this message ("send her last follow up
+ * with options of 3 bedrooms under 70 million", "attach new options"). Used only
+ * to let an empty pool reach into the nearest area when the client's own area
+ * holds nothing (candidatesForLead.widenAreaWhenEmpty); the composer still
+ * decides the message.
+ */
+const BROKER_ASKS_FOR_OPTIONS =
+  /\b(send|attach|share|offer|give|show|find|add|include)\b[^.?!\n]{0,40}\b(options?|villas?|links?|listings?|propert(?:y|ies))\b|(пришли|отправь|скинь|прикрепи|предложи|добавь|покажи)[^.?!\n]{0,30}(вариант|вилл|ссылк|опци)/i;
+
 const OBJECTION_KEYWORDS = [
   "дорог", "скидк", "подума", "конкурент", "юрист", "договор", "налог",
   "ипотек", "наличн",
@@ -763,6 +773,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           leadNotes: dbLeadNotes || null,
           clickedListingId: /Ad enquiry:\s*([A-Z0-9-]+)/i.exec(dbLeadNotes)?.[1] ?? null,
           leadId: body.leadId,
+          widenAreaWhenEmpty: BROKER_ASKS_FOR_OPTIONS.test(revision),
         });
 
         // A curated panel is law only while there is something on it. A panel
@@ -794,6 +805,9 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             pool.candidates.length === 0
               ? `NOTHING in our catalog is inside this client's request (${describeRequest(pool.request)})${pool.fitsInclSent > 0 ? " that they have not already been sent" : ""}. Attach nothing unless the broker names a villa. Never promise to check, look, find, pull together or come back with a shortlist. Unless the broker's instruction says otherwise, ask exactly ONE concrete question: ${relaxQuestion(pool.hint)}.`
               : undefined,
+          poolNote: pool.widenedArea
+            ? `NOTHING that fits is in the area the client asked for (${pool.widenedArea.asked.join(", ")}). Every property above is in ${pool.widenedArea.used.join(" or ")}: the broker asked for options, so offer these, and say plainly in the message that they are in ${pool.widenedArea.used.join(" / ")} because there is nothing in ${pool.widenedArea.asked.join(", ")} right now. Never present them as being in the area the client asked for.`
+            : undefined,
         });
 
         if (composed) {

@@ -634,6 +634,8 @@ export async function composeReplyWithListings(opts: {
   language?: string | null;
   /** With an empty pool: what to say instead of promising a shortlist (built by the caller from relaxQuestion). */
   emptyPoolGuidance?: string;
+  /** A fact about the candidate list itself (e.g. drawn from the nearest area, not the client's). */
+  poolNote?: string;
 }): Promise<{ text: string; listingIds: string[]; decision: "keep_current" | "none_this_message" | "new_selection" } | null> {
   const current = opts.currentAttachments.length
     ? opts.currentAttachments.map((a) => `${a.id} — ${a.label}`).join("\n")
@@ -677,7 +679,7 @@ ${
       }
 
 Properties you may attach (pick by ID; attaching NONE is a normal answer). They are ranked best match first — prefer the top unless the broker's instruction or the client's own words point to a lower one:
-${opts.candidates.map((c) => c.line).join("\n")}${opts.candidates.length === 0 && opts.emptyPoolGuidance ? `(none)\n\n${opts.emptyPoolGuidance}` : ""}
+${opts.candidates.map((c) => c.line).join("\n")}${opts.candidates.length === 0 && opts.emptyPoolGuidance ? `(none)\n\n${opts.emptyPoolGuidance}` : ""}${opts.poolNote ? `\n\n${opts.poolNote}` : ""}
 
 First decide attachments_decision — ONE of exactly these three, by MEANING, not keywords:
 - "keep_current" — the instruction is about wording only (shorter, warmer, translate, fix tone). listing_ids = exactly what is currently attached.
