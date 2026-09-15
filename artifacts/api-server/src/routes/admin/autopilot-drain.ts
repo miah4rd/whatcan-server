@@ -105,6 +105,11 @@ router.post("/admin/autopilot-drain", async (req, res) => {
       // someone asked us to write to that person (listing-referral.ts).
       sql`(coalesce(${leadsSyncTable.leadNotes}, '') ILIKE '%REFERRED BY%') DESC`,
       sql`(${pendingSuggestionsTable.autopilotSkippedReason} IS NOT NULL)`,
+      // A first contact told "waiting for tomorrow's new-contact budget" today cannot pass before
+      // tomorrow. Judged again every run, twenty of them took the whole batch, and a draft that could go
+      // now waited behind them (15.09.2026: five nudges back in the queue after a failed send sat at
+      // positions 39–43, past three runs of fifteen).
+      sql`(${pendingSuggestionsTable.autopilotSkippedReason} LIKE 'waiting for tomorrow%' AND (${pendingSuggestionsTable.autopilotSkippedAt} AT TIME ZONE 'Asia/Makassar')::date = (now() AT TIME ZONE 'Asia/Makassar')::date)`,
       asc(pendingSuggestionsTable.createdAt),
     )
     .limit(room * 3);
