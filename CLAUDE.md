@@ -1515,6 +1515,16 @@ on 07.09. The engine parked on one extracted word, `stopKind: "occupied"`,
   (the regulation does not name one). Listing a long term villa on the site at
   once (property_availability from the free date to 2099-12-31) is the listing
   co-worker's step, skill `listing-prelisted-enrichment`, not code.
+- Applied 15.09 (~14:50 Bali). A person had already closed 11 cards and returned
+  10 by hand at 13:11, and the old engine re-parked three of those at 13:17 on a
+  send. Of the remaining 15, 12 left: Villa Mei to co-broke (third party
+  confirmed), Villa Wabu and ten others to TAKEN TO WORK (no owner price,
+  commission, owner side or date of their own). Kept with date, task and note:
+  Ersanea 23472139 (2 January 2027, their 5% not agreed), Villa Giulia 23473387
+  (15 December 2026), Villa Selah 23518847 (1 January 2027, APPROX). Control
+  afterwards: 3 cards, four empty lists. The other actor's "WAKE-UP for …" tasks
+  on the same days were left alone; the old engine's "Villa frees up around …"
+  tasks on the parked cards were completed as superseded.
 
 ### Listing stage engine (2026-09-07, evening)
 
