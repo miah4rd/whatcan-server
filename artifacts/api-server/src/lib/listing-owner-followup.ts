@@ -106,7 +106,7 @@ function isOpenStage(stage: string | null): boolean {
  * commission position is already known (they said net, included, or named a rate): asking it
  * "including our 10%" again would re-ask the half they answered.
  */
-export type NudgeAsk = "still_renting" | "owner" | "bedrooms" | "price" | "price_plain" | "commission" | "min_stay" | "viewing";
+export type NudgeAsk = "still_renting" | "availability" | "owner" | "bedrooms" | "price" | "price_plain" | "commission" | "min_stay" | "viewing";
 
 /** The asks that are owner points of their own (`price_plain` is a phrasing of `price`). */
 type AskPoint = Exclude<NudgeAsk, "price_plain">;
@@ -118,6 +118,8 @@ const MISSING_TO_ASK: Array<[(m: string) => boolean, AskPoint]> = [
   [(m) => m === "commission position", "commission"],
   [(m) => m === "minimum stay", "min_stay"],
   [(m) => m === "earliest viewing", "viewing"],
+  // Occupied with no date (long term regulation, 15.09.2026): the card is not parked, the date is asked.
+  [(m) => m === "free date", "availability"],
 ];
 
 /**
@@ -210,6 +212,7 @@ export function ownerAskLines(asks: NudgeAsk[], o: { lang: OwnerLang; villa: str
     const call = o.call || "kak";
     const villa = spokenVilla(o.villa) || "villanya";
     if (has("still_renting")) lines.push(`Untuk ${villa} apakah masih tersedia untuk sewa bulanan atau tahunan ya ${call}?`);
+    if (has("availability")) lines.push(`Kira-kira ${villa} kosong lagi mulai kapan ya ${call}?`);
     const nouns = [
       has("bedrooms") && "jumlah kamar tidurnya",
       has("price") && "harga sewa bulanan dan tahunan yang sudah termasuk 10% komisi agensi",
@@ -228,6 +231,7 @@ export function ownerAskLines(asks: NudgeAsk[], o: { lang: OwnerLang; villa: str
   }
   const villa = spokenVilla(o.villa) || "your villa";
   if (has("still_renting")) lines.push(`Is ${villa} still available for monthly or yearly rent?`);
+  if (has("availability")) lines.push(`Roughly from when will ${villa} be free again?`);
   const nouns = [
     has("bedrooms") && "the number of bedrooms",
     has("price") && "the monthly and yearly price, already included with our 10% agency commission",

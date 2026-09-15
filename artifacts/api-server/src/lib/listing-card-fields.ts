@@ -154,6 +154,12 @@ export type ListingFacts = {
   stopKind: "occupied" | "not_our_format" | null;
   /** Best-effort ISO date the villa frees up, when the thread allows one. */
   freeFromIso: string | null;
+  /**
+   * The villa side's own words naming when it frees up, copied from their message. The long term
+   * regulation (15.09.2026) parks a card only on a date THEY said; the engine checks these words
+   * against their messages. Optional: facts read before 15.09 do not carry it.
+   */
+  freeFromQuote?: string | null;
 };
 
 const EXTRACT_SYSTEM = `You read a WhatsApp thread between a Bali rental agency and a villa owner (or the villa's manager), and pull out what the agency needs to put the villa on its website.
@@ -195,10 +201,11 @@ Fields:
 - their_commission_pct: if THEY proposed a commission rate for the agent ("we could offer 5% commission for agent", "we give agents 10% off the published rate", "our agent rate is 7"), report that number. null if they never named a rate, and null if they simply accepted ours.
 - stop_kind: "occupied" when the villa IS lettable long term and is simply taken for MORE THAN ABOUT THREE MONTHS (rented for a year, booked out for six months, tenant in place until a date well ahead). A villa free within roughly three months is NOT a stop signal at all: that is a real option we can offer now, so leave stop_kind null and just report free_from_iso. "not_our_format" ONLY when monthly AND yearly letting of the WHOLE villa are both ruled out for good: daily only with no monthly offered, rented by the room rather than whole, they no longer look after the property, they refuse to work with agencies at all. It now CLOSES the card, so the bar is a plain refusal, not a difficulty. Three things are NOT "not_our_format", and each was closed wrongly before this line existed: (1) "daily AND monthly" or any answer that includes monthly — monthly is exactly our format, report null; (2) a villa still being BUILT or renovated ("still in progress", "two units left, finishing soon") — nothing is refused, it is simply not ready, report null and let free_from_iso carry the date if one was given; (3) a period they cannot do right now for a reason that passes, such as events or bookings already in the calendar — that is "occupied", not a refusal. When in doubt report null: a wrong "occupied" costs a wait, a wrong "not_our_format" bins a live owner. null when there is no stop signal. These go opposite ways: the first is a contact worth keeping warm until a date, the second is not.
 - free_from_iso: if the thread lets you work out WHEN it frees up, give it as YYYY-MM-DD, resolving relative wording against TODAY's date given at the top of the thread ("available in 3 months", "rented for a year from June"). A month named without a year is its NEXT occurrence from today — never a past year: with today 2026-09-07, "free from October" is 2026-10-01 and "from August" is 2027-08-01. null when nobody said, or when it cannot be pinned to a month.
+- free_from_quote: the villa side's OWN words in which they said when the villa frees up, copied character for character from ONE "lead:" line ("Rented out till February 27", "sudah booked sampai 2028"). Copy, do not translate, shorten or tidy. null when they never said it: our own question about availability, a start date only we proposed, or "occupied" with no time given are all null.
 - stop_signal: quote the phrase that means this villa CANNOT be offered for long-term rental now — fully booked, already rented out for the year, daily rental only, short term only. null if there is none. Being occupied until a stated date is NOT a stop signal on its own; that is availability.
 
 Respond with JSON only:
-{"bedrooms":n|null,"monthly_idr":n|null,"max_monthly_idr":n|null,"yearly_idr":n|null,"price_note":s|null,"commission":"included"|"net"|"unknown","available_from":s|null,"min_stay_months":n|null,"viewable_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","their_commission_pct":n|null,"stop_kind":"occupied"|"not_our_format"|null,"free_from_iso":s|null,"stop_signal":s|null}`;
+{"bedrooms":n|null,"monthly_idr":n|null,"max_monthly_idr":n|null,"yearly_idr":n|null,"price_note":s|null,"commission":"included"|"net"|"unknown","available_from":s|null,"min_stay_months":n|null,"viewable_from":s|null,"area":s|null,"maps_link":s|null,"photos_link":s|null,"counterpart":"owner"|"manager"|"agent"|"unclear","their_commission_pct":n|null,"stop_kind":"occupied"|"not_our_format"|null,"free_from_iso":s|null,"free_from_quote":s|null,"stop_signal":s|null}`;
 
 /**
  * Remove quoted text before the model ever sees it.
@@ -263,6 +270,12 @@ export async function withCardFacts(leadId: string, f: ListingFacts): Promise<Li
     if (v.startsWith("owner")) out.counterpart = "owner";
     else if (v.startsWith("manager")) out.counterpart = "manager";
   }
+  // Our own dated line on the card restores the date a thinner read left out, but only when that read
+  // said nothing about timing at all: "now" in the owner's fresh words beats a date we wrote earlier.
+  if (!out.freeFromIso && !out.availableFrom) {
+    const d = dateFromAvailableLine(at("availableFrom"));
+    if (d) out.freeFromIso = d;
+  }
   if (!out.availableFrom) out.availableFrom = at("availableFrom");
   if (out.minStayMonths === null) {
     const n = parseInt(at("minStay") ?? "", 10);
@@ -321,9 +334,29 @@ export async function extractListingFacts(conversation: string, leadId?: string)
         ? (String(raw["stop_kind"]) as "occupied" | "not_our_format")
         : null,
       freeFromIso: /^\d{4}-\d{2}-\d{2}$/.test(String(raw["free_from_iso"] ?? "")) ? String(raw["free_from_iso"]) : null,
+      freeFromQuote: str(raw["free_from_quote"]),
     };
     if (!leadId) return facts;
     const merged = await withCardFacts(leadId, facts);
+    // A date the owner named stays named. A later read of a long thread that leaves the quote out
+    // must not un-say it, or the long term bar's fifth condition flaps with every re-read. Only while
+    // the fresh read names the same date, or says nothing about timing at all.
+    if (!merged.freeFromQuote) {
+      const [prev] = await db
+        .select({ facts: leadsSyncTable.listingFacts })
+        .from(leadsSyncTable)
+        .where(eq(leadsSyncTable.leadId, leadId))
+        .limit(1)
+        .catch(() => []);
+      const p = (prev?.facts ?? null) as unknown as ListingFacts | null;
+      if (p?.freeFromQuote && p.freeFromIso) {
+        if (merged.freeFromIso === p.freeFromIso) merged.freeFromQuote = p.freeFromQuote;
+        else if (!merged.freeFromIso && !facts.availableFrom) {
+          merged.freeFromIso = p.freeFromIso;
+          merged.freeFromQuote = p.freeFromQuote;
+        }
+      }
+    }
     await db
       .update(leadsSyncTable)
       .set({ listingFacts: merged as unknown as Record<string, unknown>, listingFactsAt: readAt })
@@ -429,7 +462,7 @@ export async function syncListingFactsToCard(
   put("price", priceLine(f));
   put("maps", f.mapsLink);
   put("photos", f.photosLink);
-  put("availableFrom", f.availableFrom);
+  put("availableFrom", availableFromLine(f) ?? f.availableFrom);
   put("minStay", f.minStayMonths !== null ? `${f.minStayMonths} months` : null);
   put("viewableFrom", f.viewableFrom);
   put("ownerVerified", verifiedLabel(f.counterpart));
@@ -552,6 +585,12 @@ export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[
   if (f.stopSignal && (f.stopKind === "not_our_format" || (f.stopKind === "occupied" && !freeSoon(f)))) {
     missing.push(`stop signal: ${f.stopSignal}`);
   }
+  // Long term regulation (15.09.2026): an occupied villa with no date is neither parked nor qualified;
+  // the date is the question the bot keeps asking ("free date" is an ask in the nudge and the reply).
+  // A villa free only beyond the window we sell is not qualified now either, stop word or not.
+  const freeAt = plausibleFreeDate(f);
+  if (f.stopKind === "occupied" && !freeAt) missing.push("free date");
+  else if (freeAt && !freeSoon(f)) missing.push(`free only from ${f.freeFromIso}`);
   return { ok: missing.length === 0, missing };
 }
 
@@ -645,14 +684,16 @@ Reply with JSON only: {"rules_out": true|false, "why": "<8 words>"}`,
  *  a villa free in November is stock we offer in September. */
 const FREE_SOON_DAYS = 90;
 
-/** The free date as the extractor gave it, when it can be true: today or later
- *  (a villa that freed up yesterday is simply free), within 18 months. */
+/** The free date as the extractor gave it, when it can be true: at most a month gone (a villa that
+ *  freed up last week is simply free), and within five years. The bound was 18 months until
+ *  15.09.2026; the long term regulation parks and lists a villa on a date of any distance (R-YUD-040
+ *  is published free from 01.09.2028), so the bound now only catches a misread year. */
 export function plausibleFreeDate(f: ListingFacts): Date | null {
   if (!f.freeFromIso) return null;
   const at = new Date(`${f.freeFromIso}T09:00:00+08:00`);
   if (Number.isNaN(at.getTime())) return null;
   const now = Date.now();
-  if (at.getTime() < now - 30 * 86_400_000 || at.getTime() > now + 548 * 86_400_000) return null;
+  if (at.getTime() < now - 30 * 86_400_000 || at.getTime() > now + 5 * 366 * 86_400_000) return null;
   return at;
 }
 
@@ -660,6 +701,107 @@ export function plausibleFreeDate(f: ListingFacts): Date | null {
 export function freeSoon(f: ListingFacts): boolean {
   const at = plausibleFreeDate(f);
   return !!at && at.getTime() <= Date.now() + FREE_SOON_DAYS * 86_400_000;
+}
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/** "2027-03-01" → "1 March 2027". */
+export function humanDate(iso: string): string {
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  return `${d} ${MONTH_NAMES[(m ?? 1) - 1]} ${y}`;
+}
+
+/** Our own "Listing: available from" line: `1 March 2027`, or `1 December 2026 — APPROX of the owner's "after November"`. */
+const AVAILABLE_LINE = /^(\d{1,2}) ([A-Z][a-z]+) (\d{4})(?: — APPROX of the owner's "([\s\S]*)")?$/;
+
+/** The ISO date inside our own available-from line; null for anything else (an owner's phrase). */
+export function dateFromAvailableLine(line: string | null | undefined): string | null {
+  const m = (line ?? "").trim().match(AVAILABLE_LINE);
+  if (!m) return null;
+  const month = MONTH_NAMES.indexOf(m[2]!);
+  if (month === -1) return null;
+  return `${m[3]}-${String(month + 1).padStart(2, "0")}-${m[1]!.padStart(2, "0")}`;
+}
+
+/** The villa side's words about the free date: inside our own line when the card already carries one,
+ *  else what the extraction read. */
+export function ownerFreeWords(f: ListingFacts): string | null {
+  const a = (f.availableFrom ?? "").trim();
+  const m = a.match(AVAILABLE_LINE);
+  if (m) return m[4] ?? `${m[1]} ${m[2]} ${m[3]}`;
+  return a || f.freeFromQuote || null;
+}
+
+/** They named a DAY ("27 February", "Feb 27", "15.12"), not a month or a season. */
+function namesADay(words: string): boolean {
+  const month = "(jan|feb|mar|apr|may|mei|jun|jul|aug|agu|sep|oct|okt|nov|dec|des|déc)[a-zé]*\\.?";
+  return (
+    new RegExp(`\\b\\d{1,2}(st|nd|rd|th)?\\s*(of\\s+)?${month}`, "i").test(words) ||
+    new RegExp(`\\b${month}\\s+\\d{1,2}(st|nd|rd|th)?\\b(?!\\d)`, "i").test(words) ||
+    /\b\d{1,2}[./-]\d{1,2}([./-]\d{2,4})?\b/.test(words) ||
+    /\b\d{4}-\d{2}-\d{2}\b/.test(words)
+  );
+}
+
+/**
+ * What "Listing: available from" says (regulation 15.09.2026, §5): a date, never a phrase. When the
+ * owner gave a month or a season rather than a day, the date is our approximation inside their range
+ * and says so, the way R-YUD-050 and R-YUD-084 were written. Null when there is no future date or no
+ * words of theirs to hang it on: the field then keeps the owner's own phrase ("now").
+ */
+export function availableFromLine(f: ListingFacts): string | null {
+  const at = plausibleFreeDate(f);
+  if (!at || at.getTime() <= Date.now() || !f.freeFromIso) return null;
+  const said = ownerFreeWords(f);
+  if (!said) return null;
+  const date = humanDate(f.freeFromIso);
+  if (said === date || namesADay(said) || (f.freeFromQuote && namesADay(f.freeFromQuote))) return date;
+  return `${date} — APPROX of the owner's "${said.replace(/\s+/g, " ").replace(/"/g, "'").slice(0, 120)}"`;
+}
+
+/**
+ * Long term (regulation 15.09.2026, §3): the villa suits us and is fully qualified, but occupied until
+ * a date the owner named. All five, or the card is not parked:
+ *   1. lettable long term (not a format we do not list);
+ *   2. the counterpart is the owner side;
+ *   3. bedrooms;
+ *   4. a price with its commission position;
+ *   5. a free date in the future, in the villa side's own words (`ownerSaidIt`, checked by the caller
+ *      against the thread).
+ * Whether the date is far enough to park rather than sell now is the engine's call (freeSoon).
+ * The missing names are meetsQualified's, so the nudge and the reply ask for the same things.
+ */
+export function longTermBar(f: ListingFacts, ownerSaidIt: boolean): { ok: boolean; missing: string[] } {
+  const missing: string[] = [];
+  if (f.stopKind === "not_our_format") missing.push("not our format");
+  if (f.counterpart !== "owner") missing.push("not the owner or his own staff");
+  if (!f.bedrooms) missing.push("bedrooms");
+  if (!f.monthlyIdr && !f.yearlyIdr) missing.push("price");
+  else if (f.commission === "unknown") missing.push("commission position");
+  const at = plausibleFreeDate(f);
+  if (!at || at.getTime() <= Date.now()) missing.push("free date");
+  else if (!ownerSaidIt) missing.push("free date in the owner's own words");
+  return { ok: missing.length === 0, missing };
+}
+
+/** Put the long term date on the card before the card is parked. "same" when it already says it. */
+export async function writeListingAvailableFrom(leadId: string, f: ListingFacts): Promise<"written" | "same" | "failed"> {
+  const line = availableFromLine(f);
+  if (!line) return "failed";
+  try {
+    const ids = await listingFieldIds();
+    const id = ids.availableFrom;
+    if (!id) return "failed";
+    const onCard = await readCard(leadId, ids);
+    if ((onCard[id] ?? "") === line) return "same";
+    const res = await amoPatch(`/api/v4/leads/${encodeURIComponent(leadId)}`, {
+      custom_fields_values: [{ field_id: id, values: [{ value: line }] }],
+    });
+    return res ? "written" : "failed";
+  } catch (err) {
+    logger.warn({ err, leadId }, "long term: could not write the available-from date");
+    return "failed";
+  }
 }
 
 /**
