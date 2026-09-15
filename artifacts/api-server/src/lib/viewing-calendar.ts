@@ -289,10 +289,17 @@ export async function syncViewingCalendar(o: { apply: boolean; reason?: string; 
       await create(d, base, actions);
     }
 
+    // Viewings called off or moved: their event goes even when its hour has passed.
+    const offRes = await db.execute(sql`SELECT s.id FROM viewing_slots s LEFT JOIN viewing_reports r ON r.id = s.report_id
+                                        WHERE s.status IN ('cancelled', 'rescheduled') OR r.outcome = 'cancelled' OR r.rescheduled_to IS NOT NULL`);
+    const calledOff = new Set(((offRes.rows ?? []) as { id: string }[]).map((r) => String(r.id)));
+
     for (const row of stored) {
       if (desired.has(row.sync_key) || row.status === "deleted" || row.status === "retired") continue;
       const viewingAt = asDate(row.viewing_at);
       const aged = !!viewingAt && viewingAt.getTime() < now.getTime() - RECENT_MS;
+      // A viewing whose hour has passed was held: losing the card afterwards must not erase it.
+      const held = !!viewingAt && viewingAt.getTime() <= now.getTime() && !(row.slot_id && calledOff.has(String(row.slot_id)));
       const base: ViewingCalendarAction = { action: "skipped", key: row.sync_key, start: viewingAt ? baliIso(viewingAt) : undefined, lead: row.lead_id ?? undefined, eventId: row.event_id };
       if (!row.event_id) {
         const unsure = row.status === "uncertain" || row.status === "creating";
@@ -300,8 +307,8 @@ export async function syncViewingCalendar(o: { apply: boolean; reason?: string; 
         if (o.apply) await markRow(row.sync_key, unsure ? "uncertain" : "deleted", null);
         continue;
       }
-      if (aged) {
-        actions.push({ ...base, action: "retire", detail: "viewing more than a day past — event kept as history" });
+      if (aged || held) {
+        actions.push({ ...base, action: "retire", detail: aged ? "viewing more than a day past — event kept as history" : "viewing hour passed, the card changed afterwards — event kept as history" });
         if (o.apply) await markRow(row.sync_key, "retired", null);
         continue;
       }

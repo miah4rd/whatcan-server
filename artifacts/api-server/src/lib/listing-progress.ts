@@ -69,6 +69,50 @@ const ORDER: number[] = [
 ];
 const rank = (id: number | null | undefined) => (id == null ? -1 : ORDER.indexOf(id));
 
+/** Past Inspection scheduled: a visit agreed here is recorded for the calendar, the card never moves. */
+const AFTER_LIVE = new Set<number>([LISTING_STAGE.LIVE, LISTING_STAGE.WEEKLY_CHECK_SENT, LISTING_STAGE.AVAILABILITY_RECEIVED]);
+
+/** Words that can call a visit off — only a cue for the yes/no below, never a verdict. */
+const CALL_OFF_CUE =
+  /\b(cancel|postpone|reschedul|another (time|day)|next time|not (tomorrow|today)|can'?t (come|make)|lain kali|batal|ga jadi|gak jadi|nggak jadi|tidak jadi|belum bisa|tidak bisa|ga bisa|gak bisa|nggak bisa|tunda|diundur|waktu lain|hari lain|jangan dulu|terganggu)\b/i;
+
+/**
+ * Is the visit on record now OFF? Asked only when a later message carries a call-off cue. Returns the
+ * reason when clearly off, null otherwise (unsure, still on, or moved to a new concrete day).
+ */
+async function visitCalledOff(messages: ThreadMsg[], slot: { visitAt: Date; timeKnown: boolean }): Promise<string | null> {
+  const day = slot.visitAt.toLocaleString("en-GB", { timeZone: BALI, weekday: "long", day: "numeric", month: "long", ...(slot.timeKnown ? { hour: "2-digit", minute: "2-digit", hour12: false } : {}) });
+  const out = await chatCompletionJSON<{ off: boolean; why: string }>({
+    model: HELPER_MODEL,
+    label: "listing:visit-called-off",
+    max_tokens: 100,
+    temperature: 0,
+    system: `Lines start with the weekday, day/month and Bali time. "Us" is our agency (agent Yudi, colleague Amelia, our bot); "Villa side" is the owner, staff or manager. A visit by our side to the villa was agreed for ${day}. Answer ONE question: is that visit now OFF?
+
+true ONLY when a message after the agreement clearly calls it off and nothing later puts it back on: our side says we cannot come then ("jam 11 saya belum bisa", "can't make it tomorrow"), or the villa side declines or asks for another time ("lain kali saja", "not tomorrow, the guests are in", "ga jadi").
+false when the visit is still on, when it was moved to a NEW concrete day or time (that is a reschedule), or when you are unsure.
+
+JSON only: {"off": true|false, "why": "<12 words>"}`,
+    messages: [{ role: "user", content: transcript(messages, 50).slice(-9000) }],
+  }).catch(() => null);
+  return out?.off === true ? String(out.why ?? "called off in the thread").slice(0, 160) : null;
+}
+
+/** The slot stops being the plan: marked cancelled, a note on the card, the calendar removes the event. */
+async function recordCalledOff(leadId: string, slot: { id: string; visitAt: Date }, why: string, source: string): Promise<string> {
+  const upd = await db
+    .execute(sql`UPDATE listing_inspection_slots SET status = 'cancelled', superseded_at = now() WHERE id = ${slot.id}::uuid AND status = 'scheduled' RETURNING id`)
+    .catch((err) => {
+      logger.warn({ err, leadId }, "listing-progress: called-off slot not updated");
+      return null;
+    });
+  if (!upd?.rows?.length) return "the slot could not be marked cancelled";
+  await amoPost(`/api/v4/leads/${leadId}/notes`, [{ note_type: "common", params: { text: `Inspection called off: ${fmt(slot.visitAt)} Bali — ${why}` } }]).catch(() => null);
+  queueInspectionCalendarSync(`slot called off for ${leadId}`);
+  logger.info({ leadId, visitAt: slot.visitAt, why, source }, "listing-progress: visit called off");
+  return "visit called off";
+}
+
 export type ThreadMsg = { senderType: string; text: string | null; sentAt: Date };
 export type Visit = { visitAt: Date; timeKnown: boolean; agreedAt: Date | null; quote: string; why: string };
 
@@ -464,8 +508,11 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
   if (lead.pipeline_id !== LISTINGS_PIPELINE_ID) return done({ reason: "not a Rental Listings card" });
   const taken = statusId === LISTING_STAGE.TAKEN_TO_WORK;
   const scheduled = statusId === LISTING_STAGE.INSPECTION_SCHEDULED;
-  if (statusId !== LISTING_STAGE.QUALIFIED && !scheduled && !(taken && o.reportTaken)) {
-    return done({ reason: `"${from}" is not QUALIFIED or Inspection scheduled — nothing here moves it` });
+  // Past Inspection scheduled a visit still happens (Villa Markisa, live, 15.09: "kalau jam 10 bisa?" —
+  // "Besok bisa diliat" — "saya kesana besok"), and Yudi's calendar needs it. Recorded, never moved.
+  const afterLive = AFTER_LIVE.has(statusId);
+  if (statusId !== LISTING_STAGE.QUALIFIED && !scheduled && !afterLive && !(taken && o.reportTaken)) {
+    return done({ reason: `"${from}" is not QUALIFIED, Inspection scheduled or live — nothing here moves it` });
   }
 
   const messages = await loadMessages(leadId);
@@ -473,20 +520,22 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
   const fresh = o.full || !o.checkedAt ? messages : messages.filter((m) => m.sentAt.getTime() > o.checkedAt!.getTime());
   if (fresh.length === 0) return done({ reason: "nothing new in the thread since the last check" });
 
-  const events = taken ? [] : await statusEvents(leadId);
-  if (!taken && !events) return done({ reason: "amoCRM events could not be read — nothing decided", applied: "nothing" });
-  const qualAt = taken ? null : qualificationStart(events!);
+  const events = taken || afterLive ? [] : await statusEvents(leadId);
+  if (!taken && !afterLive && !events) return done({ reason: "amoCRM events could not be read — nothing decided", applied: "nothing" });
+  const qualAt = taken || afterLive ? null : qualificationStart(events!);
   const arrivedScheduled = scheduled
     ? events!.filter((e) => e.to === LISTING_STAGE.INSPECTION_SCHEDULED).map((e) => e.at).pop() ?? null
     : null;
-  const windowStart = taken
+  const windowStart = taken || afterLive
     ? new Date(Date.now() - 21 * DAY)
     : qualAt
       ? new Date(qualAt.getTime() - WINDOW_SLACK_MS)
       : new Date(Date.now() - DAY);
   base.windowStart = windowStart;
-  const stepBack = taken || scheduled ? null : lastStepBack(events!, statusId);
-  const slot = scheduled ? await currentSlot(leadId) : null;
+  const stepBack = taken || scheduled || afterLive ? null : lastStepBack(events!, statusId);
+  /** Cards whose visit is only recorded (and called off), never moved: Inspection scheduled and live onwards. */
+  const holdsSlot = scheduled || afterLive;
+  const slot = holdsSlot ? await currentSlot(leadId) : null;
 
   let visit: Visit | null = null;
   const cueWindow = messages.filter((m) => m.sentAt.getTime() >= windowStart.getTime() - 7 * DAY);
@@ -508,7 +557,7 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
       logger.info({ leadId, visitAt: v.visitAt, windowStart }, "listing-progress: agreed visit predates qualification — ignored");
     } else if (!v.agreedAt || v.agreedAt.getTime() < windowStart.getTime() - DAY) {
       logger.info({ leadId, visitAt: v.visitAt, agreedAt: v.agreedAt, windowStart }, "listing-progress: no settling line after qualification — ignored");
-    } else if (scheduled && !isNewTime(v, slot, arrivedScheduled)) {
+    } else if (holdsSlot && !isNewTime(v, slot, arrivedScheduled)) {
       // the visit on record, read again — not a change
     } else if (!(await confirmAgreedVisit(thread, v))) {
       logger.info({ leadId, visitAt: v.visitAt, quote: v.quote }, "listing-progress: second opinion says the visit is not agreed — ignored");
@@ -518,6 +567,21 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
   }
   base.visit = visit;
 
+  // A visit on record that a later message calls off stayed on the calendar as if still on (BK Villa,
+  // 14.09 21:09–21:14: "jam 11 saya belum bisa… carikan waktu lain" — "Lain kali saja"). One yes/no on
+  // that slot, fail-closed; a new concrete day is a reschedule and is handled above.
+  if (holdsSlot && !visit && slot && slot.visitAt.getTime() > Date.now() - 2 * HOUR && fresh.some((m) => CALL_OFF_CUE.test(m.text ?? ""))) {
+    const settled = (slot.agreedAt ?? slot.createdAt).getTime();
+    if (messages.some((m) => m.sentAt.getTime() > settled)) {
+      const off = await visitCalledOff(cueWindow.length ? cueWindow : messages, slot);
+      if (off) {
+        const reason = `visit ${fmt(slot.visitAt)} called off: ${off}`;
+        if (!apply) return done({ reason });
+        return done({ reason, applied: await recordCalledOff(leadId, slot, off, o.source) });
+      }
+    }
+  }
+
   if (taken) {
     return done({
       reason: visit ? `TAKEN TO WORK with a visit agreed for ${fmt(visit.visitAt)} — reported, never moved` : "TAKEN TO WORK, no agreed visit",
@@ -525,8 +589,8 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
     });
   }
 
-  if (scheduled) {
-    if (!visit) return done({ reason: slot ? `visit on record ${fmt(slot.visitAt)}; no new agreed time` : "Inspection scheduled, no slot on record and no agreed time read" });
+  if (holdsSlot) {
+    if (!visit) return done({ reason: slot ? `visit on record ${fmt(slot.visitAt)}; no new agreed time` : `"${from}", no slot on record and no agreed time read` });
     const rescheduled = { from: slot?.visitAt ?? null, to: visit.visitAt };
     const reason = slot
       ? `visit moved ${fmt(slot.visitAt)} → ${fmt(visit.visitAt)}${visit.agreedAt ? ` (settled ${fmt(visit.agreedAt)})` : ""}: "${visit.quote}"`
