@@ -28,6 +28,8 @@ export type CalendarEventBody = {
   /** ISO datetime with +08:00 */
   start: string;
   end: string;
+  /** Google event colour id ("1".."11"); empty keeps the calendar's colour. Viewings are green, inspections default. */
+  colorId?: string;
 };
 /** `transport`: the request may have reached the scenario but its answer was lost (timeout, network) — outcome unknown. */
 export type CalResult<T> = { ok: true; data: T } | { ok: false; reason: string; transport: boolean };
@@ -60,6 +62,7 @@ async function send(action: string, ev: Partial<CalendarEventBody>, eventId?: st
         location: ev.location ?? "",
         start: ev.start ?? "",
         end: ev.end ?? "",
+        colorId: ev.colorId ?? "",
       }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });

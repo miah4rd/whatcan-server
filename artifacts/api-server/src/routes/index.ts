@@ -57,6 +57,7 @@ import listingStatusRouter from "./listing-status";
 import weeklyAvailabilityRouter from "./weekly-availability";
 import rentalStageSyncCheckRouter from "./admin/rental-stage-sync-check";
 import inspectionCalendarRouter from "./admin/inspection-calendar";
+import viewingCalendarRouter from "./admin/viewing-calendar";
 import { adminAuth } from "../lib/admin-auth";
 
 const router: IRouter = Router();
@@ -124,5 +125,6 @@ router.use(listingStatusRouter);
 router.use(weeklyAvailabilityRouter);
 router.use(rentalStageSyncCheckRouter);
 router.use(inspectionCalendarRouter);
+router.use(viewingCalendarRouter);
 
 export default router;
