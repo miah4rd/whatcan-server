@@ -126,9 +126,9 @@ export function composeWeeklyCheck(lang: "en" | "id", ownerName: string, villa: 
   const who = ownerName ? ` ${ownerName}` : "";
   const named = villa && villa !== "your villa";
   if (lang === "id") {
-    return `Halo${who}, cek mingguan untuk ${named ? villa : "villanya"}: apakah masih tersedia? Kalau sudah terisi, kosong lagi mulai tanggal berapa?`;
+    return `Halo${who}, cek mingguan untuk ${named ? villa : "villanya"}: apakah masih tersedia untuk disewa? Kalau sudah terisi, kosong lagi mulai tanggal berapa?`;
   }
-  return `Hi${who}, quick weekly check on ${named ? villa : "your villa"}: is it still available? If it's taken, when does it free up?`;
+  return `Hi${who}, quick weekly check on ${named ? villa : "your villa"}: is it still available for rent? If it's taken, when does it free up?`;
 }
 
 /**
@@ -139,9 +139,9 @@ export function composeWeeklyCheck(lang: "en" | "id", ownerName: string, villa: 
 export function composeWeeklyCheckIntro(lang: "en" | "id", ownerName: string, villa: string, broker: string): string {
   const who = ownerName ? ` ${ownerName}` : "";
   if (lang === "id") {
-    return `Halo${who}, saya ${broker} dari Unicorn Property. Cek mingguan untuk ${villa}: apakah masih tersedia? Kalau sudah terisi, kosong lagi mulai tanggal berapa?`;
+    return `Halo${who}, saya ${broker} dari Unicorn Property. Cek mingguan untuk ${villa}: apakah masih tersedia untuk disewa? Kalau sudah terisi, kosong lagi mulai tanggal berapa?`;
   }
-  return `Hi${who}, this is ${broker} from Unicorn Property. Quick weekly check on ${villa}: is it still available? If it's taken, when does it free up?`;
+  return `Hi${who}, this is ${broker} from Unicorn Property. Quick weekly check on ${villa}: is it still available for rent? If it's taken, when does it free up?`;
 }
 
 /** "your 2BR villa in Umalas" when the card title is only our code. */
@@ -154,6 +154,19 @@ function describeVilla(lang: "en" | "id", villa: string, bedrooms: number | null
 
 /** Internal data that names no person: the scout's pin placeholder, "not stated", an agency. */
 const PLACEHOLDER_OWNER = /google maps|maps pin|\bpin\b|not stated|unknown|placeholder|agency|agent\b/i;
+
+/**
+ * The owner says it is taken but names no day. The site cannot be updated without one, so the bot asks
+ * once, by itself (owner, 16.09.2026: "если даты нет, нужно уточнять до какого дня, чтобы отметить на
+ * сайте"). One question, in the same thread, no model.
+ */
+export function composeDateClarifier(lang: "en" | "id", ownerName: string): string {
+  const who = ownerName ? ` ${ownerName}` : "";
+  if (lang === "id") {
+    return `Baik${who}, terima kasih infonya. Kira-kira terisi sampai tanggal berapa ya? Begitu ada tanggalnya, kami tandai di sistem kami.`;
+  }
+  return `Thanks${who}, noted. Until when is it taken? Once I have the date I'll mark it in our system.`;
+}
 
 /**
  * The card title carries the villa, but in two shapes the scout and the site
@@ -329,6 +342,9 @@ async function planCard(lead: AmoLead, link: LinkedListing | null, why: string):
   if (!sync) return { ...base, why: "no Copilot row for this card" };
   base.responsibleUser = sync.responsibleUser;
   if (sync.botExcluded) return { ...base, why: "bot excluded on this card" };
+  if (await getKey(`weekly_check:unreachable:${leadId}`)) {
+    return { ...base, why: "WhatsApp reports no account on this number — waiting for another contact for the owner" };
+  }
 
   // What reached the owner from the phone is in amoCRM seconds after it leaves and in lead_messages
   // only on the next sweep — read it now, cadence is judged on it.
@@ -687,14 +703,14 @@ async function readAnswer(villa: string, question: string, reply: string, today:
     label: "listing:weekly-availability-answer",
     max_tokens: 200,
     temperature: 0,
-    system: `We asked a villa owner in Bali our weekly question: is the villa still available, and if taken, when does it free up. Today is ${today}. Read ONLY the owner's reply and answer ONE question: what did the owner say about the villa's availability for rent?
+    system: `We asked a villa owner in Bali our weekly question about RENTING the villa out: is it still available to rent, and if taken, when does it free up. Today is ${today}. Read ONLY the owner's reply and answer ONE question: what did the owner say about the villa's availability FOR RENT?
 
 answer:
 - "free_now": the villa is free / still available now (no later start date given).
 - "free_from": free from a later day; date = that first free day.
 - "occupied_until": occupied / booked / rented until a day; date = the LAST occupied day.
 - "not_for_rent": sold, withdrawn, no longer renting it out, only daily/nightly now, rented long term with no end, or they no longer handle it.
-- "unclear": anything else — a question back, a partial answer, a price, "I'll check", a range with gaps, several units with different dates, or you are not sure.
+- "unclear": anything else — a question back (one about buying, leasehold or selling too: we asked about renting), a partial answer, a price, "I'll check", a range with gaps, several units with different dates, or you are not sure.
 
 date: YYYY-MM-DD or null. Resolve a day without a year to its next occurrence from today.
 exact_day: true ONLY when the owner named a calendar day (or said now/today/tomorrow). A month alone ("November", "end of the month", "next month", "early October"), a week, or "soon" is false.
@@ -781,6 +797,100 @@ async function writeAvailability(
   return { written: true, detail: `${propertyId} set ${now} (was ${was})` };
 }
 
+/**
+ * "Taken, I don't know until when" still has to reach the site, or the villa keeps being offered as
+ * free (R-YUD-049: Bernice said a tenant had moved in on 15.09 and the listing stayed available). The
+ * villa is marked occupied with no end date until the owner names one; the clarifier above asks for it,
+ * and a dated answer replaces this row through writeAvailability.
+ */
+async function writeOccupied(
+  propertyId: string,
+  note: string,
+  today: string,
+  apply: boolean,
+): Promise<{ written: boolean; detail: string }> {
+  const rows = await siteGet<AvailRow[]>(
+    `property_availability?select=id,start_date,end_date,status,note&property_id=eq.${encodeURIComponent(propertyId)}`,
+  );
+  if (rows.length > 1) {
+    return { written: false, detail: `${propertyId} has ${rows.length} availability rows the pass will not guess over` };
+  }
+  const current = rows[0] ?? null;
+  const alreadyOccupied = !!current && (current.status === "occupied" || current.status === "rented") && (current.end_date ?? "") >= "2099-01-01";
+  if (alreadyOccupied) return { written: false, detail: `${propertyId} already shows occupied — nothing to change` };
+  if (!apply) return { written: false, detail: `DRY: would mark ${propertyId} occupied (the owner gave no end date)` };
+  const fullNote = current?.note ? `${note} Earlier: ${current.note}`.slice(0, 1500) : note;
+  if (current) {
+    const back = await sitePatchAvailability(current.id, { start_date: today, end_date: "2099-12-31", status: "occupied", note: fullNote });
+    if (!back || back.status !== "occupied") return { written: false, detail: `${propertyId}: the site did not return the occupied row — NOT saved` };
+  } else {
+    await siteInsert("property_availability", [{ property_id: propertyId, start_date: today, end_date: "2099-12-31", status: "occupied", note: fullNote }]);
+    const check = await siteGet<AvailRow[]>(
+      `property_availability?select=id,status&property_id=eq.${encodeURIComponent(propertyId)}&status=eq.occupied`,
+    );
+    if (check.length === 0) return { written: false, detail: `${propertyId}: the occupied row is not in the site database — NOT saved` };
+  }
+  invalidatePropertyCache();
+  return { written: true, detail: `${propertyId} marked occupied until the owner names the free date` };
+}
+
+/** One extra question in the same thread, recorded like a check so the answer comes back here. */
+async function sendClarifier(leadId: string, responsibleUser: string | null, text: string): Promise<string> {
+  const log = { warn: (obj: object, msg: string) => logger.warn(obj, msg) };
+  const channel = await resolveSendChannel(leadId, responsibleUser, log);
+  if (!channel.ok) return `the date question was not sent: ${channel.error}`;
+  const delivery = await deliverText(leadId, text, log);
+  if (delivery.leadMissing) return "the date question was not sent: lead missing in amoCRM";
+  await db.insert(sentMessagesTable).values({
+    leadId,
+    kind: WEEKLY_CHECK_KIND,
+    messageText: delivery.deliveryText,
+    responsibleUser,
+    sourceId: channel.source,
+    webhookStatus: delivery.hookStatus,
+    webhookResponse: delivery.hookBody,
+  });
+  if (!delivery.chatSent) return `the date question was refused by Salesbot (${delivery.hookStatus})`;
+  await db.update(leadsSyncTable).set({ lastOurMessageAt: new Date() }).where(eq(leadsSyncTable.leadId, leadId)).catch(() => undefined);
+  return "asked the owner until when it is taken";
+}
+
+/**
+ * An answer the pass cannot use must not end in silence. Ahj French asked "are you looking for
+ * leasehold or ?" one minute after the check on 15.09 and nothing was drafted for 21 hours: the reply
+ * generator produced no text and no push was allowed. A template draft is worse than a good answer and
+ * far better than nothing; the broker edits it. No push (owner, 15.09.2026).
+ */
+async function ensureOwnerReplyDraft(
+  leadId: string,
+  responsibleUser: string | null,
+  lang: "en" | "id",
+  villa: string,
+  why: string,
+): Promise<string | null> {
+  const [existing] = await db
+    .select({ id: pendingSuggestionsTable.id })
+    .from(pendingSuggestionsTable)
+    .where(and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending")))
+    .limit(1);
+  if (existing) return null;
+  const text =
+    lang === "id"
+      ? `Maaf kak, biar jelas: yang kami tanyakan soal sewa ${villa}. Apakah masih tersedia untuk disewa, dan kalau sudah terisi, sampai tanggal berapa ya?`
+      : `Sorry, to be clear, we're asking about the rental: is ${villa} still available to rent, and if it's taken, until when?`;
+  await db.insert(pendingSuggestionsTable).values({
+    leadId,
+    responsibleUser,
+    kind: "live",
+    followupLevel: null,
+    suggestionText: text,
+    status: "pending",
+    autopilotSkippedReason: `the owner's answer to the weekly check needs a person: ${why}`.slice(0, 300),
+    autopilotSkippedAt: new Date(),
+  });
+  return "a reply draft is waiting in the inbox";
+}
+
 export type AnswerOutcome = { leadId: string; checkId: string; reply: string; reading: AvailabilityAnswer & { guard?: string }; result: string };
 
 /** Owners who answered the newest check: stage, extraction, site write or Yudi. */
@@ -817,16 +927,26 @@ export async function processAnswers(opts: { apply: boolean }): Promise<AnswerOu
       const title = await fetchLeadTitle(c.lead_id);
       const villa = villaFromLeadName(title);
       const reading = guardAnswer(await readAnswer(villa, question, reply, today), reply, today);
+      const [sync] = await db
+        .select({ responsibleUser: leadsSyncTable.responsibleUser })
+        .from(leadsSyncTable)
+        .where(eq(leadsSyncTable.leadId, c.lead_id))
+        .limit(1);
+      const lang = threadLanguage(real.map((m) => m.text ?? ""));
+      const ownerName = await fetchOwnerName(c.lead_id, villa);
 
       let result = "";
       const links = await siteGet<{ property_id: string }[]>(`listing_crm_link?select=property_id&amo_lead_id=eq.${c.lead_id}`);
       const propertyId = links.length === 1 ? links[0]!.property_id : null;
       const stamp = `Owner WhatsApp ${human(today)} (amoCRM lead ${c.lead_id}, weekly check): "${(reading.quote || reply).slice(0, 300)}".`;
-      let tellYudi: string | null = null;
+      let needsPerson: string | null = null;
+      // The owner says it is taken but the guard found no exact day: the site still has to know, and the
+      // date has to be asked for (owner, 16.09.2026).
+      const takenWithoutDate = reading.answer === "unclear" && BUSY_WORDS.test(reply);
 
       if (reading.answer === "free_now" || reading.answer === "free_from" || reading.answer === "occupied_until") {
         if (!propertyId) {
-          tellYudi = "no single site listing linked to the card — availability not written";
+          needsPerson = "no single site listing linked to the card — availability not written";
         } else {
           let freeFrom: string | null = null;
           if (reading.answer === "free_from") freeFrom = reading.date;
@@ -837,23 +957,50 @@ export async function processAnswers(opts: { apply: boolean }): Promise<AnswerOu
           }
           const w = await writeAvailability(propertyId, freeFrom, stamp, today, opts.apply);
           result = w.detail;
-          if (!w.written && !/nothing to change|^DRY/.test(w.detail)) tellYudi = w.detail;
+          if (!w.written && !/nothing to change|^DRY/.test(w.detail)) needsPerson = w.detail;
         }
       } else if (reading.answer === "not_for_rent") {
-        tellYudi = "the owner says it is no longer for rent — the listing was NOT unpublished, decide";
+        needsPerson = "the owner says it is no longer for rent — the listing was NOT unpublished, decide";
+      } else if (takenWithoutDate) {
+        if (!propertyId) {
+          needsPerson = "no single site listing linked to the card — the villa was not marked occupied";
+        } else {
+          const w = await writeOccupied(propertyId, `${stamp} End date unknown, asked.`, today, opts.apply);
+          result = w.detail;
+          if (!w.written && !/nothing to change|^DRY/.test(w.detail)) needsPerson = w.detail;
+        }
+        if (opts.apply && !needsPerson) {
+          // One date question a week per card, whatever the owner answers. Without the cap every "still
+          // taken, not sure" would be answered with "until when?" again — the nagging the owner's rule
+          // for this pass exists to prevent.
+          const askedKey = `weekly_check:clarify:${c.lead_id}`;
+          const lastAsk = await getKey(askedKey);
+          const recentlyAsked = !!lastAsk && Date.now() - new Date(lastAsk).getTime() < CHECK_EVERY_DAYS * 86400_000;
+          if (recentlyAsked) {
+            needsPerson = "the owner says it is taken but has given no date, and we already asked this week";
+          } else {
+            const asked = await sendClarifier(c.lead_id, sync?.responsibleUser ?? null, composeDateClarifier(lang, ownerName));
+            await setKey(askedKey, new Date().toISOString());
+            result = result ? `${result}; ${asked}` : asked;
+            if (/not sent|refused/.test(asked)) needsPerson = asked;
+          }
+        }
       } else {
-        tellYudi = `unclear answer (${reading.guard ?? "the reading was not sure"}) — availability not written`;
+        needsPerson = `unclear answer (${reading.guard ?? "the reading was not sure"}) — availability not written`;
       }
-      if (tellYudi) result = result ? `${result}; ${tellYudi}` : tellYudi;
+      if (needsPerson) result = result ? `${result}; ${needsPerson}` : needsPerson;
 
       if (opts.apply) {
         const moved = await moveCard(c.lead_id, [LISTING_STAGE.WEEKLY_CHECK_SENT], LISTING_STAGE.AVAILABILITY_RECEIVED);
         await amoPost(`/api/v4/leads/${c.lead_id}/notes`, [
           { note_type: "common", params: { text: `Weekly availability check — the owner answered:\n"${reply.slice(0, 500)}"\nRead as: ${reading.answer}${reading.date ? ` ${reading.date}` : ""}.\n${result}` } },
         ]).catch(() => null);
-        // Nobody is pushed (owner, 15.09.2026). What needs a person is in the note above; its reply draft
-        // stays in the inbox, and weekly-check-reply.ts keeps the LIVE writers from pushing about it.
-        if (!tellYudi) {
+        // Nobody is pushed (owner, 15.09.2026). What needs a person is in the note above and in a draft
+        // waiting in the inbox; weekly-check-reply.ts keeps every LIVE writer from pushing about it.
+        if (needsPerson) {
+          const drafted = await ensureOwnerReplyDraft(c.lead_id, sync?.responsibleUser ?? null, lang, villa, needsPerson);
+          if (drafted) result = `${result}; ${drafted}`;
+        } else {
           // The answer is on the site: a reply draft the owner's message raised is not Yudi's to approve.
           // The LIVE writers no longer raise one (weekly-check-reply.ts); this retires any from before.
           const cleared = await db
@@ -863,7 +1010,7 @@ export async function processAnswers(opts: { apply: boolean }): Promise<AnswerOu
             .returning({ id: pendingSuggestionsTable.id });
           if (cleared.length) result = `${result}; ${cleared.length} reply draft(s) cleared from the inbox`;
         }
-        const marker: WeeklyAnswerMarker = { at: new Date().toISOString(), answer: reading.answer, date: reading.date, result, moved, handled: !tellYudi };
+        const marker: WeeklyAnswerMarker = { at: new Date().toISOString(), answer: reading.answer, date: reading.date, result, moved, handled: !needsPerson };
         await setKey(doneKey, JSON.stringify(marker));
       }
       out.push({ leadId: c.lead_id, checkId: c.id, reply, reading, result });

@@ -21,10 +21,11 @@
  * narrow for that reason — a loose pattern would start eating real replies from
  * owners who genuinely write about WhatsApp.
  */
-import { db, leadsSyncTable } from "@workspace/db";
+import { db, brokerSettingsTable, leadsSyncTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { updateLeadStatus } from "./amo-client";
+import { amoPost, updateLeadStatus } from "./amo-client";
+import { publishedListingFor } from "./listing-live-link";
 
 /**
  * amoCRM's universal terminal ids: 142 is won, 143 is lost, in every funnel.
@@ -101,6 +102,32 @@ export function undeliverableVerdict(
  */
 export async function closeUndeliverable(leadId: string): Promise<boolean> {
   try {
+    // A dead number is not a dead villa. Bima's card (23355217 / R-YUD-048) was closed here on 15.09
+    // while the listing stayed published and offered to clients, and a closed card is never checked
+    // again. Owner, 16.09.2026: do not close a card whose listing is live on the site. The card keeps
+    // its stage, the villa gets a note, and the weekly check skips it until someone adds a number.
+    const live = await publishedListingFor(leadId);
+    if (live) {
+      const key = `weekly_check:unreachable:${leadId}`;
+      const [seen] = await db
+        .select({ value: brokerSettingsTable.value })
+        .from(brokerSettingsTable)
+        .where(eq(brokerSettingsTable.key, key))
+        .limit(1);
+      if (!seen) {
+        await db.insert(brokerSettingsTable).values({ key, value: new Date().toISOString() }).onConflictDoNothing();
+        await amoPost(`/api/v4/leads/${leadId}/notes`, [
+          {
+            note_type: "common",
+            params: {
+              text: `WhatsApp reports no account on this number, but ${live.id} is published on the site. The card stays where it is; the weekly availability check skips this villa until someone adds another number for the owner.`,
+            },
+          },
+        ]).catch(() => null);
+      }
+      logger.warn({ leadId, listing: live.id }, "undeliverable: no WhatsApp, but the villa is live on the site — card kept");
+      return false;
+    }
     const ok = await updateLeadStatus(leadId, CLOSED_LOST_STATUS_ID);
     await db
       .update(leadsSyncTable)
