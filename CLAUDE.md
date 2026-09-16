@@ -1310,12 +1310,11 @@ broker wrote after the welcome (lead_messages, not only sent_messages).
   without the marker = none) — Sophie's 12.09 draft left with no links, its
   row still listed three villas, and they were "already sent" forever.
   approve now stores the links that actually go out on the row.
-- **Edited text that names none of its villas** and does not point at the
-  links (`REFERS_TO_ATTACHED_LINKS` now also "here they are", "these three",
-  "take a look"): approve refuses with 409 `links_not_named` and names the
-  villas; the /m page shows `json.message`. Chosen over keeping the links (a
-  text saying "nothing fits right now" would carry three villas) and over
-  dropping them (Sophie 14.09 got "Here they are:" with nothing under it).
+- **Edited text that names none of its villas** goes out with the links as
+  attached (since 16.09: Amelia asked "can we not make this a requirement?",
+  the owner agreed). From 14.09 to 16.09 approve refused it with 409
+  `links_not_named`; the links are never dropped (Sophie 14.09 got "Here they
+  are:" with nothing under it).
 - **Replay** (worktree code, threads cut at the logged moments, read-only):
   Lance → R-YUD-098 (around Rp 30M, move-in January); Luke → Umalas / Canggu
   / Berawa / Padonan / Seseh, R-YUD-055, R-YUD-088 (Babakan), R-YUD-059;
