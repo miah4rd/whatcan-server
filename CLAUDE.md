@@ -2607,6 +2607,27 @@ refreshed. The same Internal data carries the Pre-listed / Listed switch
 written its notes and green/red flags — and since 14.09 it moves the card to
 live (section above).
 
+### Key features: garden, workspace, living room, quiet street (2026-09-16)
+
+Owner, after reading every rental lead of 19.07–16.09: clients turn villas down over four things
+the catalog never recorded — a garden ("everything you sent me looks like concrete boxes"), a place
+to work, an enclosed living room ("don't like open living rooms") and a quiet street with no
+construction next door. The site now has them as columns the co-worker fills (bali-villa-rentals
+CLAUDE.md, same date): `garden` none|small|large, `workspace` none|desk|office_room, `living_room`
+open|enclosed, `quiet_area`, and `no_construction_nearby` derived from Internal data.
+**NULL is "not checked", never "no".** Construction in Internal data is three states since 16.09
+(NULL / false with a check date / true); `property-flags.ts` still reads only `=== true`.
+
+- `resolveClientRequest` returns `wants` (garden, workspace, enclosedLiving, quiet): the same AI
+  read decides whether something IS a wish (a school named "Garden …" is not), and `WANT_EVIDENCE`
+  requires its words in what a person wrote. No AI read, no wishes.
+- They **rank, never filter** (`rankShortlistFits`, fit score): has it +1…+2, known to lack it
+  −1.5…−2, not checked 0. A wished-for quiet street with construction nearby is −3. The request that
+  filters stays bedrooms / area / budget / dates.
+- The writer is told only checked facts: a `checked:` part on matcher and composer lines (with what
+  a villa is known to lack), the positives on the pick label. The composer's facts rule: say a villa
+  has one of these only when `checked:` says so, otherwise offer to confirm with the owner.
+
 ### Parked listing cards are answered and re-judged (2026-09-07)
 
 "long term" and "co-broke Agents" are parking stages: no proactive chasing.
