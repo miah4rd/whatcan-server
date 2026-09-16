@@ -81,6 +81,14 @@ export type SupabaseProperty = {
   min_stay_months?: number | null;
   /** Occupied / rented periods that have not ended yet (ISO dates, inclusive). */
   busy?: Array<{ start: string; end: string }>;
+  // Key features from the site (owner, 16.09.2026): what clients choose a villa by. null = nobody
+  // checked, never "no" — an unchecked villa is neither rewarded nor punished for it.
+  garden?: "none" | "small" | "large" | null;
+  workspace?: "none" | "desk" | "office_room" | null;
+  living_room?: "open" | "enclosed" | null;
+  quiet_area?: boolean | null;
+  /** Derived on the site from Internal data: true only once a person checked there is no construction next door. */
+  no_construction_nearby?: boolean | null;
 };
 
 export type PropertyMatch = {
@@ -133,7 +141,7 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
 
   const url =
     `${SUPABASE_URL}/rest/v1/properties` +
-    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,created_at,min_stay_months,pre_listed,video_url,images` +
+    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,created_at,min_stay_months,pre_listed,video_url,images,garden,workspace,living_room,quiet_area,no_construction_nearby` +
     `&is_draft=eq.false` +
     `&status=neq.sold` +
     `&order=created_at.desc`;
@@ -290,7 +298,32 @@ function styleHint(p: SupabaseProperty): string {
   const feats = (p.features ?? []).filter((f) => typeof f === "string").slice(0, 5).join(", ");
   const descr = (p.description ?? "").replace(/\s+/g, " ").trim().slice(0, 130);
   const parts = [feats, descr].filter(Boolean);
-  return parts.length ? `style: ${parts.join(" — ")}` : "";
+  const checked = keyFeatureBits(p, true);
+  return [checked.length ? `checked: ${checked.join(", ")}` : "", parts.length ? `style: ${parts.join(" — ")}` : ""]
+    .filter(Boolean)
+    .join(" | ");
+}
+
+/**
+ * The key features someone verified on the site (owner, 16.09.2026) — garden, living room,
+ * workspace, quiet street, construction checked clear. A villa's description may say "lush garden"
+ * as marketing; these are the checked facts. `withNegatives` adds what it is known to lack
+ * (matcher and composer lines), without it only what a client may be told it has (the pick label).
+ */
+export function keyFeatureBits(p: SupabaseProperty, withNegatives = false): string[] {
+  const out: string[] = [];
+  if (p.garden === "large") out.push("large garden");
+  else if (p.garden === "small") out.push("garden");
+  else if (p.garden === "none" && withNegatives) out.push("no garden");
+  if (p.living_room === "enclosed") out.push("enclosed living room");
+  else if (p.living_room === "open") out.push("open-plan living");
+  if (p.workspace === "office_room") out.push("separate office room");
+  else if (p.workspace === "desk") out.push("workspace");
+  else if (p.workspace === "none" && withNegatives) out.push("no workspace");
+  if (p.quiet_area === true) out.push("quiet street");
+  else if (p.quiet_area === false && withNegatives) out.push("busy street");
+  if (p.no_construction_nearby === true) out.push("no construction next door");
+  return out;
 }
 
 /**
@@ -485,11 +518,18 @@ function toPick(p: SupabaseProperty): PropertyPick {
   // as if the client could move in tomorrow.
   const free = freeFromLabel(p.free_from);
   const freeBit = free ? `, ${free}` : "";
+  // Checked key features last, and only whole ones: a label cut at "separate" told the writer
+  // half a fact. The writer may mention them, and nothing it was not told.
+  let featureBit = "";
+  for (const f of keyFeatureBits(p)) {
+    if (`${p.title} (${priceBit}${noPrice}${freeBit}${featureBit}, ${f})`.length > 180) break;
+    featureBit += `, ${f}`;
+  }
   return {
     id: p.id,
     title: p.title,
     url: propertyUrl(p),
-    label: `${p.title} (${priceBit}${noPrice}${freeBit})`.slice(0, 180),
+    label: `${p.title} (${priceBit}${noPrice}${freeBit}${featureBit})`.slice(0, 180),
   };
 }
 
@@ -721,6 +761,65 @@ export function rankShortlistFits(fits: SupabaseProperty[], r: ClientRequest, ct
       } else if (minStay >= 6) {
         score -= 0.25;
         note(`minimum stay ${minStay} months`, true);
+      }
+    }
+
+    // ── Key features the client asked for (owner, 16.09.2026) ──
+    // A villa that has it moves up, one known to lack it moves down, one nobody checked stays put:
+    // "not checked" is not "no". Across the 358 rental leads of 19.07–16.09 clients turned villas
+    // down over exactly these ("concrete boxes", "don't like open living rooms", "construction
+    // right next door so we decided no").
+    const w = r.wants;
+    if (w?.garden) {
+      if (p.garden === "large") {
+        score += 2;
+        note("large garden (they asked for a garden)", true);
+      } else if (p.garden === "small") {
+        score += 1.5;
+        note("has a garden (they asked for one)", true);
+      } else if (p.garden === "none") {
+        score -= 2;
+        note("no garden, and they asked for one");
+      }
+    }
+    if (w?.workspace) {
+      if (p.workspace === "office_room") {
+        score += 2;
+        note("separate office room (they need to work)", true);
+      } else if (p.workspace === "desk") {
+        score += 1;
+        note("has a workspace (they need to work)", true);
+      } else if (p.workspace === "none") {
+        score -= 1.5;
+        note("no workspace, and they need one");
+      }
+    }
+    if (w?.enclosedLiving) {
+      if (p.living_room === "enclosed") {
+        score += 2;
+        note("enclosed living room (they asked for one)", true);
+      } else if (p.living_room === "open") {
+        score -= 2;
+        note("open-plan living, and they want it enclosed");
+      }
+    }
+    if (w?.quiet) {
+      const construction = ctx.quality?.get(p.id.toUpperCase())?.constructionNearby === true;
+      if (construction) {
+        score -= 3;
+        note("construction nearby, and they asked for quiet");
+      } else {
+        if (p.no_construction_nearby === true) {
+          score += 1;
+          note("no construction next door, checked (they asked for quiet)", true);
+        }
+        if (p.quiet_area === true) {
+          score += 1.5;
+          note("quiet street (they asked for quiet)", true);
+        } else if (p.quiet_area === false) {
+          score -= 1.5;
+          note("busy street, and they asked for quiet");
+        }
       }
     }
 
@@ -1138,7 +1237,23 @@ export type ClientRequest = {
   /** ISO date. */
   moveIn: string | null;
   stayMonths: number | null;
+  /**
+   * Key features the client asked for (owner, 16.09.2026): a garden, a place to work, an enclosed
+   * living room, a quiet street. They RANK villas inside the request (rankShortlistFits) and never
+   * filter it — the request itself stays bedrooms, area, budget and dates.
+   */
+  wants: ClientWants;
   sources: { bedrooms: RequestSource; areas: RequestSource; budget: RequestSource; moveIn: RequestSource; stay: RequestSource };
+};
+
+export type ClientWants = { garden: boolean; workspace: boolean; enclosedLiving: boolean; quiet: boolean };
+
+/** Words a wish must stand on in what a person wrote; the AI decides whether it IS a wish. */
+const WANT_EVIDENCE: Record<keyof ClientWants, RegExp> = {
+  garden: /garden|green|lawn|yard|taman|сад|зелен/i,
+  workspace: /office|work ?space|work(?:ing)? from home|\bwfh\b|\bdesk\b|\bstudy\b|кабинет|рабоч/i,
+  enclosedLiving: /living|lounge|open[- ]?plan|гостин/i,
+  quiet: /quiet|calm|peaceful|nois|construct|building site|тих|шум|строй/i,
 };
 
 export type RequestInputs = {
@@ -1226,6 +1341,13 @@ export function describeRequest(r: ClientRequest): string {
   }
   if (r.moveIn) parts.push(`move-in ${dayLabel(r.moveIn)}`);
   if (r.stayMonths) parts.push(`${r.stayMonths}-month stay`);
+  const wants = [
+    r.wants?.garden ? "a garden" : "",
+    r.wants?.workspace ? "a place to work" : "",
+    r.wants?.enclosedLiving ? "an enclosed living room" : "",
+    r.wants?.quiet ? "a quiet street" : "",
+  ].filter(Boolean);
+  if (wants.length) parts.push(`wants ${wants.join(", ")}`);
   return parts.join(", ") || "no stated criteria";
 }
 
@@ -1317,7 +1439,7 @@ const requestCache = new Map<string, { at: number; value: ClientRequest }>();
 const REQUEST_TTL_MS = 10 * 60 * 1000;
 
 function copyRequest(r: ClientRequest): ClientRequest {
-  return { ...r, areas: [...r.areas], sources: { ...r.sources } };
+  return { ...r, areas: [...r.areas], wants: { ...r.wants }, sources: { ...r.sources } };
 }
 
 /**
@@ -1367,6 +1489,7 @@ export async function resolveClientRequest(inp: RequestInputs): Promise<ClientRe
     budgetAroundIdr: null,
     moveIn: null,
     stayMonths: null,
+    wants: { garden: false, workspace: false, enclosedLiving: false, quiet: false },
     sources: { bedrooms: null, areas: null, budget: null, moveIn: null, stay: null },
   };
 
@@ -1397,6 +1520,10 @@ export async function resolveClientRequest(inp: RequestInputs): Promise<ClientRe
     move_in_source?: string | null;
     stay_months?: number | null;
     stay_source?: string | null;
+    wants_garden?: boolean;
+    wants_workspace?: boolean;
+    wants_enclosed_living?: boolean;
+    wants_quiet?: boolean;
   };
   let ai: AiRequest | null = null;
   if (sections.length > 0) {
@@ -1431,7 +1558,12 @@ Return JSON with exactly these keys:
 - "move_in": the move-in date as YYYY-MM-DD. "asap", "now", "immediately" -> today; "tomorrow" -> tomorrow; "this month" -> the last day of this month; "next month" -> the 1st of next month; "in 1-2 months" -> today plus one month; a month name -> the 1st of its NEXT occurrence, never a past date (said in September, "February" is February of next year); a range of dates -> its start. Null when unstated.
 - "move_in_source": as above.
 - "stay_months": integer. "3 months" -> 3; "21 Sep - 18 Dec" -> 3; "a year", "yearly contract", "12 months" -> 12; "6-12 months" -> 6. "long term" alone -> null. Null when unstated.
-- "stay_source": as above.`,
+- "stay_source": as above.
+- "wants_garden": true only when a person asks for a garden, a lawn, green outdoor space, or "something greener" in the place they want. A school, cafe or other place whose NAME has "garden" in it is not a wish.
+- "wants_workspace": true when they need an office, a study, a desk or a room to work from home.
+- "wants_enclosed_living": true when they want an enclosed / closed / proper living room, or say they do not like open-plan or open living rooms.
+- "wants_quiet": true when they want a quiet or calm place, or no construction or noise next to it.
+The four "wants_" keys are false when nobody asked; a feature of a villa WE described is never their wish.`,
         messages: [{ role: "user", content: sections.join("\n\n").slice(0, 6000) }],
         max_tokens: 400,
         temperature: 0,
@@ -1601,6 +1733,17 @@ Return JSON with exactly these keys:
         r.sources.areas = "clicked";
       }
     }
+  }
+
+  // Key features: a wish counts only when the AI read one AND its words are in what a person wrote.
+  if (ai) {
+    const said = (k: keyof ClientWants, v: unknown) => v === true && WANT_EVIDENCE[k].test(allText);
+    r.wants = {
+      garden: said("garden", ai.wants_garden),
+      workspace: said("workspace", ai.wants_workspace),
+      enclosedLiving: said("enclosedLiving", ai.wants_enclosed_living),
+      quiet: said("quiet", ai.wants_quiet),
+    };
   }
 
   if (requestCache.size > 300) requestCache.clear();
@@ -2155,7 +2298,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
 
 ${opts.mustAttach ? MUST_ATTACH_RULE : DECLINE_RULES}
 
-EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first: first by how closely the villa matches the request (an area they named over a neighbour, a price close to their budget without going over it, free on their dates, a minimum stay that suits them), then, only between villas that match equally, by what we know about the villa (red and green flags from our inspection, construction nearby, inspected (Listed), a video tour, a full photo set, dates confirmed recently). How long a listing has been on the site plays no part: rentals come free again and again. Each line gives its reasons after "why:". Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, never because it is cheaper, older, newer or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously.
+EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first: first by how closely the villa matches the request (an area they named over a neighbour, a price close to their budget without going over it, free on their dates, a minimum stay that suits them, and the key features they asked for — a garden, a place to work, an enclosed living room, a quiet street), then, only between villas that match equally, by what we know about the villa (red and green flags from our inspection, construction nearby, inspected (Listed), a video tour, a full photo set, dates confirmed recently). How long a listing has been on the site plays no part: rentals come free again and again. Each line gives its reasons after "why:". Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, never because it is cheaper, older, newer or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously. A "checked:" part lists key features a person verified (garden, living room, workspace, quiet street, no construction next door); a feature missing from it is UNKNOWN, not absent.
 
 Pick up to ${limit} listing IDs, preferring ${MIN_SHORTLIST}-${limit} so the lead has something to compare. Never pad: if only one genuinely fits, return one.${
         (opts.seenCount ?? 0) > 0
