@@ -11,8 +11,11 @@
  * funnel, and nothing outside 08:00–20:00 Bali. A message from an unknown
  * agency at three in the morning reads as spam however good the text is.
  *
- * New conversations are NOT part of this. Opening a thread has its own budget
- * (new-contact-budget.ts) and this endpoint never sends a first contact.
+ * New conversations are not this endpoint's to allow: opening a thread has its
+ * own budget (new-contact-budget.ts), and a first contact leaves here only when
+ * that budget still has room — the drain never overrides it, it only offers the
+ * card. `?leads=` names cards instead of taking the queue's order; the guards
+ * are unchanged either way.
  */
 import { Router } from "express";
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
@@ -44,6 +47,22 @@ router.post("/admin/autopilot-drain", async (req, res) => {
   const pipeline = String(req.query["pipeline"] ?? "rental listings").trim().toLowerCase();
   const limit = Math.min(Number(req.query["limit"]) || BATCH, BATCH);
   const force = String(req.query["force"] ?? "") === "1";
+  /**
+   * Named cards instead of the queue's own order.
+   *
+   * The ordering below is deliberately fair-to-the-queue, which means a card
+   * the owner asks for BY NAME can be unreachable: a first contact stamped
+   * "waiting for tomorrow" today sorts to the very back, so a batch of fifteen
+   * never reaches it however many times it runs. This decides only WHICH cards
+   * are offered to maybeAutopilot — every guard it applies (delegated stage,
+   * outreach hours, new-contact budget, dry-run) still decides whether anything
+   * leaves. Asking for a card here is not permission to send it.
+   */
+  const named = String(req.query["leads"] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => /^\d+$/.test(s))
+    .slice(0, BATCH);
 
   const setting = await getAutopilotSetting(pipeline);
   if (setting.mode !== "on") {
@@ -116,11 +135,11 @@ router.post("/admin/autopilot-drain", async (req, res) => {
 
   const seen = new Set<string>();
   const picked: string[] = [];
-  for (const b of backlog) {
+  for (const b of named.length > 0 ? named.map((leadId) => ({ leadId })) : backlog) {
     if (seen.has(b.leadId)) continue;
     seen.add(b.leadId);
     picked.push(b.leadId);
-    if (picked.length >= room) break;
+    if (named.length === 0 && picked.length >= room) break;
   }
 
   // maybeAutopilot re-checks the stage threshold and every send guard itself —
@@ -147,6 +166,7 @@ router.post("/admin/autopilot-drain", async (req, res) => {
   );
   res.json({
     pipeline,
+    named: named.length > 0 ? named : undefined,
     attempted: picked.length,
     sent,
     declined,

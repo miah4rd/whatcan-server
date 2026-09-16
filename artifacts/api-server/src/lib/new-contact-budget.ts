@@ -61,9 +61,32 @@ function baliDateString(now: Date): string {
  */
 const NO_NEW_CONTACTS = new Set<number>([62585]);
 
+/**
+ * A ONE-DAY exception, granted by name, never a new rule.
+ *
+ * Owner, 2026-09-16: five cards of the 2BR / 30-50M / Seseh belt — the deficit
+ * cell the scout scored at up to 5.00 (five requests against one listing) —
+ * were all stamped "waiting for tomorrow's new-contact budget" while the day's
+ * nine had gone to Kerobokan, Pererenan and Umalas. He approved going past the
+ * nine for THIS Bali day only, and said in the same breath not to break the
+ * rule systemically. So the rule above is untouched and this is keyed by the
+ * Bali DATE: it expires by itself at midnight, nobody has to remember to undo
+ * it, and a forgotten override cannot quietly become the standing limit.
+ *
+ * Anything here needs a date, a line, and a number someone actually approved.
+ */
+const ONE_DAY_CAP: Record<string, Record<number, number>> = {
+  // Yudi's primary line: the usual nine plus the five Seseh-belt 2BR cards.
+  "2026-09-16": { 59537: 14 },
+};
+
 /** How many first contacts this line may open today. */
 export function dailyCapForLine(line: number | null, now: Date = new Date()): number {
   if (line !== null && NO_NEW_CONTACTS.has(line)) return 0;
+  // A held line stays held: the exception raises a cap, it never opens a line
+  // that was deliberately closed.
+  const granted = line !== null ? ONE_DAY_CAP[baliDateString(now)]?.[line] : undefined;
+  if (granted !== undefined) return granted;
   const start = line !== null ? LINE_WARMUP_START[line] : undefined;
   if (!start) return NEW_CONTACT_DAILY_CAP;
   const day = Math.round((Date.parse(baliDateString(now)) - Date.parse(start)) / 86_400_000) + 1;
