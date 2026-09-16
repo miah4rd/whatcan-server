@@ -130,11 +130,12 @@ async function startSession(name, { pairingPhone = null } = {}) {
     auth: state,
     logger: baileysLog,
     browser: Browsers.macOS("Unicorn CRM"),
-    // The broker keeps using WhatsApp on the phone: do not mark them online,
-    // do not pull years of history into amoCRM.
+    // The broker keeps using WhatsApp on the phone: do not mark them online.
+    // History sync stays ON (Baileys needs it for the LID↔phone mapping and
+    // warns the session becomes unstable without it); old messages never reach
+    // amoCRM because only messages.upsert is forwarded, see below.
     markOnlineOnConnect: false,
     syncFullHistory: false,
-    shouldSyncHistoryMessage: () => false,
     generateHighQualityLinkPreview: true,
   });
 
@@ -184,6 +185,9 @@ async function startSession(name, { pairingPhone = null } = {}) {
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify" && type !== "append") return;
     for (const m of messages) {
+      // "append" also replays recent history right after linking; only keep
+      // fresh ones (a message the broker typed on the phone a moment ago).
+      if (type === "append" && Date.now() / 1000 - Number(m.messageTimestamp ?? 0) > 600) continue;
       try { await onMessage(name, sock, m); } catch (err) { log.error({ err, name, id: m.key?.id }, "message handling failed"); }
     }
   });
