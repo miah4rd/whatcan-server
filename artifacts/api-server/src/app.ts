@@ -24,6 +24,7 @@ import { startInspectionBookingPass } from "./lib/inspection-booking";
 import { startStageSyncCheckScheduler } from "./lib/stage-sync-check";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
+import { connectChannel, ensureWaTables } from "./lib/wa-bridge";
 
 const app: Express = express();
 
@@ -47,7 +48,16 @@ app.use(
   }),
 );
 app.use(cors());
-app.use(express.json({ limit: "12mb" })); // large enough for a pasted screenshot (base64) as ground-truth context
+app.use(
+  express.json({
+    limit: "12mb",
+    // amoCRM Chats API signs hooks over the exact bytes it sent; re-serialised
+    // JSON does not match, so keep the raw body for lib/wa-bridge.ts.
+    verify: (req, _res, buf) => {
+      (req as unknown as { rawBody?: Buffer }).rawBody = buf;
+    },
+  }),
+); // large enough for a pasted screenshot (base64) as ground-truth context
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
@@ -132,6 +142,12 @@ pool.query(`UPDATE stage_events e
                AND l.pipeline IS NOT NULL`)
   .then((r) => logger.info({ rows: r.rowCount }, "startup migration: stage_events.pipeline backfilled"))
   .catch((err) => logger.error({ err }, "startup migration: stage_events backfill failed"));
+
+// Own WhatsApp bridge (replaces Wahelp): tables, then (re)connect the amojo
+// channel — amoCRM drops the link whenever the integration is reinstalled.
+ensureWaTables()
+  .then(() => connectChannel())
+  .catch((err) => logger.error({ err }, "wa-bridge: startup failed"));
 
 pool.query(`CREATE TABLE IF NOT EXISTS autopilot_settings (
   pipeline TEXT PRIMARY KEY,

@@ -58,6 +58,7 @@ import weeklyAvailabilityRouter from "./weekly-availability";
 import rentalStageSyncCheckRouter from "./admin/rental-stage-sync-check";
 import inspectionCalendarRouter from "./admin/inspection-calendar";
 import viewingCalendarRouter from "./admin/viewing-calendar";
+import waBridgeRouter from "./wa-bridge";
 import { adminAuth } from "../lib/admin-auth";
 
 const router: IRouter = Router();
@@ -120,6 +121,7 @@ router.use(viewingReportDueRouter);
 router.use(inspectionsRouter);
 router.use(syncTimelineRouter);
 router.use(amocrmChatWebhookRouter);
+router.use(waBridgeRouter);
 router.use(sendChatMessageRouter);
 router.use(listingStatusRouter);
 router.use(weeklyAvailabilityRouter);
