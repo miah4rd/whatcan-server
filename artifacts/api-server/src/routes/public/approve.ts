@@ -396,20 +396,13 @@ router.post("/approve", async (req, res) => {
           if (REFERS_TO_ATTACHED_LINKS.test(finalMessage)) {
             req.log.info({ leadId: sug.leadId, kept: labels }, "approve: edited text names no villa but refers to the links — kept as attached");
           } else {
-            // Never silently (owner, 14.09.2026, E). Dropping the links here
-            // sent Sophie "Here they are:" with nothing under it (12.09 draft,
-            // approved 46 h later with the villa names cut). Keeping them
-            // would put three villas under a text that may say "nothing fits".
-            // Neither guess is safe, so the send is refused and the broker
-            // decides in one tap: mention the villas, or remove the links.
-            const names = labels.map((l) => (l ?? "").replace(/\s*\(.*$/, "").trim()).filter(Boolean);
-            req.log.warn({ leadId: sug.leadId, attached: labels }, "approve: edited text mentions none of the attached villas — send refused, the broker decides");
-            res.status(409).json({
-              ok: false,
-              error: "links_not_named",
-              message: `Your text does not mention the ${names.length === 1 ? "attached villa" : `${names.length} attached villas`} (${names.join("; ")}). Mention them in the text, or remove the links you do not want to send, then approve again.`,
-            });
-            return;
+            // Not a requirement (Amelia, owner agreed, 16.09.2026). From 14.09
+            // this refused the send with 409 links_not_named; brokers were
+            // blocked on texts that simply do not name the villas. The links
+            // the broker left attached on approve are the ones she wants sent —
+            // dropping them sent Sophie "Here they are:" with nothing under it
+            // (12.09), so they go out exactly as attached.
+            req.log.info({ leadId: sug.leadId, kept: labels }, "approve: edited text names none of the attached villas — sent with the links as attached");
           }
         } else if (kept.length !== effectiveAttachments.length || added.length > 0) {
           req.log.info(
