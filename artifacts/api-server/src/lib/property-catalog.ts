@@ -518,9 +518,13 @@ function toPick(p: SupabaseProperty): PropertyPick {
   // as if the client could move in tomorrow.
   const free = freeFromLabel(p.free_from);
   const freeBit = free ? `, ${free}` : "";
-  // Checked key features last: the writer may mention them, and nothing it was not told.
-  const features = keyFeatureBits(p);
-  const featureBit = features.length ? `, ${features.join(", ")}` : "";
+  // Checked key features last, and only whole ones: a label cut at "separate" told the writer
+  // half a fact. The writer may mention them, and nothing it was not told.
+  let featureBit = "";
+  for (const f of keyFeatureBits(p)) {
+    if (`${p.title} (${priceBit}${noPrice}${freeBit}${featureBit}, ${f})`.length > 180) break;
+    featureBit += `, ${f}`;
+  }
   return {
     id: p.id,
     title: p.title,
