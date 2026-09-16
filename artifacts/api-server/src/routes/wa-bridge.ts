@@ -92,7 +92,7 @@ ol{padding-left:20px;margin:8px 0}
 <ol><li>WhatsApp → Settings → Linked devices</li><li>Link a device → scan</li></ol>
 <img id="qr" alt="QR code">
 </div>
-<div class="card">
+<div class="card" id="paircard">
 <b>On this phone:</b> get a code instead.
 <input id="phone" inputmode="tel" placeholder="Your WhatsApp number, e.g. 62812…">
 <button id="pair">Get code</button>
@@ -103,7 +103,7 @@ ol{padding-left:20px;margin:8px 0}
 var T=${JSON.stringify(t)};
 function poll(){fetch('/api/wa/link/'+T+'/status').then(function(r){return r.json()}).then(function(s){
  var st=document.getElementById('status');
- if(s.status==='open'){st.innerHTML='<span class="ok">Linked: +'+(s.me||'')+'</span>. You can close this page.';document.getElementById('qrcard').style.display='none';return;}
+ if(s.status==='open'){st.innerHTML='<span class="ok">Linked: +'+(s.me||'')+'</span>. You can close this page.';document.getElementById('qrcard').style.display='none';document.getElementById('paircard').style.display='none';return;}
  st.textContent=s.status==='qr'?'Waiting for the phone…':'Connecting…';
  if(s.hasQr)document.getElementById('qr').src='/api/wa/link/'+T+'/qr.png?'+Date.now();
  if(s.pairingCode)document.getElementById('code').textContent=s.pairingCode;
