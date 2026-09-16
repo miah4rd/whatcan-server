@@ -121,12 +121,30 @@ export async function connectChannel(): Promise<boolean> {
   return r.status === 200;
 }
 
-export function verifyAmojoHook(rawBody: Buffer | undefined, signature: string | undefined): boolean {
+export function verifyAmojoHook(
+  rawBody: Buffer | undefined,
+  signature: string | undefined,
+  headers: Record<string, string | string[] | undefined> = {},
+  path = "",
+): boolean {
   if (!rawBody || !signature || !CHANNEL_SECRET) return false;
-  const expected = crypto.createHmac("sha1", CHANNEL_SECRET).update(rawBody).digest("hex");
-  const a = Buffer.from(expected);
-  const b = Buffer.from(String(signature).toLowerCase());
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+  const got = String(signature).toLowerCase();
+  const same = (hex: string) => hex.length === got.length && crypto.timingSafeEqual(Buffer.from(hex), Buffer.from(got));
+  const hmac = (data: string | Buffer) => crypto.createHmac("sha1", CHANNEL_SECRET).update(data).digest("hex");
+  if (same(hmac(rawBody))) return true;
+  // Diagnostics for a mismatch: which known signing scheme would have matched.
+  const h = (k: string) => String(headers[k] ?? "");
+  const variants: Record<string, string> = {
+    trimmed: hmac(rawBody.toString("utf8").trim()),
+    headerString: hmac(["POST", h("content-md5"), h("content-type"), h("date"), path].join("\n")),
+    headerStringMd5Body: hmac(["POST", crypto.createHash("md5").update(rawBody).digest("hex"), h("content-type"), h("date"), path].join("\n")),
+  };
+  const matched = Object.entries(variants).find(([, v]) => same(v))?.[0] ?? null;
+  logger.warn(
+    { matched, sigLen: got.length, bodyLen: rawBody.length, contentType: h("content-type"), hasDate: Boolean(h("date")), hasMd5: Boolean(h("content-md5")), path },
+    "wa-bridge: amojo hook signature mismatch",
+  );
+  return matched !== null;
 }
 
 async function deliveryStatus(amoMsgId: string, statusCode: 1 | 2 | -1, errorCode?: number, error?: string) {
