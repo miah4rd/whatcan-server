@@ -2559,6 +2559,34 @@ were both answered within an hour. **Regulation now — automatic, no approval:*
   "no WhatsApp" notices; two listings R-YUD-046 / R-YUD-060 for the same owner),
   23541159 (the Umbala coordinator; the owner card 23305115 is checked).
 
+### The weekly check asks about RENT, chases the date, and never closes a live villa (2026-09-16)
+
+The first day of the automatic check produced four sends, all delivered, and three things nobody
+picked up (owner: "чини все"):
+- **"are you looking for leasehold or ?"** — Ahj French (23355247 / R-YUD-018) answered the check with
+  a question about buying, one minute after it left. The reading was correctly "unclear", nothing was
+  written, no push went out — and no draft was ever written either (the listing reply generator
+  returned empty text), so the owner waited 21 hours. Now the question itself says renting ("is it
+  still available for rent?" / "apakah masih tersedia untuk disewa?", the intro variant too), the
+  reading is told the question was about RENT and marks a reply about buying/leasehold/selling
+  unclear, and `ensureOwnerReplyDraft` guarantees a LIVE draft (template, no model, no push) whenever
+  an answer needs a person and the inbox has nothing pending on that card.
+- **"villa is not available now, someone rent it"** — Bernice (23355219 / R-YUD-049). No day, so
+  nothing reached the site and R-YUD-049 kept being offered as free. Now `takenWithoutDate` (unclear +
+  the owner's own busy words) marks the listing **occupied** with no end date (`writeOccupied`: one
+  row, start today, end 2099-12-31, read back) and the bot asks for the date itself
+  (`composeDateClarifier`, recorded as a `weekly-availability` send so the answer comes back through
+  the same path; a dated answer then replaces the row through `writeAvailability`). One date question
+  a week per card (`weekly_check:clarify:<leadId>`), otherwise "still taken, not sure" would be
+  chased forever; past the cap it is a draft for the broker.
+- **A closed card takes the villa out of the check for good.** Bima (23355217 / R-YUD-048) was closed
+  by `closeUndeliverable` when WhatsApp reported no account on the number, and Bernice's card by the
+  stage engine the moment a tenant was mentioned — both listings still published. Now
+  `publishedListingFor` (lib/listing-live-link.ts) is asked first: a card whose single linked listing
+  is a published rental is never closed by either path. The undeliverable path leaves a note and sets
+  `weekly_check:unreachable:<leadId>`, which the plan reads as "waiting for another contact for the
+  owner"; the engine returns "NOT closed: <id> is published on the site" and the audit reports it.
+
 ### Construction nearby: the one structured red flag (2026-09-10)
 
 Brokers tick **Construction nearby** in the site's Internal data

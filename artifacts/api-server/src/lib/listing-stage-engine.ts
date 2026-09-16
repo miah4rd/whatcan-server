@@ -45,6 +45,7 @@
 import { db, leadsSyncTable, leadMessagesTable, sentMessagesTable, stageEventsTable, brokerSettingsTable } from "@workspace/db";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
+import { publishedListingFor } from "./listing-live-link";
 import {
   getAmoLead,
   updateLeadStatus,
@@ -676,6 +677,24 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
   if (desired.stage === STAGE.LONG_TERM) {
     const rec = await ensureLongTermRecord(leadId, facts);
     if (!rec.ok) return { leadId, owner, current, desired: desired.stage, reason: `long term NOT applied: ${rec.why}`, applied: false };
+  }
+
+  // A villa published on the site is never closed here (owner, 16.09.2026). Bernice's card
+  // (23355219 / R-YUD-049) went to Closed - lost the moment she said a tenant had taken it for a
+  // trial month, while the listing stayed on the site as free and no weekly check could ever ask
+  // again. The card keeps its stage; the audit reports this line.
+  if (desired.stage === STAGE.CLOSED_LOST) {
+    const live = await publishedListingFor(leadId);
+    if (live) {
+      return {
+        leadId,
+        owner,
+        current,
+        desired: desired.stage,
+        reason: `NOT closed: ${live.id} is published on the site — ${desired.reason}`,
+        applied: false,
+      };
+    }
   }
 
   let ok = false;
