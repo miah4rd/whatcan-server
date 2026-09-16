@@ -11,10 +11,12 @@
  * 23541159, Umbala, 14.09) share one event — and `lead:<id>` when it does not.
  *
  * The pass (every 5 minutes, and a few seconds after a slot is recorded):
- * - slot visit in the future or at most 1 day past, card in Inspection sceduled or further (live, weekly
- *   check, availability received, won) → the event exists and matches (create / update);
- * - card went back (QUALIFIED, TAKEN TO WORK, Initial Contact), lost / parked, left the funnel, or its
- *   slot disappeared → the event is deleted;
+ * - the card's current slot (its latest 'scheduled' one), visit ahead or at most 1 day past → the event
+ *   exists and matches (create / update). The card's stage plays no part (owner, 15.09.2026: the calendar
+ *   marks when the inspection was, that is all — a red flag, delisting or closing the card afterwards is
+ *   another question; Villa Daze was inspected at 09:00 and its event deleted when the card closed);
+ * - the slot was called off or replaced in the thread (listing-progress.ts marks it cancelled /
+ *   rescheduled) → the event is deleted, unless its hour has already passed;
  * - visit more than a day past → the row is retired; the event stays as history.
  *
  * Idempotency lives in `inspection_calendar_events` (the webhook cannot list or search events): one row
@@ -28,7 +30,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch } from "./amo-client";
-import { LISTINGS_PIPELINE_ID, LISTING_STAGE, siteGet } from "./listing-status-week";
+import { LISTINGS_PIPELINE_ID, siteGet } from "./listing-status-week";
 import {
   calendarConfig,
   createEvent,
@@ -45,15 +47,6 @@ const RECENT_MS = DAY;
 const DURATION_MS = HOUR;
 const SITE = "https://unicorn-properties.com";
 const AMO = "https://unicornproperty.amocrm.ru/leads/detail";
-
-/** Where a card with an agreed visit may sit and still have the visit on the calendar. */
-const KEEP = new Set<number>([
-  LISTING_STAGE.INSPECTION_SCHEDULED,
-  LISTING_STAGE.LIVE,
-  LISTING_STAGE.WEEKLY_CHECK_SENT,
-  LISTING_STAGE.AVAILABILITY_RECEIVED,
-  LISTING_STAGE.WON,
-]);
 
 type SlotRow = { id: string; lead_id: string; visit_at: string | Date; time_known: boolean; agreed_at: string | Date | null; quote: string | null; created_at: string | Date };
 type StoredRow = { sync_key: string; slot_id: string | null; lead_ids: string | null; visit_at: string | Date | null; event_id: string | null; payload_hash: string | null; status: string };
@@ -160,9 +153,12 @@ async function buildPlan(): Promise<{ desired: Map<string, Desired>; stored: Sto
     if (!d) throw new Error("amoCRM leads could not be read");
     for (const l of d._embedded?.leads ?? []) leads.set(String(l.id), l);
   }
+  // Any stage, lost and closed included: what happened to the card after the visit is not the calendar's
+  // business. A card amoCRM no longer returns (deleted, merged) keeps its visit too; only a card moved to
+  // another funnel is left out.
   const kept = candidates.filter((s) => {
     const l = leads.get(s.lead_id);
-    return !!l && l.pipeline_id === LISTINGS_PIPELINE_ID && KEEP.has(l.status_id);
+    return !l || l.pipeline_id === LISTINGS_PIPELINE_ID;
   });
   if (kept.length === 0) return { desired, stored, now };
 
@@ -218,7 +214,7 @@ async function buildPlan(): Promise<{ desired: Map<string, Desired>; stored: Sto
   for (const [key, slots] of groups) {
     slots.sort((a, b) => asDate(b.created_at)!.getTime() - asDate(a.created_at)!.getTime());
     const slot = slots[0]!;
-    const cards = [slot.lead_id, ...slots.slice(1).map((s) => s.lead_id).filter((id) => id !== slot.lead_id)].map((id) => leads.get(id)!);
+    const cards = [slot.lead_id, ...slots.slice(1).map((s) => s.lead_id).filter((id) => id !== slot.lead_id)].map((id) => leads.get(id) ?? { id: Number(id), name: null, status_id: 0, pipeline_id: LISTINGS_PIPELINE_ID });
     const code = key.startsWith("prop:") ? key.slice(5) : null;
     const prop = code ? propById.get(code) : undefined;
     const priv = code ? privById.get(code) : undefined;
@@ -366,22 +362,29 @@ export async function syncInspectionCalendar(o: { apply: boolean; reason?: strin
       await create(d, base, actions);
     }
 
+    // Slots a later message called off or replaced: their event goes even when its hour has passed.
+    const offRes = await db.execute(sql`SELECT id FROM listing_inspection_slots WHERE status IN ('cancelled', 'rescheduled')`);
+    const calledOff = new Set(((offRes.rows ?? []) as { id: string }[]).map((r) => String(r.id)));
+
     for (const row of stored) {
       if (desired.has(row.sync_key) || row.status === "deleted" || row.status === "retired") continue;
       const visitAt = asDate(row.visit_at);
       const aged = !!visitAt && visitAt.getTime() < now.getTime() - RECENT_MS;
+      // A visit whose hour has passed was held: closing the card afterwards must not erase it
+      // (Villa Daze 15.09: inspected 09:00, card closed ~12:00, event deleted at 12:12).
+      const held = !!visitAt && visitAt.getTime() <= now.getTime() && !(row.slot_id && calledOff.has(String(row.slot_id)));
       const base: CalendarAction = { action: "skipped", key: row.sync_key, start: visitAt ? baliIso(visitAt) : undefined, leads: (row.lead_ids ?? "").split(",").filter(Boolean), eventId: row.event_id };
       if (!row.event_id) {
         actions.push({ ...base, action: row.status === "uncertain" || row.status === "creating" ? "uncertain" : "skipped", detail: "no longer wanted; no event id on record" });
         if (o.apply) await markRow(row.sync_key, row.status === "uncertain" || row.status === "creating" ? "uncertain" : "deleted", null);
         continue;
       }
-      if (aged) {
-        actions.push({ ...base, action: "retire", detail: "visit more than a day past — event kept as history" });
+      if (aged || held) {
+        actions.push({ ...base, action: "retire", detail: aged ? "visit more than a day past — event kept as history" : "visit hour passed, the card changed afterwards — event kept as history" });
         if (o.apply) await markRow(row.sync_key, "retired", null);
         continue;
       }
-      actions.push({ ...base, action: "delete", detail: "card left Inspection sceduled (back, lost, parked) or its slot is gone" });
+      actions.push({ ...base, action: "delete", detail: "the visit was called off or replaced in the thread, or its slot is gone" });
       if (!o.apply) continue;
       const r = await deleteEvent(row.event_id);
       await markRow(row.sync_key, r.ok ? "deleted" : row.status, r.ok ? null : r.reason);

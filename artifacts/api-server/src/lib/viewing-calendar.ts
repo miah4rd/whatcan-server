@@ -8,9 +8,11 @@
  * viewing-report.ts marks it reported once the report is owed. One event per slot (card + time).
  *
  * The pass (every 5 minutes, and a few seconds after a slot is recorded):
- * - slot scheduled or reported, viewing ahead or at most 1 day past, card still in Rental and not lost,
- *   its report not filed as cancelled or rescheduled → the event exists and matches (create / update);
- * - slot rescheduled / cancelled / gone, card lost or out of Rental, report cancelled → the event is deleted;
+ * - slot scheduled or reported, viewing ahead or at most 1 day past, its report not filed as cancelled or
+ *   rescheduled → the event exists and matches (create / update). The card's stage plays no part (owner,
+ *   15.09.2026: the calendar marks when the viewing was, that is all — losing the client afterwards is
+ *   another question);
+ * - slot rescheduled / cancelled / gone, or the report says cancelled → the event is deleted;
  * - viewing more than a day past → the row is retired; the event stays as history.
  *
  * Idempotency lives in `viewing_calendar_events`, with the same create-once rules as
@@ -41,7 +43,6 @@ const DURATION_MS = HOUR;
 const SITE = "https://unicorn-properties.com";
 const AMO = "https://unicornproperty.amocrm.ru/leads/detail";
 const RENTAL_PIPELINE_ID = 11119150;
-const CLOSED_LOST = 143;
 /** Google Calendar event colour 10 "Basil" (green). Inspections keep the calendar's own colour. */
 export const VIEWING_COLOR_ID = "10";
 
@@ -147,9 +148,11 @@ async function buildPlan(): Promise<{ desired: Map<string, Desired>; stored: Sto
     if (!d) throw new Error("amoCRM leads could not be read");
     for (const l of d._embedded?.leads ?? []) leads.set(String(l.id), l);
   }
+  // Any stage, Closed Lost included: what happened to the client after the viewing is not the calendar's
+  // business. A card amoCRM no longer returns keeps its viewing; only a card in another funnel is left out.
   const kept = slots.filter((s) => {
     const l = leads.get(s.lead_id);
-    return !!l && l.pipeline_id === RENTAL_PIPELINE_ID && l.status_id !== CLOSED_LOST;
+    return !l || l.pipeline_id === RENTAL_PIPELINE_ID;
   });
   if (kept.length === 0) return { desired, stored, now };
 
@@ -165,7 +168,7 @@ async function buildPlan(): Promise<{ desired: Map<string, Desired>; stored: Sto
   const privById = new Map(privs.map((p) => [p.property_id.toUpperCase(), p]));
 
   for (const slot of kept) {
-    const lead = leads.get(slot.lead_id)!;
+    const lead = leads.get(slot.lead_id) ?? { id: Number(slot.lead_id), name: null, status_id: 0, pipeline_id: RENTAL_PIPELINE_ID };
     const code = (slot.property_code ?? "").trim().toUpperCase() || null;
     const prop = code ? propById.get(code) : undefined;
     const priv = code ? privById.get(code) : undefined;
@@ -289,10 +292,17 @@ export async function syncViewingCalendar(o: { apply: boolean; reason?: string; 
       await create(d, base, actions);
     }
 
+    // Viewings called off or moved: their event goes even when its hour has passed.
+    const offRes = await db.execute(sql`SELECT s.id FROM viewing_slots s LEFT JOIN viewing_reports r ON r.id = s.report_id
+                                        WHERE s.status IN ('cancelled', 'rescheduled') OR r.outcome = 'cancelled' OR r.rescheduled_to IS NOT NULL`);
+    const calledOff = new Set(((offRes.rows ?? []) as { id: string }[]).map((r) => String(r.id)));
+
     for (const row of stored) {
       if (desired.has(row.sync_key) || row.status === "deleted" || row.status === "retired") continue;
       const viewingAt = asDate(row.viewing_at);
       const aged = !!viewingAt && viewingAt.getTime() < now.getTime() - RECENT_MS;
+      // A viewing whose hour has passed was held: losing the card afterwards must not erase it.
+      const held = !!viewingAt && viewingAt.getTime() <= now.getTime() && !(row.slot_id && calledOff.has(String(row.slot_id)));
       const base: ViewingCalendarAction = { action: "skipped", key: row.sync_key, start: viewingAt ? baliIso(viewingAt) : undefined, lead: row.lead_id ?? undefined, eventId: row.event_id };
       if (!row.event_id) {
         const unsure = row.status === "uncertain" || row.status === "creating";
@@ -300,8 +310,8 @@ export async function syncViewingCalendar(o: { apply: boolean; reason?: string; 
         if (o.apply) await markRow(row.sync_key, unsure ? "uncertain" : "deleted", null);
         continue;
       }
-      if (aged) {
-        actions.push({ ...base, action: "retire", detail: "viewing more than a day past — event kept as history" });
+      if (aged || held) {
+        actions.push({ ...base, action: "retire", detail: aged ? "viewing more than a day past — event kept as history" : "viewing hour passed, the card changed afterwards — event kept as history" });
         if (o.apply) await markRow(row.sync_key, "retired", null);
         continue;
       }
