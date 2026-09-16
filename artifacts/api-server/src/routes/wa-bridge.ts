@@ -11,6 +11,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { pool } from "@workspace/db";
 import { logger } from "../lib/logger";
+import crypto from "node:crypto";
+import { listPipelines, listUsers } from "../lib/wa-routing";
 import {
   WA_GATEWAY_SECRET,
   gateway,
@@ -181,6 +183,147 @@ router.get("/admin/wa/messages", async (req, res) => {
     [(req.query.session as string) ?? null, limit],
   );
   res.json(r.rows);
+});
+
+// ── Numbers page: link numbers, pick each number's funnel ─────────────────────
+// A capability URL (/api/wa/numbers/<WA_SETTINGS_KEY>) so the owner can open it
+// from a phone; funnels, stages and users come live from amoCRM, so a funnel
+// created later shows up here on its own.
+
+function settingsKeyOk(key: string | undefined): boolean {
+  const expected = process.env.WA_SETTINGS_KEY ?? "";
+  if (!expected || !key || key.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(key), Buffer.from(expected));
+}
+
+router.get("/wa/numbers/:key/data", async (req, res) => {
+  if (!settingsKeyOk(req.params.key)) { res.status(404).end(); return; }
+  const [gw, rows, pipelines, users] = await Promise.all([
+    gateway("GET", "/sessions").catch(() => ({ status: 503, data: [] })),
+    pool.query(`SELECT name, mode, label, phone, status, pipeline, stage, responsible FROM wa_sessions ORDER BY name`),
+    listPipelines(true),
+    listUsers(),
+  ]);
+  const live = new Map<string, any>((Array.isArray(gw.data) ? gw.data : []).map((g: any) => [g.name, g]));
+  res.json({
+    numbers: rows.rows.map((r) => ({ ...r, connection: live.get(r.name)?.status ?? "not running" })),
+    pipelines: pipelines
+      .filter((p) => !p.is_archive)
+      .map((p) => ({ id: p.id, name: p.name, stages: p.stages.filter((s) => s.type !== 1 && s.id !== 142 && s.id !== 143).map((s) => ({ id: s.id, name: s.name })) })),
+    users,
+  });
+});
+
+router.post("/wa/numbers/:key/save", async (req, res) => {
+  if (!settingsKeyOk(req.params.key)) { res.status(404).end(); return; }
+  const { name, label, pipeline, stage, responsible, mode } = req.body ?? {};
+  if (!SESSION_RE.test(String(name ?? ""))) { res.status(400).json({ error: "bad number name" }); return; }
+  if (mode !== undefined && mode !== "shadow" && mode !== "live") { res.status(400).json({ error: "mode: shadow | live" }); return; }
+  const r = await pool.query(
+    `UPDATE wa_sessions SET label = COALESCE($2, label), pipeline = $3, stage = $4, responsible = $5,
+            mode = COALESCE($6, mode), updated_at = now()
+      WHERE name = $1 RETURNING name, mode, label, pipeline, stage, responsible`,
+    [name, label ?? null, pipeline || null, stage || null, responsible || null, mode ?? null],
+  );
+  logger.info({ number: name, pipeline, stage, responsible, mode }, "wa numbers: route saved");
+  res.json(r.rows[0] ?? { error: "no such number" });
+});
+
+router.post("/wa/numbers/:key/new", async (req, res) => {
+  if (!settingsKeyOk(req.params.key)) { res.status(404).end(); return; }
+  const label = String(req.body?.label ?? "").trim().slice(0, 60) || null;
+  const base = (label ?? "number").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "number";
+  let name = base.length >= 2 ? base : `n-${base}`;
+  for (let i = 2; (await pool.query(`SELECT 1 FROM wa_sessions WHERE name = $1`, [name])).rows.length; i++) name = `${base}-${i}`;
+  await pool.query(`INSERT INTO wa_sessions (name, label) VALUES ($1, $2)`, [name, label]);
+  res.json({ name, url: await newLinkToken(name, 24) });
+});
+
+router.post("/wa/numbers/:key/relink", async (req, res) => {
+  if (!settingsKeyOk(req.params.key)) { res.status(404).end(); return; }
+  const name = String(req.body?.name ?? "");
+  if (!SESSION_RE.test(name)) { res.status(400).json({ error: "bad number name" }); return; }
+  res.json({ url: await newLinkToken(name, 24) });
+});
+
+router.get("/wa/numbers/:key", (req, res) => {
+  if (!settingsKeyOk(req.params.key)) { res.status(404).end(); return; }
+  const k = JSON.stringify(encodeURIComponent(req.params.key));
+  res.set("Cache-Control", "no-store").type("html").send(`<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WhatsApp numbers</title>
+<style>
+body{font:15px/1.45 -apple-system,system-ui,sans-serif;margin:0;padding:20px 16px;background:#0f1a24;color:#e8eef3}
+main{max-width:640px;margin:0 auto}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:#8aa0b2;margin:0 0 16px}
+.card{background:#182634;border-radius:14px;padding:16px;margin:14px 0}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.title{font-weight:600;font-size:17px;flex:1;min-width:0}
+.pill{font-size:12px;padding:2px 8px;border-radius:99px;background:#24384a;color:#b8c7d3}
+.pill.ok{background:#12422a;color:#5ee39a}.pill.bad{background:#4a1f24;color:#ff9a9a}
+label{display:block;font-size:12px;color:#8aa0b2;margin:10px 0 4px}
+select,input,button{font:inherit;width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #2c4356;background:#0f1a24;color:#e8eef3}
+button{background:#25d366;color:#07210f;font-weight:600;border:0;cursor:pointer}
+button.ghost{background:#24384a;color:#e8eef3}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+@media (max-width:480px){.grid{grid-template-columns:1fr}}
+.msg{font-size:13px;color:#5ee39a;min-height:18px;margin-top:6px;word-break:break-all}
+a{color:#7cc4ff}
+</style></head><body><main>
+<h1>WhatsApp numbers</h1>
+<p class="sub">Each number sends its new chats to the funnel and stage chosen here. Funnels come live from amoCRM.</p>
+<div id="list">Loading…</div>
+<div class="card">
+<div class="title">Connect a new number</div>
+<label>Name (e.g. Amelia rental)</label>
+<input id="newLabel" placeholder="Who uses this number">
+<div style="height:8px"></div>
+<button id="newBtn">Get link to connect</button>
+<div class="msg" id="newMsg"></div>
+</div>
+</main><script>
+var K=${k}, D=null;
+function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function opts(list,sel,empty){var h='<option value="">'+esc(empty)+'</option>';list.forEach(function(x){var on=(String(x.id)===String(sel)||x.name===sel)?' selected':'';h+='<option value="'+x.id+'"'+on+'>'+esc(x.name)+'</option>'});return h}
+function findPipe(v){return D.pipelines.filter(function(p){return String(p.id)===String(v)||p.name===v})[0]}
+function render(){
+ var h='';
+ if(!D.numbers.length)h='<div class="card">No numbers yet.</div>';
+ D.numbers.forEach(function(n,i){
+  var p=findPipe(n.pipeline), conn=n.connection==='open';
+  h+='<div class="card" data-i="'+i+'"><div class="row"><div class="title">'+esc(n.label||n.name)+(n.phone?' · +'+esc(n.phone):'')+'</div>'
+   +'<span class="pill '+(conn?'ok':'bad')+'">'+(conn?'connected':esc(n.connection))+'</span>'
+   +'<span class="pill">'+(n.mode==='live'?'live in amoCRM':'test (not in amoCRM)')+'</span></div>'
+   +'<div class="grid"><div><label>Funnel</label><select class="pipe">'+opts(D.pipelines,p?p.id:'','— leave where amoCRM puts it —')+'</select></div>'
+   +'<div><label>Stage</label><select class="stage">'+(p?opts(p.stages,n.stage,'First stage'):'<option value="">—</option>')+'</select></div>'
+   +'<div><label>Responsible</label><select class="resp">'+opts(D.users,n.responsible,'— not set —')+'</select></div>'
+   +'<div><label>Mode</label><select class="mode"><option value="live"'+(n.mode==='live'?' selected':'')+'>Live: chats go to amoCRM</option><option value="shadow"'+(n.mode!=='live'?' selected':'')+'>Test: record only</option></select></div></div>'
+   +'<div style="height:10px"></div><div class="grid"><button class="save">Save</button><button class="ghost relink">Reconnect link</button></div>'
+   +'<div class="msg"></div></div>';
+ });
+ var list=document.getElementById('list');list.innerHTML=h;
+ [].forEach.call(list.querySelectorAll('.card[data-i]'),function(c){
+  var n=D.numbers[+c.dataset.i], msg=c.querySelector('.msg');
+  c.querySelector('.pipe').onchange=function(){var p=findPipe(this.value);c.querySelector('.stage').innerHTML=p?opts(p.stages,'','First stage'):'<option value="">—</option>'};
+  c.querySelector('.save').onclick=function(){
+   msg.textContent='Saving…';
+   post('save',{name:n.name,pipeline:c.querySelector('.pipe').value,stage:c.querySelector('.stage').value,responsible:c.querySelector('.resp').value,mode:c.querySelector('.mode').value})
+   .then(function(r){msg.textContent=r.error?r.error:'Saved. New chats from this number go there now.';load(true)});
+  };
+  c.querySelector('.relink').onclick=function(){post('relink',{name:n.name}).then(function(r){msg.innerHTML=r.url?'Open on the phone: <a href="'+esc(r.url)+'" target="_blank">'+esc(r.url)+'</a>':esc(r.error)})};
+ });
+}
+function post(path,body){return fetch('/api/wa/numbers/'+K+'/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json()})}
+function load(keepMsgs){fetch('/api/wa/numbers/'+K+'/data').then(function(r){return r.json()}).then(function(d){D=d;if(!keepMsgs)render();else setTimeout(render,1500)})}
+document.getElementById('newBtn').onclick=function(){
+ var m=document.getElementById('newMsg');m.textContent='Creating…';
+ post('new',{label:document.getElementById('newLabel').value}).then(function(r){
+  m.innerHTML=r.url?'Open on the phone of that number: <a href="'+esc(r.url)+'" target="_blank">'+esc(r.url)+'</a><br>It starts in test mode; switch to Live and pick the funnel after it connects.':esc(r.error);load(true);
+ });
+};
+load();
+</script></body></html>`);
 });
 
 export default router;

@@ -17,6 +17,7 @@
 import * as crypto from "crypto";
 import { pool } from "@workspace/db";
 import { logger } from "./logger";
+import { routeNewChat } from "./wa-routing";
 
 const AMOJO_BASE = "https://amojo.amocrm.ru";
 const clean = (v: string | undefined) => (v ?? "").replace(/["\r]/g, "").trim();
@@ -69,6 +70,9 @@ export async function ensureWaTables(): Promise<void> {
       linked               boolean NOT NULL DEFAULT false,
       PRIMARY KEY (session, phone)
     );
+    ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS pipeline text;
+    ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS stage text;
+    ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS responsible text;
     CREATE TABLE IF NOT EXISTS wa_link_tokens (
       token       text PRIMARY KEY,
       session     text NOT NULL,
@@ -276,6 +280,18 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
     await pool.query(`UPDATE wa_messages SET mirrored = true, amo_msg_id = $2 WHERE id = $1`, [ins.rows[0].id, r.data?.new_message?.msgid ?? null]);
     if (conv?.amo_conversation_id && !conv.linked) {
       await pool.query(`UPDATE wa_conversations SET linked = true WHERE session = $1 AND phone = $2`, [ev.session, ev.phone]);
+    }
+    // A client's first message on this number opens an unsorted chat in
+    // amoCRM's default funnel; put it into this number's funnel
+    // (lib/wa-routing.ts). Once per (number, client): the row is the marker.
+    if (!ev.fromMe && ev.phone) {
+      const first = await pool.query(
+        `INSERT INTO wa_conversations (session, phone) VALUES ($1, $2) ON CONFLICT (session, phone) DO NOTHING RETURNING 1`,
+        [ev.session, ev.phone],
+      );
+      if (first.rows.length) {
+        void routeNewChat(ev.session, convId).catch((err) => logger.error({ err, session: ev.session }, "wa-routing failed"));
+      }
     }
   } else {
     await pool.query(`UPDATE wa_messages SET error = $2 WHERE id = $1`, [ins.rows[0].id, `amojo ${r.status}: ${JSON.stringify(r.data).slice(0, 500)}`]);
