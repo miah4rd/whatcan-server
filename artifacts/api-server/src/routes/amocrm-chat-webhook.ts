@@ -14,7 +14,7 @@ const router = Router();
 
 router.post("/amocrm/chats/:scopeId", (req, res) => {
   const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
-  if (!verifyAmojoHook(raw, req.headers["x-signature"] as string | undefined, req.headers, req.originalUrl.split("?")[0].replace(/^\/api/, ""))) {
+  if (!verifyAmojoHook(raw, req.headers["x-signature"] as string | undefined)) {
     logger.warn({ scopeId: req.params.scopeId }, "amoChat hook: invalid signature");
     res.status(403).json({ error: "invalid signature" });
     return;
