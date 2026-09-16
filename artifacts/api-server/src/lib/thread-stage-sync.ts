@@ -86,6 +86,8 @@ export type ThreadMessage = { senderType: string; text: string | null; sentAt: D
 
 const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
 
+const tailOf = (notes: string[]): string => (notes.length ? ` (${notes.join("; ")})` : "");
+
 function fmt(d: Date): string {
   return d.toLocaleString("en-GB", { timeZone: BALI, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
@@ -150,7 +152,7 @@ export async function isEchoOfOurSend(leadId: string, at: Date): Promise<boolean
 
 // ── Viewing slot and evidence readers ────────────────────────────────────────
 
-export type ExtractedSlot = { viewingAt: Date; agreedAt: Date | null; propertyCode: string | null };
+export type ExtractedSlot = { viewingAt: Date; agreedAt: Date | null; propertyCode: string | null; confirmedByBroker: boolean };
 
 function parseIso(v: unknown): Date | null {
   if (typeof v !== "string" || !v.trim()) return null;
@@ -166,7 +168,7 @@ function parseIso(v: unknown): Date | null {
  * make it clear: the broker picks it in the report form instead.
  */
 export async function extractViewingSlot(threadText: string, asOf: Date = new Date()): Promise<ExtractedSlot | null> {
-  const out = await chatCompletionJSON<{ viewing_at: string | null; agreed_at: string | null; property: string | null }>({
+  const out = await chatCompletionJSON<{ viewing_at: string | null; agreed_at: string | null; property: string | null; confirmed_by_broker?: boolean }>({
     model: HELPER_MODEL,
     label: "viewing:extract-slot",
     max_tokens: 160,
@@ -176,8 +178,9 @@ Find the MOST RECENT property viewing in this thread that was AGREED for a concr
 - viewing_at: the slot as an ISO datetime in +08:00, or null.
 - agreed_at: when the slot was settled (the date and time of the line that settled it), ISO +08:00, or null.
 - property: the code of the villa this slot is for (like R-YUD-071), ONLY when the messages that agree the slot make it clear: the client answering under one link, the broker naming it, one villa being discussed in that exchange. null when two or more villas could be meant or none is named.
+- confirmed_by_broker: true ONLY when the LAST line that settles this slot is the Broker's — the broker names the date and time as set ("See you tomorrow at 2 PM", "Booked for Friday 15:00"), or confirms the time the client picked ("2pm works, see you then", "Perfect, tomorrow 14:00"). false when only the Client states or accepts the time and the broker has not answered it yet.
 Relative words ("tomorrow", "Wednesday") are relative to the line they appear in, not to now.
-JSON only: {"viewing_at": "2026-09-07T15:00:00+08:00" | null, "agreed_at": "2026-09-06T11:20:00+08:00" | null, "property": "R-YUD-071" | null}`,
+JSON only: {"viewing_at": "2026-09-07T15:00:00+08:00" | null, "agreed_at": "2026-09-06T11:20:00+08:00" | null, "property": "R-YUD-071" | null, "confirmed_by_broker": true|false}`,
     messages: [{ role: "user", content: threadText.slice(-7000) }],
   }).catch(() => null);
   const at = parseIso(out?.viewing_at);
@@ -197,7 +200,7 @@ JSON only: {"viewing_at": "2026-09-07T15:00:00+08:00" | null, "agreed_at": "2026
   if (agreed ? at.getTime() < agreed.getTime() - 12 * HOUR : at.getTime() < asOf.getTime() - 2 * DAY) return null;
   let code = typeof out?.property === "string" ? out.property.trim().toUpperCase() : null;
   if (code && (!/^(R-[A-Z]+-\d+|YUDR-\d+)$/.test(code) || !threadText.toUpperCase().includes(code))) code = null;
-  return { viewingAt: at, agreedAt: agreed, propertyCode: code };
+  return { viewingAt: at, agreedAt: agreed, propertyCode: code, confirmedByBroker: out?.confirmed_by_broker === true };
 }
 
 /**
@@ -221,6 +224,44 @@ export async function propertyForSlot(leadId: string, viewingAt: Date): Promise<
 export async function extractViewingAt(threadText: string): Promise<Date | null> {
   const s = await extractViewingSlot(threadText);
   return s && s.viewingAt.getTime() >= Date.now() - 2 * DAY ? s.viewingAt : null;
+}
+
+export type BrokerAction = "viewing_confirmed" | "viewing_suggested" | "negotiation" | "other";
+
+/**
+ * What did the BROKER just do? Read from the message we actually sent — the
+ * final text, edited or not — never from the thread as a whole.
+ *
+ * Owner, 16.09.2026: every Rental stage is one of our own completed actions
+ * ("показ предложен / назначен / проведён — нашим брокером"), so this is the
+ * only question worth asking a model here. The client's words are context, not
+ * the verdict: they are given so "2pm works, see you then" can be recognised as
+ * a confirmation of the time the client named.
+ */
+export async function detectBrokerAction(ourText: string, context: string): Promise<{ action: BrokerAction; why: string }> {
+  const text = (ourText ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return { action: "other", why: "nothing was sent" };
+  const out = await chatCompletionJSON<{ action: string; why: string }>({
+    model: HELPER_MODEL,
+    label: "stage:broker-action",
+    max_tokens: 120,
+    temperature: 0,
+    system: `The message below was sent by OUR BROKER to a villa rental client. Say which action the broker performed with it. Judge the broker's message only; the thread is context.
+
+- "viewing_confirmed": the broker states a viewing as settled — names the date and time as agreed ("See you tomorrow at 2 PM", "Booked for Friday 15:00"), or confirms a time the client picked ("2pm works, see you then").
+- "viewing_suggested": the broker offers a viewing or asks when the client can come — no time is settled yet ("want me to arrange a visit?", "when suits you this week?", "I can show you both on Thursday or Friday").
+- "negotiation": the broker works the TERMS of a specific villa the client has already seen — price, a discount, the deposit, the move-in date, the contract length, what is included.
+- "other": anything else — a greeting, questions about requirements, sending options or links, answering about a villa, chasing for a reply.
+
+Choose "other" whenever you are unsure. Sending property links is "other" on its own: the code handles shortlists.
+
+JSON only: {"action": "viewing_confirmed"|"viewing_suggested"|"negotiation"|"other", "why": "<8 words>"}`,
+    messages: [{ role: "user", content: `Thread (context):\n${context.slice(-3000)}\n\nThe broker's message:\n${text.slice(0, 1500)}` }],
+  }).catch(() => null);
+  const a = (out?.action ?? "").trim();
+  const action: BrokerAction =
+    a === "viewing_confirmed" || a === "viewing_suggested" || a === "negotiation" ? a : "other";
+  return { action, why: (out?.why ?? "").slice(0, 60) || "no action read" };
 }
 
 /**
@@ -262,7 +303,7 @@ JSON only: {"regressed": true|false, "why": "<8 words>"}`,
 // ── The decision (reads, model calls; no writes) ─────────────────────────────
 
 export type SlotRecord = { viewingAt: Date; status: string; propertyCode: string | null };
-export type SlotChange = { viewingAt: Date; agreedAt: Date | null; propertyCode: string | null; replaces: Date | null; newCycle: boolean };
+export type SlotChange = { viewingAt: Date; agreedAt: Date | null; propertyCode: string | null; replaces: Date | null; newCycle: boolean; confirmedByBroker: boolean };
 
 export type DecideInput = {
   leadId: string;
@@ -356,7 +397,7 @@ export async function decideStage(i: DecideInput): Promise<StageDecision> {
         // (or missed) and keeps its claim to a report — a new cycle. Otherwise
         // this slot replaces it: a reschedule.
         const newCycle = !!previous && previous.getTime() + HOUR <= (ex.agreedAt ?? i.asOf).getTime();
-        slot = { viewingAt: ex.viewingAt, agreedAt: ex.agreedAt, propertyCode: ex.propertyCode, replaces: previous && !newCycle ? previous : null, newCycle };
+        slot = { viewingAt: ex.viewingAt, agreedAt: ex.agreedAt, propertyCode: ex.propertyCode, replaces: previous && !newCycle ? previous : null, newCycle, confirmedByBroker: ex.confirmedByBroker };
         latest = ex.viewingAt;
       }
     }
@@ -390,6 +431,106 @@ export async function decideStage(i: DecideInput): Promise<StageDecision> {
   // done within a minute on 14.09. A new viewing is a new cycle (below); a new
   // shortlist changes nothing.
   const pastViewing = rental && DONE >= 0 && cur >= DONE;
+
+  // ── Rental: a stage is a completed action OF OURS (owner, 16.09.2026) ──────
+  // "Показ предложен, показ назначен, показ проведён — кем? нашим брокером."
+  // Every Rental stage names something the BROKER did, so the client's message
+  // is never the trigger: at most it is the condition that makes our next
+  // action count as a different stage (the same shortlist after a real reply is
+  // Objection Handled; after silence it is still Options sent). The classifier
+  // that read the whole thread and answered "where is the conversation" is not
+  // used here any more — it kept confusing the client's state with our work.
+  if (rental) {
+    const OBJECTION = at(/objection|feedback/i);
+    const NEGOTIATION = at(/negotiat/i);
+    // A time the CLIENT named or accepted is not a booked viewing until we say
+    // it is. Nothing is recorded for it either: no slot, no report, no calendar.
+    if (slot && !slot.confirmedByBroker) {
+      notes.push(`a time is on the table for ${fmt(slot.viewingAt)}, but we have not confirmed it — not a booked viewing`);
+      slot = null;
+      latest = previous;
+    }
+    const forward: Array<{ idx: number; why: string }> = [];
+    if (floor > cur) forward.push({ idx: floor, why: floorWhy });
+    let newCycle = false;
+    if (slot && SCHEDULED >= 0 && slotStillValid(slot.viewingAt)) {
+      if (cur < SCHEDULED) forward.push({ idx: SCHEDULED, why: `we confirmed the viewing for ${fmt(slot.viewingAt)}` });
+      else if (cur === DONE && slot.newCycle) newCycle = true;
+      else if (cur > DONE) notes.push(`we confirmed another viewing for ${fmt(slot.viewingAt)} while on "${i.stage}" — stage kept, the slot is recorded for its report`);
+    }
+
+    const lastOurs = [...fresh].reverse().find((m) => m.senderType !== "lead" && (m.text ?? "").trim() && !isUndeliverableNotice(m.text)) ?? null;
+    if (!lastOurs) {
+      return forward.length > 0
+        ? { ...base, slot, action: "move", to: all[forward[0]!.idx]!.name, direction: "forward", reason: forward[0]!.why + tailOf(notes) }
+        : stay(`nothing of ours is new — the client wrote, the stage waits for our action${tailOf(notes)}`);
+    }
+
+    // The same shortlist means two different stages depending on what it
+    // answers: a real reply from the client (Objection Handled) or silence
+    // (still Options sent). Decided on the messages BETWEEN the two shortlists,
+    // never on how the new one is worded.
+    if (OBJECTION >= 0 && cur < OBJECTION && PROPERTY_LINK.test(lastOurs.text ?? "")) {
+      const idx = i.messages.lastIndexOf(lastOurs);
+      const before = idx > 0 ? i.messages.slice(0, idx) : [];
+      const prevShortlistIdx = before.map((m) => m.senderType !== "lead" && PROPERTY_LINK.test(m.text ?? "")).lastIndexOf(true);
+      if (prevShortlistIdx >= 0) {
+        const between = before.slice(prevShortlistIdx + 1);
+        const reacted = between.some((m) => {
+          if (m.senderType !== "lead" || isUndeliverableNotice(m.text)) return false;
+          const t = (m.text ?? "").replace(/\s+/g, " ").trim();
+          return t.length > 15 || t.includes("?");
+        });
+        if (reacted) forward.push({ idx: OBJECTION, why: "we answered the client's reaction with a new shortlist" });
+        else notes.push("a new shortlist after silence — still Options sent");
+      }
+    }
+
+    // Past the last stage this path can set, there is nothing to ask a model.
+    const act =
+      NEGOTIATION >= 0 && cur >= NEGOTIATION
+        ? { action: "other" as const, why: "nothing left for the thread to set" }
+        : await detectBrokerAction(lastOurs.text ?? "", transcriptOf(i.messages, 12));
+    if (act.action === "viewing_confirmed") {
+      if (slot && SCHEDULED >= 0 && slotStillValid(slot.viewingAt)) {
+        // already pushed above
+      } else if (SUGGESTED >= 0 && cur < SUGGESTED) {
+        notes.push("we confirmed a viewing, but no concrete date and time is readable — kept at the suggestion");
+        forward.push({ idx: SUGGESTED, why: `we offered a viewing (${act.why})` });
+      } else {
+        notes.push("we confirmed a viewing, but no concrete date and time is readable");
+      }
+    } else if (act.action === "viewing_suggested" && SUGGESTED >= 0 && cur < SUGGESTED) {
+      forward.push({ idx: SUGGESTED, why: `we offered a viewing (${act.why})` });
+    } else if (act.action === "negotiation" && NEGOTIATION >= 0 && cur >= DONE && DONE >= 0 && cur < NEGOTIATION) {
+      forward.push({ idx: NEGOTIATION, why: `we worked the terms of the villa they saw (${act.why})` });
+    } else if (act.action === "negotiation" && NEGOTIATION >= 0 && DONE >= 0 && cur < DONE) {
+      notes.push("we are working terms, but the viewing report is not filed — Viewing done is the broker's form");
+    }
+
+    // "Viewing done" is deliberately absent from everything above: it is set by
+    // the filed report (viewing-report.ts), because the action it names —
+    // holding the viewing and taking the feedback — is the broker's, and the
+    // form is where they hand it in.
+    if (forward.length > 0) {
+      const best = forward.reduce((a, b) => (b.idx > a.idx ? b : a));
+      return {
+        ...base, slot, action: "move", to: all[best.idx]!.name, direction: "forward", reason: best.why + tailOf(notes),
+        viewingAt: best.idx === SCHEDULED ? (slot?.viewingAt ?? latest) : undefined,
+      };
+    }
+    if (newCycle && slot) {
+      return {
+        ...base, slot, action: "move", to: all[SCHEDULED]!.name, direction: "new-cycle",
+        reason: `we confirmed a new viewing for ${fmt(slot.viewingAt)} after the one on ${previous ? fmt(previous) : "record"} — a new cycle${tailOf(notes)}`,
+        viewingAt: slot.viewingAt,
+      };
+    }
+    if (slot && cur === SCHEDULED) {
+      return stay(`still Viewing scheduled; slot now ${fmt(slot.viewingAt)}${slot.replaces ? ` (replaces ${fmt(slot.replaces)})` : ""}${tailOf(notes)}`, { viewingAt: slot.viewingAt });
+    }
+    return stay(`our message carries no stage action (${act.why})${tailOf(notes)}`);
+  }
 
   // ── The classifier, told what code knows for certain ───────────────────────
   const facts: string[] = [];
