@@ -7,14 +7,14 @@
  * carry the client's verdict, their objections or the agreed next step. The
  * next draft was written blind, and the stage after the viewing was a guess.
  *
- * Three hours after the slot the broker gets a push and an amoCRM task; the
+ * Half an hour after the slot the broker gets a push and an amoCRM task; the
  * card in PUSH carries a three-part form (outcome · the client's feedback ·
  * next steps). Filing it sets the stage, writes the notes, creates the
  * next-step task and rewrites the draft to the client from what was said.
  * Without a report for 24 hours the generic "how did the viewing go?" goes out
  * and the task turns overdue. Viewings are counted from reports only.
  */
-import { db, viewingReportsTable, viewingSlotsTable, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
+import { db, viewingReportsTable, viewingSlotsTable, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable, stageEventsTable } from "@workspace/db";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import {
@@ -24,6 +24,7 @@ import {
   amoPatch,
   amoPost,
   amoFetch,
+  updateLeadStatus,
   VIEWING_REPORT_TASK_PREFIX,
   NEXT_STEP_TASK_PREFIX,
   LISTING_STEP_TASK_PREFIX,
@@ -36,6 +37,8 @@ import { getMergedDialog } from "./merged-conversation";
 import { correctionsPromptBlock, deriveSituation } from "./broker-corrections";
 import { leadPhone, siblingLeadIds } from "./phone-dedupe";
 import { propertyForSlot, recordViewingSlot } from "./thread-stage-sync";
+import { amoStageFor } from "./stage-classifier";
+import { pipelineKind } from "./pipelines";
 
 /** The task texts live in amo-client, where closeAmoTasksForLead protects them. */
 export const REPORT_TASK_PREFIX = VIEWING_REPORT_TASK_PREFIX;
@@ -295,9 +298,11 @@ export async function dueReportForLead(leadId: string) {
   return (await dueReportsForLeads([leadId])).get(leadId) ?? null;
 }
 
-// The report never moves the card (owner, 09.09.2026: "анкета — это просто
-// обратная связь… зачем-то на основе неё начинаешь какие-то действия делать").
-// Stages follow the thread and the broker; the report is information.
+// The filed report DOES move the card to "Viewing done" (markViewingDone
+// above) — owner, 16.09.2026: "этап завершён только если брокер выполнил
+// действие: провёл, получил фидбек, отправил через анкету". This replaces the
+// 09.09 canon that the report is information only. Nothing else sets that
+// stage: not a timer, not the thread, not the classifier.
 const OUTCOME_LABEL: Record<ViewingOutcome, string> = {
   go: "Going ahead",
   think: "Liked it, needs time",
@@ -331,6 +336,54 @@ function stepDue(nextBy: string | null): Date {
     if (d.getTime() > soon) return d;
   }
   return new Date(Date.now() + 3 * 3_600_000);
+}
+
+/** Stages only a person sets and only a person leaves. */
+const HANDS_OFF_STAGE = /check[-\s]?in|inventory|contract\s*signed/i;
+const VIEWING_DONE_STAGE = /viewing\s*(done|held|completed)/i;
+
+/**
+ * The filed report moves the card to "Viewing done".
+ *
+ * Owner, 16.09.2026: every Rental stage is a completed action of the broker's
+ * — "показ проведён" is one of them — and the action is finished when they held
+ * the viewing, took the feedback and handed it in through this form. So the
+ * form is the trigger, not a timer and not the thread. This reverses the
+ * 09.09 canon ("анкета — это просто обратная связь"), which left the card on
+ * "Viewing scheduled" whenever the viewing happened and nobody wrote about it.
+ *
+ * Only forward, only Rental, never onto or off a stage a person owns.
+ */
+async function markViewingDone(leadId: string): Promise<string | null> {
+  const lead = await getAmoLead(leadId).catch(() => null);
+  if (!lead?.status_id || !lead.pipeline_id) return null;
+  if (CLOSED_STATUS_IDS.has(lead.status_id)) return null;
+  const where = await amoStageFor(lead.pipeline_id, lead.status_id).catch(() => null);
+  if (!where || pipelineKind(where.pipeline) !== "rental") return null;
+  if (HANDS_OFF_STAGE.test(where.stage ?? "")) return null;
+  const cur = where.all.findIndex((st) => st.id === lead.status_id);
+  const done = where.all.findIndex((st) => VIEWING_DONE_STAGE.test(st.name));
+  if (cur < 0 || done < 0 || cur >= done) return null;
+  const target = where.all[done]!;
+  if (!(await updateLeadStatus(leadId, target.id))) {
+    logger.warn({ leadId, to: target.name }, "viewing report: amoCRM refused Viewing done");
+    return null;
+  }
+  const [sync] = await db
+    .select({ responsibleUser: leadsSyncTable.responsibleUser })
+    .from(leadsSyncTable)
+    .where(eq(leadsSyncTable.leadId, leadId))
+    .limit(1);
+  await db
+    .update(leadsSyncTable)
+    .set({ leadStage: target.name, leadStageId: String(target.id), updatedAt: new Date() })
+    .where(eq(leadsSyncTable.leadId, leadId));
+  await db
+    .insert(stageEventsTable)
+    .values({ leadId, fromStage: where.stage, toStage: target.name, pipeline: where.pipeline, responsibleUser: sync?.responsibleUser ?? null })
+    .catch(() => undefined);
+  logger.info({ leadId, from: where.stage, to: target.name }, "viewing report: card moved by the filed report");
+  return target.name;
 }
 
 /**
@@ -369,6 +422,16 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
     .from(leadsSyncTable)
     .where(eq(leadsSyncTable.leadId, leadId))
     .limit(1);
+
+  // 1a. The stage: the broker held the viewing and handed in the feedback, so
+  //     the card moves now. "Did not happen" outcomes move nothing.
+  let stage: string | null = null;
+  if (input.outcome === "go" || input.outcome === "think" || input.outcome === "no") {
+    stage = await markViewingDone(leadId).catch((err) => {
+      logger.warn({ err, leadId }, "viewing report: stage not moved (non-fatal)");
+      return null;
+    });
+  }
 
   // 1. The slot only: a viewing that did not happen frees the slot, a
   //    rescheduled one replaces it, so the next report is asked at the right
@@ -474,8 +537,8 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
     logger.warn({ err, leadId }, "viewing report: client draft not written (non-fatal)");
   }
 
-  logger.info({ leadId, reportId: input.reportId, outcome: input.outcome, nextSteps }, "viewing report: filed");
-  return { ok: true, stage: null };
+  logger.info({ leadId, reportId: input.reportId, outcome: input.outcome, nextSteps, stage }, "viewing report: filed");
+  return { ok: true, stage };
 }
 
 async function composeClientDraft(
