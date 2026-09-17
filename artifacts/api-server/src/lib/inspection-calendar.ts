@@ -10,14 +10,11 @@
  * else exactly one site code in the card's name or notes) — duplicate cards of one villa (23305115 and
  * 23541159, Umbala, 14.09) share one event — and `lead:<id>` when it does not.
  *
- * The pass (every 5 minutes, and a few seconds after a slot is recorded):
- * - the card's current slot (its latest 'scheduled' one), visit ahead or at most 1 day past → the event
- *   exists and matches (create / update). The card's stage plays no part (owner, 15.09.2026: the calendar
- *   marks when the inspection was, that is all — a red flag, delisting or closing the card afterwards is
- *   another question; Villa Daze was inspected at 09:00 and its event deleted when the card closed);
- * - the slot was called off or replaced in the thread (listing-progress.ts marks it cancelled /
- *   rescheduled) before its hour → the event is deleted; called off after the hour → kept;
- * - visit more than a day past → the row is retired; the event stays as history.
+ * The pass (every 5 minutes, and a few seconds after a slot is recorded) only ADDS: the card's current slot
+ * (its latest 'scheduled' one), visit ahead or at most 1 day past, gets an event once. Nothing is ever
+ * edited or deleted afterwards — not when the card closes, not when the visit is called off or moved (a new
+ * time is a new event). Owner, 17.09.2026: "твоя задача только ставить запланированные визиты, удалять
+ * ничего не надо". Rows no longer wanted are retired; their events stay.
  *
  * Idempotency lives in `inspection_calendar_events` (the webhook cannot list or search events): one row
  * per key with the event id, the body's hash and a status. The row is marked `creating` BEFORE the create
@@ -35,7 +32,6 @@ import {
   calendarConfig,
   createEvent,
   deleteEvent,
-  isMissingEventError,
   updateEvent,
   type CalendarEventBody,
 } from "./google-calendar";
@@ -335,61 +331,30 @@ export async function syncInspectionCalendar(o: { apply: boolean; reason?: strin
         actions.push({ ...base, action: "uncertain", detail: "an earlier create may have written this event — check the calendar, then ?apply=1&retry=1" });
         continue;
       }
-      if (live && row!.payload_hash === d.hash) {
+      // Written once, never edited or replaced (owner, 17.09.2026: only put planned visits, delete nothing).
+      if (live) {
         actions.push({ ...base, action: "unchanged", eventId: row!.event_id });
         if (o.apply && row!.status !== "synced") await markRow(d.key, "synced", null);
         continue;
       }
       if (!o.apply) {
-        actions.push({ ...base, action: live ? "update" : "create", eventId: row?.event_id ?? null });
+        actions.push({ ...base, action: "create", eventId: null });
         continue;
-      }
-      if (live) {
-        const u = await updateEvent(row!.event_id!, d.body);
-        if (u.ok) {
-          await writeRow(d, "synced", u.data.id, null);
-          actions.push({ ...base, action: "update", eventId: u.data.id });
-          continue;
-        }
-        if (u.transport || !isMissingEventError(u.reason)) {
-          await markRow(d.key, "error", u.reason);
-          actions.push({ ...base, action: "error", eventId: row!.event_id, detail: u.reason });
-          continue;
-        }
-        // Removed in the calendar by hand, and the visit changed since: written again.
-        await markRow(d.key, "error", u.reason, true);
       }
       await create(d, base, actions);
     }
 
-    // Slots called off or replaced before their hour. A message after the hour never takes the visit off (owner, 17.09.2026).
-    const offRes = await db.execute(sql`SELECT id FROM listing_inspection_slots
-                                        WHERE status IN ('cancelled', 'rescheduled') AND (superseded_at IS NULL OR superseded_at < visit_at)`);
-    const calledOff = new Set(((offRes.rows ?? []) as { id: string }[]).map((r) => String(r.id)));
-
     for (const row of stored) {
       if (desired.has(row.sync_key) || row.status === "deleted" || row.status === "retired") continue;
       const visitAt = asDate(row.visit_at);
-      const aged = !!visitAt && visitAt.getTime() < now.getTime() - RECENT_MS;
-      // A visit whose hour has passed was held: closing the card afterwards must not erase it
-      // (Villa Daze 15.09: inspected 09:00, card closed ~12:00, event deleted at 12:12).
-      const held = !!visitAt && visitAt.getTime() <= now.getTime() && !(row.slot_id && calledOff.has(String(row.slot_id)));
       const base: CalendarAction = { action: "skipped", key: row.sync_key, start: visitAt ? baliIso(visitAt) : undefined, leads: (row.lead_ids ?? "").split(",").filter(Boolean), eventId: row.event_id };
       if (!row.event_id) {
         actions.push({ ...base, action: row.status === "uncertain" || row.status === "creating" ? "uncertain" : "skipped", detail: "no longer wanted; no event id on record" });
         if (o.apply) await markRow(row.sync_key, row.status === "uncertain" || row.status === "creating" ? "uncertain" : "deleted", null);
         continue;
       }
-      if (aged || held) {
-        actions.push({ ...base, action: "retire", detail: aged ? "visit more than a day past — event kept as history" : "visit hour passed, the card changed afterwards — event kept as history" });
-        if (o.apply) await markRow(row.sync_key, "retired", null);
-        continue;
-      }
-      actions.push({ ...base, action: "delete", detail: "the visit was called off or replaced in the thread, or its slot is gone" });
-      if (!o.apply) continue;
-      const r = await deleteEvent(row.event_id);
-      await markRow(row.sync_key, r.ok ? "deleted" : row.status, r.ok ? null : r.reason);
-      if (!r.ok) actions[actions.length - 1] = { ...actions[actions.length - 1]!, action: "error", detail: r.reason };
+      actions.push({ ...base, action: "retire", detail: "no longer planned or past — the event stays, nothing is deleted" });
+      if (o.apply) await markRow(row.sync_key, "retired", null);
     }
 
     if (o.apply) {
