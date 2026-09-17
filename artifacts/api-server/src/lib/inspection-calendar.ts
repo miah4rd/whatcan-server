@@ -16,7 +16,7 @@
  *   marks when the inspection was, that is all — a red flag, delisting or closing the card afterwards is
  *   another question; Villa Daze was inspected at 09:00 and its event deleted when the card closed);
  * - the slot was called off or replaced in the thread (listing-progress.ts marks it cancelled /
- *   rescheduled) → the event is deleted, unless its hour has already passed;
+ *   rescheduled) before its hour → the event is deleted; called off after the hour → kept;
  * - visit more than a day past → the row is retired; the event stays as history.
  *
  * Idempotency lives in `inspection_calendar_events` (the webhook cannot list or search events): one row
@@ -362,8 +362,9 @@ export async function syncInspectionCalendar(o: { apply: boolean; reason?: strin
       await create(d, base, actions);
     }
 
-    // Slots a later message called off or replaced: their event goes even when its hour has passed.
-    const offRes = await db.execute(sql`SELECT id FROM listing_inspection_slots WHERE status IN ('cancelled', 'rescheduled')`);
+    // Slots called off or replaced before their hour. A message after the hour never takes the visit off (owner, 17.09.2026).
+    const offRes = await db.execute(sql`SELECT id FROM listing_inspection_slots
+                                        WHERE status IN ('cancelled', 'rescheduled') AND (superseded_at IS NULL OR superseded_at < visit_at)`);
     const calledOff = new Set(((offRes.rows ?? []) as { id: string }[]).map((r) => String(r.id)));
 
     for (const row of stored) {
