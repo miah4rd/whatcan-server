@@ -78,6 +78,9 @@ const NO_NEW_CONTACTS = new Set<number>([62585]);
 const ONE_DAY_CAP: Record<string, Record<number, number>> = {
   // Yudi's primary line: the usual nine plus the five Seseh-belt 2BR cards.
   "2026-09-16": { 59537: 14 },
+  // Owner, 17.09: Aloma Villa (Cemagi 2BR) and Oemah David (Munggu 2BR) — the
+  // Seseh-belt replacements for the two undeliverable cards — out of turn, now.
+  "2026-09-17": { 59537: 11 },
 };
 
 /** How many first contacts this line may open today. */
