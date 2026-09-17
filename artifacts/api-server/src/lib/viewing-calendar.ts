@@ -123,9 +123,12 @@ async function buildPlan(sinceDays?: number): Promise<{ desired: Map<string, Des
   const since = new Date(now.getTime() - (sinceDays ? sinceDays * DAY : RECENT_MS));
   const slotsRes = await db.execute(sql`SELECT s.id, s.lead_id, s.viewing_at, s.property_code, s.status, s.agreed_at, ls.content, ls.responsible_user
       FROM viewing_slots s
+      LEFT JOIN viewing_reports r ON r.id = s.report_id
       LEFT JOIN leads_sync ls ON ls.lead_id = s.lead_id
      WHERE s.status IN ('scheduled', 'reported')
-       AND s.viewing_at >= ${since.toISOString()}::timestamptz`);
+       AND s.viewing_at >= ${since.toISOString()}::timestamptz
+       AND coalesce(r.feedback, '') NOT ILIKE 'TEST:%'
+     ORDER BY s.viewing_at, s.id`);
   const slots = (slotsRes.rows ?? []) as SlotRow[];
   const storedRes = await db.execute(sql`SELECT sync_key, slot_id, lead_id, viewing_at, event_id, payload_hash, status FROM viewing_calendar_events`);
   const stored = (storedRes.rows ?? []) as StoredRow[];
@@ -160,7 +163,12 @@ async function buildPlan(sinceDays?: number): Promise<{ desired: Map<string, Des
   const propById = new Map(props.map((p) => [p.id.toUpperCase(), p]));
   const privById = new Map(privs.map((p) => [p.property_id.toUpperCase(), p]));
 
+  // Two cards of one client, one visit (Remi Petit, R-YUD-054 10.09): one event.
+  const seenVisit = new Set<string>();
   for (const slot of kept) {
+    const visitKey = `${(slot.property_code ?? "").trim().toUpperCase()}|${asDate(slot.viewing_at)!.getTime()}`;
+    if ((slot.property_code ?? "").trim() && seenVisit.has(visitKey)) continue;
+    seenVisit.add(visitKey);
     const lead = leads.get(slot.lead_id) ?? { id: Number(slot.lead_id), name: null, status_id: 0, pipeline_id: RENTAL_PIPELINE_ID };
     const code = (slot.property_code ?? "").trim().toUpperCase() || null;
     const prop = code ? propById.get(code) : undefined;
@@ -168,7 +176,9 @@ async function buildPlan(sinceDays?: number): Promise<{ desired: Map<string, Des
     const viewingAt = asDate(slot.viewing_at)!;
     const agreedAt = asDate(slot.agreed_at);
     const timed = timeKnown(viewingAt);
-    const client = clientNameFromContent(slot.content);
+    const parsed = clientNameFromContent(slot.content);
+    // The thread parse sometimes grabs a sentence ("like to visit? I can check…"): then the card's name.
+    const client = parsed && !/[\d?!:]/.test(parsed) && parsed.split(/\s+/).length <= 4 ? parsed : cleanLeadName(lead.name ?? "")?.trim().slice(0, 60) || null;
     const area = (prop?.area ?? "").trim();
     const mapUrl = (priv?.google_maps_url ?? "").trim();
     const address = (priv?.exact_address ?? "").trim();
