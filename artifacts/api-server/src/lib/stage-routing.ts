@@ -204,6 +204,18 @@ export function isParkedListingStage(rawStage: string | null | undefined): boole
   return s.includes("long term") || s.includes("co-broke");
 }
 
+/**
+ * The listing funnel's reserve: "BACKLOG - cell has no demand". Cards the scout
+ * found for cells nobody is asking for right now. The owner made the stage so
+ * autopilot would NOT take them into work (17.09.2026) — but it sat before the
+ * QUALIFIED threshold, so by funnel order it counted as delegated and three of
+ * the next day's nine first contacts were queued to it. Matched by the word,
+ * not the full name, so a rename of the tail does not silently reopen it.
+ */
+export function isBacklogListingStage(rawStage: string | null | undefined): boolean {
+  return (rawStage ?? "").toLowerCase().includes("backlog");
+}
+
 export function shouldSuppressPush(rawStage: string): boolean {
   const group = resolveStageGroup(rawStage);
   if (PUSH_SUPPRESSED_GROUPS.includes(group)) return true;

@@ -26,7 +26,7 @@ import { db, leadsSyncTable, pendingSuggestionsTable, sentMessagesTable, leadMes
 import { eq, and, sql, desc } from "drizzle-orm";
 import { logger } from "./logger";
 import { getPipelineStages } from "./stage-classifier";
-import { isParkedListingStage } from "./stage-routing";
+import { isParkedListingStage, isBacklogListingStage } from "./stage-routing";
 import { isListingAcquisition } from "./pipelines";
 import { guardOwnerDraft } from "./owner-thread-known";
 import {
@@ -121,7 +121,8 @@ export async function delegatedStageNames(pipeline: string): Promise<string[] | 
   if (capIdx === -1) return null;
   // EXCLUSIVE: the threshold is the handover point, not the bot's last desk.
   // See maybeAutopilot for why.
-  return stages.all.slice(0, capIdx).map((st) => st.name);
+  // The reserve sits before the threshold but is not the bot's to work.
+  return stages.all.slice(0, capIdx).map((st) => st.name).filter((n) => !isBacklogListingStage(n));
 }
 
 /**
@@ -441,6 +442,11 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
     // tab all evening and the broker was invited to send at 21:00 by hand what
     // the bot would have sent itself at 10:00.
     const proactive = sug.kind === "push" || (await isFirstOutbound(leadId));
+    // Reserve cards are never opened or chased by the bot; an owner who writes
+    // to one is still answered.
+    if (proactive && isBacklogListingStage(lead.leadStage)) {
+      return decline("reserve: backlog stage is not taken into work by autopilot");
+    }
     if (proactive && !withinOutreachHours()) {
       return decline(
         `waiting for outreach hours (${OUTREACH_OPEN_HOUR}:00-${OUTREACH_CLOSE_HOUR}:00 Bali)`,
