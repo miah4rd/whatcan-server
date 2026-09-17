@@ -7,15 +7,11 @@
  * Source: `viewing_slots` — thread-stage-sync.ts records a slot when a viewing time is agreed in the thread,
  * viewing-report.ts marks it reported once the report is owed. One event per slot (card + time).
  *
- * The pass (every 5 minutes, and a few seconds after a slot is recorded):
- * - slot scheduled or reported, viewing ahead or at most 1 day past, not called off before its hour → the event
- *   exists and matches (create / update). The card's stage plays no part (owner,
- *   15.09.2026: the calendar marks when the viewing was, that is all — losing the client afterwards is
- *   another question);
- * - slot rescheduled / cancelled / gone, or a report filed as cancelled / moved BEFORE the viewing hour → the
- *   event is deleted. Once the hour has passed nothing deletes it — not a report filed afterwards as cancelled,
- *   not the card (owner, 17.09.2026: "запланировано — факт, и дальше ничего не надо трогать");
- * - viewing more than a day past → the row is retired; the event stays as history.
+ * The pass (every 5 minutes, and a few seconds after a slot is recorded) only ADDS: a slot scheduled or
+ * reported, viewing ahead or at most 1 day past, gets an event once. Nothing is ever edited or deleted
+ * afterwards — not by a report (16.09 Anastasia Bondar was deleted by a "cancelled" report), not by the
+ * card's stage. Owner, 17.09.2026: "запланировано — факт… только ставить запланированные визиты, удалять
+ * ничего не надо". Rows no longer wanted are retired; their events stay.
  *
  * Idempotency lives in `viewing_calendar_events`, with the same create-once rules as
  * inspection_calendar_events: the row is marked `creating` before the call, an unknown outcome becomes
@@ -31,9 +27,6 @@ import { cleanLeadName } from "./lead-display-name";
 import {
   calendarConfig,
   createEvent,
-  deleteEvent,
-  isMissingEventError,
-  updateEvent,
   type CalendarEventBody,
 } from "./google-calendar";
 
@@ -123,17 +116,16 @@ export function clientNameFromContent(content: string | null | undefined): strin
 
 type Desired = { key: string; slot: SlotRow; lead: AmoLead; body: CalendarEventBody; hash: string; viewingAt: Date };
 
-async function buildPlan(): Promise<{ desired: Map<string, Desired>; stored: StoredRow[]; now: Date }> {
+async function buildPlan(sinceDays?: number): Promise<{ desired: Map<string, Desired>; stored: StoredRow[]; now: Date }> {
   await ensureTable();
   const now = new Date();
-  // A report filed as cancelled or moved takes the viewing off the calendar only when filed before its hour.
+  // Every agreed slot is a planned visit, whatever its report says later. ?since= reaches further back (backfill).
+  const since = new Date(now.getTime() - (sinceDays ? sinceDays * DAY : RECENT_MS));
   const slotsRes = await db.execute(sql`SELECT s.id, s.lead_id, s.viewing_at, s.property_code, s.status, s.agreed_at, ls.content, ls.responsible_user
       FROM viewing_slots s
-      LEFT JOIN viewing_reports r ON r.id = s.report_id
       LEFT JOIN leads_sync ls ON ls.lead_id = s.lead_id
      WHERE s.status IN ('scheduled', 'reported')
-       AND s.viewing_at >= ${new Date(now.getTime() - RECENT_MS).toISOString()}::timestamptz
-       AND (r.id IS NULL OR r.filed_at >= s.viewing_at OR (coalesce(r.outcome, '') <> 'cancelled' AND r.rescheduled_to IS NULL))`);
+       AND s.viewing_at >= ${since.toISOString()}::timestamptz`);
   const slots = (slotsRes.rows ?? []) as SlotRow[];
   const storedRes = await db.execute(sql`SELECT sync_key, slot_id, lead_id, viewing_at, event_id, payload_hash, status FROM viewing_calendar_events`);
   const stored = (storedRes.rows ?? []) as StoredRow[];
@@ -247,13 +239,13 @@ async function create(d: Desired, base: ViewingCalendarAction, out: ViewingCalen
 
 let running = false;
 
-export async function syncViewingCalendar(o: { apply: boolean; reason?: string; retryUncertain?: boolean }): Promise<{ configured: boolean; missing: string[]; actions: ViewingCalendarAction[] }> {
+export async function syncViewingCalendar(o: { apply: boolean; reason?: string; retryUncertain?: boolean; sinceDays?: number }): Promise<{ configured: boolean; missing: string[]; actions: ViewingCalendarAction[] }> {
   const cfg = calendarConfig();
   if (o.apply && !cfg.configured) return { configured: false, missing: cfg.missing, actions: [] };
   if (o.apply && running) return { configured: true, missing: [], actions: [{ action: "skipped", key: "*", detail: "a pass is already running" }] };
   if (o.apply) running = true;
   try {
-    const { desired, stored, now } = await buildPlan();
+    const { desired, stored, now } = await buildPlan(o.sinceDays);
     const actions: ViewingCalendarAction[] = [];
     const storedByKey = new Map(stored.map((r) => [r.sync_key, r]));
 
@@ -266,45 +258,22 @@ export async function syncViewingCalendar(o: { apply: boolean; reason?: string; 
         actions.push({ ...base, action: "uncertain", detail: "an earlier create may have written this event — check the calendar, then ?apply=1&retry=1" });
         continue;
       }
-      if (live && row!.payload_hash === d.hash) {
+      // Written once, never edited or replaced (owner, 17.09.2026: only put planned visits, delete nothing).
+      if (live) {
         actions.push({ ...base, action: "unchanged", eventId: row!.event_id });
         if (o.apply && row!.status !== "synced") await markRow(d.key, "synced", null);
         continue;
       }
       if (!o.apply) {
-        actions.push({ ...base, action: live ? "update" : "create", eventId: row?.event_id ?? null });
+        actions.push({ ...base, action: "create", eventId: null });
         continue;
-      }
-      if (live) {
-        const u = await updateEvent(row!.event_id!, d.body);
-        if (u.ok) {
-          await writeRow(d, "synced", u.data.id, null);
-          actions.push({ ...base, action: "update", eventId: u.data.id });
-          continue;
-        }
-        if (u.transport || !isMissingEventError(u.reason)) {
-          await markRow(d.key, "error", u.reason);
-          actions.push({ ...base, action: "error", eventId: row!.event_id, detail: u.reason });
-          continue;
-        }
-        // Removed in the calendar by hand, and the viewing changed since: written again.
-        await markRow(d.key, "error", u.reason, true);
       }
       await create(d, base, actions);
     }
 
-    // Viewings called off or moved before their hour. A report filed after the hour never takes the event off.
-    const offRes = await db.execute(sql`SELECT s.id FROM viewing_slots s LEFT JOIN viewing_reports r ON r.id = s.report_id
-                                        WHERE s.status IN ('cancelled', 'rescheduled')
-                                           OR ((r.outcome = 'cancelled' OR r.rescheduled_to IS NOT NULL) AND r.filed_at < s.viewing_at)`);
-    const calledOff = new Set(((offRes.rows ?? []) as { id: string }[]).map((r) => String(r.id)));
-
     for (const row of stored) {
       if (desired.has(row.sync_key) || row.status === "deleted" || row.status === "retired") continue;
       const viewingAt = asDate(row.viewing_at);
-      const aged = !!viewingAt && viewingAt.getTime() < now.getTime() - RECENT_MS;
-      // A viewing whose hour has passed was held: losing the card afterwards must not erase it.
-      const held = !!viewingAt && viewingAt.getTime() <= now.getTime() && !(row.slot_id && calledOff.has(String(row.slot_id)));
       const base: ViewingCalendarAction = { action: "skipped", key: row.sync_key, start: viewingAt ? baliIso(viewingAt) : undefined, lead: row.lead_id ?? undefined, eventId: row.event_id };
       if (!row.event_id) {
         const unsure = row.status === "uncertain" || row.status === "creating";
@@ -312,16 +281,8 @@ export async function syncViewingCalendar(o: { apply: boolean; reason?: string; 
         if (o.apply) await markRow(row.sync_key, unsure ? "uncertain" : "deleted", null);
         continue;
       }
-      if (aged || held) {
-        actions.push({ ...base, action: "retire", detail: aged ? "viewing more than a day past — event kept as history" : "viewing hour passed, the card changed afterwards — event kept as history" });
-        if (o.apply) await markRow(row.sync_key, "retired", null);
-        continue;
-      }
-      actions.push({ ...base, action: "delete", detail: "viewing rescheduled or cancelled, report cancelled, or the card was lost / left Rental" });
-      if (!o.apply) continue;
-      const r = await deleteEvent(row.event_id);
-      await markRow(row.sync_key, r.ok ? "deleted" : row.status, r.ok ? null : r.reason);
-      if (!r.ok) actions[actions.length - 1] = { ...actions[actions.length - 1]!, action: "error", detail: r.reason };
+      actions.push({ ...base, action: "retire", detail: "no longer planned or past — the event stays, nothing is deleted" });
+      if (o.apply) await markRow(row.sync_key, "retired", null);
     }
 
     if (o.apply) {
