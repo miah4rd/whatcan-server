@@ -80,7 +80,7 @@ const ONE_DAY_CAP: Record<string, Record<number, number>> = {
   "2026-09-16": { 59537: 14 },
   // Owner, 17.09: Aloma Villa (Cemagi 2BR) and Oemah David (Munggu 2BR) — the
   // Seseh-belt replacements for the two undeliverable cards — out of turn, now.
-  "2026-09-17": { 59537: 11 },
+  "2026-09-17": { 59537: 10 },
 };
 
 /** How many first contacts this line may open today. */
