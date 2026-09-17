@@ -8,11 +8,13 @@
  * viewing-report.ts marks it reported once the report is owed. One event per slot (card + time).
  *
  * The pass (every 5 minutes, and a few seconds after a slot is recorded):
- * - slot scheduled or reported, viewing ahead or at most 1 day past, its report not filed as cancelled or
- *   rescheduled → the event exists and matches (create / update). The card's stage plays no part (owner,
+ * - slot scheduled or reported, viewing ahead or at most 1 day past, not called off before its hour → the event
+ *   exists and matches (create / update). The card's stage plays no part (owner,
  *   15.09.2026: the calendar marks when the viewing was, that is all — losing the client afterwards is
  *   another question);
- * - slot rescheduled / cancelled / gone, or the report says cancelled → the event is deleted;
+ * - slot rescheduled / cancelled / gone, or a report filed as cancelled / moved BEFORE the viewing hour → the
+ *   event is deleted. Once the hour has passed nothing deletes it — not a report filed afterwards as cancelled,
+ *   not the card (owner, 17.09.2026: "запланировано — факт, и дальше ничего не надо трогать");
  * - viewing more than a day past → the row is retired; the event stays as history.
  *
  * Idempotency lives in `viewing_calendar_events`, with the same create-once rules as
@@ -124,15 +126,14 @@ type Desired = { key: string; slot: SlotRow; lead: AmoLead; body: CalendarEventB
 async function buildPlan(): Promise<{ desired: Map<string, Desired>; stored: StoredRow[]; now: Date }> {
   await ensureTable();
   const now = new Date();
-  // A report filed as cancelled or moved to another time takes the viewing off the calendar.
+  // A report filed as cancelled or moved takes the viewing off the calendar only when filed before its hour.
   const slotsRes = await db.execute(sql`SELECT s.id, s.lead_id, s.viewing_at, s.property_code, s.status, s.agreed_at, ls.content, ls.responsible_user
       FROM viewing_slots s
       LEFT JOIN viewing_reports r ON r.id = s.report_id
       LEFT JOIN leads_sync ls ON ls.lead_id = s.lead_id
      WHERE s.status IN ('scheduled', 'reported')
        AND s.viewing_at >= ${new Date(now.getTime() - RECENT_MS).toISOString()}::timestamptz
-       AND coalesce(r.outcome, '') <> 'cancelled'
-       AND r.rescheduled_to IS NULL`);
+       AND (r.id IS NULL OR r.filed_at >= s.viewing_at OR (coalesce(r.outcome, '') <> 'cancelled' AND r.rescheduled_to IS NULL))`);
   const slots = (slotsRes.rows ?? []) as SlotRow[];
   const storedRes = await db.execute(sql`SELECT sync_key, slot_id, lead_id, viewing_at, event_id, payload_hash, status FROM viewing_calendar_events`);
   const stored = (storedRes.rows ?? []) as StoredRow[];
@@ -292,9 +293,10 @@ export async function syncViewingCalendar(o: { apply: boolean; reason?: string; 
       await create(d, base, actions);
     }
 
-    // Viewings called off or moved: their event goes even when its hour has passed.
+    // Viewings called off or moved before their hour. A report filed after the hour never takes the event off.
     const offRes = await db.execute(sql`SELECT s.id FROM viewing_slots s LEFT JOIN viewing_reports r ON r.id = s.report_id
-                                        WHERE s.status IN ('cancelled', 'rescheduled') OR r.outcome = 'cancelled' OR r.rescheduled_to IS NOT NULL`);
+                                        WHERE s.status IN ('cancelled', 'rescheduled')
+                                           OR ((r.outcome = 'cancelled' OR r.rescheduled_to IS NOT NULL) AND r.filed_at < s.viewing_at)`);
     const calledOff = new Set(((offRes.rows ?? []) as { id: string }[]).map((r) => String(r.id)));
 
     for (const row of stored) {
