@@ -81,7 +81,15 @@ export async function ensureWaTables(): Promise<void> {
   `);
 }
 
+/**
+ * The owner's personal number (WA_OWNER_SESSION) is only for the co-workers'
+ * send API and never reaches amoCRM: on 16–17.09.2026 it was left live after a
+ * test and 15 personal chats landed in Amelia's Rental funnel as 14 leads.
+ */
+export const OWNER_SESSION = process.env.WA_OWNER_SESSION ?? "pilot1";
+
 export async function sessionMode(name: string): Promise<WaMode> {
+  if (name === OWNER_SESSION) return "shadow";
   const r = await pool.query(`SELECT mode FROM wa_sessions WHERE name = $1`, [name]);
   return (r.rows[0]?.mode as WaMode) ?? "shadow";
 }

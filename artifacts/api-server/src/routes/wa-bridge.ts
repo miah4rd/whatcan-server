@@ -14,6 +14,7 @@ import { logger } from "../lib/logger";
 import crypto from "node:crypto";
 import { listPipelines, listUsers } from "../lib/wa-routing";
 import {
+  OWNER_SESSION,
   WA_GATEWAY_SECRET,
   gateway,
   handleGatewayEvent,
@@ -167,6 +168,7 @@ router.post("/admin/wa/sessions/:name/link", async (req, res) => {
 router.post("/admin/wa/sessions/:name/mode", async (req, res) => {
   const mode = req.body?.mode;
   if (mode !== "shadow" && mode !== "live") { res.status(400).json({ error: "mode: shadow | live" }); return; }
+  if (mode === "live" && req.params.name === OWNER_SESSION) { res.status(403).json({ error: "the owner's personal number never goes to amoCRM" }); return; }
   const r = await pool.query(`UPDATE wa_sessions SET mode = $2, updated_at = now() WHERE name = $1 RETURNING *`, [req.params.name, mode]);
   res.json(r.rows[0] ?? { error: "no such session" });
 });
@@ -219,6 +221,7 @@ router.post("/wa/numbers/:key/save", async (req, res) => {
   const { name, label, pipeline, stage, responsible, mode } = req.body ?? {};
   if (!SESSION_RE.test(String(name ?? ""))) { res.status(400).json({ error: "bad number name" }); return; }
   if (mode !== undefined && mode !== "shadow" && mode !== "live") { res.status(400).json({ error: "mode: shadow | live" }); return; }
+  if (mode === "live" && name === OWNER_SESSION) { res.status(403).json({ error: "This is the owner's personal number — it never goes to amoCRM." }); return; }
   const r = await pool.query(
     `UPDATE wa_sessions SET label = COALESCE($2, label), pipeline = $3, stage = $4, responsible = $5,
             mode = COALESCE($6, mode), updated_at = now()
@@ -338,7 +341,7 @@ function sendTokenOk(req: Request): boolean {
   const got = String(req.headers["x-wa-token"] ?? req.query.token ?? "");
   return Boolean(expected) && got.length === expected.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
 }
-const ownerSession = () => process.env.WA_OWNER_SESSION ?? "pilot1";
+const ownerSession = () => OWNER_SESSION;
 
 router.post("/wa/send", async (req, res) => {
   if (!sendTokenOk(req)) { res.status(401).json({ ok: false, error: "bad token" }); return; }
