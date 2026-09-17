@@ -322,11 +322,16 @@ async function send({ session, to, text, media, quotedId }) {
   const s = sessions.get(session);
   if (!s || s.status !== "open") return { ok: false, error: "session_not_open", code: 902 };
 
-  const digits = String(to ?? "").replace(/\D/g, "");
-  if (digits.length < 7) return { ok: false, error: "bad_phone", code: 904 };
-  const [exists] = await s.sock.onWhatsApp(`${digits}@s.whatsapp.net`).catch(() => [null]);
-  if (!exists?.exists) return { ok: false, error: "not_on_whatsapp", code: 904 };
-  const jid = exists.jid;
+  let jid;
+  if (/@g\.us$/.test(String(to))) {
+    jid = String(to); // a group the number is in
+  } else {
+    const digits = String(to ?? "").replace(/@.*$/, "").replace(/\D/g, "");
+    if (digits.length < 7) return { ok: false, error: "bad_phone", code: 904 };
+    const [exists] = await s.sock.onWhatsApp(`${digits}@s.whatsapp.net`).catch(() => [null]);
+    if (!exists?.exists) return { ok: false, error: "not_on_whatsapp", code: 904 };
+    jid = exists.jid;
+  }
 
   let payload;
   if (media?.url) {
@@ -410,6 +415,12 @@ const server = http.createServer(async (req, res) => {
         sessions.delete(name);
         return json(res, 200, { ok: true });
       }
+    }
+    if (req.method === "GET" && parts[0] === "groups" && parts[1]) {
+      const s = sessions.get(parts[1]);
+      if (!s || s.status !== "open") return json(res, 422, { error: "session_not_open" });
+      const all = await s.sock.groupFetchAllParticipating();
+      return json(res, 200, Object.values(all).map((g) => ({ id: g.id, name: g.subject, size: g.participants?.length ?? null })));
     }
     if (req.method === "POST" && url.pathname === "/send") {
       const r = await send(await readBody(req));

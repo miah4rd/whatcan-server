@@ -326,4 +326,41 @@ load();
 </script></body></html>`);
 });
 
+// ── Send API for the owner's Claude co-workers (replaces Green API) ───────────
+// Writes from the owner's own WhatsApp (WA_OWNER_SESSION) to a person or a
+// group. Nothing here touches amoCRM: the gateway does not echo its own sends.
+//   POST /api/wa/send    {to: "628…" | "…@g.us", text, media?: {url, kind, fileName}}
+//   GET  /api/wa/groups  → [{id, name, size}]
+// Auth: header "x-wa-token: <WA_SEND_TOKEN>" (or ?token= for tools that cannot set headers).
+
+function sendTokenOk(req: Request): boolean {
+  const expected = process.env.WA_SEND_TOKEN ?? "";
+  const got = String(req.headers["x-wa-token"] ?? req.query.token ?? "");
+  return Boolean(expected) && got.length === expected.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
+}
+const ownerSession = () => process.env.WA_OWNER_SESSION ?? "pilot1";
+
+router.post("/wa/send", async (req, res) => {
+  if (!sendTokenOk(req)) { res.status(401).json({ ok: false, error: "bad token" }); return; }
+  const to = String(req.body?.to ?? req.body?.chatId ?? "").trim();
+  const text = String(req.body?.text ?? req.body?.message ?? "");
+  const media = req.body?.media ?? (req.body?.urlFile ? { url: req.body.urlFile, kind: "file", fileName: req.body.fileName } : undefined);
+  if (!to || (!text && !media?.url)) { res.status(400).json({ ok: false, error: "need to + text (or media.url)" }); return; }
+  const r = await gateway("POST", "/send", { session: ownerSession(), to: to.replace(/@c\.us$/, ""), text: media?.url ? (req.body?.caption ?? text) : text, media })
+    .catch((err) => ({ status: 503, data: { ok: false, error: String(err) } }));
+  await pool.query(
+    `INSERT INTO wa_messages (session, wa_id, direction, phone, type, text, status, error) VALUES ($1, $2, 'out_api', $3, $4, $5, $6, $7)
+     ON CONFLICT (session, wa_id) WHERE wa_id IS NOT NULL DO NOTHING`,
+    [ownerSession(), r.data?.id ?? null, to, media?.url ? media.kind ?? "file" : "text", text, r.data?.ok ? "sent" : "error", r.data?.ok ? null : String(r.data?.error ?? r.status)],
+  ).catch(() => null);
+  logger.info({ to: to.slice(-4), ok: Boolean(r.data?.ok), error: r.data?.error }, "wa send api");
+  res.status(r.data?.ok ? 200 : 422).json(r.data?.ok ? { ok: true, idMessage: r.data.id } : { ok: false, error: r.data?.error ?? "not sent" });
+});
+
+router.get("/wa/groups", async (req, res) => {
+  if (!sendTokenOk(req)) { res.status(401).json({ ok: false, error: "bad token" }); return; }
+  const r = await gateway("GET", `/groups/${ownerSession()}`).catch((err) => ({ status: 503, data: { error: String(err) } }));
+  res.status(r.status).json(r.data);
+});
+
 export default router;
