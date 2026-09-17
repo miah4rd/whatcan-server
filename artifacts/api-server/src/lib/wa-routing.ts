@@ -112,3 +112,10 @@ export async function routeNewChat(session: string, conversationId: string): Pro
   }
   logger.info({ session, conversationId }, "wa-routing: no unsorted entry — chat joined an existing lead");
 }
+
+/** The amoCRM user a number belongs to (wa_sessions.responsible, by id or name), or null. */
+export async function resolveResponsibleId(session: string): Promise<number | null> {
+  const row = (await pool.query(`SELECT responsible FROM wa_sessions WHERE name = $1`, [session])).rows[0];
+  if (!row?.responsible) return null;
+  return byIdOrName(await listUsers(), row.responsible)?.id ?? null;
+}

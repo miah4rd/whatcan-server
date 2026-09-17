@@ -223,7 +223,7 @@ router.post("/wa/numbers/:key/save", async (req, res) => {
   if (mode !== undefined && mode !== "shadow" && mode !== "live") { res.status(400).json({ error: "mode: shadow | live" }); return; }
   if (mode === "live" && name === OWNER_SESSION) { res.status(403).json({ error: "This is the owner's personal number — it never goes to amoCRM." }); return; }
   const r = await pool.query(
-    `UPDATE wa_sessions SET label = COALESCE($2, label), pipeline = $3, stage = $4, responsible = $5,
+    `UPDATE wa_sessions SET label = COALESCE($2, label), pipeline = COALESCE($3, pipeline), stage = COALESCE($4, stage), responsible = $5,
             mode = COALESCE($6, mode), updated_at = now()
       WHERE name = $1 RETURNING name, mode, label, pipeline, stage, responsible`,
     [name, label ?? null, pipeline || null, stage || null, responsible || null, mode ?? null],
@@ -275,7 +275,7 @@ button.ghost{background:#24384a;color:#e8eef3}
 a{color:#7cc4ff}
 </style></head><body><main>
 <h1>WhatsApp numbers</h1>
-<p class="sub">Each number sends its new chats to the funnel and stage chosen here. Funnels come live from amoCRM.</p>
+<p class="sub">Only people who already have an open card in amoCRM reach the CRM; every other chat on the phone stays private. Responsible = whose number this is.</p>
 <div id="list">Loading…</div>
 <div class="card">
 <div class="title">Connect a new number</div>
@@ -297,10 +297,8 @@ function render(){
   var p=findPipe(n.pipeline), conn=n.connection==='open';
   h+='<div class="card" data-i="'+i+'"><div class="row"><div class="title">'+esc(n.label||n.name)+(n.phone?' · +'+esc(n.phone):'')+'</div>'
    +'<span class="pill '+(conn?'ok':'bad')+'">'+(conn?'connected':esc(n.connection))+'</span>'
-   +'<span class="pill">'+(n.mode==='live'?'live in amoCRM':'test (not in amoCRM)')+'</span></div>'
-   +'<div class="grid"><div><label>Funnel</label><select class="pipe">'+opts(D.pipelines,p?p.id:'','— leave where amoCRM puts it —')+'</select></div>'
-   +'<div><label>Stage</label><select class="stage">'+(p?opts(p.stages,n.stage,'First stage'):'<option value="">—</option>')+'</select></div>'
-   +'<div><label>Responsible</label><select class="resp">'+opts(D.users,n.responsible,'— not set —')+'</select></div>'
+   +'<span class="pill">'+(n.mode==='live'?'live: card chats in amoCRM':'test (not in amoCRM)')+'</span></div>'
+   +'<div class="grid"><div><label>Responsible</label><select class="resp">'+opts(D.users,n.responsible,'— not set —')+'</select></div>'
    +'<div><label>Mode</label><select class="mode"><option value="live"'+(n.mode==='live'?' selected':'')+'>Live: chats go to amoCRM</option><option value="shadow"'+(n.mode!=='live'?' selected':'')+'>Test: record only</option></select></div></div>'
    +'<div style="height:10px"></div><div class="grid"><button class="save">Save</button><button class="ghost relink">Reconnect link</button></div>'
    +'<div class="msg"></div></div>';
@@ -308,11 +306,10 @@ function render(){
  var list=document.getElementById('list');list.innerHTML=h;
  [].forEach.call(list.querySelectorAll('.card[data-i]'),function(c){
   var n=D.numbers[+c.dataset.i], msg=c.querySelector('.msg');
-  c.querySelector('.pipe').onchange=function(){var p=findPipe(this.value);c.querySelector('.stage').innerHTML=p?opts(p.stages,'','First stage'):'<option value="">—</option>'};
   c.querySelector('.save').onclick=function(){
    msg.textContent='Saving…';
-   post('save',{name:n.name,pipeline:c.querySelector('.pipe').value,stage:c.querySelector('.stage').value,responsible:c.querySelector('.resp').value,mode:c.querySelector('.mode').value})
-   .then(function(r){msg.textContent=r.error?r.error:'Saved. New chats from this number go there now.';load(true)});
+   post('save',{name:n.name,responsible:c.querySelector('.resp').value,mode:c.querySelector('.mode').value})
+   .then(function(r){msg.textContent=r.error?r.error:'Saved.';load(true)});
   };
   c.querySelector('.relink').onclick=function(){post('relink',{name:n.name}).then(function(r){msg.innerHTML=r.url?'Open on the phone: <a href="'+esc(r.url)+'" target="_blank">'+esc(r.url)+'</a>':esc(r.error)})};
  });

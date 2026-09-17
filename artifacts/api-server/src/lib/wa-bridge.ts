@@ -17,7 +17,9 @@
 import * as crypto from "crypto";
 import { pool } from "@workspace/db";
 import { logger } from "./logger";
-import { routeNewChat } from "./wa-routing";
+import { cardForPhone } from "./wa-card-match";
+import { resolveResponsibleId } from "./wa-routing";
+import { amoPost } from "./amo-client";
 
 const AMOJO_BASE = "https://amojo.amocrm.ru";
 const clean = (v: string | undefined) => (v ?? "").replace(/["\r]/g, "").trim();
@@ -73,6 +75,9 @@ export async function ensureWaTables(): Promise<void> {
     ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS pipeline text;
     ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS stage text;
     ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS responsible text;
+    ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS card_lead_id bigint;
+    ALTER TABLE wa_conversations ADD COLUMN IF NOT EXISTS amo_chat_id text;
+    ALTER TABLE wa_conversations ADD COLUMN IF NOT EXISTS contact_id bigint;
     CREATE TABLE IF NOT EXISTS wa_link_tokens (
       token       text PRIMARY KEY,
       session     text NOT NULL,
@@ -244,20 +249,53 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
   );
   if (!ins.rows.length || ins.rows[0].mirrored) return;
 
-  if ((await sessionMode(ev.session)) !== "live") return;
-  if (ev.type === "reaction") return; // recorded only; not mirrored yet
+  if (ev.type === "reaction") return; // recorded only; not mirrored
 
-  const clientKey = ev.phone ?? ev.chatJid.split("@")[0];
+  // THE RULE (owner, 17.09.2026): only a person who already has an open card
+  // in amoCRM reaches the CRM. Everyone else on the phone is private and stays
+  // there. The decision is stored on every row, shadow numbers included, so it
+  // can be checked on real traffic before a number goes live.
+  const mode = await sessionMode(ev.session);
+  const card = await cardForPhone(ev.phone, await resolveResponsibleId(ev.session));
+  await pool.query(`UPDATE wa_messages SET card_lead_id = $2 WHERE id = $1`, [ins.rows[0].id, card?.leadId ?? null]);
+  if (mode !== "live" || !card || !ev.phone) return;
+
+  const clientKey = ev.phone;
   const convId = conversationId(ev.session, clientKey);
   const client = {
     id: `wa-${clientKey}`,
-    name: ev.pushName || (ev.phone ? `+${ev.phone}` : "WhatsApp"),
-    ...(ev.phone ? { profile: { phone: `+${ev.phone}` } } : {}),
+    name: ev.pushName || `+${ev.phone}`,
+    profile: { phone: `+${ev.phone}` },
   };
 
-  const conv = ev.phone
-    ? (await pool.query(`SELECT amo_conversation_id, linked FROM wa_conversations WHERE session = $1 AND phone = $2`, [ev.session, ev.phone])).rows[0]
-    : undefined;
+  const conv = (await pool.query(
+    `SELECT amo_conversation_id, linked, amo_chat_id, contact_id FROM wa_conversations WHERE session = $1 AND phone = $2`,
+    [ev.session, ev.phone],
+  )).rows[0];
+
+  // First message with this person on this number: create the chat and tie it
+  // to their contact, so it opens inside the existing card and amoCRM creates
+  // no unsorted lead (verified 17.09 on a throwaway card). A chat amoCRM opened
+  // itself ("write first") is already on the contact.
+  if (!conv?.amo_chat_id && !conv?.amo_conversation_id) {
+    const created = await amojo("POST", `/v2/origin/custom/${SCOPE_ID}/chats`, { conversation_id: convId, user: client });
+    const chatId: string | undefined = created.data?.id;
+    if (created.status !== 200 || !chatId) {
+      logger.error({ status: created.status, data: created.data, session: ev.session }, "wa-bridge: chat create failed");
+      throw new Error(`amojo ${created.status === 200 ? 500 : created.status}`);
+    }
+    const linked = await amoPost<{ _embedded?: { chats?: unknown[] } }>(`/api/v4/contacts/chats`, [{ contact_id: card.contactId, chat_id: chatId }]);
+    if (!linked?._embedded?.chats?.length) {
+      logger.error({ session: ev.session, contactId: card.contactId }, "wa-bridge: linking the chat to the contact failed");
+      throw new Error("amojo 503"); // retried; never import into an unlinked chat
+    }
+    await pool.query(
+      `INSERT INTO wa_conversations (session, phone, amo_chat_id, contact_id, linked) VALUES ($1, $2, $3, $4, true)
+       ON CONFLICT (session, phone) DO UPDATE SET amo_chat_id = EXCLUDED.amo_chat_id, contact_id = EXCLUDED.contact_id`,
+      [ev.session, ev.phone, chatId, card.contactId],
+    );
+    logger.info({ session: ev.session, leadId: card.leadId, contactId: card.contactId }, "wa-bridge: chat opened inside the existing card");
+  }
 
   let replyTo: Record<string, unknown> | undefined;
   if (ev.quotedId) {
@@ -288,18 +326,6 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
     await pool.query(`UPDATE wa_messages SET mirrored = true, amo_msg_id = $2 WHERE id = $1`, [ins.rows[0].id, r.data?.new_message?.msgid ?? null]);
     if (conv?.amo_conversation_id && !conv.linked) {
       await pool.query(`UPDATE wa_conversations SET linked = true WHERE session = $1 AND phone = $2`, [ev.session, ev.phone]);
-    }
-    // A client's first message on this number opens an unsorted chat in
-    // amoCRM's default funnel; put it into this number's funnel
-    // (lib/wa-routing.ts). Once per (number, client): the row is the marker.
-    if (!ev.fromMe && ev.phone) {
-      const first = await pool.query(
-        `INSERT INTO wa_conversations (session, phone) VALUES ($1, $2) ON CONFLICT (session, phone) DO NOTHING RETURNING 1`,
-        [ev.session, ev.phone],
-      );
-      if (first.rows.length) {
-        void routeNewChat(ev.session, convId).catch((err) => logger.error({ err, session: ev.session }, "wa-routing failed"));
-      }
     }
   } else {
     await pool.query(`UPDATE wa_messages SET error = $2 WHERE id = $1`, [ins.rows[0].id, `amojo ${r.status}: ${JSON.stringify(r.data).slice(0, 500)}`]);
