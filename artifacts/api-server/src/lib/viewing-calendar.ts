@@ -114,6 +114,12 @@ export function clientNameFromContent(content: string | null | undefined): strin
   return null;
 }
 
+/** A person's name from the card title: "FB Lead: Searra" → Searra; "R-UM-024 - qualification" → none. */
+function cardClient(name: string | null): string | null {
+  const n = (cleanLeadName(name ?? "") ?? "").replace(/^\s*(fb|ig|meta)\s*lead\s*:\s*/i, "").trim();
+  return n && !/\d|qualification|lead\b/i.test(n) ? n.slice(0, 60) : null;
+}
+
 type Desired = { key: string; slot: SlotRow; lead: AmoLead; body: CalendarEventBody; hash: string; viewingAt: Date };
 
 async function buildPlan(sinceDays?: number): Promise<{ desired: Map<string, Desired>; stored: StoredRow[]; now: Date }> {
@@ -178,7 +184,7 @@ async function buildPlan(sinceDays?: number): Promise<{ desired: Map<string, Des
     const timed = timeKnown(viewingAt);
     const parsed = clientNameFromContent(slot.content);
     // The thread parse sometimes grabs a sentence ("like to visit? I can check…"): then the card's name.
-    const client = parsed && !/[\d?!:]/.test(parsed) && parsed.split(/\s+/).length <= 4 ? parsed : cleanLeadName(lead.name ?? "")?.trim().slice(0, 60) || null;
+    const client = parsed && !/[\d?!:]/.test(parsed) && parsed.split(/\s+/).length <= 4 ? parsed : cardClient(lead.name);
     const area = (prop?.area ?? "").trim();
     const mapUrl = (priv?.google_maps_url ?? "").trim();
     const address = (priv?.exact_address ?? "").trim();
