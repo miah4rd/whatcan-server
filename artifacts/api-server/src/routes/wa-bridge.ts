@@ -275,7 +275,7 @@ button.ghost{background:#24384a;color:#e8eef3}
 a{color:#7cc4ff}
 </style></head><body><main>
 <h1>WhatsApp numbers</h1>
-<p class="sub">Only people who already have an open card in amoCRM reach the CRM; every other chat on the phone stays private. Responsible = whose number this is.</p>
+<p class="sub">A chat reaches amoCRM only when that person has an open card whose responsible is the owner of this number. Everything else on the phone stays private. A number with no responsible sends nothing to amoCRM.</p>
 <div id="list">Loading…</div>
 <div class="card">
 <div class="title">Connect a new number</div>

@@ -30,16 +30,18 @@ type AmoContact = {
 };
 
 /**
- * The open card of the person behind this phone, or null. Prefers a card whose
- * responsible user is `preferResponsible` (the broker the number belongs to),
- * then the most recently updated open card. Anything unreadable is null: a chat
- * that fails to reach the CRM costs a look on the phone, a personal chat in the
- * CRM is the incident this exists to prevent.
+ * The open card of the person behind this phone WHOSE RESPONSIBLE USER OWNS THE
+ * NUMBER, or null. The owner's model (17.09.2026), the same as Wahelp: a card
+ * exists, its responsible's number is tied to it, the work on that card goes
+ * through that number. A card of another broker, a stale card on a colleague's
+ * number, a number with no responsible set: nothing reaches the CRM.
+ * Anything unreadable is null — a chat missing from the CRM costs a look on the
+ * phone, a private chat in the CRM is the incident this exists to prevent.
  */
-export async function cardForPhone(phone: string | null, preferResponsible: number | null = null): Promise<CardMatch | null> {
+export async function cardForPhone(phone: string | null, responsibleId: number | null): Promise<CardMatch | null> {
   const p = digits(phone ?? "");
-  if (p.length < 8) return null;
-  const key = `${p.slice(-9)}:${preferResponsible ?? ""}`;
+  if (p.length < 8 || !responsibleId) return null;
+  const key = `${p.slice(-9)}:${responsibleId}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < (hit.value ? HIT_TTL : MISS_TTL)) return hit.value;
 
@@ -58,15 +60,15 @@ export async function cardForPhone(phone: string | null, preferResponsible: numb
       if (!phones.some((x) => samePhone(x, p))) continue;
       for (const l of c._embedded?.leads ?? []) candidates.push({ contactId: c.id, leadId: l.id });
     }
-    let best: { m: CardMatch; updated: number; mine: boolean } | null = null;
+    let best: { m: CardMatch; updated: number } | null = null;
     for (const cand of candidates.slice(0, 10)) {
       const lead = await amoFetch<{ id: number; status_id: number; responsible_user_id: number; updated_at: number; is_deleted?: boolean }>(
         `/api/v4/leads/${cand.leadId}`,
       );
       if (!lead || CLOSED.has(lead.status_id) || lead.is_deleted) continue;
-      const mine = preferResponsible !== null && lead.responsible_user_id === preferResponsible;
-      if (!best || (mine && !best.mine) || (mine === best.mine && lead.updated_at > best.updated)) {
-        best = { m: { contactId: cand.contactId, leadId: lead.id, responsibleId: lead.responsible_user_id ?? null }, updated: lead.updated_at, mine };
+      if (lead.responsible_user_id !== responsibleId) continue;
+      if (!best || lead.updated_at > best.updated) {
+        best = { m: { contactId: cand.contactId, leadId: lead.id, responsibleId }, updated: lead.updated_at };
       }
     }
     value = best?.m ?? null;
