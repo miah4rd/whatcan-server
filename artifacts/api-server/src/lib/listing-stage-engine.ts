@@ -62,6 +62,7 @@ import { isListingAcquisition } from "./pipelines";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { notifyBroker } from "./push-notifications";
 import { auditListingProgress } from "./listing-progress";
+import { returnHold, ownerWroteSince } from "./listing-return-hold";
 import {
   type ListingFacts,
   extractListingFacts,
@@ -597,6 +598,17 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
   // (§6). Facts read months ago do not carry it on to QUALIFIED unasked.
   if (norm(current) === norm(STAGE.WORK) && desired.stage === STAGE.QUALIFIED && (await awaitingOwnerAfterLongTerm(leadId))) {
     desired = { stage: STAGE.WORK, reason: "back from long term — waiting for the owner to confirm the date and the price" };
+  }
+  // Taken back out of QUALIFIED by someone else (the listing manager's "RETURNED TO TAKEN TO WORK"):
+  // the same facts do not promote it again — only the owner's next message does (19.09.2026).
+  if (norm(current) === norm(STAGE.WORK) && desired.stage === STAGE.QUALIFIED) {
+    const hold = await returnHold(leadId, current);
+    if (hold && !(await ownerWroteSince(leadId, hold.at))) {
+      desired = {
+        stage: STAGE.WORK,
+        reason: `returned from QUALIFIED ${hold.at.toISOString().slice(0, 16)}${hold.reason ? ` (${hold.reason})` : ""} — waiting for the owner's answer`,
+      };
+    }
   }
 
   // Outbound is monotonic: a card past Initial Contact whose thread shows no

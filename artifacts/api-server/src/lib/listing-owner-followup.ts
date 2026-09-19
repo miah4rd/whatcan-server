@@ -29,6 +29,7 @@ import { villaFromLeadName, fetchLeadTitle, fetchOwnerName } from "./weekly-avai
 import { closeLeadAsLost } from "./amo-client";
 import { maybeAutopilot } from "./autopilot";
 import { meetsQualified } from "./listing-card-fields";
+import { returnHold, ownerWroteSince, weWroteSince, MANAGER_QUESTION_CATEGORY } from "./listing-return-hold";
 import { ownerThreadKnown, type OwnerThreadKnown } from "./owner-thread-known";
 import { ownerThreadLanguage, type OwnerLang } from "./yudi-voice";
 
@@ -106,7 +107,7 @@ function isOpenStage(stage: string | null): boolean {
  * commission position is already known (they said net, included, or named a rate): asking it
  * "including our 10%" again would re-ask the half they answered.
  */
-export type NudgeAsk = "still_renting" | "availability" | "owner" | "bedrooms" | "price" | "price_plain" | "commission" | "min_stay" | "viewing";
+export type NudgeAsk = "still_renting" | "availability" | "owner" | "bedrooms" | "price" | "price_plain" | "monthly_price" | "commission" | "min_stay" | "viewing";
 
 /** The asks that are owner points of their own (`price_plain` is a phrasing of `price`). */
 type AskPoint = Exclude<NudgeAsk, "price_plain">;
@@ -115,6 +116,8 @@ const MISSING_TO_ASK: Array<[(m: string) => boolean, AskPoint]> = [
   [(m) => m.startsWith("not the owner"), "owner"],
   [(m) => m === "bedrooms", "bedrooms"],
   [(m) => m === "price", "price"],
+  // Only a yearly rate, and a twelfth of it is under the floor: the monthly rate decides the card.
+  [(m) => m === "monthly price", "monthly_price"],
   [(m) => m === "commission position", "commission"],
   [(m) => m === "minimum stay", "min_stay"],
   [(m) => m === "earliest viewing", "viewing"],
@@ -217,6 +220,7 @@ export function ownerAskLines(asks: NudgeAsk[], o: { lang: OwnerLang; villa: str
       has("bedrooms") && "jumlah kamar tidurnya",
       has("price") && "harga sewa bulanan dan tahunan yang sudah termasuk 10% komisi agensi",
       has("price_plain") && "harga sewa bulanan dan tahunannya",
+      has("monthly_price") && !has("price") && !has("price_plain") && "harga sewa per bulannya (bukan per tahun)",
       has("min_stay") && "minimal sewanya",
       has("viewing") && "kapan kami bisa bawa client untuk lihat villanya",
     ].filter((x): x is string => Boolean(x));
@@ -236,6 +240,7 @@ export function ownerAskLines(asks: NudgeAsk[], o: { lang: OwnerLang; villa: str
     has("bedrooms") && "the number of bedrooms",
     has("price") && "the monthly and yearly price, already included with our 10% agency commission",
     has("price_plain") && "the monthly and yearly price",
+    has("monthly_price") && !has("price") && !has("price_plain") && "the monthly price (not the yearly one)",
     has("min_stay") && "the minimum rental period",
     has("viewing") && "when we could bring a client to view the villa",
   ].filter((x): x is string => Boolean(x));
@@ -327,6 +332,37 @@ export async function processListingOwnerFollowup(): Promise<number> {
       // Yudi typed on his phone is in the thread but not in last_our_message_at.
       const lastOursAtMs = Math.max(lead.lastOurMessageAt!.getTime(), newest ? newest.at.getTime() : 0);
 
+      // Returned from QUALIFIED by the listing manager with a question for us (listing-return-hold.ts):
+      // the facts show nothing missing, so without this the card sat silent while the engine promoted
+      // it back. The question goes once, as written, the moment it is on the card; after that the
+      // ladder below repeats it on its usual days.
+      const hold = await returnHold(lead.leadId, lead.leadStage);
+      const managerQuestion = hold?.question && !(await ownerWroteSince(lead.leadId, hold.at)) ? hold.question : null;
+      if (managerQuestion && hold && !(await weWroteSince(lead.leadId, hold.at))) {
+        const [waiting] = await db
+          .select({ id: pendingSuggestionsTable.id })
+          .from(pendingSuggestionsTable)
+          .where(and(eq(pendingSuggestionsTable.leadId, lead.leadId), eq(pendingSuggestionsTable.status, "pending")))
+          .limit(1);
+        if (waiting) continue;
+        await db.insert(pendingSuggestionsTable).values({
+          leadId: lead.leadId,
+          responsibleUser: lead.responsibleUser,
+          kind: "push",
+          suggestionText: managerQuestion,
+          objectionCategory: MANAGER_QUESTION_CATEGORY,
+          status: "pending",
+        });
+        await db.update(leadsSyncTable).set({ followupLevel: 1 }).where(eq(leadsSyncTable.leadId, lead.leadId));
+        queued++;
+        logger.info(
+          { leadId: lead.leadId, returnedAt: hold.at.toISOString(), reason: hold.reason },
+          "listing-owner-followup: queued the listing manager's question on a card returned from QUALIFIED",
+        );
+        void maybeAutopilot(lead.leadId);
+        continue;
+      }
+
       // followupLevel is free to use here: the buyer scheduler clears
       // nextFollowupAt for this funnel and never advances the level on it.
       const round = (lead.followupLevel ?? 0) + 1;
@@ -377,7 +413,7 @@ export async function processListingOwnerFollowup(): Promise<number> {
       if (memo && memo.newestMs === newestMs && Date.now() < memo.until) continue;
       const known = await ownerThreadKnown(lead.leadId);
       const asks = nudgeAsks(known, known.facts ? meetsQualified(known.facts).missing : null);
-      if (!asks.length) {
+      if (!asks.length && !managerQuestion) {
         nothingToAsk.set(lead.leadId, {
           newestMs,
           until: known.facts ? Number.POSITIVE_INFINITY : Date.now() + 3_600_000,
@@ -401,7 +437,10 @@ export async function processListingOwnerFollowup(): Promise<number> {
         // tab is selected by stage name (REACH_STAGE_KEYWORDS) and none of the
         // open acquisition stages are in it.
         kind: "push",
-        suggestionText: composeNudge({ owner, villa, lang, asks }),
+        suggestionText: managerQuestion ?? composeNudge({ owner, villa, lang, asks }),
+        // The monthly-rate ask re-asks a price the thread holds on purpose (a yearly one only): exempt
+        // from the autopilot's repeated-question cut, like the manager's own question.
+        ...(managerQuestion || asks.includes("monthly_price") ? { objectionCategory: MANAGER_QUESTION_CATEGORY } : {}),
         status: "pending",
       });
 

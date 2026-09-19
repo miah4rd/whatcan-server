@@ -29,6 +29,7 @@ import { getPipelineStages } from "./stage-classifier";
 import { isParkedListingStage, isBacklogListingStage } from "./stage-routing";
 import { isListingAcquisition } from "./pipelines";
 import { guardOwnerDraft } from "./owner-thread-known";
+import { MANAGER_QUESTION_CATEGORY } from "./listing-return-hold";
 import {
   mayOpenNewConversation,
   isFirstOutbound,
@@ -293,6 +294,7 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
         attachments: pendingSuggestionsTable.attachments,
         responsibleUser: pendingSuggestionsTable.responsibleUser,
         skippedReason: pendingSuggestionsTable.autopilotSkippedReason,
+        category: pendingSuggestionsTable.objectionCategory,
       })
       .from(pendingSuggestionsTable)
       .where(
@@ -402,7 +404,10 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
     // moved while the draft waited for outreach hours. No model call: stored
     // facts plus the villa side's own words; a repeated question is cut, and a
     // draft that was nothing but repeated questions is retired.
-    if (isListingAcquisition(lead.pipeline)) {
+    // Exempt: the listing manager's own question on a card it returned from QUALIFIED
+    // (listing-return-hold.ts). It re-asks a point the thread seems to answer ON PURPOSE — the answer
+    // it had was not good enough to publish ("confirm it is 2 bedrooms", "the monthly price").
+    if (isListingAcquisition(lead.pipeline) && sug.category !== MANAGER_QUESTION_CATEGORY) {
       const g = await guardOwnerDraft(leadId, sug.text);
       if (g.changed) {
         logger.warn(
