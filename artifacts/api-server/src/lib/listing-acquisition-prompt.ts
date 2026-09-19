@@ -56,7 +56,7 @@ import {
   type OwnerPoint,
   type OwnerThreadKnown,
 } from "./owner-thread-known";
-import { ownerVoiceBlock } from "./owner-voice";
+import { ownerVoiceBlock, tightenInYudiVoice } from "./owner-voice";
 import { ownerThreadLanguage, type OwnerLang } from "./yudi-voice";
 
 /** One roster for every funnel — lib/pipelines.ts. */
@@ -448,6 +448,9 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
       }
     }
   }
+
+  // Shorter, in Yudi's own length and register (owner, 19.09.2026). See tightenInYudiVoice.
+  if (text) text = await tightenInYudiVoice(text, { lang, leadId: opts.leadId });
 
   // Per the owner: never auto-close or auto-move stage here (the funnel's
   // stages aren't configured yet) — only flag, using the same "⊘ Review" chip

@@ -22,6 +22,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { yudiStyleExamples, yudiExamplesBlock, type OwnerLang } from "./yudi-voice";
+import { chatCompletionJSON, WRITER_MODEL } from "./ai-client";
 
 const CACHE_MS = 15 * 60_000;
 let rewriteCache: { at: number; lines: string[] } | null = null;
@@ -111,4 +112,56 @@ export async function ownerVoiceBlock(o: { lang: OwnerLang }): Promise<string> {
     }; one or two questions, never a checklist read out; no company pitch, no claim about clients searching, no closing formula.`,
   );
   return parts.join("");
+}
+
+const TIGHT_WORDS = 22;
+const HARD_MAX_WORDS = 30;
+const wordCount = (s: string) => (s.trim() ? s.trim().split(/\s+/).length : 0);
+// The autopilot judges a waiting draft again every few minutes: a rewrite that
+// was rejected once is not paid for again.
+const rejected = new Map<string, number>();
+
+/**
+ * Owner, 19.09.2026: "сделай тексты короче как у Юди, в целом копируй его стиль". Measured the same
+ * day on Rental Listings: the bot's replies 32 words at the median, nudges 37; Yudi's own messages
+ * that ask an owner something, 13. An owner wrote back "nice automatic answer. So not serious".
+ *
+ * The last step for every owner-facing draft (the reply generator, and the autopilot before it
+ * sends anything, whoever wrote it): a draft over ~22 words is rewritten ONCE in his voice, from his
+ * own short lines — every question and every fact the owner needs stays, the recap of what they
+ * said, the explanations and the pitch go. A rewrite that loses the question, grows, or comes back
+ * empty is thrown away and the draft goes as it was: shorter is the goal, never a lost ask.
+ */
+export async function tightenInYudiVoice(text: string, o: { lang: OwnerLang; leadId?: string }): Promise<string> {
+  const before = (text ?? "").trim();
+  if (wordCount(before) <= TIGHT_WORDS) return before;
+  if (rejected.has(before)) return before;
+  try {
+    const examples = await yudiStyleExamples({ lang: o.lang, limit: 14, minLen: 12, maxLen: 140 });
+    const r = await chatCompletionJSON<{ text?: string }>({
+      model: WRITER_MODEL,
+      label: "owner-tighten",
+      max_tokens: 300,
+      system:
+        `You shorten a WhatsApp message that Yudi, a Bali villa-rental agent, is about to send to a villa owner, so it reads like he typed it himself on his phone.` +
+        yudiExamplesBlock(examples) +
+        `\n\nRules:\n- Keep every question and every fact the owner needs to act on. Drop what repeats what the owner already said to us, explanations of why we ask, reassurance, company pitch, and closing formulas.\n- ${TIGHT_WORDS} words or fewer if at all possible, never more than ${HARD_MAX_WORDS}.\n- One to three short lines, separated by a line break, like his.\n- Same language as the message (${o.lang === "id" ? "Indonesian" : "English"}), his register: ${o.lang === "id" ? "kak / pak / bu, Baik, Terimakasih" : "Hello / may I know / well noted / thank you"}.\n- No dashes, no emoji except a plain 🙏 if the original had one.\n- Keep villa names, people's names, prices and dates exactly as written.\n- Never add a form of address that is not in the message (no pak or bu: you do not know if it is a man or a woman; kak only if it was there).\n- In the examples \"/\" only marks a line break: write real line breaks, never a slash.\n- Do not add anything that is not in the message.\nReturn JSON {"text": "..."}.`,
+      messages: [{ role: "user", content: before }],
+    });
+    // The examples mark line breaks with " / "; the model copies it sometimes.
+    const after = String(r?.text ?? "").replace(/\s+\/\s+/g, "\n").trim();
+    const askedBefore = /\?/.test(before);
+    const ok = after && wordCount(after) < wordCount(before) && wordCount(after) <= HARD_MAX_WORDS + 5 && (!askedBefore || /\?/.test(after));
+    if (!ok) {
+      logger.warn({ leadId: o.leadId, before: wordCount(before), after: wordCount(after) }, "owner tighten: rewrite rejected — draft kept as written");
+      if (rejected.size > 500) rejected.clear();
+      rejected.set(before, Date.now());
+      return before;
+    }
+    logger.info({ leadId: o.leadId, before: wordCount(before), after: wordCount(after) }, "owner tighten: draft shortened in Yudi's voice");
+    return after;
+  } catch (err) {
+    logger.warn({ err: String(err), leadId: o.leadId }, "owner tighten failed — draft kept as written");
+    return before;
+  }
 }

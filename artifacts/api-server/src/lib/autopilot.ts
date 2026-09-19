@@ -30,6 +30,8 @@ import { isParkedListingStage, isBacklogListingStage } from "./stage-routing";
 import { isListingAcquisition } from "./pipelines";
 import { guardOwnerDraft } from "./owner-thread-known";
 import { isAutomaticReply } from "./humanize-layout";
+import { tightenInYudiVoice } from "./owner-voice";
+import { textLanguage } from "./yudi-voice";
 import { MANAGER_QUESTION_CATEGORY } from "./listing-return-hold";
 import {
   mayOpenNewConversation,
@@ -435,6 +437,19 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
           .where(eq(pendingSuggestionsTable.id, sug.id))
           .catch(() => undefined);
         sug.text = g.text;
+      }
+    }
+    // Yudi's length and register for anything that reaches an owner on its own (owner, 19.09.2026),
+    // whichever pass wrote the draft. The listing manager's verbatim question is left as written.
+    if (isListingAcquisition(lead.pipeline) && sug.category !== MANAGER_QUESTION_CATEGORY && setting.mode !== "dry") {
+      const tight = await tightenInYudiVoice(sug.text, { lang: textLanguage(sug.text) ?? "en", leadId });
+      if (tight && tight !== sug.text.trim()) {
+        await db
+          .update(pendingSuggestionsTable)
+          .set({ suggestionText: tight })
+          .where(eq(pendingSuggestionsTable.id, sug.id))
+          .catch(() => undefined);
+        sug.text = tight;
       }
     }
     if (setting.mode === "dry") {
