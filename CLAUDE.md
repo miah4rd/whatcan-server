@@ -2902,3 +2902,15 @@ swallows the real one.
 - **Answer the owner in English** (he asked for it explicitly on 2026-08-18; this
   line used to say Russian). He still wants plain-language explanations of what
   broke and why, not jargon.
+
+## Quality control report (lib/quality-control.ts, 19.09.2026)
+
+Every morning at 09:00 Bali a report on yesterday goes to the team chat (`qc_chat_id`, default Unicorn
+Rental group) from the owner's WhatsApp — **only while broker_settings `qc_enabled` = 'on'**. Per broker:
+reply time in working minutes (08–21 Bali; bot replies counted apart, never against the broker), who is
+still waiting, phone vs Copilot sends, missing viewing reports, overdue promises, and at most two coaching
+notes from a model review of the threads the broker personally wrote in. A note is kept only if its quote
+is found verbatim in the broker's own message that day. Mondays add the finished week vs targets.
+Preview: `GET /qc/preview?k=<kpi_dashboard_key>&day=YYYY-MM-DD` (`&review=0` skips the model,
+`&json=1` raw). Send now: `POST /qc/send` with x-admin-token `{day?, to?, force?}`; `to` = test copy,
+does not mark the day sent. History in `qc_reports`.
