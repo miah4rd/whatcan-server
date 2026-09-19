@@ -683,7 +683,7 @@ export function groupMessage(rep: ReportRow, property: Property | null): string 
   const green = (rep.green_flags ?? "").split("\n").filter(Boolean).join("; ");
   const note = (rep.notes ?? "").split("\n").map((s) => s.trim()).filter(Boolean)[0] ?? "";
   const media: string[] = [];
-  if (rep.photos?.length) media.push(`${rep.photos.length} new photos`);
+  if (rep.photos?.length) media.push(`${rep.photos.length} new photo${rep.photos.length === 1 ? "" : "s"}`);
   if (rep.video_url) media.push("video tour");
   const facts = [property?.bedrooms ? `${property.bedrooms}BR` : null, property?.area ?? null, "✅ Listed"].filter(Boolean).join(" · ");
   const title = (property?.title ?? "").replace(/\s+[-–—|]\s+.*$/, "").trim();
