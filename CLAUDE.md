@@ -565,6 +565,27 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
   generation — "чтобы не тратить ни время, ни энергию, ни токены". Ranges take
   the upper bound, equal-to-threshold stays, no parsed budget = worked normally.
   The dial lives in the mobile 🤖 panel next to the autopilot.
+- **The rental area gate (owner, 18.09.2026, TEMPORARY).** "Улувату, Убуд и
+  Санур пока не работаем — такие заявки в корзину и не обслуживать вообще".
+  `lib/excluded-area-filter.ts` (`EXCLUDED_AREAS`) sits beside every budget
+  gate call (both timeline-sync passes, the follow-up scheduler, the ad/scout
+  seeding BEFORE the welcome, the webhook and regen): a Rental lead whose form
+  area (or its notes when the answer is "Other"; the card note for a scout
+  lead) names ONLY those districts — sub-areas and villages resolved through
+  `districtOfPlace` (Bingin/Pecatu → Uluwatu, Renon/Kesiman → Sanur, Sayan →
+  Ubud) — is closed to Lost with no message at all. First touch only: once
+  anything of ours reached the client, the lead is kept. A served area named
+  too, or nothing readable, keeps it. Not the same as area-coverage.ts, which
+  only withholds the automatic welcome for places with no stock. Lifting it =
+  emptying `EXCLUDED_AREAS`, on the owner's word only. Log line:
+  "excluded-area filter: rental lead auto-closed".
+- **The new-contact cap is lifted for Amelia's line only (owner, 19.09.2026).**
+  `UNCAPPED_LINES` in new-contact-budget.ts. With her nine spent, an ad lead's
+  welcome was held back and the lead fell into the ordinary LIVE path, whose
+  `adRule` (generate-suggestion.ts) says the client told us nothing but the
+  click — ignoring the form and re-asking move-in (Linda 23598585, 17.09). That
+  fallback is still wrong when it runs; lifting the cap only stops triggering
+  it. Yudi's line keeps nine: it opens cold conversations with villa owners.
 - **Rental changes must not leak into Unicorn.** The sales funnel is configured
   the way the owner wants it — leave its cadence and flow alone. Anything shaped
   for Rental is gated: the ad-lead and scout seeding is `pipeline='rental'` only,
