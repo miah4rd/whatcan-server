@@ -47,6 +47,7 @@
  * Switch: broker_settings `weekly_availability_mode` = on | dry | off (missing = dry: the scheduler
  * does nothing). Plan without sending: POST /api/admin/weekly-availability?dry=1.
  */
+import { isOwnLine } from "./wa-own-line-ids";
 import { db, leadsSyncTable, leadMessagesTable, sentMessagesTable, brokerSettingsTable, pendingSuggestionsTable } from "@workspace/db";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { logger } from "./logger";
@@ -377,7 +378,9 @@ async function planCard(lead: AmoLead, link: LinkedListing | null, why: string):
   base.owner = await fetchOwnerName(leadId, villa);
   base.message = composeWeeklyCheck(base.lang, base.owner, villa);
 
-  const own = brokerLines(sync.responsibleUser);
+  // Own-bridge lines (Yudi 2) open new conversations only; the weekly check to
+  // an owner we already know stays on the broker's Wahelp line.
+  const own = brokerLines(sync.responsibleUser).filter((l) => !isOwnLine(l));
   // No thread in amoCRM. Checked anyway when the site knows this owner: the card's contact phone is the
   // linked listing's Internal data owner phone, and that owner is a person (owner, 15.09.2026: the live
   // cards imported from the site on 25.08 — Yudi dealt with those owners outside Copilot). Never a scout
@@ -578,7 +581,7 @@ async function sendCheck(c: Candidate): Promise<string> {
     return `refused: ${channel.error}`;
   }
   const sinceSec = Math.floor(Date.now() / 1000);
-  const delivery = await deliverText(c.leadId, c.message!, log);
+  const delivery = await deliverText(c.leadId, c.message!, log, channel.ok ? channel.source : null);
   if (delivery.leadMissing) return "lead missing in amoCRM";
   const [row] = await db
     .insert(sentMessagesTable)
@@ -839,7 +842,7 @@ async function sendClarifier(leadId: string, responsibleUser: string | null, tex
   const log = { warn: (obj: object, msg: string) => logger.warn(obj, msg) };
   const channel = await resolveSendChannel(leadId, responsibleUser, log);
   if (!channel.ok) return `the date question was not sent: ${channel.error}`;
-  const delivery = await deliverText(leadId, text, log);
+  const delivery = await deliverText(leadId, text, log, channel.ok ? channel.source : null);
   if (delivery.leadMissing) return "the date question was not sent: lead missing in amoCRM";
   await db.insert(sentMessagesTable).values({
     leadId,

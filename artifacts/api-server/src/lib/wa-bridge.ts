@@ -273,29 +273,7 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
     [ev.session, ev.phone],
   )).rows[0];
 
-  // First message with this person on this number: create the chat and tie it
-  // to their contact, so it opens inside the existing card and amoCRM creates
-  // no unsorted lead (verified 17.09 on a throwaway card). A chat amoCRM opened
-  // itself ("write first") is already on the contact.
-  if (!conv?.amo_chat_id && !conv?.amo_conversation_id) {
-    const created = await amojo("POST", `/v2/origin/custom/${SCOPE_ID}/chats`, { conversation_id: convId, user: client });
-    const chatId: string | undefined = created.data?.id;
-    if (created.status !== 200 || !chatId) {
-      logger.error({ status: created.status, data: created.data, session: ev.session }, "wa-bridge: chat create failed");
-      throw new Error(`amojo ${created.status === 200 ? 500 : created.status}`);
-    }
-    const linked = await amoPost<{ _embedded?: { chats?: unknown[] } }>(`/api/v4/contacts/chats`, [{ contact_id: card.contactId, chat_id: chatId }]);
-    if (!linked?._embedded?.chats?.length) {
-      logger.error({ session: ev.session, contactId: card.contactId }, "wa-bridge: linking the chat to the contact failed");
-      throw new Error("amojo 503"); // retried; never import into an unlinked chat
-    }
-    await pool.query(
-      `INSERT INTO wa_conversations (session, phone, amo_chat_id, contact_id, linked) VALUES ($1, $2, $3, $4, true)
-       ON CONFLICT (session, phone) DO UPDATE SET amo_chat_id = EXCLUDED.amo_chat_id, contact_id = EXCLUDED.contact_id`,
-      [ev.session, ev.phone, chatId, card.contactId],
-    );
-    logger.info({ session: ev.session, leadId: card.leadId, contactId: card.contactId }, "wa-bridge: chat opened inside the existing card");
-  }
+  await ensureChatOnContact(ev.session, ev.phone, card.contactId, client, conv);
 
   let replyTo: Record<string, unknown> | undefined;
   if (ev.quotedId) {
@@ -332,6 +310,79 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
     logger.error({ status: r.status, data: r.data, session: ev.session, waId: ev.id }, "wa-bridge: import into amoCRM failed");
     throw new Error(`amojo ${r.status}`); // gateway keeps the event and retries
   }
+}
+
+/**
+ * First message with this person on this number: create the chat and tie it to
+ * their contact, so it opens inside the existing card and amoCRM creates no
+ * unsorted lead (verified 17.09 on a throwaway card). A chat amoCRM opened
+ * itself ("write first") is already on the contact. Throws on failure so the
+ * caller retries — a message is never imported into an unlinked chat.
+ */
+export async function ensureChatOnContact(
+  session: string,
+  phone: string,
+  contactId: number,
+  client: { id: string; name: string; profile?: { phone: string } },
+  conv?: { amo_chat_id?: string | null; amo_conversation_id?: string | null },
+): Promise<void> {
+  const known = conv ?? (await pool.query(
+    `SELECT amo_chat_id, amo_conversation_id FROM wa_conversations WHERE session = $1 AND phone = $2`,
+    [session, phone],
+  )).rows[0];
+  if (known?.amo_chat_id || known?.amo_conversation_id) return;
+  const convId = conversationId(session, phone);
+  const created = await amojo("POST", `/v2/origin/custom/${SCOPE_ID}/chats`, { conversation_id: convId, user: client });
+  const chatId: string | undefined = created.data?.id;
+  if (created.status !== 200 || !chatId) {
+    logger.error({ status: created.status, data: created.data, session }, "wa-bridge: chat create failed");
+    throw new Error(`amojo ${created.status === 200 ? 500 : created.status}`);
+  }
+  const linked = await amoPost<{ _embedded?: { chats?: unknown[] } }>(`/api/v4/contacts/chats`, [{ contact_id: contactId, chat_id: chatId }]);
+  if (!linked?._embedded?.chats?.length) {
+    logger.error({ session, contactId }, "wa-bridge: linking the chat to the contact failed");
+    throw new Error("amojo 503");
+  }
+  await pool.query(
+    `INSERT INTO wa_conversations (session, phone, amo_chat_id, contact_id, linked) VALUES ($1, $2, $3, $4, true)
+     ON CONFLICT (session, phone) DO UPDATE SET amo_chat_id = EXCLUDED.amo_chat_id, contact_id = EXCLUDED.contact_id`,
+    [session, phone, chatId, contactId],
+  );
+  logger.info({ session, contactId }, "wa-bridge: chat opened inside the existing card");
+}
+
+/**
+ * A message Copilot sent through our own line (lib/wa-own-send.ts): write it
+ * into the card's chat as ours, so the broker sees it in amoCRM and every
+ * detector that reads the timeline knows we spoke. The gateway does not echo
+ * its own sends, so this is the only record amoCRM gets.
+ */
+export async function mirrorOwnSend(
+  session: string,
+  phone: string,
+  contactId: number,
+  clientName: string,
+  waId: string,
+  message: Record<string, unknown>,
+): Promise<{ ok: boolean; amoMsgId: string | null; error?: string }> {
+  const client = { id: `wa-${phone}`, name: clientName || `+${phone}`, profile: { phone: `+${phone}` } };
+  await ensureChatOnContact(session, phone, contactId, client);
+  const now = Math.floor(Date.now() / 1000);
+  const r = await amojo("POST", `/v2/origin/custom/${SCOPE_ID}`, {
+    event_type: "new_message",
+    payload: {
+      timestamp: now,
+      msec_timestamp: Date.now(),
+      msgid: `${session}:${waId}`,
+      conversation_id: conversationId(session, phone),
+      silent: true,
+      sender: { id: `wa-bot-${session}`, ref_id: BOT_ID, name: "WhatsApp" },
+      receiver: client,
+      message,
+    },
+  });
+  if (r.status !== 200) return { ok: false, amoMsgId: null, error: `amojo ${r.status}: ${JSON.stringify(r.data).slice(0, 300)}` };
+  return { ok: true, amoMsgId: r.data?.new_message?.msgid ?? null };
 }
 
 // ── Outgoing hook from amoCRM ─────────────────────────────────────────────────

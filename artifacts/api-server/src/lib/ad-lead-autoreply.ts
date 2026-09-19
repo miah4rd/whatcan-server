@@ -338,7 +338,7 @@ export async function sendAdLeadWelcome(opts: {
     answers,
   });
 
-  const delivery = await deliverText(leadId, text, log);
+  const delivery = await deliverText(leadId, text, log, channel.ok ? channel.source : null);
   if (delivery.leadMissing || !delivery.chatSent) {
     logger.warn({ leadId, hookBody: delivery.hookBody }, "ad welcome delivery failed — leaving the lead to the normal draft path");
     return false;

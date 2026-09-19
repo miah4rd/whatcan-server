@@ -29,6 +29,8 @@ import {
 import { countActiveWhatsappChats, closeStaleDuplicateWhatsappTalks, whatsappTalkLines } from "./amo-client.js";
 import { isFirstOutbound, pickLineForNewConversation } from "./new-contact-budget";
 import { stripEmojiForDelivery } from "./message-delivery.js";
+import { isOwnLine } from "./wa-own-line-ids";
+import { deliverViaOwnLine } from "./wa-own-send";
 import { fetchTimeline, parseTimelineEvents, getAmoAuth } from "./amo-timeline-sync.js";
 
 /** amoCRM custom field the Salesbot reads the outgoing text from. */
@@ -96,6 +98,14 @@ async function resolveMultiLineSource(
   }
   if (line === null) return { source: null };
 
+  // Our own-bridge lines are not amoCRM sources: nothing is written into the
+  // messenger field (Salesbot would read it and send on its fallback exit), the
+  // send goes through wa-gateway (deliverText / sendAttachmentLinks below).
+  if (isOwnLine(line)) {
+    log.warn({ leadId, responsibleUser, line, why }, "multi-line send: own-bridge line chosen");
+    return { source: String(line) };
+  }
+
   const ok = await updateLastMessengerField(leadId, String(line), line, getLastMessengerFieldId());
   if (!ok) {
     log.warn({ leadId, line }, "multi-line send: could not write the chosen number into the messenger field — refusing");
@@ -135,6 +145,7 @@ export async function resolveSendChannel(
       };
     }
     source = multi.source;
+    if (source && isOwnLine(source)) return { ok: true, source };
   }
 
   if (!source) {
@@ -219,7 +230,12 @@ export type DeliverResult = {
  * at the first astral-plane character, so clients were receiving only the
  * greeting and nothing after it.
  */
-export async function deliverText(leadId: string, text: string, log: Log): Promise<DeliverResult> {
+export async function deliverText(leadId: string, text: string, log: Log, source?: string | null): Promise<DeliverResult> {
+  if (source && isOwnLine(source)) {
+    // WhatsApp through our gateway keeps emoji; nothing truncates them there.
+    const own = await deliverViaOwnLine(leadId, source, text);
+    return { leadMissing: false, chatSent: own.chatSent, hookStatus: own.hookStatus, hookBody: own.hookBody, deliveryText: text };
+  }
   const deliveryText = stripEmojiForDelivery(text);
   let hookStatus = 0;
   let hookBody = "";
@@ -334,9 +350,34 @@ export async function sendAttachmentLinks(
    * pass null only when it is already known to have reached the client (resume).
    */
   precedingText: string | null = null,
+  source?: string | null,
 ): Promise<number> {
   const total = attachments.length;
   let delivered = startIndex;
+  if (source && isOwnLine(source)) {
+    // Own line: each link is its own WhatsApp message straight through the
+    // gateway — no shared field to protect, so no waiting on the timeline.
+    for (let i = startIndex; i < total; i++) {
+      const url = attachments[i]?.url;
+      if (url) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const r = await deliverViaOwnLine(leadId, source, url);
+        if (!r.chatSent) {
+          log.warn({ leadId, url, body: r.hookBody }, "own line: link not sent — stopping");
+          break;
+        }
+      }
+      delivered = i + 1;
+      if (sentMessageId) {
+        await db
+          .update(sentMessagesTable)
+          .set({ webhookResponse: `${hookBody} | links ${delivered}/${total}` })
+          .where(eq(sentMessagesTable.id, sentMessageId as any))
+          .catch(() => {});
+      }
+    }
+    return delivered;
+  }
   // One read of the conversation up front tells us what the client already has,
   // so a re-approved or edited draft cannot repeat a link they can see.
   let sent = (await outboundTexts(leadId).catch(() => null)) ?? [];
