@@ -35,6 +35,14 @@ const SEND_HOUR_BALI = 9;
 const MAX_THREADS_REVIEWED = 6;
 const MAX_NOTES_PER_BROKER = 2;
 
+/** A short "ok / thanks / 🙏" with no question needs no reply and does not open a wait. */
+const ACK_RE = "(^|[^a-z])(ok|oke|okay|okey|thanks|thank|thankyou|thx|makasih|terima kasih|siap|noted|sip|great|perfect|baik)([^a-z]|$)|👍|🙏";
+
+/** The client's own name as WhatsApp shows it, else the amoCRM card name. `lead` is the SQL lead_id column. */
+const nameSql = (lead: string) =>
+  `coalesce((SELECT n.sender_name FROM lead_messages n WHERE n.lead_id = ${lead} AND n.sender_type = 'lead'
+     AND coalesce(n.sender_name, '') <> '' ORDER BY n.sent_at DESC LIMIT 1), d.name)`;
+
 const BALI_OFFSET_MS = 8 * 3600_000;
 const dayStart = (day: string) => new Date(`${day}T00:00:00+08:00`);
 const addDays = (day: string, n: number) =>
@@ -112,8 +120,12 @@ async function episodes(broker: string, day: string): Promise<Episode[]> {
               lag(m.sent_at) OVER (PARTITION BY m.lead_id ORDER BY m.sent_at) AS prev_in
          FROM lead_messages m
         WHERE m.sender_type = 'lead' AND m.sent_at >= $2::timestamptz - interval '14 days' AND m.sent_at < $3
+          AND coalesce(m.text, '') !~* 'не установлен whatsapp'
+          AND NOT (length(coalesce(m.text, '')) BETWEEN 1 AND 40 AND m.text !~ '\\?' AND m.text ~* $4)
      )
-     SELECT i.lead_id, i.t, r.t AS replied_at, r.human, d.name, l.live_dismissed_at
+     SELECT i.lead_id, i.t, r.t AS replied_at, r.human, l.live_dismissed_at,
+            coalesce((SELECT n.sender_name FROM lead_messages n WHERE n.lead_id = i.lead_id AND n.sender_type = 'lead'
+                        AND coalesce(n.sender_name, '') <> '' ORDER BY n.sent_at DESC LIMIT 1), d.name) AS name
        FROM inb i
        JOIN leads_sync l ON l.lead_id = i.lead_id
        LEFT JOIN amo_deals d ON d.id::text = i.lead_id
@@ -122,8 +134,9 @@ async function episodes(broker: string, day: string): Promise<Episode[]> {
         AND lower(l.responsible_user) = lower($1)
         AND NOT coalesce(l.bot_excluded, false)
         AND coalesce(d.status_id::text, '') NOT IN ('142', '143')
+        AND coalesce(l.lead_stage, '') !~* '^(closed|co-broke)'
         AND (i.prev_in IS NULL OR EXISTS (SELECT 1 FROM our o WHERE o.lead_id = i.lead_id AND o.t > i.prev_in AND o.t < i.t))`,
-    [broker, from, to],
+    [broker, from, to, ACK_RE],
   );
   const now = new Date();
   const out: Episode[] = [];
@@ -173,7 +186,7 @@ async function overdue(broker: string) {
   const [reports, promises] = await Promise.all([
     pool
       .query(
-        `SELECT v.lead_id, d.name, v.viewing_at FROM viewing_reports v
+        `SELECT v.lead_id, ${nameSql("v.lead_id")} AS name, v.viewing_at FROM viewing_reports v
            JOIN leads_sync l ON l.lead_id = v.lead_id LEFT JOIN amo_deals d ON d.id::text = v.lead_id
           WHERE v.status = 'due' AND v.viewing_at < now() - interval '24 hours' AND v.viewing_at > now() - interval '30 days'
             AND lower(l.responsible_user) = lower($1)
@@ -183,7 +196,7 @@ async function overdue(broker: string) {
       .catch(() => ({ rows: [] })),
     pool
       .query(
-        `SELECT c.lead_id, d.name, c.promise_text, c.due_at FROM lead_commitments c LEFT JOIN amo_deals d ON d.id::text = c.lead_id
+        `SELECT c.lead_id, ${nameSql("c.lead_id")} AS name, c.promise_text, c.due_at FROM lead_commitments c LEFT JOIN amo_deals d ON d.id::text = c.lead_id
           WHERE c.status = 'open' AND c.due_at < now() AND c.due_at > now() - interval '14 days' AND lower(c.responsible_user) = lower($1)
           ORDER BY c.due_at`,
         [broker],
@@ -254,7 +267,7 @@ async function threadsToReview(broker: string, day: string): Promise<Thread[]> {
           ORDER BY sent_at DESC LIMIT 30`,
         [leadId, to],
       ),
-      pool.query(`SELECT name FROM amo_deals WHERE id::text = $1`, [leadId]).catch(() => ({ rows: [] })),
+      pool.query(`SELECT ${nameSql("$1")} AS name FROM (SELECT 1) x LEFT JOIN amo_deals d ON d.id::text = $1`, [leadId]).catch(() => ({ rows: [] })),
     ]);
     const lines = (msgs.rows as { sender_type: string; text: string; sent_at: Date }[])
       .reverse()
@@ -405,8 +418,8 @@ export function composeMessage(qc: Awaited<ReturnType<typeof buildQc>>): string 
     const d = b.drafts;
     L.push(`✉️ Sent: ${d.fromPhone} from phone · ${d.approvedAsIs + d.edited} via Copilot (${d.edited} edited)` + (d.skipped ? ` · ${d.skipped} drafts skipped` : ""));
     if (b.overdue.viewingReports.length) L.push(`📝 Viewing report missing: ${b.overdue.viewingReports.join(", ")}`);
-    if (b.overdue.promises.length)
-      L.push(`🤝 Promise overdue: ${b.overdue.promises.slice(0, 3).map((p) => `${p.name} — "${p.promise.slice(0, 60)}"`).join("; ")}`);
+    // Overdue promises (lead_commitments) are deliberately not shown: checked 19.09, most "open" rows
+    // were the owner's own promises or sat on closed cards — a list that blames the broker for nothing.
     for (const n of b.notes) {
       if (n.kind === "good") L.push(`👍 ${n.client}: "${n.quote}" — ${n.issue}`);
       else L.push(`${n.severity === "critical" ? "❗" : "💡"} ${n.client}: "${n.quote}" — ${n.issue}${n.better ? ` → ${n.better}` : ""}`);
