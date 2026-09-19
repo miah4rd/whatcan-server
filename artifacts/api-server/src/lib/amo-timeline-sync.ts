@@ -25,6 +25,7 @@ import { followupClockAfterReply } from "./rental-followup";
 import { reconcileTasksAfterManualReply } from "./manual-reply-followup";
 import { onThreadChanged, threadWatched } from "./thread-stage-sync";
 import { enforceBudgetFilter } from "./budget-filter";
+import { enforceExcludedAreaFilter } from "./excluded-area-filter";
 import { recordCommitment } from "./commitment-scheduler";
 import { getAccessToken } from "./amo-client";
 import { getMergedConversation } from "./merged-conversation";
@@ -732,6 +733,7 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
             scheduleLiveReply(lead.leadId, async () => {
               try {
                 if (await enforceBudgetFilter(lead.leadId)) return;
+                if (await enforceExcludedAreaFilter(lead.leadId)) return;
                 const [freshLead] = await db
                   .select({
                     content: leadsSyncTable.content,
@@ -1059,6 +1061,7 @@ async function processQuickPollLead(
     scheduleLiveReply(leadId, async () => {
       try {
         if (await enforceBudgetFilter(leadId)) return;
+        if (await enforceExcludedAreaFilter(leadId)) return;
         const [freshLead] = await db
           .select({
             content: leadsSyncTable.content,

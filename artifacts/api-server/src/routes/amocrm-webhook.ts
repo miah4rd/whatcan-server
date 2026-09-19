@@ -25,6 +25,7 @@ import { maybeAutopilot } from "../lib/autopilot";
 import { classifyAndApplyStage } from "../lib/stage-on-reply";
 import { onThreadChanged, threadDrivesStage, threadWatched, isEchoOfOurSend, threadTranscript } from "../lib/thread-stage-sync";
 import { enforceBudgetFilter } from "../lib/budget-filter";
+import { enforceExcludedAreaFilter } from "../lib/excluded-area-filter";
 import { recordCommitment } from "../lib/commitment-scheduler";
 import { scheduleLiveReply } from "../lib/live-reply-debounce";
 import { classifyStage } from "../lib/stage-classifier";
@@ -800,6 +801,7 @@ router.post("/amocrm/webhook", async (req, res) => {
             // The budget gate runs BEFORE any generation — a below-threshold
             // rental lead is closed without spending a token on it.
             if (await enforceBudgetFilter(leadId)) return;
+            if (await enforceExcludedAreaFilter(leadId)) return;
             const [freshLead] = await db
               .select({
                 content: leadsSyncTable.content,
@@ -1008,6 +1010,10 @@ router.post("/amocrm/regen-live", async (req, res) => {
     // 40M bar), because regen skipped every entry-point check.
     if (await enforceBudgetFilter(String(leadId))) {
       res.json({ ok: true, closed: true, reason: "budget below the broker's threshold" });
+      return;
+    }
+    if (await enforceExcludedAreaFilter(String(leadId))) {
+      res.json({ ok: true, closed: true, reason: "asks only for an area we do not work yet" });
       return;
     }
 
