@@ -497,12 +497,14 @@ export async function getAllOpenLeadTasksPaginated(): Promise<AmoTask[]> {
 export const VIEWING_REPORT_TASK_PREFIX = "Fill the viewing report";
 export const NEXT_STEP_TASK_PREFIX = "Next step after the viewing";
 export const LISTING_STEP_TASK_PREFIX = "Client after the viewing of";
+/** The inspection report owed on a Rental Listings card (inspection-report.ts); closed only by filing it. */
+export const INSPECTION_REPORT_TASK_PREFIX = "Fill the inspection report";
 /** The long term task two weeks before the owner's free date (regulation 15.09.2026, §5): the one
  *  thing that keeps a parked card from falling silent. Any message to the owner used to close it. */
 export const LONG_TERM_TASK_PREFIX = "Long term:";
 export function isProtectedTask(text: string | null | undefined): boolean {
   const t = (text ?? "").trim().toLowerCase();
-  return [VIEWING_REPORT_TASK_PREFIX, NEXT_STEP_TASK_PREFIX, LISTING_STEP_TASK_PREFIX, LONG_TERM_TASK_PREFIX].some((p) => t.startsWith(p.toLowerCase()));
+  return [VIEWING_REPORT_TASK_PREFIX, NEXT_STEP_TASK_PREFIX, LISTING_STEP_TASK_PREFIX, LONG_TERM_TASK_PREFIX, INSPECTION_REPORT_TASK_PREFIX].some((p) => t.startsWith(p.toLowerCase()));
 }
 
 /** Complete these tasks — and only these, unlike closeAmoTasksForLead. */

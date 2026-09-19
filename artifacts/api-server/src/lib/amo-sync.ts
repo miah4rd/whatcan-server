@@ -431,7 +431,11 @@ export async function syncTaskSchedule(): Promise<void> {
             // here is usually the bot's own "Sent (…)" one, which deleted the ask every 5 minutes.
             or(
               isNull(pendingSuggestionsTable.autopilotSkippedReason),
-              notLike(pendingSuggestionsTable.autopilotSkippedReason, "inspection booking ask%"),
+              and(
+                notLike(pendingSuggestionsTable.autopilotSkippedReason, "inspection booking ask%"),
+                // The inspection report placeholder: its own "Fill the inspection report" task is the future task.
+                notLike(pendingSuggestionsTable.autopilotSkippedReason, "inspection report due"),
+              ),
             ),
           ),
         );

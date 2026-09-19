@@ -866,6 +866,7 @@ const PAGE_HTML = `<!doctype html>
   function cardBadges(item) {
     var html = taskStatusBadge(item.next_followup_at);
     if (item.viewing_report) html += '<span class="badge vreport">&#x1F4CB; viewing report</span>';
+    if (item.inspection_report) html += '<span class="badge vreport">&#x1F50D; inspection report</span>';
     if (item.profile_temperature) html += tempBadge(item.profile_temperature);
     // Which funnel this lead lives in. Only while viewing ALL pipelines — once
     // the broker has narrowed to one, every card would repeat the same word.
@@ -1269,6 +1270,7 @@ const PAGE_HTML = `<!doctype html>
           openItem.original = freshOpen.suggestion_text || "";
           openItem.attachments = Array.isArray(freshOpen.attachments) ? freshOpen.attachments.slice() : [];
           openItem.villa_flags = freshOpen.villa_flags || null;
+          openItem.inspection_report = freshOpen.inspection_report || null;
           openItem.recent_messages = Array.isArray(freshOpen.recent_messages) ? freshOpen.recent_messages : [];
           openItem.lead_stage = freshOpen.lead_stage || null;
           openItem.suggested_stage = freshOpen.suggested_stage || null;
@@ -1722,6 +1724,8 @@ const PAGE_HTML = `<!doctype html>
       suggested_stage_terminal: !!item.suggested_stage_terminal,
       // The viewing report the card carries (see renderViewingReport).
       viewing_report: item.viewing_report || null,
+      // The open inspection report (lib/inspection-report.ts): a link to its own screen.
+      inspection_report: item.inspection_report || null,
       pipeline: item.pipeline || null,
       _skipExpanded: false,
       _skipTaskMode: false,
@@ -2499,6 +2503,21 @@ const PAGE_HTML = `<!doctype html>
     h += '</div>';
     return h;
   }
+  // The inspection report lives on its own screen (/m/inspection/<id>): a long
+  // form with uploads would lose its state on every re-render of this card.
+  function renderInspectionReport(it) {
+    var ir = it.inspection_report;
+    if (!ir) return "";
+    var failed = ir.status === "failed";
+    var h = '<div class="vr">';
+    h += '<div class="vr-head">&#x1F50D; Inspection report' + (ir.property_code ? ' &middot; <b>' + esc(ir.property_code) + '</b>' : '') + ' &middot; ' + esc(vrFmt(ir.visit_at)) + '</div>';
+    h += '<div class="vr-row"><span class="vr-status">' + (failed
+      ? 'Filed, but some checks did not pass &mdash; open it to see what and check again.'
+      : (ir.status === "checking" ? 'Being applied and checked&hellip;' : 'Listed, red &amp; green flags, your notes, photos &amp; video. Filing it moves the villa to live and posts the report to Unicorn Rental.')) + '</span></div>';
+    h += '<div class="vr-row"><a class="vr-send" style="text-decoration:none;display:inline-block" href="/m/inspection/' + encodeURIComponent(ir.id) + '?broker=' + encodeURIComponent(activeBroker() || "") + '">' + (failed ? 'Open &amp; check again' : 'Open the report') + '</a></div>';
+    h += '</div>';
+    return h;
+  }
   function bindViewingReport(it) {
     var box = $("#vr");
     if (!box || !it.viewing_report) return;
@@ -2657,6 +2676,7 @@ const PAGE_HTML = `<!doctype html>
     html += '<div class="conv-resize" id="conv-resize" title="Drag to resize"></div>';
 
     html += renderViewingReport(it);
+    html += renderInspectionReport(it);
 
     html += '<div class="body-block">';
     if (editing) {
