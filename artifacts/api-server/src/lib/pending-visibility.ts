@@ -260,7 +260,10 @@ export function isPendingVisible(
     // The inspection ask checks Yudi's real tasks itself; nextFollowupAt is usually the bot's own
     // "Sent (…)" task from its last message, which hid the ask for days.
     const bookingAsk = (r.autopilotSkippedReason ?? "").startsWith(INSPECTION_ASK_VERDICT);
-    if (!r.requestedAt && !bookingAsk && sync?.nextFollowupAt && sync.nextFollowupAt > endOfTodayBali) return false;
+    // The inspection report placeholder carries the report link; the card must show whatever tasks it has
+    // (INSPECTION_REPORT_VERDICT in inspection-report.ts, not imported: that module pulls the WhatsApp bridge).
+    const inspectionReport = (r.autopilotSkippedReason ?? "") === "inspection report due";
+    if (!r.requestedAt && !bookingAsk && !inspectionReport && sync?.nextFollowupAt && sync.nextFollowupAt > endOfTodayBali) return false;
   }
 
   /**

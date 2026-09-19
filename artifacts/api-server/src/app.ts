@@ -23,6 +23,8 @@ import { startListingStatusPass } from "./lib/listing-status-pass";
 import { startInspectionCalendarSync } from "./lib/inspection-calendar";
 import { startViewingCalendarSync } from "./lib/viewing-calendar";
 import { startInspectionBookingPass } from "./lib/inspection-booking";
+import { startInspectionReportPass } from "./lib/inspection-report";
+import inspectionPageRouter from "./routes/inspection-page";
 import { startStageSyncCheckScheduler } from "./lib/stage-sync-check";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
@@ -64,6 +66,8 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
 app.use(mobileRouter);
+// The inspection report screen, /m/inspection/<id> (lib/inspection-report.ts).
+app.use(inspectionPageRouter);
 // The owner's daily numbers page, /kpi (lib/kpi-dashboard.ts).
 app.use(kpiRouter);
 app.use(swRouter);
@@ -110,6 +114,8 @@ startInspectionCalendarSync();
 startViewingCalendarSync();
 // QUALIFIED listing cards: a PUSH draft for Yudi asking the owner to let him inspect, in his own words; see lib/inspection-booking.ts.
 startInspectionBookingPass();
+// Inspection report due 30 minutes after an agreed inspection (lib/inspection-report.ts).
+startInspectionReportPass();
 // Meta Ads spend for the /kpi page, pulled through Make every 4 hours; see lib/kpi-dashboard.ts.
 startMetaSpendPull();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));

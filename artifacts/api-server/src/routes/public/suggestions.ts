@@ -7,6 +7,7 @@ import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
 import { computePushPriority, computeNextFollowupDays, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
 import { delegatedStagesByPipeline } from "../../lib/autopilot";
 import { dueReportsForLeads } from "../../lib/viewing-report";
+import { openReportsForLeads } from "../../lib/inspection-report";
 import { isPendingVisible, dedupePushPerLead, repliedSignalFromTimeline, loadReplySignals } from "../../lib/pending-visibility";
 import { findStuckLeads } from "../../lib/stuck-leads";
 import { flagsForAttachments } from "../../lib/property-flags";
@@ -181,6 +182,8 @@ router.get("/suggestions", async (req, res) => {
 
     // A viewing whose report is still due: the card carries the form.
     const dueReports = await dueReportsForLeads([...new Set(items.map((i) => i.leadId))]).catch(() => new Map());
+    // An inspection whose report is still open: the listing card carries a link to the report screen.
+    const openInspections = await openReportsForLeads([...new Set(items.map((i) => i.leadId))]).catch(() => new Map());
 
     const enrichedRaw = items.map((i) => {
       const sync = syncByLeadId.get(i.leadId);
@@ -277,6 +280,7 @@ router.get("/suggestions", async (req, res) => {
             ? { id: r.id, viewing_at: r.viewingAt.toISOString(), property_code: r.propertyCode, due_since: r.createdAt.toISOString(), open_count: r.openCount }
             : null;
         })(),
+        inspection_report: openInspections.get(i.leadId) ?? null,
         pipeline: sync?.pipeline ?? null,
         last_message_at: sync?.lastMessageAt?.toISOString() ?? null,
         next_followup_at: sync?.nextFollowupAt?.toISOString() ?? null,
