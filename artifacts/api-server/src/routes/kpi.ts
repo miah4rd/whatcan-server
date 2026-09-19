@@ -217,14 +217,14 @@ footer { color: var(--muted); font-size: 12px; padding: 4px 2px 24px; }
     h += tile("New owner leads", fmt(add(x.o.owner_outreach, x.o.owner_referral, x.o.owner_other, x.o.paid_meta_form)[sel]), "Rental Listings");
     h += tile("Autopilot messages", fmt(A.listings.messagesSent[sel] + A.weeklyCheck.sent[sel] + A.rental.adInstantReplies[sel] + A.rental.autoSent[sel]), fmt(A.listings.ownersMessaged[sel]) + " owners reached");
     if (amelia) h += tile("Amelia: viewings", fmt(amelia.viewings.held[sel]), fmt(amelia.viewings.agreed[sel]) + " newly agreed");
-    if (yudi) h += tile("Yudi: inspections", fmt(yudi.inspections.due[sel]), fmt(yudi.inspections.listed[sel]) + " switched to Listed");
+    if (yudi) h += tile("Yudi: inspections held", fmt(yudi.inspections.held[sel]), fmt(yudi.inspections.listed[sel]) + " switched to Listed");
     h += "</div>";
 
     // Week to date
     var W = D.week;
     h += '<section><h2>This week vs target</h2><p class="hint">Week from ' + esc(short(W.weekStart)) + " (Mon), day " + W.daysIn + " of 7. Targets set by the owner on 14.09.</p><div class=\"grid2\">";
     h += "<div><b>Amelia</b>" + target("Viewings held", W.amelia.viewings, W.amelia.viewingsTarget) + target("Deals won", W.amelia.deals, W.amelia.dealsTarget) + "</div>";
-    h += "<div><b>Yudi</b>" + target("Listings published (Pre-listed)", W.yudi.published, W.yudi.publishedTarget) + target("Inspected → Listed on site", W.yudi.listed, W.yudi.listedTarget) + "</div>";
+    h += "<div><b>Yudi</b>" + target("Listings published (Pre-listed)", W.yudi.published, W.yudi.publishedTarget) + '<div class="kv"><span>Inspections held</span><b>' + fmt(W.yudi.inspections) + "</b></div>" + target("Inspected → Listed on site", W.yudi.listed, W.yudi.listedTarget) + "</div>";
     h += "</div></section>";
 
     // Traffic
@@ -305,14 +305,14 @@ footer { color: var(--muted); font-size: 12px; padding: 4px 2px 24px; }
       if (b.viewings) r = r.concat([
         { group: "Viewings" },
         { label: "Viewings agreed", hint: "by agreement day", s: b.viewings.agreed },
-        { label: "Viewings held", hint: "by viewing day, one per visit, cancelled excluded", s: b.viewings.held },
+        { label: "Viewings held", hint: "scheduled and not cancelled, by viewing day", s: b.viewings.held },
         { label: "Viewing reports filed", s: b.viewings.reportsFiled },
         { label: "Deals won", s: b.dealsWon }
       ]);
       if (b.inspections) r = r.concat([
         { group: "Inspections and listings" },
         { label: "Inspections agreed", hint: "by agreement day", s: b.inspections.agreed },
-        { label: "Inspections scheduled", hint: "by visit day", s: b.inspections.due },
+        { label: "Inspections held", hint: "scheduled and not cancelled, by visit day", s: b.inspections.held },
         { label: "Switched Pre-listed → Listed", hint: "site", s: b.inspections.listed },
         { label: "Listings published (Pre-listed)", hint: "site", s: b.inspections.published }
       ]);
@@ -369,7 +369,7 @@ footer { color: var(--muted); font-size: 12px; padding: 4px 2px 24px; }
       lines.push("*" + b.name + "*");
       lines.push("Messages: " + fmt(b.messages.viaCopilot[d]) + " via Copilot + " + fmt(b.messages.fromPhone[d]) + " from phone · " + fmt(b.messages.peopleWritten[d]) + " people");
       if (b.viewings) lines.push("Viewings: " + fmt(b.viewings.held[d]) + " held, " + fmt(b.viewings.agreed[d]) + " agreed, " + fmt(b.viewings.reportsFiled[d]) + " reports filed");
-      if (b.inspections) lines.push("Inspections: " + fmt(b.inspections.due[d]) + " scheduled, " + fmt(b.inspections.listed[d]) + " → Listed, " + fmt(b.inspections.published[d]) + " published");
+      if (b.inspections) lines.push("Inspections: " + fmt(b.inspections.held[d]) + " held, " + fmt(b.inspections.listed[d]) + " → Listed, " + fmt(b.inspections.published[d]) + " published");
       if (b.tasks) lines.push("Tasks: " + fmt(b.tasks.overdue) + " overdue of " + fmt(b.tasks.open) + " open (" + fmt(b.tasks.overdue3d) + " over 3 days)");
       if (b.inbox) lines.push("Waiting for reply: " + fmt(b.inbox.waiting) + " (" + fmt(b.inbox.waitingOverdue) + " over 24h)");
     });
@@ -377,7 +377,7 @@ footer { color: var(--muted); font-size: 12px; padding: 4px 2px 24px; }
     lines.push("");
     lines.push("*Week to date* (day " + W.daysIn + "/7)");
     lines.push("Amelia: viewings " + W.amelia.viewings + "/" + W.amelia.viewingsTarget + ", deals " + W.amelia.deals + "/" + W.amelia.dealsTarget);
-    lines.push("Yudi: published " + W.yudi.published + "/" + W.yudi.publishedTarget + ", Listed " + W.yudi.listed + "/" + W.yudi.listedTarget);
+    lines.push("Yudi: published " + W.yudi.published + "/" + W.yudi.publishedTarget + ", inspections " + W.yudi.inspections + ", Listed " + W.yudi.listed + "/" + W.yudi.listedTarget);
     return lines.join("\n");
   }
 
