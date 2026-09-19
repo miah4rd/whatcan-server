@@ -339,7 +339,7 @@ ${t.mine.map((m, i) => `(${i + 1}) ${m}`).join("\n\n")}`;
       kind: n.kind === "good" ? "good" : "fix",
       severity: n.severity === "critical" ? "critical" : "minor",
       client: t.name,
-      quote: String(n.quote).trim(),
+      quote: String(n.quote).replace(/\s+/g, " ").trim(),
       issue: String(n.issue ?? "").trim(),
       better: String(n.better ?? "").trim(),
     });
@@ -428,7 +428,7 @@ export function composeMessage(qc: Awaited<ReturnType<typeof buildQc>>): string 
     // Overdue promises (lead_commitments) are deliberately not shown: checked 19.09, most "open" rows
     // were the owner's own promises or sat on closed cards — a list that blames the broker for nothing.
     for (const n of b.notes) {
-      if (n.kind === "good") L.push(`👍 ${n.client}: "${n.quote}" — ${n.issue}`);
+      if (n.kind === "good") L.push(`👍 ${n.client}: "${n.quote}"${n.issue ? ` — ${n.issue}` : ""}`);
       else L.push(`${n.severity === "critical" ? "❗" : "💡"} ${n.client}: "${n.quote}" — ${n.issue}${n.better ? ` → ${n.better}` : ""}`);
     }
     if (b.reviewed > 0 && b.notes.length === 0) L.push(`✅ ${b.reviewed} conversation${b.reviewed === 1 ? "" : "s"} reviewed, nothing to fix.`);
