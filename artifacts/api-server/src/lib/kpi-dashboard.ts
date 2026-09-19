@@ -492,18 +492,31 @@ async function amoTasks(userId: number, completed: boolean, sinceSec?: number): 
   });
 }
 
+/** Cards amoCRM itself shows as won/lost or deleted (our leads_sync does not hold every old card). */
+async function closedLeadIds(ids: string[]): Promise<Set<string>> {
+  const closed = new Set<string>();
+  for (let i = 0; i < ids.length; i += 200) {
+    const chunk = ids.slice(i, i + 200);
+    const q = chunk.map((id) => `filter[id][]=${encodeURIComponent(id)}`).join("&");
+    const d = await cached(`status:${chunk.join(",")}`, 30 * 60_000, () =>
+      amoFetch<{ _embedded?: { leads?: { id: number; status_id: number }[] } }>(`/api/v4/leads?${q}&limit=250`),
+    );
+    const seen = new Set<string>();
+    for (const l of d?._embedded?.leads ?? []) {
+      seen.add(String(l.id));
+      if (l.status_id === 142 || l.status_id === 143) closed.add(String(l.id));
+    }
+    // A card amoCRM no longer returns was deleted: its task is not work anyone owes.
+    if (d) for (const id of chunk) if (!seen.has(id)) closed.add(id);
+  }
+  return closed;
+}
+
 async function taskState(userId: number, days: string[]) {
   const [open, done] = await Promise.all([amoTasks(userId, false), amoTasks(userId, true, startSec(days[0]!))]);
   // A task on a closed card is not work anyone owes: shown apart as clean-up, never as overdue.
   const leadIds = [...new Set(open.filter((t) => t.entity_type === "leads").map((t) => String(t.entity_id)))];
-  const closed = new Set<string>();
-  if (leadIds.length) {
-    const r = await pool.query(
-      `SELECT lead_id FROM leads_sync WHERE lead_id = ANY($1) AND lower(coalesce(lead_stage,'')) LIKE '%lost%'`,
-      [leadIds],
-    );
-    for (const row of r.rows as { lead_id: string }[]) closed.add(String(row.lead_id));
-  }
+  const closed = await closedLeadIds(leadIds);
   const now = Date.now() / 1000;
   const active = open.filter((t) => !(t.entity_type === "leads" && closed.has(String(t.entity_id))));
   const overdueDays = active.filter((t) => t.complete_till < now).map((t) => (now - t.complete_till) / 86400);
