@@ -733,11 +733,13 @@ function countByDay(times: (number | null)[], days: string[]): Series {
 async function viewingEvents(days: string[]) {
   const from = startIso(addDays(days[0]!, -14));
   const to = startIso(addDays(days[days.length - 1]!, 1));
+  // Visits agreed in the period may take place weeks later: read ahead for the "agreed" count.
+  const ahead = startIso(addDays(days[days.length - 1]!, 60));
   const r = await pool.query(
     `SELECT vs.lead_id, vs.property_code, vs.viewing_at, vs.agreed_at, vs.status, vr.outcome
        FROM viewing_slots vs LEFT JOIN viewing_reports vr ON vr.id = vs.report_id
       WHERE vs.viewing_at >= $1 AND vs.viewing_at < $2 AND vs.status IN ('scheduled', 'reported')`,
-    [from, to],
+    [from, ahead],
   );
   const rows = r.rows as { lead_id: string; property_code: string | null; viewing_at: string; agreed_at: string | null; outcome: string | null }[];
   const notHeld = new Set(["cancelled", "no_show", "rescheduled"]);
@@ -764,10 +766,11 @@ async function viewingEvents(days: string[]) {
 async function inspectionEvents(days: string[]) {
   const from = startIso(addDays(days[0]!, -14));
   const to = startIso(addDays(days[days.length - 1]!, 1));
+  const ahead = startIso(addDays(days[days.length - 1]!, 60));
   const r = await pool.query(
     `SELECT lead_id, visit_at, agreed_at FROM listing_inspection_slots
       WHERE visit_at >= $1 AND visit_at < $2 AND status = 'scheduled' AND superseded_at IS NULL`,
-    [from, to],
+    [from, ahead],
   );
   // Duplicate cards of one villa (Umbala 23305115 / 23541159) share the slot: same time = one visit.
   const slots = (r.rows as { lead_id: string; visit_at: string; agreed_at: string | null }[]).map((x) => ({
