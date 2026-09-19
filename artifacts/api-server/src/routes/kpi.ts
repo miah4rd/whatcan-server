@@ -4,14 +4,13 @@
  *
  * GET  /kpi?k=KEY                       the page (English; the owner posts it to the team chat)
  * GET  /kpi/data?k=KEY&to=YYYY-MM-DD&days=7   the numbers as JSON
- * POST /kpi/ad-spend  (x-kpi-token)     Meta Ads insights rows from the Make scenario
+ * POST /kpi/pull-spend (x-admin-token)  pull Meta spend from the Make scenario now (it runs every 4h)
  *
- * Keys live in broker_settings: `kpi_dashboard_key` opens the page, `kpi_ingest_token` lets Make
- * write spend. Both fail closed: no key stored → nothing opens.
+ * `kpi_dashboard_key` in broker_settings opens the page; no key stored → nothing opens.
  */
 import { Router } from "express";
 import { pool } from "@workspace/db";
-import { buildKpi, baliDate, ingestAdSpend, type AdSpendRow } from "../lib/kpi-dashboard";
+import { buildKpi, baliDate, pullMetaSpend } from "../lib/kpi-dashboard";
 
 const router = Router();
 
@@ -48,31 +47,15 @@ router.get("/kpi/data", async (req, res) => {
   }
 });
 
-router.post("/kpi/ad-spend", async (req, res) => {
-  const token = await setting("kpi_ingest_token");
-  const given = req.get("x-kpi-token") ?? String(req.query["token"] ?? "");
+/** Pull Meta spend now (admin token): POST /kpi/pull-spend with x-admin-token. */
+router.post("/kpi/pull-spend", async (req, res) => {
+  const token = process.env["ADMIN_TOKEN"];
+  const given = req.get("x-admin-token") ?? (req.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
   if (!token || given !== token) {
     res.status(403).json({ error: "forbidden" });
     return;
   }
-  // Make sends { rows: [...] } or { rows: "<json string>" } (its Transform-to-JSON output).
-  let rows: unknown = (req.body as { rows?: unknown })?.rows ?? req.body;
-  if (typeof rows === "string") {
-    try {
-      rows = JSON.parse(rows);
-    } catch {
-      rows = [];
-    }
-  }
-  if (!Array.isArray(rows)) rows = [];
-  try {
-    const n = await ingestAdSpend(rows as AdSpendRow[]);
-    req.log.info({ n }, "kpi: ad spend rows stored");
-    res.json({ ok: true, stored: n });
-  } catch (err) {
-    req.log.error({ err }, "kpi ad spend ingest failed");
-    res.status(500).json({ error: "ingest failed" });
-  }
+  res.json({ result: await pullMetaSpend() });
 });
 
 // The page. Client code below uses no backticks and no dollar-brace: it lives in String.raw.
@@ -271,7 +254,7 @@ footer { color: var(--muted); font-size: 12px; padding: 4px 2px 24px; }
       { label: "Cost per paid lead", hint: "spend ÷ amoCRM paid leads", s: x.cpl, money: true, cur: cur, total: totalPaid ? totalSpend / totalPaid : 0 }
     ];
     h += table(rows);
-    if (!T.ads.spendUpdatedAt) h += '<p class="hint warn">No Meta spend received yet for these days. It arrives from the Make scenario "whatcan Meta ad spend → KPI".</p>';
+    if (!T.ads.spendUpdatedAt) h += '<p class="hint warn">No Meta spend received yet for these days. It is pulled every 4 hours from the Make scenario &ldquo;whatcan KPI: Meta ad spend on request&rdquo;.</p>';
     else h += '<p class="hint">Spend last updated ' + esc(new Date(T.ads.spendUpdatedAt).toLocaleString("en-GB", { timeZone: "Asia/Makassar" })) + " (Bali). Meta days follow the ad account's time zone.</p>";
     if (T.ads.campaigns.length) {
       h += '<div class="scroll"><table><thead><tr><th>Campaign (whole period)</th><th>Spend</th><th>Meta leads</th><th>Per lead</th></tr></thead><tbody>';

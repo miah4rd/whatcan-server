@@ -5,6 +5,7 @@ import pinoHttp from "pino-http";
 import router from "./routes";
 import mobileRouter from "./routes/mobile";
 import kpiRouter from "./routes/kpi";
+import { startMetaSpendPull } from "./lib/kpi-dashboard";
 import swRouter from "./routes/public-sw";
 import propertyShareRouter from "./routes/property-share";
 import photoVariantsRouter from "./routes/photo-variants";
@@ -109,6 +110,8 @@ startInspectionCalendarSync();
 startViewingCalendarSync();
 // QUALIFIED listing cards: a PUSH draft for Yudi asking the owner to let him inspect, in his own words; see lib/inspection-booking.ts.
 startInspectionBookingPass();
+// Meta Ads spend for the /kpi page, pulled through Make every 4 hours; see lib/kpi-dashboard.ts.
+startMetaSpendPull();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));
 
 // When a rental is free from — asked in the intake chat, written to Supabase's

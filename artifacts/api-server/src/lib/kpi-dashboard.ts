@@ -11,8 +11,9 @@
  * - Traffic: amoCRM leads created in the day, classified by the card's Source field (956451), UTM
  *   medium (372079), click ids, tags and the scout's card name. amoCRM is the only place a lead's
  *   source is written, so it is read live (cached 10 min).
- * - Ad spend: `kpi_ad_spend`, filled by a Make scenario that reads Meta Ads insights through the
- *   owner's Facebook connection and POSTs /kpi/ad-spend (there is no Meta token on this server).
+ * - Ad spend: `kpi_ad_spend`, pulled every 4 hours from the Make scenario "whatcan KPI: Meta ad spend on
+ *   request" (6329721): its webhook (broker_settings `kpi_meta_webhook_url`) reads Meta Ads insights through
+ *   the owner's Facebook connection and answers with rows. There is no Meta token on this server.
  * - Autopilot: sent_messages (+ pending_suggestions.auto_sent), stage_events written by the listing
  *   engine (responsible_user 'engine:*'), the weekly check's answer markers in broker_settings.
  * - Brokers: Copilot sends (sent_messages, not auto), phone messages (lead_messages broker/whatsapp on
@@ -136,7 +137,10 @@ export async function ingestAdSpend(rows: AdSpendRow[]): Promise<number> {
   await ensureKpiTables();
   let n = 0;
   for (const r of rows) {
-    const day = String(r.date_start ?? "").slice(0, 10);
+    // Make hands the account-timezone midnight as an ISO instant (2026-09-11T17:00Z = 12.09 in Jakarta);
+    // half a day forward lands on the right date for any offset.
+    const raw = String(r.date_start ?? "");
+    const day = raw.includes("T") ? new Date(Date.parse(raw) + 12 * 3600_000).toISOString().slice(0, 10) : raw.slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !r.campaign_id) continue;
     await pool.query(
       `INSERT INTO kpi_ad_spend (day, account_id, campaign_id, campaign_name, currency, spend, impressions, clicks, link_clicks, meta_leads, updated_at)
@@ -764,4 +768,55 @@ export async function buildKpi(to: string, span = 7) {
     channelLabels: CHANNEL_LABEL,
     paidChannels: PAID_CHANNELS,
   };
+}
+
+// ── Meta pull (Make webhook) ─────────────────────────────────────────────────
+
+/** Ad accounts the Make scenario has a branch for (it cannot take an account from the request). */
+const META_ACCOUNTS = ["act_778356744500892", "act_553520974005703"];
+const PULL_EVERY_MS = 4 * 3600_000;
+
+export async function pullMetaSpend(): Promise<{ account: string; rows: number; error?: string }[]> {
+  const r = await pool.query(`SELECT value FROM broker_settings WHERE key = 'kpi_meta_webhook_url'`);
+  const url = (r.rows[0] as { value?: string } | undefined)?.value;
+  if (!url) return [{ account: "*", rows: 0, error: "kpi_meta_webhook_url not set" }];
+  const until = baliDate();
+  const since = addDays(until, -8);
+  const out: { account: string; rows: number; error?: string }[] = [];
+  for (const account of META_ACCOUNTS) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account, since, until }),
+        signal: AbortSignal.timeout(120_000),
+      });
+      const text = await res.text();
+      let body: { ok?: boolean; rows?: AdSpendRow[] } | null = null;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        /* "Accepted" = the scenario is off */
+      }
+      if (!res.ok || !body?.ok) {
+        out.push({ account, rows: 0, error: `HTTP ${res.status} ${text.slice(0, 80)}` });
+        continue;
+      }
+      out.push({ account, rows: await ingestAdSpend(body.rows ?? []) });
+    } catch (err) {
+      out.push({ account, rows: 0, error: String(err).slice(0, 120) });
+    }
+  }
+  return out;
+}
+
+let pullTimer: NodeJS.Timeout | null = null;
+export function startMetaSpendPull(): void {
+  if (pullTimer) return;
+  const run = () =>
+    pullMetaSpend()
+      .then((r) => logger.info({ result: r }, "kpi: Meta spend pulled"))
+      .catch((err) => logger.warn({ err }, "kpi: Meta spend pull failed"));
+  setTimeout(run, 90_000);
+  pullTimer = setInterval(run, PULL_EVERY_MS);
 }
