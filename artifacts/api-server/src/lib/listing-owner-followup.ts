@@ -249,7 +249,8 @@ export function ownerAskLines(asks: NudgeAsk[], o: { lang: OwnerLang; villa: str
     lines.push("May I double check if the price is already included with our 10% agency commission?");
   }
   if (has("owner")) {
-    lines.push(`${lines.length ? "Also, may" : "May"} I know if you are the owner, part of the owner's team, or is there a management company looking after it?`);
+    // Yudi's length (19.09.2026): the old line was 22 words on its own.
+    lines.push(`${lines.length ? "Also, are" : "Are"} you the owner, or is it managed by a team or company?`);
   }
   return lines;
 }
