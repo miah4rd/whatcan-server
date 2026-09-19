@@ -653,7 +653,7 @@ async function copyToDrive(rep: ReportRow): Promise<[CheckState, string]> {
     body: JSON.stringify({ secret: process.env["DRIVE_COPY_WEBHOOK_SECRET"] ?? "", folderId: folder, files: files.map((url) => ({ url, name: url.split("/").pop() })) }),
     signal: AbortSignal.timeout(120000),
   }).catch(() => null);
-  const body = res ? await res.json().catch(() => null) : null;
+  const body = (res ? await res.json().catch(() => null) : null) as { ok?: boolean; copied?: number } | null;
   if (!res?.ok || !body?.ok) return ["bad", `Drive copy did not confirm (${res?.status ?? "no answer"})`];
   const copied = Number(body.copied ?? 0);
   return copied >= files.length ? ["ok", `${copied} files in the listing's Drive folder`] : ["bad", `${copied} of ${files.length} files reached Drive`];
