@@ -43,6 +43,7 @@ import { shouldSuppressPush } from "./stage-routing";
 import { refreshLeadMessages } from "./amo-timeline-sync";
 import { advanceListingProgress } from "./listing-progress";
 import { queueViewingCalendarSync } from "./viewing-calendar";
+import { villaSideCard } from "./villa-side";
 
 const BALI = "Asia/Makassar";
 const MIN = 60_000;
@@ -627,6 +628,12 @@ export async function recordViewingSlot(
   s: { viewingAt: Date; agreedAt?: Date | null; propertyCode?: string | null; replaces?: Date | null },
   source: string,
 ): Promise<void> {
+  // The villa's owner or staff is not a client: their card gets no viewing, no report, no count (18.09).
+  const side = await villaSideCard(leadId);
+  if (side.villa) {
+    logger.info({ leadId, viewingAt: s.viewingAt, source, why: side.why }, "viewing slot not recorded: the card is the villa's side");
+    return;
+  }
   await db
     .insert(viewingSlotsTable)
     .values({ leadId, viewingAt: s.viewingAt, agreedAt: s.agreedAt ?? null, propertyCode: s.propertyCode ?? null, source, status: "scheduled" })
