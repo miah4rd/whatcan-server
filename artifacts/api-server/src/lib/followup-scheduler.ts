@@ -33,6 +33,7 @@ import { amoFetch } from "./amo-client";
 import { correctionsPromptBlock } from "./broker-corrections";
 import { maybeAutopilot } from "./autopilot";
 import { enforceBudgetFilter } from "./budget-filter";
+import { enforceExcludedAreaFilter } from "./excluded-area-filter";
 import { classifyStageInBackground } from "../routes/amocrm-webhook.js";
 
 /**
@@ -1532,6 +1533,7 @@ export async function processUnansweredLive(): Promise<void> {
     try {
       // Below-budget rentals are binned before any generation spends a token.
       if (await enforceBudgetFilter(lead.leadId)) continue;
+      if (await enforceExcludedAreaFilter(lead.leadId)) continue;
       const content = lead.content ?? "";
       if (!content) continue;
 

@@ -25,6 +25,7 @@ import { amoFetch } from "./amo-client";
 import { decodeAmoEntities } from "./amo-text";
 import { describePropertiesByIds } from "./property-catalog";
 import { enforceBudgetFilter } from "./budget-filter";
+import { enforceExcludedAreaFilter } from "./excluded-area-filter";
 import { sendAdLeadWelcome } from "./ad-lead-autoreply";
 import { leadPhone, phoneIsAlreadyInConversation } from "./phone-dedupe";
 import { closeIfDuplicateCard } from "./duplicate-card";
@@ -337,6 +338,7 @@ export async function processSourcedLeadOutreach(): Promise<number> {
       // The ad/scout form may carry the budget — a below-threshold lead goes to
       // the bin instead of being seeded and worked.
       if (await enforceBudgetFilter(lead.leadId, [note, catalogAnswers].filter(Boolean))) continue;
+      if (await enforceExcludedAreaFilter(lead.leadId, [note, catalogAnswers].filter(Boolean))) continue;
 
       // The person, not the lead title — for ad leads those are different things.
       // The deal name is only a person's name when nothing else named them.

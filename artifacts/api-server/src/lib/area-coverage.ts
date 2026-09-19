@@ -112,6 +112,16 @@ export function placesAsked(areaAnswer: string | null | undefined, notes: string
   return isNonAnswer(note) ? [] : placesIn(note);
 }
 
+/**
+ * The district a named place belongs to: a site sub-area resolves to its parent
+ * ("Bingin" → Uluwatu), a village from the list above to its district
+ * ("Renon" → Sanur, "Sayan" → Ubud), anything else to itself.
+ */
+export function districtOfPlace(place: string): string {
+  const village = DISTRICT_OF_PLACE[place.toLowerCase().replace(/\s+/g, " ")];
+  return village ?? parentAreaOf(place) ?? place;
+}
+
 /** Served: an offerable rental in the place itself, its district, or next door. */
 export function isServed(place: string, stockAreas: readonly string[]): boolean {
   const district = DISTRICT_OF_PLACE[place.toLowerCase().replace(/\s+/g, " ")];
