@@ -4,6 +4,7 @@ import path from "path";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import mobileRouter from "./routes/mobile";
+import kpiRouter from "./routes/kpi";
 import swRouter from "./routes/public-sw";
 import propertyShareRouter from "./routes/property-share";
 import photoVariantsRouter from "./routes/photo-variants";
@@ -62,6 +63,8 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
 app.use(mobileRouter);
+// The owner's daily numbers page, /kpi (lib/kpi-dashboard.ts).
+app.use(kpiRouter);
 app.use(swRouter);
 // Before the static/SPA fallback: /property/<ID> is the link clients receive,
 // and the SPA shell would otherwise swallow it and serve generic OG tags —
