@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { dueReportForLead, fileReport, NEXT_STEPS, type ViewingOutcome } from "../../lib/viewing-report";
+import { signedStorageUpload } from "../../lib/site-storage";
 
 const router = Router();
 
@@ -27,9 +28,22 @@ router.post("/public/viewing-report", async (req, res) => {
     rescheduledTo: b["rescheduledTo"] ? String(b["rescheduledTo"]) : null,
     brokerId: b["brokerId"] ? String(b["brokerId"]) : null,
     propertyCode: b["propertyCode"] ? String(b["propertyCode"]) : null,
+    media: Array.isArray(b["media"]) ? (b["media"] as unknown[]).map(String) : [],
   });
   if (!r.ok) { res.status(404).json(r); return; }
   res.json(r);
+});
+
+/** A one-time upload slot for a photo or video from the viewing: viewings/<report id>/… in the site's storage. */
+router.post("/public/viewing-report/upload", async (req, res) => {
+  const reportId = String(req.body?.reportId ?? "").trim();
+  if (!/^[0-9a-f-]{36}$/i.test(reportId)) { res.status(400).json({ error: "reportId required" }); return; }
+  const kind = req.body?.kind === "video" ? "video" : "photo";
+  try {
+    res.json(await signedStorageUpload(`viewings/${reportId}`, kind, String(req.body?.name ?? ""), "view"));
+  } catch (err) {
+    res.status(503).json({ error: String((err as Error).message).slice(0, 200) });
+  }
 });
 
 export default router;

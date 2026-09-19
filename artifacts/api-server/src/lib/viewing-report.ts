@@ -39,6 +39,33 @@ import { leadPhone, siblingLeadIds } from "./phone-dedupe";
 import { propertyForSlot, recordViewingSlot } from "./thread-stage-sync";
 import { amoStageFor } from "./stage-classifier";
 import { pipelineKind } from "./pipelines";
+import { pool } from "@workspace/db";
+import { isOwnStorageUrl } from "./site-storage";
+
+/**
+ * Photos and video the broker took at the viewing (owner, 19.09.2026: Amelia sometimes films the
+ * villa; it goes into the report straight from her phone instead of being forgotten in the gallery).
+ * Files live in the site's storage under viewings/<report id>/; the links go into the notes.
+ */
+let mediaTable: Promise<void> | null = null;
+function ensureMediaTable(): Promise<void> {
+  mediaTable ??= pool
+    .query(`CREATE TABLE IF NOT EXISTS viewing_report_media (
+      id BIGSERIAL PRIMARY KEY,
+      report_id UUID NOT NULL,
+      url TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (report_id, url)
+    )`)
+    .then(() => undefined)
+    .catch((err) => {
+      mediaTable = null;
+      throw err;
+    });
+  return mediaTable;
+}
+const isVideoUrl = (u: string) => u.includes("/property-videos/");
 
 /** The task texts live in amo-client, where closeAmoTasksForLead protects them. */
 export const REPORT_TASK_PREFIX = VIEWING_REPORT_TASK_PREFIX;
@@ -246,7 +273,7 @@ export async function ensureDueReport(
     const lead = await getAmoLead(leadId);
     await createAmoTask(
       leadId,
-      `${REPORT_TASK_PREFIX}: ${label} (viewing ${fmt(viewingAt)}). Open the card in Copilot — outcome, the client's feedback, next steps.${elsewhere}${reopen}`,
+      `${REPORT_TASK_PREFIX}: ${label} (viewing ${fmt(viewingAt)}). Open the card in Copilot — outcome, the client's feedback, next steps, and your photos/video if you filmed the villa.${elsewhere}${reopen}`,
       new Date(Date.now() + 3 * 3_600_000),
       lead?.responsible_user_id ?? undefined,
     );
@@ -256,7 +283,7 @@ export async function ensureDueReport(
   await notifyBroker(
     brokerKey(sync?.responsibleUser),
     `Fill the viewing report · ${name || "client"}`,
-    `${property ?? "Viewing"} at ${fmt(viewingAt)}. Outcome, the client's feedback, next steps — one minute.${opts.closedCard ? " The card is closed: reopen it?" : ""}`,
+    `${property ?? "Viewing"} at ${fmt(viewingAt)}. Outcome, feedback, next steps — and the video if you filmed it.${opts.closedCard ? " The card is closed: reopen it?" : ""}`,
     "/m",
   ).catch(() => 0);
   logger.info({ leadId, threadLeadId, closedCard: !!opts.closedCard, reportId: row!.id, property, viewingAt }, "viewing report: due");
@@ -322,6 +349,8 @@ export type FileReportInput = {
   brokerId: string | null;
   /** The villa, when the report carried none: the thread did not make it clear, so the broker named it. */
   propertyCode?: string | null;
+  /** Photos / video uploaded from the form (public URLs of our own storage). */
+  media?: string[];
 };
 
 /**
@@ -417,6 +446,23 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
     })
     .where(eq(viewingReportsTable.id, input.reportId));
 
+  const media = [...new Set((input.media ?? []).filter(isOwnStorageUrl))].slice(0, 30);
+  if (media.length) {
+    try {
+      await ensureMediaTable();
+      for (const url of media) {
+        await pool.query(`INSERT INTO viewing_report_media (report_id, url, kind) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, [
+          input.reportId,
+          url,
+          isVideoUrl(url) ? "video" : "photo",
+        ]);
+      }
+    } catch (err) {
+      logger.warn({ err, reportId: input.reportId }, "viewing report: media not recorded (non-fatal, links still go into the notes)");
+    }
+  }
+  const mediaLines = media.map((u) => `${isVideoUrl(u) ? "Video" : "Photo"}: ${u}`);
+
   const [sync] = await db
     .select({ responsibleUser: leadsSyncTable.responsibleUser })
     .from(leadsSyncTable)
@@ -449,6 +495,7 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
     `Outcome: ${OUTCOME_LABEL[input.outcome]}${rescheduledTo ? ` → ${fmt(rescheduledTo)}` : ""}`,
     input.feedback.trim() ? `Client's feedback: ${input.feedback.trim()}` : null,
     nextSteps.length ? `Next steps: ${nextSteps.join(", ")}${nextBy ? ` by ${nextBy}` : ""}` : null,
+    ...mediaLines,
     `Filed by ${input.brokerId ?? "broker"} via Copilot`,
   ].filter(Boolean);
   const noteText = noteLines.join("\n");
@@ -479,10 +526,12 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
       );
       const listing = (found?._embedded?.leads ?? []).find((l) => (l.name ?? "").toUpperCase().includes(rep.propertyCode!));
       if (listing) {
-        if (input.feedback.trim()) {
-          await amoPost(`/api/v4/leads/${listing.id}/notes`, [
-            { note_type: "common", params: { text: `Viewing feedback (${fmt(rep.viewingAt)}, lead #${leadId}): ${OUTCOME_LABEL[input.outcome]}. ${input.feedback.trim()}` } },
-          ]);
+        if (input.feedback.trim() || mediaLines.length) {
+          const text = [
+            `Viewing feedback (${fmt(rep.viewingAt)}, lead #${leadId}): ${OUTCOME_LABEL[input.outcome]}. ${input.feedback.trim()}`.trim(),
+            ...(mediaLines.length ? [`Filmed / photographed at the viewing:`, ...mediaLines] : []),
+          ].join("\n");
+          await amoPost(`/api/v4/leads/${listing.id}/notes`, [{ note_type: "common", params: { text } }]);
         }
         const ownerSide = nextSteps.filter((s) => s === "Counter-offer to owner" || s === "Deposit to hold it" || s === "Contract");
         if (ownerSide.length) {
