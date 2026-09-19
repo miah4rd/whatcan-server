@@ -1766,6 +1766,24 @@ fail the per-bedroom floor; four TAKEN TO WORK cards meet the 08.09 bar and
 are held only by minimum stay or viewing. Which bar wins is the owner's
 decision — never align either side silently.
 
+**A card the listing manager returned stays returned until the owner answers
+(owner, 19.09: "если инфы не хватает — добрать инфы и квалифицировать; убрать
+зацикленность").** Diraya 23567217, Bersinar 23567313 and Evelyn 23528509 went
+QUALIFIED → TAKEN TO WORK → QUALIFIED up to four times in four days: the manager
+returned each with a note "RETURNED TO TAKEN TO WORK <date> - <reason>" and a
+"QUESTION FOR THE BOT, to send as is: "…"", the engine's next audit promoted the
+same unchanged facts again, and the nudge pass saw nothing missing and asked
+nothing. `lib/listing-return-hold.ts`: a card whose last engine move put it on
+QUALIFIED and that now sits in TAKEN TO WORK was returned by someone else (the
+way back is not in `stage_events`); the engine keeps it in TAKEN TO WORK until
+the owner writes after the return (time from the note, else amoCRM events;
+amoCRM unreadable = held), and the nudge pass sends the manager's question
+verbatim at once, then repeats it on the ladder. Such drafts carry
+`objection_category = listing_manager_question` and skip the autopilot's
+repeated-question cut: they re-ask on purpose. Also: a yearly rate alone whose
+twelfth (with our 10%) is under the floor is "monthly price" missing, not
+QUALIFIED; the nudge asks the monthly rate.
+
 ### The autopilot check of 11.09: what "тупит" looked like
 
 The owner: "проверь как автопилот работает вчера, сегодня и двигает карты по

@@ -554,6 +554,13 @@ export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[
   if (!f.bedrooms) missing.push("bedrooms");
   if (!f.monthlyIdr && !f.yearlyIdr) missing.push("price");
   else if (f.commission === "unknown") missing.push("commission position");
+  // A yearly rate alone is not a verdict either way (see clientFacingMonthlyIdr): when a twelfth of it
+  // is under the floor, the monthly rate is the question, not QUALIFIED. Diraya (23567217, 16.09) was
+  // promoted on 220M a year net — about 20M a month — and the listing manager sent it back three times.
+  if (!f.monthlyIdr && f.yearlyIdr) {
+    const derived = Math.round((f.commission === "included" ? f.yearlyIdr : f.yearlyIdr * 1.1) / 12);
+    if (derived < MIN_LISTING_MONTHLY_IDR) missing.push("monthly price");
+  }
   // Viewability is part of qualification (owner, 07.09.2026): a listing that
   // cannot be shown when a client asks is not a listing. Both are asked in the
   // same qualifying sentence; neither may be inferred.
