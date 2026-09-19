@@ -686,17 +686,22 @@ export function groupMessage(rep: ReportRow, property: Property | null): string 
     .join("\n");
 }
 
-async function sendToGroup(text: string): Promise<{ ok: boolean; id?: string; session: string; error?: string }> {
+/** A throwaway test listing (R-TEST-…) never posts to the team: its message goes to the company number's own chat. */
+const TEST_CODE = /^R-TEST-/i;
+const SELF_CHAT = process.env["INSPECTION_REPORT_TEST_CHAT"] ?? "6285337836490";
+
+async function sendToGroup(text: string, code: string | null = null): Promise<{ ok: boolean; id?: string; session: string; error?: string }> {
+  const to = code && TEST_CODE.test(code) ? SELF_CHAT : GROUP_JID;
   const yudi = await sessionOpen(YUDI_SESSION);
   // Until Yudi's number is linked, the owner's number posts it, signed, so no report waits on a QR code.
   const session = yudi ? YUDI_SESSION : OWNER_SESSION;
   const body = yudi ? text : `Yudi's inspection report:\n${text}`;
-  const r = await gateway("POST", "/send", { session, to: GROUP_JID, text: body }).catch((err) => ({ status: 503, data: { ok: false, error: String(err) } }));
+  const r = await gateway("POST", "/send", { session, to, text: body }).catch((err) => ({ status: 503, data: { ok: false, error: String(err) } }));
   await pool
     .query(
       `INSERT INTO wa_messages (session, wa_id, direction, phone, type, text, status, error) VALUES ($1, $2, 'out_api', $3, 'text', $4, $5, $6)
        ON CONFLICT (session, wa_id) WHERE wa_id IS NOT NULL DO NOTHING`,
-      [session, r.data?.id ?? null, GROUP_JID, body, r.data?.ok ? "sent" : "error", r.data?.ok ? null : String(r.data?.error ?? r.status)],
+      [session, r.data?.id ?? null, to, body, r.data?.ok ? "sent" : "error", r.data?.ok ? null : String(r.data?.error ?? r.status)],
     )
     .catch(() => null);
   return { ok: !!r.data?.ok, id: r.data?.id, session, error: r.data?.error };
@@ -705,7 +710,7 @@ async function sendToGroup(text: string): Promise<{ ok: boolean; id?: string; se
 async function postToGroup(id: string, rep: ReportRow): Promise<[CheckState, string]> {
   if (rep.wa_message_id) return ["ok", "already posted"];
   const { property } = await siteListing(rep.property_code!);
-  const sent = await sendToGroup(groupMessage(rep, property));
+  const sent = await sendToGroup(groupMessage(rep, property), rep.property_code);
   if (!sent.ok) return ["bad", `WhatsApp did not accept the message (${sent.error ?? "no answer"})`];
   await pool.query(`UPDATE inspection_reports SET wa_message_id = $2 WHERE id = $1`, [id, sent.id ?? "sent"]);
   return sent.session === YUDI_SESSION ? ["ok", "sent from Yudi's number"] : ["warn", "sent from the company number, signed as Yudi's report — Yudi's WhatsApp is not linked yet"];
@@ -764,7 +769,7 @@ export async function closeNotListing(id: string, reason: string, notes: string,
   if (!rep.wa_message_id) {
     const { property } = code ? await siteListing(code).catch(() => ({ property: null, priv: null })) : { property: null };
     const title = (property?.title ?? "").replace(/\s+[-–—|]\s+.*$/, "").trim();
-    const sent = await sendToGroup(`🔍 *Inspected, not listing — ${title || code || `card #${rep.lead_id}`}*\n${reason}: ${notes.trim().split("\n")[0]}`);
+    const sent = await sendToGroup(`🔍 *Inspected, not listing — ${title || code || `card #${rep.lead_id}`}*\n${reason}: ${notes.trim().split("\n")[0]}`, code);
     if (sent.ok) await pool.query(`UPDATE inspection_reports SET wa_message_id = $2 WHERE id = $1`, [id, sent.id ?? "sent"]);
     add("group", "Posted to Unicorn Rental", sent.ok ? (sent.session === YUDI_SESSION ? "ok" : "warn") : "bad", sent.ok ? (sent.session === YUDI_SESSION ? "sent from Yudi's number" : "sent from the company number") : `not sent (${sent.error ?? "no answer"})`);
   }
