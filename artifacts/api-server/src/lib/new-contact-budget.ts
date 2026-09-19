@@ -33,13 +33,10 @@ import { brokerLines } from "./amo-messenger-field";
  * carries no such ceiling, which is why this budget counts FIRST messages only.
  * Nine is the owner's figure (2026-09-03).
  *
- * LIFTED, owner, 18.09.2026: "просто отменяем дневные лимиты... я буду
- * контролировать со стороны лидогенерации" — volume is now controlled at the
- * source (how many ad leads are bought), not by refusing to open conversations
- * with the ones that already arrived. `dailyCapForLine` returns no ceiling
- * below; this constant and the warmup/one-day-exception machinery stay for
- * their history and in case the cap is reinstated. `NO_NEW_CONTACTS` (a line
- * held for a separate, unrelated fault) is untouched.
+ * LIFTED FOR AMELIA'S LINE ONLY, owner, 18-19.09.2026: "снять лимит только у
+ * Амелии в воронке рентал, у Юди лимит остается" — ad-lead volume is controlled
+ * at the source (lead generation). See UNCAPPED_LINES below; every other line
+ * keeps this nine.
  */
 export const NEW_CONTACT_DAILY_CAP = 9;
 
@@ -91,15 +88,29 @@ const ONE_DAY_CAP: Record<string, Record<number, number>> = {
   "2026-09-17": { 59537: 10 },
 };
 
+/**
+ * Lines with no daily ceiling. Owner, 18-19.09.2026: only Amelia's line (Rental
+ * clients from the ads, whose volume he controls from lead generation). Yudi's
+ * line opens cold conversations with villa owners — the outreach Meta polices —
+ * and keeps its nine.
+ */
+const UNCAPPED_LINES = new Set<number>([56811]);
+
 /** How many first contacts this line may open today. */
-export function dailyCapForLine(line: number | null, _now: Date = new Date()): number {
-  // A held line stays held — that fault (WAhelp misreporting "no WhatsApp" on
-  // 62585) is unrelated to the volume policy below and is not lifted with it.
+export function dailyCapForLine(line: number | null, now: Date = new Date()): number {
   if (line !== null && NO_NEW_CONTACTS.has(line)) return 0;
-  // Owner, 18.09.2026: no daily ceiling — see the note on NEW_CONTACT_DAILY_CAP.
-  // The warmup and one-day-exception tables above are dead while this stands;
-  // reinstating the cap means deleting this early return, not rebuilding them.
-  return Number.MAX_SAFE_INTEGER;
+  if (line !== null && UNCAPPED_LINES.has(line)) return Number.MAX_SAFE_INTEGER;
+  // A held line stays held: the exception raises a cap, it never opens a line
+  // that was deliberately closed.
+  const granted = line !== null ? ONE_DAY_CAP[baliDateString(now)]?.[line] : undefined;
+  if (granted !== undefined) return granted;
+  const start = line !== null ? LINE_WARMUP_START[line] : undefined;
+  if (!start) return NEW_CONTACT_DAILY_CAP;
+  const day = Math.round((Date.parse(baliDateString(now)) - Date.parse(start)) / 86_400_000) + 1;
+  if (day < 1) return 0;
+  if (day <= 3) return 3;
+  if (day <= 6) return 6;
+  return NEW_CONTACT_DAILY_CAP;
 }
 
 /**
