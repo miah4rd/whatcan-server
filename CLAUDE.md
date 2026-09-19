@@ -2791,6 +2791,32 @@ logs by hand. The brokers just saw a slow day.
   `npx esbuild <file> --bundle --platform=node --format=cjs --packages=external`
   — the default ESM bundle dies on pino's `require("node:os")`.
 
+## Daily numbers page `/kpi` (2026-09-19)
+
+The owner's one page for the team chat (English, no client names): traffic and its cost, what the
+autopilot did, what Amelia and Yudi did personally. `lib/kpi-dashboard.ts` (every number and its
+source), `routes/kpi.ts` (page + `GET /kpi/data?k=&to=&days=`). Opens only with `?k=` equal to
+`broker_settings.kpi_dashboard_key`. "Copy for chat" builds a WhatsApp-formatted summary of the day.
+
+- **Traffic** is read live from amoCRM (leads created that Bali day), classified by Source field 956451
+  ("Facebook Lead Ads" = paid form; "Website" + utm_medium paid/cpc or a click id = paid website),
+  "FB Lead" card names (scout), Instagram tags, and for Rental Listings the SRC:AI / Referral tags.
+- **Meta spend** has no token on this server: every 4 h `startMetaSpendPull` POSTs `{account, since,
+  until}` to the Make webhook in `broker_settings.kpi_meta_webhook_url` (scenario 6329721 "whatcan KPI:
+  Meta ad spend on request", Nikita's Facebook connection 10665190, which expires 25.10.2026 — reconnect
+  it in Make or spend stops). The scenario has one router branch per ad account (it cannot take the
+  account from the request — a mapped account silently returned nothing); a new account = a branch
+  there + `META_ACCOUNTS`. Rows land in `kpi_ad_spend` (day, campaign). Make sends the account-timezone
+  midnight as an ISO instant; `ingestAdSpend` shifts it half a day before taking the date.
+  Pull now: `POST /kpi/pull-spend` with the admin token.
+- **Bot and broker are separate rows**: autopilot = auto_sent drafts, ad_auto, weekly-availability;
+  broker = non-auto Copilot sends + `lead_messages` broker rows on their cards (phone).
+- **Tasks** count only open cards of the broker's own funnel; open tasks on old UNICORN cards, won/lost,
+  co-broke or deleted cards are shown as clean-up (on 19.09 that was 247 of Amelia's 347 and 361 of
+  Yudi's 554).
+- Known limits: no site visit numbers (nothing records visits); Meta days follow the ad account's
+  time zone (Jakarta), not Bali.
+
 ## Reports (discipline, not dashboards)
 
 `lib/daily-report.ts` → `GET /api/public/report` (one broker) and

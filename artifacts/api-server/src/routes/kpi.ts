@@ -88,7 +88,8 @@ button, input[type=date], select { font: inherit; border: 1px solid var(--line);
   border-radius: 8px; padding: 6px 10px; min-height: 34px; }
 button { cursor: pointer; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+@media (max-width: 420px) { .tiles { grid-template-columns: 1fr 1fr; } .tile .value { font-size: 22px; } }
 .tile { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
 .tile .label { color: var(--muted); font-size: 12px; }
 .tile .value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
@@ -367,7 +368,7 @@ footer { color: var(--muted); font-size: 12px; padding: 4px 2px 24px; }
       lines.push("");
       lines.push("*" + b.name + "*");
       lines.push("Messages: " + fmt(b.messages.viaCopilot[d]) + " via Copilot + " + fmt(b.messages.fromPhone[d]) + " from phone · " + fmt(b.messages.peopleWritten[d]) + " people");
-      if (b.viewings) lines.push("Viewings: " + fmt(b.viewings.held[d]) + " held, " + fmt(b.viewings.agreed[d]) + " agreed, " + fmt(b.viewings.reportsFiled[d]) + " reports");
+      if (b.viewings) lines.push("Viewings: " + fmt(b.viewings.held[d]) + " held, " + fmt(b.viewings.agreed[d]) + " agreed, " + fmt(b.viewings.reportsFiled[d]) + " reports filed");
       if (b.inspections) lines.push("Inspections: " + fmt(b.inspections.due[d]) + " scheduled, " + fmt(b.inspections.listed[d]) + " → Listed, " + fmt(b.inspections.published[d]) + " published");
       if (b.tasks) lines.push("Tasks: " + fmt(b.tasks.overdue) + " overdue of " + fmt(b.tasks.open) + " open (" + fmt(b.tasks.overdue3d) + " over 3 days)");
       if (b.inbox) lines.push("Waiting for reply: " + fmt(b.inbox.waiting) + " (" + fmt(b.inbox.waitingOverdue) + " over 24h)");
