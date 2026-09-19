@@ -143,7 +143,7 @@ const MISSING_TO_ASK: Array<[(m: string) => boolean, AskPoint]> = [
  */
 export function nudgeAsks(k: OwnerThreadKnown, missing: string[] | null): NudgeAsk[] {
   if (!k.ownerReplied) {
-    return (["still_renting", "owner"] as AskPoint[]).filter((a) => !k.known[a]);
+    return (["still_renting", "owner"] as Exclude<AskPoint, "monthly_price">[]).filter((a) => !k.known[a]);
   }
   if (missing === null) return [];
   // They named a commission rate that is not ours: the terms are the broker's call, not a question
@@ -151,7 +151,7 @@ export function nudgeAsks(k: OwnerThreadKnown, missing: string[] | null): NudgeA
   if (missing.some((m) => m.startsWith("commission terms to agree"))) return [];
   const asks: NudgeAsk[] = [];
   for (const [is, a] of MISSING_TO_ASK) {
-    if (missing.some(is) && (a === "monthly_price" || !k.known[a]) && !asks.includes(a)) asks.push(a);
+    if (missing.some(is) && (a === "monthly_price" || !k.known[a as Exclude<AskPoint, "monthly_price">]) && !asks.includes(a)) asks.push(a);
   }
   // A price the extraction could not read (USD, a pasted brochure) is still a price: the only open
   // question is whether our 10% is inside it.
