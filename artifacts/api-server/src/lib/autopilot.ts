@@ -23,12 +23,13 @@
  * the table/API but is not enforced.
  */
 import { db, leadsSyncTable, pendingSuggestionsTable, sentMessagesTable, leadMessagesTable } from "@workspace/db";
-import { eq, and, sql, desc } from "drizzle-orm";
+import { eq, and, sql, desc, gt } from "drizzle-orm";
 import { logger } from "./logger";
 import { getPipelineStages } from "./stage-classifier";
 import { isParkedListingStage, isBacklogListingStage } from "./stage-routing";
 import { isListingAcquisition } from "./pipelines";
 import { guardOwnerDraft } from "./owner-thread-known";
+import { isAutomaticReply } from "./humanize-layout";
 import { MANAGER_QUESTION_CATEGORY } from "./listing-return-hold";
 import {
   mayOpenNewConversation,
@@ -390,6 +391,19 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
         "autopilot: the lead's last message was already answered — duplicate reply retired",
       );
       return retire("already answered since the lead's last message — duplicate reply retired");
+    }
+    // A WhatsApp Business auto-reply ("Thank you for contacting …") is not the
+    // owner. Answering it at once, and re-asking our own question, is how a bot
+    // gives itself away (19.09.2026, three villas on Yudi 2). Wait for a person.
+    if (sug.kind === "live" && lastOursAt > 0) {
+      const since = await db
+        .select({ text: leadMessagesTable.text })
+        .from(leadMessagesTable)
+        .where(and(eq(leadMessagesTable.leadId, leadId), eq(leadMessagesTable.direction, "inbound"), gt(leadMessagesTable.createdAt, new Date(lastOursAt))));
+      if (since.length > 0 && since.every((m) => isAutomaticReply(m.text))) {
+        logger.warn({ leadId }, "autopilot: only an automatic reply came back — waiting for a person");
+        return retire("the villa's automatic reply, not a person — waiting for a real answer");
+      }
     }
     if (sug.kind !== "live" && lastOursAt > 0 && now - lastOursAt < 20 * 3600_000) {
       return decline("cadence: something already went out in the last 20h — waiting");

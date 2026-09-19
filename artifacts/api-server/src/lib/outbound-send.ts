@@ -30,6 +30,7 @@ import { countActiveWhatsappChats, closeStaleDuplicateWhatsappTalks, whatsappTal
 import { isFirstOutbound, pickLineForNewConversation } from "./new-contact-budget";
 import { stripEmojiForDelivery } from "./message-delivery.js";
 import { isOwnLine } from "./wa-own-line-ids";
+import { humanizeLayout } from "./humanize-layout";
 import { deliverViaOwnLine } from "./wa-own-send";
 import { fetchTimeline, parseTimelineEvents, getAmoAuth } from "./amo-timeline-sync.js";
 
@@ -230,7 +231,10 @@ export type DeliverResult = {
  * at the first astral-plane character, so clients were receiving only the
  * greeting and nothing after it.
  */
-export async function deliverText(leadId: string, text: string, log: Log, source?: string | null): Promise<DeliverResult> {
+export async function deliverText(leadId: string, rawText: string, log: Log, source?: string | null): Promise<DeliverResult> {
+  // One wall of text reads as a bot (owner, 19.09.2026): long messages go out
+  // in short paragraphs with an empty line between them. See humanize-layout.ts.
+  const text = humanizeLayout(rawText);
   if (source && isOwnLine(source)) {
     // WhatsApp through our gateway keeps emoji; nothing truncates them there.
     const own = await deliverViaOwnLine(leadId, source, text);
