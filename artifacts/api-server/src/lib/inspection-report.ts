@@ -402,7 +402,7 @@ export async function tidyNotes(raw: string, code: string | null): Promise<strin
     system:
       "A listing manager dictated notes right after inspecting a rental villa in Bali (speech-to-text, may mix English and Indonesian, no punctuation). " +
       "Rewrite them for the team as 2–4 short plain lines in English, one fact per line: condition, owner's terms (price, minimum stay), issues, anything the team must know. " +
-      "Keep every number, price and name exactly as said; add nothing that was not said; no bullets, no headings, no emoji. Output only the lines.",
+      "Keep every number, price and name exactly as said, written as digits (40M, 12 months); keep the owner's terms together as said (e.g. 12 months at 40M, minimum 6 months); add nothing that was not said; no bullets, no headings, no emoji. Output only the lines.",
     messages: [{ role: "user", content: `${code ? `Villa ${code}. ` : ""}Dictated notes:\n${text}` }],
   });
   return (out.content ?? "").trim().split("\n").map((l) => l.replace(/^[-•*\s]+/, "").trim()).filter(Boolean).slice(0, 5).join("\n");
@@ -440,6 +440,10 @@ async function setChecks(id: string, checks: Check[], status?: string): Promise<
 }
 
 const running = new Set<string>();
+/** "checking" with no run in this process = the run died with a restart: the form offers "Check again". */
+export function isRunning(id: string): boolean {
+  return running.has(id);
+}
 
 /** Starts the apply-and-check run; the form polls GET /status for the lines. */
 export async function fileReport(id: string, broker: string | null): Promise<{ ok: boolean; error?: string; missing?: string[] }> {
@@ -477,8 +481,18 @@ async function applyAndCheck(id: string): Promise<void> {
   const step = async (key: string, fn: () => Promise<[CheckState, string]>) => {
     if (!need(key)) return;
     await set(key, "run", "");
+    const t0 = Date.now();
     try {
-      const [state, detail] = await fn();
+      // A step that hangs is a red line, not an endless "checking" (the first live run sat on one for minutes).
+      const limit = key === "card" ? 120_000 : key === "drive" ? 150_000 : 60_000;
+      let timer: NodeJS.Timeout | undefined;
+      const [state, detail] = await Promise.race([
+        fn(),
+        new Promise<[CheckState, string]>((resolve) => {
+          timer = setTimeout(() => resolve(["bad", `no answer in ${Math.round(limit / 1000)} s — check again`]), limit);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      logger.info({ id, key, state, ms: Date.now() - t0, detail }, "inspection report: check");
       await set(key, state, detail);
     } catch (err) {
       logger.warn({ err, id, key }, "inspection report: check failed");
