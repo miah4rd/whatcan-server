@@ -2905,7 +2905,7 @@ swallows the real one.
 
 ## Quality control report (lib/quality-control.ts, 19.09.2026)
 
-Every morning at 09:00 Bali a report on yesterday goes to the team chat (`qc_chat_id`, default Unicorn
+Every morning at 10:00 Bali (not before `qc_start_on`) a report on yesterday goes to the team chat (`qc_chat_id`, default Unicorn
 Rental group) from the owner's WhatsApp — **only while broker_settings `qc_enabled` = 'on'**. Per broker:
 reply time in working minutes (08–21 Bali; bot replies counted apart, never against the broker), who is
 still waiting, phone vs Copilot sends, missing viewing reports, overdue promises, and at most two coaching

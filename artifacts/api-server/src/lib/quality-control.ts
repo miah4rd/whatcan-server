@@ -31,7 +31,7 @@ const WORK_START_H = 8;
 const WORK_END_H = 21;
 /** A reply slower than this (working minutes) is named in the report. */
 const SLOW_MIN = 30;
-const SEND_HOUR_BALI = 9;
+const SEND_HOUR_BALI = 10;
 const MAX_THREADS_REVIEWED = 6;
 const MAX_NOTES_PER_BROKER = 2;
 
@@ -494,6 +494,9 @@ export function startQcScheduler(): void {
     const now = new Date();
     if (new Date(now.getTime() + BALI_OFFSET_MS).getUTCHours() !== SEND_HOUR_BALI) return;
     if ((await setting("qc_enabled")) !== "on") return;
+    // qc_start_on (YYYY-MM-DD, Bali): the first morning a report may go out.
+    const startOn = await setting("qc_start_on");
+    if (startOn && baliDate(now) < startOn) return;
     running = true;
     try {
       await runQc(addDays(baliDate(now), -1), { send: true });
