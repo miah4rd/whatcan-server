@@ -691,6 +691,8 @@ export type RankContext = {
 export type RankedFit = {
   p: SupabaseProperty;
   namedArea: boolean;
+  /** 1 = green flags from our inspection, 0 = nothing known, -1 = a red flag or construction nearby. */
+  flagTier: number;
   score: number;
   skipped: boolean;
   quality: number;
@@ -699,6 +701,11 @@ export type RankedFit = {
 };
 
 const RANK_DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A red flag line or the Construction nearby tick in Internal data. */
+export function isRedFlagged(q: ListingQuality | undefined): boolean {
+  return !!q && (q.constructionNearby || q.redFlags > 0);
+}
 
 /** A stable per-lead shuffle position (FNV-1a) — the same lead always sees the same order. */
 function rotationTurn(key: string, id: string): number {
@@ -866,12 +873,18 @@ export function rankShortlistFits(fits: SupabaseProperty[], r: ClientRequest, ct
       note(`dates confirmed ${dayLabel(p.availability_checked_at!.slice(0, 10))}`);
     }
 
-    return { p, namedArea, score, skipped, quality, why, whyClient };
+    // Flags decide the order right after the request itself (owner, 19.09.2026): the request
+    // filters, then green-flagged villas go first and red-flagged ones last — "why send a client
+    // a villa we know something bad about". Construction nearby is a red flag too.
+    const flagTier = isRedFlagged(q) ? -1 : (q?.greenFlags ?? 0) > 0 ? 1 : 0;
+
+    return { p, namedArea, flagTier, score, skipped, quality, why, whyClient };
   });
   const key = ctx.rotationKey ?? "";
   return out.sort(
     (a, b) =>
       Number(b.namedArea) - Number(a.namedArea) ||
+      b.flagTier - a.flagTier ||
       b.score - a.score ||
       Number(a.skipped) - Number(b.skipped) ||
       b.quality - a.quality ||
@@ -1924,7 +1937,11 @@ export async function strictShortlistPool(
   const scored = rankShortlistFits(fits, r, { quality, proposedIds: opts.proposedIds, rotationKey: opts.rotationKey, now });
   if (floor) scored.sort((a, b) => (priceOf(a.p) >= floor ? 0 : 1) - (priceOf(b.p) >= floor ? 0 : 1));
   const keep = new Set(dedupeByTitle(scored.map((x) => x.p)).map((p) => p.id));
-  const ranked = scored.filter((x) => keep.has(x.p.id));
+  // A red-flagged villa goes only when nothing else fits (owner, 19.09.2026): while any clean
+  // villa is inside the request, the red ones are not candidates at all — neither the model,
+  // nor the top-up, nor the price spread can reach them.
+  const clean = scored.filter((x) => keep.has(x.p.id) && x.flagTier >= 0);
+  const ranked = clean.length > 0 ? clean : scored.filter((x) => keep.has(x.p.id));
   fits = ranked.map((x) => x.p);
   const hint = fits.length === 0 ? relaxationHint(r, judged.filter((j) => !exclude.has(j.p.id.toUpperCase()))) : null;
   return { fits, ranked, fitsInclSent: fitAll.length, poolSize: typed.length, hint };
@@ -2298,7 +2315,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
 
 ${opts.mustAttach ? MUST_ATTACH_RULE : DECLINE_RULES}
 
-EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first: first by how closely the villa matches the request (an area they named over a neighbour, a price close to their budget without going over it, free on their dates, a minimum stay that suits them, and the key features they asked for — a garden, a place to work, an enclosed living room, a quiet street), then, only between villas that match equally, by what we know about the villa (red and green flags from our inspection, construction nearby, inspected (Listed), a video tour, a full photo set, dates confirmed recently). How long a listing has been on the site plays no part: rentals come free again and again. Each line gives its reasons after "why:". Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, never because it is cheaper, older, newer or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously. A "checked:" part lists key features a person verified (garden, living room, workspace, quiet street, no construction next door); a feature missing from it is UNKNOWN, not absent.
+EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first: first by how closely the villa matches the request (an area they named over a neighbour, a price close to their budget without going over it, free on their dates, a minimum stay that suits them, and the key features they asked for — a garden, a place to work, an enclosed living room, a quiet street), then villas with green flags from our inspection go first, then, only between villas that match equally, by what we know about the villa (inspected (Listed), a video tour, a full photo set, dates confirmed recently). Villas with a red flag or construction nearby are only in the catalog when nothing else fits, and then they are at the bottom. How long a listing has been on the site plays no part: rentals come free again and again. Each line gives its reasons after "why:". Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, never because it is cheaper, older, newer or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously. A "checked:" part lists key features a person verified (garden, living room, workspace, quiet street, no construction next door); a feature missing from it is UNKNOWN, not absent.
 
 Pick up to ${limit} listing IDs, preferring ${MIN_SHORTLIST}-${limit} so the lead has something to compare. Never pad: if only one genuinely fits, return one.${
         (opts.seenCount ?? 0) > 0
