@@ -121,7 +121,7 @@ async function episodes(broker: string, day: string): Promise<Episode[]> {
       WHERE i.t >= $2 AND i.t < $3
         AND lower(l.responsible_user) = lower($1)
         AND NOT coalesce(l.bot_excluded, false)
-        AND coalesce(d.status_id, 0) NOT IN (142, 143)
+        AND coalesce(d.status_id::text, '') NOT IN ('142', '143')
         AND (i.prev_in IS NULL OR EXISTS (SELECT 1 FROM our o WHERE o.lead_id = i.lead_id AND o.t > i.prev_in AND o.t < i.t))`,
     [broker, from, to],
   );
