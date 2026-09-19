@@ -21,6 +21,7 @@ import { db, viewingSlotsTable } from "@workspace/db";
 import { and, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { ensureSlotReport } from "./viewing-report";
+import { villaSideCard } from "./villa-side";
 
 export { VIEWING_FOLLOWUP_VERDICT } from "./viewing-report";
 /** The form goes out half an hour after the slot, with a push — owner,
@@ -57,6 +58,13 @@ export async function processViewingOutcomes(): Promise<{ reported: number; move
 
     for (const slot of due) {
       try {
+        // A slot recorded on the villa's own card (before 19.09, or by the leads_sync backfill) gets no report.
+        const side = await villaSideCard(slot.leadId);
+        if (side.villa) {
+          await db.update(viewingSlotsTable).set({ status: "cancelled", updatedAt: new Date() }).where(eq(viewingSlotsTable.id, slot.id));
+          logger.info({ leadId: slot.leadId, viewingAt: slot.viewingAt, why: side.why }, "viewing outcome: no report — the card is the villa's side");
+          continue;
+        }
         const r = await ensureSlotReport(slot.leadId, slot.viewingAt, slot.propertyCode, "viewing-outcome");
         if (r.created) reported++;
 
