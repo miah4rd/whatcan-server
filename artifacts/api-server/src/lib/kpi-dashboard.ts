@@ -34,8 +34,8 @@ const WON_STATUS = 142;
 
 /** amoCRM user ids of the two brokers the page follows. */
 export const KPI_BROKERS = [
-  { name: "Amelia", amoId: 13372414, pipeline: "Rental", role: "Client broker (Rental)" },
-  { name: "Yudi", amoId: 13301186, pipeline: "Rental Listings", role: "Listing agent (Rental Listings)" },
+  { name: "Amelia", amoId: 13372414, pipeline: "Rental", pipelineId: 11119150, role: "Client broker (Rental)" },
+  { name: "Yudi", amoId: 13301186, pipeline: "Rental Listings", pipelineId: 11180334, role: "Listing agent (Rental Listings)" },
 ] as const;
 
 /** Weekly targets set by the owner on 14.09.2026. */
@@ -492,33 +492,40 @@ async function amoTasks(userId: number, completed: boolean, sinceSec?: number): 
   });
 }
 
-/** Cards amoCRM itself shows as won/lost or deleted (our leads_sync does not hold every old card). */
-async function closedLeadIds(ids: string[]): Promise<Set<string>> {
-  const closed = new Set<string>();
+/** Where each task's card sits in amoCRM now (our leads_sync does not hold every old card); absent = deleted. */
+async function leadStatuses(ids: string[]): Promise<Map<string, { pipeline: number; status: number }>> {
+  const out = new Map<string, { pipeline: number; status: number }>();
   for (let i = 0; i < ids.length; i += 200) {
     const chunk = ids.slice(i, i + 200);
     const q = chunk.map((id) => `filter[id][]=${encodeURIComponent(id)}`).join("&");
     const d = await cached(`status:${chunk.join(",")}`, 30 * 60_000, () =>
-      amoFetch<{ _embedded?: { leads?: { id: number; status_id: number }[] } }>(`/api/v4/leads?${q}&limit=250`),
+      amoFetch<{ _embedded?: { leads?: { id: number; status_id: number; pipeline_id: number }[] } }>(`/api/v4/leads?${q}&limit=250`),
     );
-    const seen = new Set<string>();
-    for (const l of d?._embedded?.leads ?? []) {
-      seen.add(String(l.id));
-      if (l.status_id === 142 || l.status_id === 143) closed.add(String(l.id));
-    }
-    // A card amoCRM no longer returns was deleted: its task is not work anyone owes.
-    if (d) for (const id of chunk) if (!seen.has(id)) closed.add(id);
+    if (!d) throw new Error("amoCRM leads status read failed");
+    for (const l of d._embedded?.leads ?? []) out.set(String(l.id), { pipeline: l.pipeline_id, status: l.status_id });
   }
-  return closed;
+  return out;
 }
 
-async function taskState(userId: number, days: string[]) {
+/** Stages that are archives, not work: a task there is clean-up. */
+const ARCHIVE_STATUSES = new Set<number>([142, 143, 88322314 /* co-broke Agents */]);
+
+async function taskState(userId: number, pipelineId: number, days: string[]) {
   const [open, done] = await Promise.all([amoTasks(userId, false), amoTasks(userId, true, startSec(days[0]!))]);
-  // A task on a closed card is not work anyone owes: shown apart as clean-up, never as overdue.
+  // Only a task on an open card of the broker's own funnel is work owed. The rest (old UNICORN sales
+  // cards still assigned to them, won/lost, co-broke archive, deleted cards) is shown as clean-up.
   const leadIds = [...new Set(open.filter((t) => t.entity_type === "leads").map((t) => String(t.entity_id)))];
-  const closed = await closedLeadIds(leadIds);
+  const statuses = await leadStatuses(leadIds);
+  let otherFunnels = 0;
+  let archived = 0;
+  const active: AmoTaskRow[] = [];
+  for (const t of open) {
+    const st = t.entity_type === "leads" ? statuses.get(String(t.entity_id)) : undefined;
+    if (!st || ARCHIVE_STATUSES.has(st.status)) archived++;
+    else if (st.pipeline !== pipelineId) otherFunnels++;
+    else active.push(t);
+  }
   const now = Date.now() / 1000;
-  const active = open.filter((t) => !(t.entity_type === "leads" && closed.has(String(t.entity_id))));
   const overdueDays = active.filter((t) => t.complete_till < now).map((t) => (now - t.complete_till) / 86400);
   const sorted = [...overdueDays].sort((a, b) => a - b);
   const doneByBroker = zero(days);
@@ -537,7 +544,8 @@ async function taskState(userId: number, days: string[]) {
     overdue7d: overdueDays.filter((x) => x > 7).length,
     medianOverdueDays: sorted.length ? Math.round(sorted[Math.floor(sorted.length / 2)]! * 10) / 10 : 0,
     oldestOverdueDays: sorted.length ? Math.round(sorted[sorted.length - 1]!) : 0,
-    onClosedCards: open.length - active.length,
+    cleanupOtherFunnels: otherFunnels,
+    cleanupArchived: archived,
     doneByBroker,
     doneAuto,
   };
@@ -652,7 +660,7 @@ async function brokers(days: string[]) {
       if (d in wonS) wonS[d]!++;
     }
     const [tasks, report] = await Promise.all([
-      taskState(b.amoId, days).catch((err) => {
+      taskState(b.amoId, b.pipelineId, days).catch((err) => {
         logger.warn({ err, broker: b.name }, "kpi: amoCRM tasks unavailable");
         return null;
       }),

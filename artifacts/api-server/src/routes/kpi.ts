@@ -341,12 +341,13 @@ footer { color: var(--muted); font-size: 12px; padding: 4px 2px 24px; }
       h += '<div class="grid2" style="margin-top:10px">';
       if (b.tasks) {
         var t = b.tasks;
-        h += "<div><b>Tasks right now</b>" +
-          '<div class="kv"><span>Open tasks on active cards</span><b>' + fmt(t.open) + "</b></div>" +
+        h += "<div><b>Tasks right now</b> <span class=\"muted\">(" + esc(b.pipeline) + " funnel)</span>" +
+          '<div class="kv"><span>Open tasks on open cards</span><b>' + fmt(t.open) + "</b></div>" +
           '<div class="kv"><span>Overdue</span><b class="' + (t.overdue ? "bad" : "good") + '">' + fmt(t.overdue) + "</b></div>" +
           '<div class="kv"><span>Overdue more than 1 / 3 / 7 days</span><b>' + fmt(t.overdue1d) + " / " + fmt(t.overdue3d) + " / " + fmt(t.overdue7d) + "</b></div>" +
           '<div class="kv"><span>Typical delay (median) · oldest</span><b>' + t.medianOverdueDays + " d · " + fmt(t.oldestOverdueDays) + " d</b></div>" +
-          '<div class="kv"><span class="muted">Open tasks left on closed cards (clean-up)</span><b class="muted">' + fmt(t.onClosedCards) + "</b></div></div>";
+          '<div class="kv"><span class="muted">Clean-up: open tasks in other funnels (old Sales cards)</span><b class="muted">' + fmt(t.cleanupOtherFunnels) + "</b></div>" +
+          '<div class="kv"><span class="muted">Clean-up: open tasks on closed / archived cards</span><b class="muted">' + fmt(t.cleanupArchived) + "</b></div></div>";
       } else h += '<div class="muted">amoCRM tasks could not be read.</div>';
       if (b.inbox) {
         var i = b.inbox;
