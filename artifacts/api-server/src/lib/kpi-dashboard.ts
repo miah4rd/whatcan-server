@@ -671,7 +671,7 @@ async function brokers(days: string[]) {
         : {
             inspections: {
               agreed: inspections.agreed,
-              due: inspections.due,
+              held: inspections.held,
               listed,
               published,
             },
@@ -769,7 +769,7 @@ async function inspectionEvents(days: string[]) {
   const ahead = startIso(addDays(days[days.length - 1]!, 60));
   const r = await pool.query(
     `SELECT lead_id, visit_at, agreed_at FROM listing_inspection_slots
-      WHERE visit_at >= $1 AND visit_at < $2 AND status = 'scheduled' AND superseded_at IS NULL`,
+      WHERE visit_at >= $1 AND visit_at < $2 AND status IN ('scheduled', 'rescheduled') AND superseded_at IS NULL`,
     [from, ahead],
   );
   // Duplicate cards of one villa (Umbala 23305115 / 23541159) share the slot: same time = one visit.
@@ -784,7 +784,8 @@ async function inspectionEvents(days: string[]) {
   for (const s of sorted) if (!visits.some((v) => Math.abs(v.at - s.at) <= 30 * 60_000)) visits.push(s);
   return {
     agreed: countByDay(visits.map((v) => v.agreedAt), days),
-    due: countByDay(visits.map((v) => v.at), days),
+    // Owner, 19.09: a visit scheduled and not cancelled counts as held once its time has passed.
+    held: countByDay(visits.filter((v) => v.at <= Date.now()).map((v) => v.at), days),
   };
 }
 
@@ -797,6 +798,7 @@ async function weekToDate(day: string) {
   const to = startIso(addDays(day, 1));
   const v = await viewingEvents(days);
   const won = await amoWonDeals(ws, day).catch((): WonDeal[] => []);
+  const insp = await inspectionEvents(days);
   let listed = 0;
   let published = 0;
   try {
@@ -821,7 +823,13 @@ async function weekToDate(day: string) {
       deals: won.filter((w) => w.responsible_user_id === KPI_BROKERS[0].amoId).length,
       dealsTarget: WEEKLY_TARGETS.amelia.deals,
     },
-    yudi: { published, publishedTarget: WEEKLY_TARGETS.yudi.prelisted, listed, listedTarget: WEEKLY_TARGETS.yudi.listed },
+    yudi: {
+      published,
+      publishedTarget: WEEKLY_TARGETS.yudi.prelisted,
+      inspections: Object.values(insp.held).reduce((a, n) => a + n, 0),
+      listed,
+      listedTarget: WEEKLY_TARGETS.yudi.listed,
+    },
   };
 }
 
