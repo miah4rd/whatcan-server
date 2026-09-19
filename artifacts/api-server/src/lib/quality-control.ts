@@ -43,6 +43,9 @@ const nameSql = (lead: string) =>
   `coalesce((SELECT n.sender_name FROM lead_messages n WHERE n.lead_id = ${lead} AND n.sender_type = 'lead'
      AND coalesce(n.sender_name, '') <> '' ORDER BY n.sent_at DESC LIMIT 1), d.name)`;
 
+/** Test cards (the line retests, ZZTEST) are nobody's work. */
+const isTest = (name: string, leadId: string) => /^(test\b|zztest)/i.test(name.trim()) || ["23509507", "23499347"].includes(leadId);
+
 const BALI_OFFSET_MS = 8 * 3600_000;
 const dayStart = (day: string) => new Date(`${day}T00:00:00+08:00`);
 const addDays = (day: string, n: number) =>
@@ -141,6 +144,7 @@ async function episodes(broker: string, day: string): Promise<Episode[]> {
   const now = new Date();
   const out: Episode[] = [];
   for (const row of r.rows as Array<{ lead_id: string; t: Date; replied_at: Date | null; human: boolean | null; name: string | null; live_dismissed_at: Date | null }>) {
+    if (isTest(row.name ?? "", row.lead_id)) continue;
     const dismissed = row.live_dismissed_at && row.live_dismissed_at > row.t && (!row.replied_at || row.live_dismissed_at < row.replied_at);
     if (dismissed) continue;
     const end = row.replied_at ?? now;
@@ -276,6 +280,8 @@ async function threadsToReview(broker: string, day: string): Promise<Thread[]> {
         const when = new Date(m.sent_at.getTime() + BALI_OFFSET_MS).toISOString().slice(5, 16).replace("T", " ");
         return `[${when}] ${who}: ${m.text.slice(0, 1500)}`;
       });
+    const name = cleanLeadName((deal.rows[0] as { name?: string } | undefined)?.name) ?? `#${leadId}`;
+    if (isTest(name, leadId)) continue;
     out.push({
       leadId,
       name: cleanLeadName((deal.rows[0] as { name?: string } | undefined)?.name) ?? `#${leadId}`,
@@ -300,6 +306,7 @@ Rules:
 - Be fair: if the thread gives no chance to do something (the client has not replied, the catalogue has nothing matching, the owner already answered), it is not a fault.
 - "quote" must be copied EXACTLY, character for character, from one of the broker's messages today (at most 20 words). Notes without an exact quote are discarded.
 - "critical" only for: wrong facts given to the client/owner (price, availability, bedrooms), a promise broken, rudeness, or a clear request ignored. Everything else is "minor".
+- Short acknowledgements in chat ("Baik kak", "ok", "noted", "thanks") are normal and never a fault by themselves. Raise a "minor" note only when it clearly cost momentum: a question left unanswered, a next step not proposed when the other side was ready, a request that did not fit, a vague time instead of a concrete one. No style nitpicks.
 - Also give at most one "good" note when something was done genuinely well.
 - If there is nothing worth saying, return an empty list.
 
