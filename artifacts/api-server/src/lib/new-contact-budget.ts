@@ -32,6 +32,14 @@ import { brokerLines } from "./amo-messenger-field";
  * blocked. Replying to someone who has written to us is not the same act and
  * carries no such ceiling, which is why this budget counts FIRST messages only.
  * Nine is the owner's figure (2026-09-03).
+ *
+ * LIFTED, owner, 18.09.2026: "просто отменяем дневные лимиты... я буду
+ * контролировать со стороны лидогенерации" — volume is now controlled at the
+ * source (how many ad leads are bought), not by refusing to open conversations
+ * with the ones that already arrived. `dailyCapForLine` returns no ceiling
+ * below; this constant and the warmup/one-day-exception machinery stay for
+ * their history and in case the cap is reinstated. `NO_NEW_CONTACTS` (a line
+ * held for a separate, unrelated fault) is untouched.
  */
 export const NEW_CONTACT_DAILY_CAP = 9;
 
@@ -84,19 +92,14 @@ const ONE_DAY_CAP: Record<string, Record<number, number>> = {
 };
 
 /** How many first contacts this line may open today. */
-export function dailyCapForLine(line: number | null, now: Date = new Date()): number {
+export function dailyCapForLine(line: number | null, _now: Date = new Date()): number {
+  // A held line stays held — that fault (WAhelp misreporting "no WhatsApp" on
+  // 62585) is unrelated to the volume policy below and is not lifted with it.
   if (line !== null && NO_NEW_CONTACTS.has(line)) return 0;
-  // A held line stays held: the exception raises a cap, it never opens a line
-  // that was deliberately closed.
-  const granted = line !== null ? ONE_DAY_CAP[baliDateString(now)]?.[line] : undefined;
-  if (granted !== undefined) return granted;
-  const start = line !== null ? LINE_WARMUP_START[line] : undefined;
-  if (!start) return NEW_CONTACT_DAILY_CAP;
-  const day = Math.round((Date.parse(baliDateString(now)) - Date.parse(start)) / 86_400_000) + 1;
-  if (day < 1) return 0;
-  if (day <= 3) return 3;
-  if (day <= 6) return 6;
-  return NEW_CONTACT_DAILY_CAP;
+  // Owner, 18.09.2026: no daily ceiling — see the note on NEW_CONTACT_DAILY_CAP.
+  // The warmup and one-day-exception tables above are dead while this stands;
+  // reinstating the cap means deleting this early return, not rebuilding them.
+  return Number.MAX_SAFE_INTEGER;
 }
 
 /**
