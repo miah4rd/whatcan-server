@@ -151,7 +151,7 @@ export function nudgeAsks(k: OwnerThreadKnown, missing: string[] | null): NudgeA
   if (missing.some((m) => m.startsWith("commission terms to agree"))) return [];
   const asks: NudgeAsk[] = [];
   for (const [is, a] of MISSING_TO_ASK) {
-    if (missing.some(is) && !k.known[a] && !asks.includes(a)) asks.push(a);
+    if (missing.some(is) && (a === "monthly_price" || !k.known[a]) && !asks.includes(a)) asks.push(a);
   }
   // A price the extraction could not read (USD, a pasted brochure) is still a price: the only open
   // question is whether our 10% is inside it.
