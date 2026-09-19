@@ -103,15 +103,15 @@ async function episodes(broker: string, day: string): Promise<Episode[]> {
     `WITH our AS (
        SELECT s.lead_id, s.created_at AS t, NOT coalesce(p.auto_sent, false) AS human
          FROM sent_messages s LEFT JOIN pending_suggestions p ON p.id = s.suggestion_id
-        WHERE s.webhook_status = 200 AND s.created_at >= $2 - interval '14 days'
+        WHERE s.webhook_status = 200 AND s.created_at >= $2::timestamptz - interval '14 days'
        UNION ALL
        SELECT lead_id, sent_at, true FROM lead_messages
-        WHERE sender_type = 'broker' AND sent_at >= $2 - interval '14 days'
+        WHERE sender_type = 'broker' AND sent_at >= $2::timestamptz - interval '14 days'
      ), inb AS (
        SELECT m.lead_id, m.sent_at AS t,
               lag(m.sent_at) OVER (PARTITION BY m.lead_id ORDER BY m.sent_at) AS prev_in
          FROM lead_messages m
-        WHERE m.sender_type = 'lead' AND m.sent_at >= $2 - interval '14 days' AND m.sent_at < $3
+        WHERE m.sender_type = 'lead' AND m.sent_at >= $2::timestamptz - interval '14 days' AND m.sent_at < $3
      )
      SELECT i.lead_id, i.t, r.t AS replied_at, r.human, d.name, l.live_dismissed_at
        FROM inb i
