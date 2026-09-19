@@ -10,6 +10,7 @@
 import { logger } from "./logger";
 import { db, leadMessagesTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
+import { isOwnLine } from "./wa-own-line-ids";
 
 const AMO_BASE = `https://${process.env.AMO_SUBDOMAIN ?? "unicornproperty"}.amocrm.ru`;
 const LOGIN = process.env.AMO_LOGIN ?? "unicorn.properties.office@gmail.com";
@@ -50,7 +51,7 @@ const NAMES_LONGEST_FIRST = Object.entries(NAME_TO_ID).sort((a, b) => b[0].lengt
 /** Is this source id one of our WhatsApp lines (as opposed to Instagram, Facebook, …)? */
 export function isKnownWhatsappLine(sourceId: number | string | null | undefined): boolean {
   const n = Number(sourceId);
-  return Number.isFinite(n) && SOURCE_MAP[n] !== undefined;
+  return (Number.isFinite(n) && SOURCE_MAP[n] !== undefined) || isOwnLine(n);
 }
 
 // Integration origin → default channel name
@@ -98,7 +99,9 @@ const BROKER_LINES: Record<string, number[]> = {
   // PROJECT PAUSED by the owner 14.09: "пока как было, один номер". 62585
   // gave false "WhatsApp not installed" notices (see CLAUDE.md "One broker,
   // two WhatsApp numbers"). The per-line code stays; re-enable = [59537, 62585].
-  yudi: [59537],
+  // Second line since 19.09.2026: 900002 = Yudi 2 on our own bridge
+  // (wa-own-line-ids.ts), not the paused Wahelp 62585.
+  yudi: [59537, 900002],
   saif: [59893],
   kristo: [61161],
   ferdian: [61191],

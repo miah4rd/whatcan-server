@@ -445,6 +445,7 @@ router.post("/approve", async (req, res) => {
         id: sentMessagesTable.id,
         webhookStatus: sentMessagesTable.webhookStatus,
         webhookResponse: sentMessagesTable.webhookResponse,
+        sourceId: sentMessagesTable.sourceId,
       })
       .from(sentMessagesTable)
       .where(eq(sentMessagesTable.suggestionId, sug.id as any))
@@ -475,7 +476,7 @@ router.post("/approve", async (req, res) => {
           { leadId: sug.leadId, suggestionId: sug.id, linksSent, total: effectiveAttachments.length },
           "interrupted send resumed — text already delivered, sending only the missing links",
         );
-        await sendAttachmentLinks(sug.leadId, effectiveAttachments, linksSent, alreadySent!.id, base, req.log);
+        await sendAttachmentLinks(sug.leadId, effectiveAttachments, linksSent, alreadySent!.id, base, req.log, null, alreadySent!.sourceId ?? null);
       }
 
       res.json({
@@ -640,7 +641,7 @@ router.post("/approve", async (req, res) => {
     }
 
     // ── Send via Salesbot ─────────────────────────────────────────────────────
-    const delivery = await deliverText(sug.leadId, finalMessage, req.log);
+    const delivery = await deliverText(sug.leadId, finalMessage, req.log, messengerSource);
     const deliveryText = delivery.deliveryText;
     hookStatus = delivery.hookStatus;
     hookBody = delivery.hookBody;
@@ -720,6 +721,7 @@ router.post("/approve", async (req, res) => {
         hookBody,
         req.log,
         deliveryText,
+        messengerSource,
       );
     }
 
