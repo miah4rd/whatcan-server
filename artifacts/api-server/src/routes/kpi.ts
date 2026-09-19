@@ -305,7 +305,7 @@ footer { color: var(--muted); font-size: 12px; padding: 4px 2px 24px; }
       if (b.viewings) r = r.concat([
         { group: "Viewings" },
         { label: "Viewings agreed", hint: "by agreement day", s: b.viewings.agreed },
-        { label: "Viewings held", hint: "by viewing day", s: b.viewings.held },
+        { label: "Viewings held", hint: "by viewing day, one per visit, cancelled excluded", s: b.viewings.held },
         { label: "Viewing reports filed", s: b.viewings.reportsFiled },
         { label: "Deals won", s: b.dealsWon }
       ]);

@@ -600,27 +600,7 @@ async function brokers(days: string[]) {
     params,
     days,
   );
-  const viewings = await grouped(
-    `SELECT (agreed_at AT TIME ZONE $1)::date::text AS d, 'agreed' AS k, count(DISTINCT lead_id || ':' || coalesce(property_code,''))::int AS n
-       FROM viewing_slots WHERE agreed_at >= $2 AND agreed_at < $3 GROUP BY 1, 2
-     UNION ALL
-     SELECT (viewing_at AT TIME ZONE $1)::date::text, 'held', count(DISTINCT lead_id || ':' || coalesce(property_code,''))::int
-       FROM viewing_slots WHERE viewing_at >= $2 AND viewing_at < $3 AND status IN ('scheduled', 'reported') GROUP BY 1, 2
-     UNION ALL
-     SELECT (filed_at AT TIME ZONE $1)::date::text, 'reported', count(*)::int
-       FROM viewing_reports WHERE filed_at >= $2 AND filed_at < $3 AND status = 'filed' GROUP BY 1, 2`,
-    params,
-    days,
-  );
-  const inspections = await grouped(
-    `SELECT (agreed_at AT TIME ZONE $1)::date::text AS d, 'agreed' AS k, count(DISTINCT lead_id)::int AS n
-       FROM listing_inspection_slots WHERE agreed_at >= $2 AND agreed_at < $3 AND status <> 'cancelled' GROUP BY 1, 2
-     UNION ALL
-     SELECT (visit_at AT TIME ZONE $1)::date::text, 'due', count(DISTINCT lead_id)::int
-       FROM listing_inspection_slots WHERE visit_at >= $2 AND visit_at < $3 AND status <> 'cancelled' AND superseded_at IS NULL GROUP BY 1, 2`,
-    params,
-    days,
-  );
+  const [viewings, inspections] = await Promise.all([viewingEvents(days), inspectionEvents(days)]);
 
   // The site: listings published (Pre-listed) and switched Pre-listed → Listed after an inspection.
   const published = zero(days);
@@ -683,15 +663,15 @@ async function brokers(days: string[]) {
       ...(k === "amelia"
         ? {
             viewings: {
-              agreed: pick(viewings, "agreed", days),
-              held: pick(viewings, "held", days),
-              reportsFiled: pick(viewings, "reported", days),
+              agreed: viewings.agreed,
+              held: viewings.held,
+              reportsFiled: viewings.reportsFiled,
             },
           }
         : {
             inspections: {
-              agreed: pick(inspections, "agreed", days),
-              due: pick(inspections, "due", days),
+              agreed: inspections.agreed,
+              due: inspections.due,
               listed,
               published,
             },
@@ -712,6 +692,99 @@ async function brokers(days: string[]) {
   return out;
 }
 
+// ── Viewings and inspections: one visit = one event ─────────────────────────
+
+/**
+ * One visit is often recorded on several cards: the client's, and a card amoCRM opened for the villa's
+ * owner or staff when the broker wrote to them to book it (18.09: one viewing of R-YUD-042 sat on three
+ * cards). Slots within two hours of each other on the same villa (or with the villa unknown) are one
+ * visit. A viewing whose report says it did not happen is not a viewing held.
+ */
+type Slot = { lead: string; code: string | null; at: number; agreedAt: number | null };
+function clusterVisits(slots: Slot[]): Slot[] {
+  const sorted = [...slots].sort((a, b) => a.at - b.at);
+  const out: Slot[][] = [];
+  for (const s of sorted) {
+    const hit = out.find((c) =>
+      c.some((x) => Math.abs(x.at - s.at) <= 2 * 3600_000 && (!x.code || !s.code || x.code === s.code)),
+    );
+    if (hit) hit.push(s);
+    else out.push([s]);
+  }
+  // The visit's own time is the earliest slot; agreed = the earliest agreement among its cards.
+  return out.map((c) => ({
+    lead: c[0]!.lead,
+    code: c.find((x) => x.code)?.code ?? null,
+    at: c[0]!.at,
+    agreedAt: c.map((x) => x.agreedAt).filter((x): x is number => x != null).sort((a, b) => a - b)[0] ?? null,
+  }));
+}
+
+function countByDay(times: (number | null)[], days: string[]): Series {
+  const s = zero(days);
+  for (const t of times) {
+    if (t == null) continue;
+    const d = baliDate(new Date(t));
+    if (d in s) s[d]!++;
+  }
+  return s;
+}
+
+async function viewingEvents(days: string[]) {
+  const from = startIso(addDays(days[0]!, -14));
+  const to = startIso(addDays(days[days.length - 1]!, 1));
+  const r = await pool.query(
+    `SELECT vs.lead_id, vs.property_code, vs.viewing_at, vs.agreed_at, vs.status, vr.outcome
+       FROM viewing_slots vs LEFT JOIN viewing_reports vr ON vr.id = vs.report_id
+      WHERE vs.viewing_at >= $1 AND vs.viewing_at < $2 AND vs.status IN ('scheduled', 'reported')`,
+    [from, to],
+  );
+  const rows = r.rows as { lead_id: string; property_code: string | null; viewing_at: string; agreed_at: string | null; outcome: string | null }[];
+  const notHeld = new Set(["cancelled", "no_show", "rescheduled"]);
+  const slots = rows.filter((x) => !notHeld.has(String(x.outcome ?? ""))).map((x) => ({
+    lead: String(x.lead_id),
+    code: x.property_code || null,
+    at: new Date(x.viewing_at).getTime(),
+    agreedAt: x.agreed_at ? new Date(x.agreed_at).getTime() : null,
+  }));
+  const now = Date.now();
+  const visits = clusterVisits(slots);
+  const filed = await pool.query(
+    `SELECT filed_at FROM viewing_reports WHERE status = 'filed' AND filed_at >= $1 AND filed_at < $2
+        AND coalesce(outcome, '') NOT IN ('cancelled', 'no_show', 'rescheduled')`,
+    [startIso(days[0]!), to],
+  );
+  return {
+    agreed: countByDay(visits.map((v) => v.agreedAt), days),
+    held: countByDay(visits.filter((v) => v.at <= now).map((v) => v.at), days),
+    reportsFiled: countByDay((filed.rows as { filed_at: string }[]).map((x) => new Date(x.filed_at).getTime()), days),
+  };
+}
+
+async function inspectionEvents(days: string[]) {
+  const from = startIso(addDays(days[0]!, -14));
+  const to = startIso(addDays(days[days.length - 1]!, 1));
+  const r = await pool.query(
+    `SELECT lead_id, visit_at, agreed_at FROM listing_inspection_slots
+      WHERE visit_at >= $1 AND visit_at < $2 AND status = 'scheduled' AND superseded_at IS NULL`,
+    [from, to],
+  );
+  // Duplicate cards of one villa (Umbala 23305115 / 23541159) share the slot: same time = one visit.
+  const slots = (r.rows as { lead_id: string; visit_at: string; agreed_at: string | null }[]).map((x) => ({
+    lead: String(x.lead_id),
+    code: String(x.lead_id),
+    at: new Date(x.visit_at).getTime(),
+    agreedAt: x.agreed_at ? new Date(x.agreed_at).getTime() : null,
+  }));
+  const sorted = [...slots].sort((a, b) => a.at - b.at);
+  const visits: Slot[] = [];
+  for (const s of sorted) if (!visits.some((v) => Math.abs(v.at - s.at) <= 30 * 60_000)) visits.push(s);
+  return {
+    agreed: countByDay(visits.map((v) => v.agreedAt), days),
+    due: countByDay(visits.map((v) => v.at), days),
+  };
+}
+
 // ── Whole page ───────────────────────────────────────────────────────────────
 
 async function weekToDate(day: string) {
@@ -719,11 +792,7 @@ async function weekToDate(day: string) {
   const days = dayRange(ws, day);
   const from = startIso(ws);
   const to = startIso(addDays(day, 1));
-  const v = await pool.query(
-    `SELECT count(DISTINCT lead_id || ':' || coalesce(property_code,''))::int AS n
-       FROM viewing_slots WHERE viewing_at >= $1 AND viewing_at < $2 AND status IN ('scheduled', 'reported')`,
-    [from, to],
-  );
+  const v = await viewingEvents(days);
   const won = await amoWonDeals(ws, day).catch((): WonDeal[] => []);
   let listed = 0;
   let published = 0;
@@ -744,7 +813,7 @@ async function weekToDate(day: string) {
     weekStart: ws,
     daysIn: days.length,
     amelia: {
-      viewings: Number((v.rows[0] as { n: number }).n),
+      viewings: Object.values(v.held).reduce((a, n) => a + n, 0),
       viewingsTarget: WEEKLY_TARGETS.amelia.viewings,
       deals: won.filter((w) => w.responsible_user_id === KPI_BROKERS[0].amoId).length,
       dealsTarget: WEEKLY_TARGETS.amelia.deals,
