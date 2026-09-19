@@ -31,6 +31,7 @@ import { chatCompletion, HELPER_MODEL } from "./ai-client";
 import { LISTING_AGENT_BROKER, LISTINGS_PIPELINE_ID, LISTING_STAGE, siteGet, siteInsert } from "./listing-status-week";
 import { runListingStatusPass } from "./listing-status-pass";
 import { gateway, OWNER_SESSION } from "./wa-bridge";
+import { signedStorageUpload } from "./site-storage";
 
 export const INSPECTION_REPORT_VERDICT = "inspection report due";
 export { INSPECTION_REPORT_TASK_PREFIX };
@@ -181,27 +182,9 @@ async function publishBlockers(code: string): Promise<string[]> {
   return Array.isArray(v) ? v.map(String).filter(Boolean) : v ? [String(v)] : [];
 }
 
-/**
- * A signed, one-time upload URL: the phone PUTs the file straight into the site's storage, so a
- * 200 MB video never passes through this server (2.5 GB free on the VPS).
- */
-export async function signedUpload(code: string, kind: "photo" | "video", fileName: string): Promise<{ uploadUrl: string; publicUrl: string }> {
-  const { url, key } = siteDb();
-  const bucket = kind === "photo" ? "property-images" : "property-videos";
-  const ext = kind === "photo" ? "jpg" : ((fileName.match(/\.([a-z0-9]{2,4})$/i)?.[1] ?? "mp4").toLowerCase());
-  const objectPath = `${code}/insp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-  const res = await fetch(`${url}/storage/v1/object/upload/sign/${bucket}/${objectPath}`, {
-    method: "POST",
-    headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: "{}",
-    signal: AbortSignal.timeout(15000),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`storage sign → ${res.status} ${text.slice(0, 200)}`);
-  const signed = JSON.parse(text) as { url?: string; signedURL?: string };
-  const rel = signed.url ?? signed.signedURL ?? "";
-  if (!rel) throw new Error("storage sign returned no url");
-  return { uploadUrl: `${url}/storage/v1${rel.startsWith("/") ? "" : "/"}${rel}`, publicUrl: `${url}/storage/v1/object/public/${bucket}/${objectPath}` };
+/** Uploads go straight from the phone into the site's storage (lib/site-storage.ts). */
+export function signedUpload(code: string, kind: "photo" | "video", fileName: string): Promise<{ uploadUrl: string; publicUrl: string }> {
+  return signedStorageUpload(code, kind, fileName, "insp");
 }
 
 type Property = { id: string; title: string | null; area: string | null; bedrooms: number | null; images: string[] | null; video_url: string | null; pre_listed: boolean | null; is_draft: boolean | null };

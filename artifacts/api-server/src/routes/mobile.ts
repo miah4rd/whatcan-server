@@ -2499,6 +2499,9 @@ const PAGE_HTML = `<!doctype html>
     for (var i = 0; i < VR_STEPS.length; i++) h += '<span class="vr-opt' + (VR_STEPS[i] === "Close" ? " bad" : "") + '" data-v="' + esc(VR_STEPS[i]) + '">' + esc(VR_STEPS[i]) + '</span>';
     h += '</div>';
     h += '<div class="vr-row"><span class="vr-status">By when</span><input type="date" id="vr-by"></div>';
+    h += '<label class="section">4 &middot; Photos &amp; video <span style="text-transform:none;letter-spacing:0;color:#6b7488">(optional &middot; if you filmed the villa)</span></label>';
+    h += '<div class="vr-row"><label class="ai-mic-btn" style="cursor:pointer">&#x1F4F7; Add photos<input type="file" id="vr-pics" accept="image/*" multiple hidden></label><label class="ai-mic-btn" style="cursor:pointer">&#x1F3AC; Add video<input type="file" id="vr-vid" accept="video/*" hidden></label></div>';
+    h += '<div id="vr-media">' + vrMediaHtml(it) + '</div>';
     h += '<div class="vr-row"><button class="vr-send" id="vr-send" disabled>Send report</button><span class="vr-status" id="vr-status">pick an outcome</span></div>';
     h += '</div>';
     return h;
@@ -2518,6 +2521,84 @@ const PAGE_HTML = `<!doctype html>
     h += '</div>';
     return h;
   }
+  // Photos / video from the viewing go straight from the phone into the site's
+  // storage (a one-time upload slot from the server); the report carries the links.
+  function vrMediaHtml(it) {
+    var m = it._vrMedia || [], up = it._vrUploads || 0, h = '';
+    if (m.length || up) {
+      h += '<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:8px">';
+      m.forEach(function (u, i) {
+        var vid = u.indexOf('/property-videos/') >= 0;
+        h += '<div style="position:relative;aspect-ratio:1;border-radius:7px;border:1px solid #2a3146;background:#0f1320 center/cover no-repeat;' + (vid ? '' : 'background-image:url(' + esc(u) + ')') + ';display:grid;place-items:center;font-size:22px">' + (vid ? '&#x1F3AC;' : '') +
+          '<button data-vrm="' + i + '" style="position:absolute;right:2px;top:2px;width:22px;height:22px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;font-size:13px;line-height:22px;padding:0;cursor:pointer">&times;</button></div>';
+      });
+      for (var k = 0; k < up; k++) h += '<div style="aspect-ratio:1;border-radius:7px;border:1px dashed #3a4462;display:grid;place-items:center;color:#6b7488;font-size:11px">&hellip;</div>';
+      h += '</div>';
+    }
+    if (it._vrUpMsg) h += '<div class="vr-row"><span class="vr-status">' + esc(it._vrUpMsg) + '</span></div>';
+    return h;
+  }
+  function vrMediaRefresh(it) {
+    var box = $("#vr-media");
+    if (box) box.innerHTML = vrMediaHtml(it);
+    document.querySelectorAll("[data-vrm]").forEach(function (b) {
+      b.onclick = function () { it._vrMedia.splice(+b.getAttribute("data-vrm"), 1); vrMediaRefresh(it); };
+    });
+    var send = $("#vr-send");
+    if (send && it._vrUploads) send.disabled = true;
+  }
+  function vrShrink(file) {
+    return new Promise(function (resolve) {
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () {
+        var s = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
+        var c = document.createElement("canvas"); c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        c.toBlob(function (b) { resolve(b || file); }, "image/jpeg", 0.85);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+  function vrUpload(it, kind, blob, name, type) {
+    return fetch(API + "/viewing-report/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reportId: it.viewing_report.id, kind: kind, name: name }) })
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        if (!s.uploadUrl) throw new Error(s.error || "no upload slot");
+        return new Promise(function (resolve, reject) {
+          var x = new XMLHttpRequest();
+          x.open("PUT", s.uploadUrl);
+          x.setRequestHeader("Content-Type", type);
+          x.upload.onprogress = function (e) { if (kind === "video" && e.lengthComputable) { it._vrUpMsg = "Uploading video " + Math.round(e.loaded / e.total * 100) + "% - keep this screen open"; vrMediaRefresh(it); } };
+          x.onload = function () { if (x.status >= 200 && x.status < 300) resolve(s.publicUrl); else reject(new Error("upload " + x.status)); };
+          x.onerror = function () { reject(new Error("upload failed")); };
+          x.send(blob);
+        });
+      });
+  }
+  function vrAddFiles(it, files, kind) {
+    it._vrMedia = it._vrMedia || [];
+    it._vrUploads = (it._vrUploads || 0) + files.length;
+    it._vrUpMsg = "";
+    vrMediaRefresh(it);
+    var chain = Promise.resolve();
+    files.forEach(function (f) {
+      chain = chain.then(function () {
+        if (kind === "video" && f.size > 200 * 1024 * 1024) throw new Error("the video is " + Math.round(f.size / 1048576) + " MB, the limit is 200 MB");
+        var prep = kind === "photo" ? vrShrink(f) : Promise.resolve(f);
+        return prep.then(function (blob) { return vrUpload(it, kind, blob, f.name, kind === "photo" ? "image/jpeg" : (f.type || "video/mp4")); })
+          .then(function (u) { it._vrMedia.push(u); });
+      }).catch(function (e) { it._vrUpMsg = "Not uploaded: " + (e && e.message ? e.message : "try again"); })
+        .then(function () {
+          it._vrUploads--;
+          if (!it._vrUploads && it._vrUpMsg.indexOf("Uploading") === 0) it._vrUpMsg = "";
+          vrMediaRefresh(it);
+          var send = $("#vr-send");
+          if (send && !it._vrUploads && send.getAttribute("data-ready") === "1") send.disabled = false;
+        });
+    });
+  }
   function bindViewingReport(it) {
     var box = $("#vr");
     if (!box || !it.viewing_report) return;
@@ -2536,16 +2617,20 @@ const PAGE_HTML = `<!doctype html>
       var other = from === "vr-outcome" ? "vr-noshow" : "vr-outcome";
       document.querySelectorAll("#" + other + " .vr-opt").forEach(function (x) { x.classList.remove("on"); });
       $("#vr-resched-row").hidden = v !== "rescheduled";
-      $("#vr-send").disabled = false;
-      $("#vr-status").textContent = "";
+      $("#vr-send").setAttribute("data-ready", "1");
+      $("#vr-send").disabled = !!it._vrUploads;
+      $("#vr-status").textContent = it._vrUploads ? "wait for the uploads" : "";
     }
     pick("vr-outcome", true, function (v) { setOutcome(v, "vr-outcome"); });
     pick("vr-noshow", true, function (v) { setOutcome(v, "vr-noshow"); });
     pick("vr-steps", false, null);
     $("#vr-noshow-link").onclick = function (e) { e.preventDefault(); $("#vr-noshow").hidden = !$("#vr-noshow").hidden; };
     $("#vr-voice").onclick = function () { startVoiceDictation($("#vr-feedback"), $("#vr-voice")); };
+    $("#vr-pics").onchange = function () { var f = [].slice.call(this.files || []); this.value = ""; if (f.length) vrAddFiles(it, f, "photo"); };
+    $("#vr-vid").onchange = function () { var f = [].slice.call(this.files || []); this.value = ""; if (f.length) vrAddFiles(it, f, "video"); };
+    vrMediaRefresh(it);
     $("#vr-send").onclick = async function () {
-      if (!outcome) return;
+      if (!outcome || it._vrUploads) return;
       var steps = [];
       document.querySelectorAll("#vr-steps .vr-opt.on").forEach(function (o) { steps.push(o.getAttribute("data-v")); });
       var btn = $("#vr-send"); btn.disabled = true; $("#vr-status").textContent = "Sending\u2026";
@@ -2559,12 +2644,14 @@ const PAGE_HTML = `<!doctype html>
             rescheduledTo: (outcome === "rescheduled" && $("#vr-resched").value) ? new Date($("#vr-resched").value).toISOString() : null,
             propertyCode: ($("#vr-code") && $("#vr-code").value) ? $("#vr-code").value.trim().toUpperCase() : null,
             brokerId: activeBroker(),
+            media: it._vrMedia || [],
           }),
         });
         var j = await r.json().catch(function () { return {}; });
         if (!r.ok || !j.ok) throw new Error(j.error || ("HTTP " + r.status));
         it._vrFiled = { stage: j.stage || null, more: Math.max(0, (it.viewing_report.open_count || 1) - 1) };
         it.viewing_report = null;
+        it._vrMedia = []; it._vrUpMsg = "";
         showToast("Viewing report filed");
         renderDetail();
         // The draft underneath is rewritten from the report on the server;
