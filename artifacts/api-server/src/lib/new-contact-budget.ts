@@ -86,9 +86,9 @@ const ONE_DAY_CAP: Record<string, Record<number, number>> = {
   // Owner, 17.09: Aloma Villa (Cemagi 2BR) and Oemah David (Munggu 2BR) — the
   // Seseh-belt replacements for the two undeliverable cards — out of turn, now.
   "2026-09-17": { 59537: 10 },
-  // Owner, 19.09: Yudi 2 (own bridge, 900002) goes live today. One first
-  // contact first, checked end to end, then the rest of its nine.
-  "2026-09-19": { 900002: 1 },
+  // Owner, 19.09: Yudi 2 (own bridge, 900002) went live today with one first
+  // contact (23608383, delivered, in the card's chat), then the rest of its nine.
+  "2026-09-19": { 900002: 9 },
 };
 
 /**
