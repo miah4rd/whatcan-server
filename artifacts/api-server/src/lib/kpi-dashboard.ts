@@ -254,6 +254,8 @@ async function amoLeadsCreated(from: string, to: string): Promise<AmoLead[]> {
   });
 }
 
+type WonDeal = { id: number; closed_at: number; responsible_user_id: number; price: number };
+
 async function amoWonDeals(from: string, to: string): Promise<{ id: number; closed_at: number; responsible_user_id: number; price: number }[]> {
   return cached(`won:${from}:${to}`, 10 * 60_000, async () => {
     const out: { id: number; closed_at: number; responsible_user_id: number; price: number }[] = [];
@@ -625,7 +627,7 @@ async function brokers(days: string[]) {
     logger.warn({ err }, "kpi: site listing numbers unavailable");
   }
 
-  const won = await amoWonDeals(days[0]!, days[days.length - 1]!).catch(() => []);
+  const won = await amoWonDeals(days[0]!, days[days.length - 1]!).catch((): WonDeal[] => []);
 
   const out = [];
   for (const b of KPI_BROKERS) {
@@ -697,7 +699,7 @@ async function weekToDate(day: string) {
        FROM viewing_slots WHERE viewing_at >= $1 AND viewing_at < $2 AND status IN ('scheduled', 'reported')`,
     [from, to],
   );
-  const won = await amoWonDeals(ws, day).catch(() => []);
+  const won = await amoWonDeals(ws, day).catch((): WonDeal[] => []);
   let listed = 0;
   let published = 0;
   try {
@@ -719,7 +721,7 @@ async function weekToDate(day: string) {
     amelia: {
       viewings: Number((v.rows[0] as { n: number }).n),
       viewingsTarget: WEEKLY_TARGETS.amelia.viewings,
-      deals: won.filter((w) => w.responsible_user_id === 13372414).length,
+      deals: won.filter((w) => w.responsible_user_id === KPI_BROKERS[0].amoId).length,
       dealsTarget: WEEKLY_TARGETS.amelia.deals,
     },
     yudi: { published, publishedTarget: WEEKLY_TARGETS.yudi.prelisted, listed, listedTarget: WEEKLY_TARGETS.yudi.listed },
