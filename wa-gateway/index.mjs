@@ -318,7 +318,7 @@ async function saveMedia(sock, m, body, ctype) {
 
 // ── Sending ──────────────────────────────────────────────────────────────────
 
-async function send({ session, to, text, media, quotedId }) {
+async function send({ session, to, text, media, quotedId, mentions }) {
   const s = sessions.get(session);
   if (!s || s.status !== "open") return { ok: false, error: "session_not_open", code: 902 };
 
@@ -345,6 +345,11 @@ async function send({ session, to, text, media, quotedId }) {
   } else {
     if (!text) return { ok: false, error: "empty_message", code: 905 };
     payload = { text };
+  }
+
+  // @-mentions in a group: jids (or plain numbers) of the people tagged; the text carries "@<number>".
+  if (Array.isArray(mentions) && mentions.length) {
+    payload.mentions = mentions.map((m) => (String(m).includes("@") ? String(m) : `${String(m).replace(/\D/g, "")}@s.whatsapp.net`));
   }
 
   const options = quotedId ? { quoted: { key: { remoteJid: jid, id: quotedId, fromMe: false }, message: { conversation: "" } } } : {};
@@ -415,6 +420,19 @@ const server = http.createServer(async (req, res) => {
         sessions.delete(name);
         return json(res, 200, { ok: true });
       }
+    }
+    if (req.method === "GET" && parts[0] === "groups" && parts[1] && parts[2]) {
+      // One group's participants (to tag someone): id, phone, admin, and the business profile blurb if any.
+      const s = sessions.get(parts[1]);
+      if (!s || s.status !== "open") return json(res, 422, { error: "session_not_open" });
+      const meta = await s.sock.groupMetadata(decodeURIComponent(parts[2]));
+      const out = [];
+      for (const p of meta.participants ?? []) {
+        const phoneJid = p.phoneNumber ?? (String(p.id).endsWith("@s.whatsapp.net") ? p.id : null);
+        const biz = phoneJid ? await s.sock.getBusinessProfile(phoneJid).catch(() => null) : null;
+        out.push({ id: p.id, phone: phoneOf(phoneJid), admin: p.admin ?? null, business: biz ? { description: biz.description ?? null, email: biz.email ?? null, website: biz.website ?? null } : null });
+      }
+      return json(res, 200, { id: meta.id, subject: meta.subject, participants: out });
     }
     if (req.method === "GET" && parts[0] === "groups" && parts[1]) {
       const s = sessions.get(parts[1]);
