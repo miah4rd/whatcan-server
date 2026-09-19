@@ -791,7 +791,7 @@ async function inspectionEvents(days: string[]) {
 
 // ── Whole page ───────────────────────────────────────────────────────────────
 
-async function weekToDate(day: string) {
+export async function weekToDate(day: string) {
   const ws = weekStartOf(day);
   const days = dayRange(ws, day);
   const from = startIso(ws);
