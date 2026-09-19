@@ -6,6 +6,7 @@ import {
   ensureTable,
   fileReport,
   getReport,
+  isRunning,
   missingFields,
   NOT_LISTING_REASONS,
   runDuePass,
@@ -70,7 +71,8 @@ router.get("/public/inspection-report/:id", async (req, res) => {
 router.get("/public/inspection-report/:id/status", async (req, res) => {
   const rep = await getReport(req.params.id);
   if (!rep) { res.status(404).json({ error: "report not found" }); return; }
-  res.json({ status: rep.status, checks: rep.checks ?? [] });
+  const status = rep.status === "checking" && !isRunning(rep.id) ? "failed" : rep.status;
+  res.json({ status, checks: rep.checks ?? [] });
 });
 
 router.post("/public/inspection-report/:id/save", async (req, res) => {
