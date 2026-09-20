@@ -1784,6 +1784,20 @@ repeated-question cut: they re-ask on purpose. Also: a yearly rate alone whose
 twelfth (with our 10%) is under the floor is "monthly price" missing, not
 QUALIFIED; the nudge asks the monthly rate.
 
+**Three holes that version left, closed 20.09 on Villa Antony (23608407).** The card sat in
+Inspection sceduled (a person's move, so the last stage event read that stage); the manager returned
+it to TAKEN TO WORK at 10:20 with a question; at 10:30 the bot sent a friendly "I'll be in touch once
+we're ready to schedule the visit" and put the card back in QUALIFIED in the same second, with
+nothing from the owner in between. Now: the hold reads a return from ANY stage at or past the bar and
+by anyone (`AT_OR_PAST_QUALIFIED`), not only from QUALIFIED by the engine; the question is queued even
+when the owner spoke last (their message is precisely what did not answer it), it retires whatever
+else was pending on the card, and it outranks a newer LIVE draft in the autopilot's draft order; and
+QUALIFIED is refused when the trigger is our own message leaving and our word is the newest in the
+thread (`OUR_OUTGOING_SOURCE`: send / approve / phone / the outgoing feed — owner, 20.09: "перевод в
+QUALIFIED только по входящему сообщению, своё исходящее в QUALIFIED не поднимает никогда"). The daily
+audit still promotes, or a card whose owner gave everything and then got an answer from us could
+never qualify again.
+
 ### The autopilot check of 11.09: what "тупит" looked like
 
 The owner: "проверь как автопилот работает вчера, сегодня и двигает карты по
