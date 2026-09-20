@@ -413,7 +413,15 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
         return retire("the villa's automatic reply, not a person — waiting for a real answer");
       }
     }
-    if (sug.kind !== "live" && lastOursAt > 0 && now - lastOursAt < 20 * 3600_000) {
+    // The listing manager's question is exempt: the message that spent this card's 20 hours is the
+    // very reply that failed to ask it (Villa Antony, 20.09 — the question sat waiting behind our
+    // own "I'll be in touch once we're ready to schedule the visit").
+    if (
+      sug.kind !== "live" &&
+      sug.category !== MANAGER_QUESTION_CATEGORY &&
+      lastOursAt > 0 &&
+      now - lastOursAt < 20 * 3600_000
+    ) {
       return decline("cadence: something already went out in the last 20h — waiting");
     }
     if (failedAt > sentAt && now - failedAt < 30 * 60_000) {
