@@ -66,9 +66,14 @@ function decodeEntities(s: string): string {
 /** "RETURNED TO TAKEN TO WORK 19 Sep 2026 - still no monthly rate…" → the reason and the question. */
 export function parseReturnNote(raw: string): { reason: string | null; question: string | null } | null {
   const text = decodeEntities(raw ?? "");
-  if (!/^\s*RETURNED TO TAKEN TO WORK\b/i.test(text)) return null;
-  const firstLine = text.split("\n")[0] ?? "";
-  const reason = firstLine.replace(/^\s*RETURNED TO TAKEN TO WORK\b[^-–—]*[-–—]\s*/i, "").trim() || null;
+  // The manager writes the note freely: "RETURNED TO TAKEN TO WORK 19 Sep - …" one day, "REVIEWED
+  // 20 Sep 2026, second pass of the daily listing run - NOT LISTED. Returned to TAKEN TO WORK." the
+  // next. Matching only the first spelling lost Villa Antony's question (20.09). What identifies the
+  // note is the question block, or the sentence saying the card went back.
+  if (!/QUESTION FOR THE BOT/i.test(text) && !/returned to taken to work/i.test(text)) return null;
+  const firstLine = (text.split("\n")[0] ?? "").slice(0, 300);
+  const reason =
+    firstLine.replace(/^\s*(RETURNED TO TAKEN TO WORK|REVIEWED)\b[^-–—]*[-–—]\s*/i, "").trim() || null;
   const m = text.match(/QUESTION FOR THE BOT[^\n]*\n+\s*["“]([\s\S]+?)["”]\s*(?:\n|$)/i);
   const question = m?.[1]?.trim() || null;
   return { reason, question };
