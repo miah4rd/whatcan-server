@@ -163,6 +163,9 @@ export type Desired = {
  * a deterministic price beats everything, WHO beats occupancy, occupancy
  * beats format, and qualification is judged last.
  */
+/** Triggers that are a message of OURS leaving, not a word from the villa side. */
+const OUR_OUTGOING_SOURCE = /send|approve|phone|outgoing/i;
+
 export function desiredStage(i: EngineInput): Desired {
   const f = i.facts;
   if (!i.outboundSent) return { stage: STAGE.INITIAL, reason: "nothing sent yet" };
@@ -598,6 +601,23 @@ async function reconcileOnce(leadId: string, opts: ReconcileOpts): Promise<Recon
   // (§6). Facts read months ago do not carry it on to QUALIFIED unasked.
   if (norm(current) === norm(STAGE.WORK) && desired.stage === STAGE.QUALIFIED && (await awaitingOwnerAfterLongTerm(leadId))) {
     desired = { stage: STAGE.WORK, reason: "back from long term — waiting for the owner to confirm the date and the price" };
+  }
+  // QUALIFIED arrives on the VILLA SIDE'S word, never on ours (owner, 20.09.2026: "перевод в
+  // QUALIFIED только по входящему сообщению; своё исходящее в QUALIFIED не поднимает никогда").
+  // Villa Antony (23608407) was promoted in the same second as our own "I'll be in touch once we're
+  // ready to schedule the visit" — the owner had written nothing, and the question the listing
+  // manager had left on the card ten minutes earlier went unasked.
+  // Only the trigger that IS our own message is refused: the daily audit still promotes a card
+  // whose owner gave everything and then got an answer from us, or nothing would ever qualify again.
+  if (desired.stage === STAGE.QUALIFIED && norm(current) !== norm(STAGE.QUALIFIED) && OUR_OUTGOING_SOURCE.test(opts.source)) {
+    const ourWordIsNewest =
+      !sig?.theirNewestMs || (sig?.newestMs != null && Number(sig.newestMs) > Number(sig.theirNewestMs));
+    if (ourWordIsNewest) {
+      desired = {
+        stage: current as EngineStage,
+        reason: "the facts are complete, but the newest word in the thread is ours — QUALIFIED waits for the villa side",
+      };
+    }
   }
   // Taken back out of QUALIFIED by someone else (the listing manager's "RETURNED TO TAKEN TO WORK"):
   // the same facts do not promote it again — only the owner's next message does (19.09.2026).
