@@ -328,7 +328,13 @@ export async function processListingOwnerFollowup(): Promise<number> {
         .orderBy(desc(leadMessagesTable.sentAt))
         .limit(1);
       const ownerSpokeLast = newest ? newest.who === "lead" : (lead.lastMessageFrom ?? "").toLowerCase() === "lead";
-      if (ownerSpokeLast) continue;
+      // The listing manager's question is asked even when the owner spoke last: it is the question
+      // their message did NOT answer, which is why the card was returned (Villa Antony, 20.09 — the
+      // owner's last words were "yes sir 🙏", the bot answered in kind and the question was lost).
+      const holdNow = await returnHold(lead.leadId, lead.leadStage);
+      const pendingQuestion =
+        holdNow?.question && !(await ownerWroteSince(lead.leadId, holdNow.at)) ? holdNow.question : null;
+      if (ownerSpokeLast && !pendingQuestion) continue;
       // Silence runs from OUR latest word, whichever record has it: a reply
       // Yudi typed on his phone is in the thread but not in last_our_message_at.
       const lastOursAtMs = Math.max(lead.lastOurMessageAt!.getTime(), newest ? newest.at.getTime() : 0);
@@ -337,15 +343,26 @@ export async function processListingOwnerFollowup(): Promise<number> {
       // the facts show nothing missing, so without this the card sat silent while the engine promoted
       // it back. The question goes once, as written, the moment it is on the card; after that the
       // ladder below repeats it on its usual days.
-      const hold = await returnHold(lead.leadId, lead.leadStage);
-      const managerQuestion = hold?.question && !(await ownerWroteSince(lead.leadId, hold.at)) ? hold.question : null;
+      const hold = holdNow;
+      const managerQuestion = pendingQuestion;
       if (managerQuestion && hold && !(await weWroteSince(lead.leadId, hold.at))) {
         const [waiting] = await db
           .select({ id: pendingSuggestionsTable.id })
           .from(pendingSuggestionsTable)
           .where(and(eq(pendingSuggestionsTable.leadId, lead.leadId), eq(pendingSuggestionsTable.status, "pending")))
           .limit(1);
-        if (waiting) continue;
+        // Whatever else is in the inbox for this card was written before the return and answers
+        // nothing the manager asked: retire it, or autopilot sends that one and the question waits.
+        if (waiting) {
+          await db
+            .update(pendingSuggestionsTable)
+            .set({
+              status: "skipped",
+              autopilotSkippedReason: "retired: the listing manager returned the card with a question of its own",
+              autopilotSkippedAt: new Date(),
+            })
+            .where(and(eq(pendingSuggestionsTable.leadId, lead.leadId), eq(pendingSuggestionsTable.status, "pending")));
+        }
         await db.insert(pendingSuggestionsTable).values({
           leadId: lead.leadId,
           responsibleUser: lead.responsibleUser,

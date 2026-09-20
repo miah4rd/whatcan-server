@@ -303,10 +303,16 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
       .where(
         and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending")),
       )
-      // The newest draft is the one that reflects the conversation as it is now.
-      // Unordered, Postgres handed back whichever row it liked, and the verdict
-      // landed on a stale sibling while the draft that mattered stayed unjudged.
-      .orderBy(desc(pendingSuggestionsTable.createdAt))
+      // The listing manager's question outranks anything else waiting on that card: it is the one
+      // thing the card was returned for, and a friendly LIVE reply written after it would otherwise
+      // win on recency and leave the owner unasked (Villa Antony, 20.09).
+      // (One orderBy call: a second one REPLACES the first in drizzle.) The newest draft is
+      // otherwise the one that reflects the conversation as it is now — unordered, Postgres handed
+      // back whichever row it liked, and the verdict landed on a stale sibling.
+      .orderBy(
+        sql`(${pendingSuggestionsTable.objectionCategory} = ${MANAGER_QUESTION_CATEGORY}) DESC`,
+        desc(pendingSuggestionsTable.createdAt),
+      )
       .limit(1);
     if (!sug || !sug.text?.trim()) return { sent: false, reason: "no pending draft" };
     const standing = (sug.skippedReason ?? "").trim();

@@ -28,7 +28,14 @@ import { logger } from "./logger";
 /** pending_suggestions.objection_category of a draft that is the manager's question, sent as is. */
 export const MANAGER_QUESTION_CATEGORY = "listing_manager_question";
 
-const QUALIFIED_NAME ="qualified (pre-listed)";
+/** Stages at or past the bar: a card now in TAKEN TO WORK below one of these was moved back. */
+const AT_OR_PAST_QUALIFIED = new Set<string>([
+  "qualified (pre-listed)",
+  "inspection sceduled",
+  "live",
+  "weekly check sent",
+  "update availability received",
+]);
 const WORK_NAME = "taken to work";
 const CACHE_MS = 10 * 60_000;
 
@@ -81,13 +88,21 @@ async function newestReturnNote(leadId: string): Promise<{ at: Date; reason: str
   return null;
 }
 
-async function lastExitFromQualified(leadId: string): Promise<Date | null | undefined> {
+const PAST_BAR = new Set<number>([
+  LISTING_STAGE.QUALIFIED,
+  LISTING_STAGE.INSPECTION_SCHEDULED,
+  LISTING_STAGE.LIVE,
+  LISTING_STAGE.WEEKLY_CHECK_SENT,
+  LISTING_STAGE.AVAILABILITY_RECEIVED,
+]);
+
+async function lastExitFromTheBar(leadId: string): Promise<Date | null | undefined> {
   const d = await amoFetch<{
     _embedded?: { events?: Array<{ created_at: number; value_before?: Array<{ lead_status?: { id?: number } }> }> };
   }>(`/api/v4/events?filter[entity]=lead&filter[entity_id][]=${leadId}&filter[type]=lead_status_changed&limit=50`);
   if (d === null) return undefined;
   const exits = (d._embedded?.events ?? [])
-    .filter((e) => e.value_before?.[0]?.lead_status?.id === LISTING_STAGE.QUALIFIED)
+    .filter((e) => PAST_BAR.has(e.value_before?.[0]?.lead_status?.id ?? -1))
     .map((e) => e.created_at * 1000);
   return exits.length ? new Date(Math.max(...exits)) : null;
 }
@@ -105,7 +120,12 @@ export async function returnHold(leadId: string, currentStage: string | null | u
     .where(eq(stageEventsTable.leadId, leadId))
     .orderBy(desc(stageEventsTable.changedAt))
     .limit(1);
-  if (!last?.at || norm(last.to) !== QUALIFIED_NAME || !String(last.by ?? "").startsWith("engine:")) return null;
+  // Returned from ANYWHERE at or past the bar, not only from QUALIFIED itself, and by anyone.
+  // Villa Antony (23608407, 20.09) sat in Inspection sceduled (a person's move, so the last event
+  // reads "Inspection sceduled"); the manager returned it to TAKEN TO WORK with a question, a
+  // signature that knew only QUALIFIED saw nothing, and ten minutes later our own send put the card
+  // back in QUALIFIED with the owner never asked.
+  if (!last?.at || !AT_OR_PAST_QUALIFIED.has(norm(last.to))) return null;
   const arrivalMs = last.at.getTime();
 
   const hit = cache.get(leadId);
@@ -116,12 +136,12 @@ export async function returnHold(leadId: string, currentStage: string | null | u
   if (note && note.at.getTime() >= arrivalMs) {
     hold = { at: note.at, reason: note.reason, question: note.question };
   } else {
-    const exit = await lastExitFromQualified(leadId);
+    const exit = await lastExitFromTheBar(leadId);
     if (note === undefined || exit === undefined) {
       logger.warn({ leadId }, "listing return hold: amoCRM unreadable — holding the card this round");
       return { at: new Date(), reason: null, question: null };
     }
-    // The engine put it on QUALIFIED and it is in TAKEN TO WORK now: somebody moved it. No event
+    // The card was past the bar and is in TAKEN TO WORK now: somebody moved it. No event
     // found (older than the page) still means a return; time it from the engine's own arrival.
     hold = { at: exit && exit.getTime() >= arrivalMs ? exit : new Date(arrivalMs), reason: null, question: null };
   }
