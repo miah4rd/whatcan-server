@@ -74,7 +74,11 @@ export function parseReturnNote(raw: string): { reason: string | null; question:
   const firstLine = (text.split("\n")[0] ?? "").slice(0, 300);
   const reason =
     firstLine.replace(/^\s*(RETURNED TO TAKEN TO WORK|REVIEWED)\b[^-–—]*[-–—]\s*/i, "").trim() || null;
-  const m = text.match(/QUESTION FOR THE BOT[^\n]*\n+\s*["“]([\s\S]+?)["”]\s*(?:\n|$)/i);
+  const m =
+    text.match(/QUESTION FOR THE BOT[^\n]*\n+\s*["“]([\s\S]+?)["”]\s*(?:\n|$)/i) ??
+    // The same instruction is sometimes written inline: `BOT: keep asking, one line: "…"`
+    // (Castillo 23528517, Di Villa 23434747, 13.09) — those questions were never asked.
+    text.match(/\bBOT:[^\n]*?["“]([\s\S]+?)["”]/i);
   const question = m?.[1]?.trim() || null;
   return { reason, question };
 }
@@ -138,7 +142,11 @@ export async function returnHold(leadId: string, currentStage: string | null | u
 
   const note = await newestReturnNote(leadId);
   let hold: ReturnHold | null;
-  if (note && note.at.getTime() >= arrivalMs) {
+  // A return note OLDER than our own last move still stands while the owner has said nothing since:
+  // that is the whole rule ("returned stays returned until the owner answers"), and three cards
+  // (Di Villa, Castillo, Casa Petak) were re-qualified over exactly such a note in September. The
+  // caller decides on the owner's silence; here the note is simply the return's record.
+  if (note) {
     hold = { at: note.at, reason: note.reason, question: note.question };
   } else {
     const exit = await lastExitFromTheBar(leadId);
