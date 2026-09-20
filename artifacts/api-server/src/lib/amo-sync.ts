@@ -4,8 +4,9 @@
  * Runs every 5 minutes in background.
  */
 import { db, leadsSyncTable, pendingSuggestionsTable, sentMessagesTable } from "@workspace/db";
-import { eq, and, inArray, isNull, or, ilike, notLike, gte, lte } from "drizzle-orm";
+import { eq, ne, and, inArray, isNull, or, ilike, notLike, gte, lte } from "drizzle-orm";
 import { WEEKLY_CHECK_KIND } from "./weekly-check-reply";
+import { MANAGER_QUESTION_CATEGORY } from "./listing-return-hold";
 import { logger } from "./logger";
 import { amoFetch, getAccessToken, getAllOpenLeadTasksPaginated, createAmoTask } from "./amo-client";
 import { shouldSuppressPush } from "./stage-routing";
@@ -427,6 +428,13 @@ export async function syncTaskSchedule(): Promise<void> {
             // just requested, every 5 minutes, so the lead kept vanishing from the
             // app seconds after it appeared.
             isNull(pendingSuggestionsTable.requestedAt),
+            // The listing manager's question on a card it returned is not a nag either: the future
+            // task is the bot's own "Sent (live)" one from the very message that failed to ask it
+            // (Villa Antony, 20.09 — the question was queued and deleted twice in five minutes).
+            or(
+              isNull(pendingSuggestionsTable.objectionCategory),
+              ne(pendingSuggestionsTable.objectionCategory, MANAGER_QUESTION_CATEGORY),
+            ),
             // Yudi's inspection ask checks his real tasks itself (inspection-booking.ts); the future task
             // here is usually the bot's own "Sent (…)" one, which deleted the ask every 5 minutes.
             or(
