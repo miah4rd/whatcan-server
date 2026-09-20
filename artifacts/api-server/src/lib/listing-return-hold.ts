@@ -76,6 +76,10 @@ export function parseReturnNote(raw: string): { reason: string | null; question:
     firstLine.replace(/^\s*(RETURNED TO TAKEN TO WORK|REVIEWED)\b[^-–—]*[-–—]\s*/i, "").trim() || null;
   const m =
     text.match(/QUESTION FOR THE BOT[^\n]*\n+\s*["“]([\s\S]+?)["”]\s*(?:\n|$)/i) ??
+    // "QUESTION 1, send as is:" — the manager's third spelling (Castillo 23528517, 20.09). The
+    // FIRST such block is the one to send; a "QUESTION 2 if he replies with anything other than…"
+    // below it is the follow-up, and it goes out on the ladder's next round, not now.
+    text.match(/QUESTION\s*\d*[^\n]*\bsend as is\b[^\n]*\n+\s*["“]([\s\S]+?)["”]\s*(?:\n|$)/i) ??
     // The same instruction is sometimes written inline: `BOT: keep asking, one line: "…"`
     // (Castillo 23528517, Di Villa 23434747, 13.09) — those questions were never asked.
     text.match(/\bBOT:[^\n]*?["“]([\s\S]+?)["”]/i);
