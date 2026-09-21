@@ -341,9 +341,33 @@ async function waitForOutbound(leadId: string, value: string, budgetMs: number):
  * @param startIndex first link to send — > 0 when resuming an interrupted send.
  * @returns how many links have now been delivered in total.
  */
+/**
+ * The price-ladder layout of a Rental shortlist (generate-suggestion.ts,
+ * LadderInfo): before the first villa of each price group its title goes out
+ * as its own message, each villa goes as "caption + link" in ONE message (the
+ * preview still unfurls — the link is the only URL in it), and after the last
+ * villa the closing line. A link without a ladder goes out bare, as always.
+ */
+type LadderedLink = {
+  url?: string | null;
+  ladder?: { band: string; caption: string; headers: Record<string, string>; closing: string };
+};
+
+function ladderMessagesAt(attachments: LadderedLink[], i: number): { before: string | null; body: string | null; after: string | null } {
+  const a = attachments[i];
+  if (!a?.url) return { before: null, body: null, after: null };
+  const lad = a.ladder;
+  if (!lad) return { before: null, body: a.url, after: null };
+  const prevBand = i > 0 ? attachments[i - 1]?.ladder?.band ?? null : null;
+  const before = prevBand !== lad.band ? (lad.headers[lad.band] ?? "").trim() || null : null;
+  const lastLinked = attachments.map((x, j) => (x?.url ? j : -1)).filter((j) => j >= 0).pop();
+  const after = i === lastLinked ? (lad.closing ?? "").trim() || null : null;
+  return { before, body: lad.caption ? `${lad.caption}\n${a.url}` : a.url, after };
+}
+
 export async function sendAttachmentLinks(
   leadId: string,
-  attachments: Array<{ url?: string | null }>,
+  attachments: LadderedLink[],
   startIndex: number,
   sentMessageId: string | null,
   hookBody: string,
@@ -364,11 +388,22 @@ export async function sendAttachmentLinks(
     for (let i = startIndex; i < total; i++) {
       const url = attachments[i]?.url;
       if (url) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const r = await deliverViaOwnLine(leadId, source, url);
-        if (!r.chatSent) {
-          log.warn({ leadId, url, body: r.hookBody }, "own line: link not sent — stopping");
-          break;
+        const m = ladderMessagesAt(attachments, i);
+        let ok = true;
+        for (const value of [m.before, m.body]) {
+          if (!value) continue;
+          await new Promise((r) => setTimeout(r, 2000));
+          const r = await deliverViaOwnLine(leadId, source, value);
+          if (!r.chatSent) {
+            log.warn({ leadId, url, body: r.hookBody }, "own line: link not sent — stopping");
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) break;
+        if (m.after) {
+          await new Promise((r) => setTimeout(r, 2000));
+          await deliverViaOwnLine(leadId, source, m.after);
         }
       }
       delivered = i + 1;
@@ -420,9 +455,26 @@ export async function sendAttachmentLinks(
       continue;
     }
 
+    const m = ladderMessagesAt(attachments, i);
+    // A group title goes out on its own before the group's first villa, under
+    // the same guard as every other overwrite of the shared field.
+    if (m.before) {
+      await new Promise((r) => setTimeout(r, 1200));
+      const headField = await updateLeadCustomField(leadId, COMPANION_FIELD_ID, m.before).catch(() => ({ ok: false, leadMissing: false }));
+      if (headField.leadMissing) break;
+      if (headField.ok) {
+        await triggerSalesbot(leadId, COMPANION_ROBERT_BOT_ID);
+        const confirmed = await waitForOutbound(leadId, m.before, 20_000);
+        if (!confirmed) {
+          log.warn({ leadId, delivered, total }, "ladder: group title not confirmed in the timeline — stopping before it is overwritten");
+          break;
+        }
+      }
+    }
+
     await new Promise((r) => setTimeout(r, 1200));
     try {
-      const linkField = await updateLeadCustomField(leadId, COMPANION_FIELD_ID, url);
+      const linkField = await updateLeadCustomField(leadId, COMPANION_FIELD_ID, m.body ?? url);
       // The lead vanished between the text and this link (deleted or merged in
       // amoCRM mid-send) — the remaining links can only fail the same way.
       if (linkField.leadMissing) break;
@@ -430,7 +482,7 @@ export async function sendAttachmentLinks(
         await triggerSalesbot(leadId, COMPANION_ROBERT_BOT_ID);
         delivered = i + 1;
         // Guard the NEXT overwrite on this one actually landing.
-        pending = url;
+        pending = m.body ?? url;
         if (sentMessageId) {
           await db
             .update(sentMessagesTable)
@@ -441,6 +493,19 @@ export async function sendAttachmentLinks(
       }
     } catch (e) {
       log.warn({ leadId, url, err: e }, "attachment send failed (non-fatal)");
+    }
+  }
+  // The ladder's closing line, once every villa is out.
+  const lastIdx = attachments.map((x, j) => (x?.url ? j : -1)).filter((j) => j >= 0).pop();
+  const closing = lastIdx !== undefined && delivered >= total ? ladderMessagesAt(attachments, lastIdx).after : null;
+  if (closing) {
+    const ready = pending ? await waitForOutbound(leadId, pending, 20_000) : true;
+    if (!ready) {
+      log.warn({ leadId }, "ladder: last villa not confirmed in the timeline — closing line not sent");
+    } else {
+      await new Promise((r) => setTimeout(r, 1200));
+      const f = await updateLeadCustomField(leadId, COMPANION_FIELD_ID, closing).catch(() => ({ ok: false, leadMissing: false }));
+      if (f.ok) await triggerSalesbot(leadId, COMPANION_ROBERT_BOT_ID);
     }
   }
   return delivered;

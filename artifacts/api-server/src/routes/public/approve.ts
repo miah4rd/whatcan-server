@@ -19,7 +19,7 @@ import {
 } from "../../lib/outbound-send.js";
 import { FOLLOWUP_STAGE_ADVANCE_RENTAL, FOLLOWUP_DELAY_DAYS_RENTAL, followupClockAfterReply } from "../../lib/rental-followup.js";
 import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
-import { reconcileTextWithAttachments, allAttachmentsNamed, villasNamedInText, textNamesVilla, dropUnpublishedAttachments } from "../../lib/generate-suggestion";
+import { reconcileTextWithAttachments, allAttachmentsNamed, villasNamedInText, textNamesVilla, dropUnpublishedAttachments, isLadderLayout, type GeneratedSuggestion } from "../../lib/generate-suggestion";
 import { fetchAllPropertiesForPriceLookup, describePropertiesByIds } from "../../lib/property-catalog";
 import { recordCommitment } from "../../lib/commitment-scheduler.js";
 
@@ -306,11 +306,18 @@ router.post("/approve", async (req, res) => {
   // suggestion's own correctly-generated links. Uncurated → trust what was
   // generated; curated → trust the broker's edits, empty list included.
   const clientCurated = body.attachmentsCurated === true;
-  let effectiveAttachments: Array<{ type: "link"; label: string; url: string }> = clientCurated && Array.isArray(body.attachments)
+  // `ladder` rides along untouched: the price-ladder layout of a Rental
+  // shortlist (captions, group titles, closing) is sent from it.
+  type Ladder = NonNullable<GeneratedSuggestion["attachments"][number]["ladder"]>;
+  const withLadder = (a: unknown): { ladder?: Ladder } => {
+    const l = (a as { ladder?: Ladder } | null)?.ladder;
+    return l && typeof l.caption === "string" && typeof l.band === "string" ? { ladder: l } : {};
+  };
+  let effectiveAttachments: Array<{ type: "link"; label: string; url: string; ladder?: Ladder }> = clientCurated && Array.isArray(body.attachments)
     ? body.attachments
         .filter((a) => a?.type === "link" && typeof a.url === "string" && a.url)
-        .map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url! }))
-    : (sug.attachments ?? []).filter((a) => a.type === "link" && a.url).map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url! }));
+        .map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url!, ...withLadder(a) }))
+    : (sug.attachments ?? []).filter((a) => a.type === "link" && a.url).map((a) => ({ type: "link" as const, label: a.label ?? a.url!, url: a.url!, ...withLadder(a) }));
 
   // ── Text and links are ONE message — reconciled here, at the last gate. ──
   //
@@ -341,7 +348,11 @@ router.post("/approve", async (req, res) => {
     const after = urlSet(effectiveAttachments);
     const linksChanged = before.size !== after.size || [...after].some((u) => !before.has(u));
     try {
-      if (textEdited) {
+      if (isLadderLayout(effectiveAttachments)) {
+        // The price ladder: each villa is named by its own caption, the text is
+        // only the lead-in. Neither half is rewritten to mirror the other.
+        req.log.info({ leadId: sug.leadId, links: effectiveAttachments.length, textEdited, linksChanged }, "approve: price-ladder shortlist — captions name the villas, text sent as written");
+      } else if (textEdited) {
         // Words changed. Text and links are ONE message — there is no "main"
         // half (the owner's words: the links are a mirror of the text and the
         // text a mirror of the links). So the links are brought to what the

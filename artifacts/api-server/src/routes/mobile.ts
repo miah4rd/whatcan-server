@@ -1032,7 +1032,23 @@ const PAGE_HTML = `<!doctype html>
       } else if (a.type === "image" && !a.url) {
         html += '<div class="att att-reminder"><span>\\ud83d\\uddbc</span><span class="attlbl">' + esc(a.label) + ' \\u2014 not uploaded yet</span></div>';
       } else if (a.type === "link") {
+        // Price-ladder shortlist: the broker sees the messages exactly as the
+        // client will get them, group title, caption with its link, closing.
+        var lad = a.ladder && a.ladder.caption ? a.ladder : null;
+        if (lad) {
+          var prevLad = null;
+          for (var pj = i - 1; pj >= 0; pj--) { if (item.attachments[pj].type === "link") { prevLad = item.attachments[pj].ladder || null; break; } }
+          if (!prevLad || prevLad.band !== lad.band) {
+            html += '<div class="att att-ladhead" style="font-weight:600;margin-top:8px">' + esc((lad.headers && lad.headers[lad.band]) || "") + '</div>';
+          }
+          html += '<div class="att att-ladcap" style="white-space:normal;opacity:.9">' + lad.caption.split(String.fromCharCode(10)).map(esc).join("<br>") + '</div>';
+        }
         html += '<div class="att att-link"><span>\\ud83d\\udd17</span><a href="' + esc(a.url) + '" target="_blank" rel="noopener">' + esc(a.label || a.url) + '</a>' + rm + '</div>';
+        if (lad) {
+          var laterLink = false;
+          for (var nj = i + 1; nj < item.attachments.length; nj++) { if (item.attachments[nj].type === "link") { laterLink = true; break; } }
+          if (!laterLink && lad.closing) html += '<div class="att att-ladclose" style="margin-top:8px">' + esc(lad.closing) + '</div>';
+        }
         // Flags a broker set in the site's Internal data for this villa. For the
         // broker only: they never enter the text or the links the client receives.
         var fl = item.villa_flags && a.url ? item.villa_flags[a.url] : null;

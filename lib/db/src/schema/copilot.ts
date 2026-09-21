@@ -64,6 +64,8 @@ export const pendingSuggestionsTable = pgTable("pending_suggestions", {
     label: string;
     url?: string | null;
     storageKey?: string;
+    /** Rental price-ladder layout (generate-suggestion.ts, LadderInfo). */
+    ladder?: { band: string; caption: string; headers: Record<string, string>; closing: string };
   }>>(),
   // Funnel stage the conversation reaches once this reply is sent, derived from
   // the conversation itself (see lib/stage-classifier.ts). Applied on approve so

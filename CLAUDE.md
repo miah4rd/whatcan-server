@@ -295,7 +295,27 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
   listing age in the top 3 12 → 16 days (no bias either way); first place 8 →
   11 different villas across 16 leads. 23558753 (2BR Canggu, 30-50M): old top
   R-YUD-053 at 36.7M, new R-YUD-047/089/090 at 45-46M.
-- **A shortlist is 2-3 listings when 2-3 FIT — never padded (owner, 2026-09-04).**
+- **Rental shortlist = a price ladder, laid out as the owner's messages (owner,
+  21.09.2026).** With a stated monthly budget B the money is a corridor, not a
+  ceiling: `requestMisfitDims` lets 70-125% of B in (bedrooms, area, dates stay
+  strict), `matchPropertiesDetailed` picks up to 2 villas in each group — below
+  (70-90%), in (90-100%), above (100-125%), `PRICE_BAND_*` / `priceBandOf` —
+  and marks `outcome.priceBands`. A broker's revision keeps its own limit.
+  `enforceRequestOnDraft` (every generator) then runs `layoutPriceLadder`: the
+  draft becomes the lead-in (their request said back WITH its details — garden,
+  enclosed kitchen, workspace, quiet — "some a bit below your budget, some
+  within it, some a little above, so you can compare"; never "available"),
+  each link carries `ladder` {band, caption "N. Area, District — Rp 40M" +
+  one line of checked facts, group titles, closing "which ones you like, so I
+  can check availability"}. In ladder mode the text is NOT held to naming each
+  villa (captions do), the viewing push is skipped, approve does not mirror
+  text and links (`isLadderLayout`). `sendAttachmentLinks` sends the group
+  title before a group's first villa, "caption + link" as one message, and
+  the closing after the last. /m shows the same sequence. An Edit through
+  /suggest still returns the old format (plain text + links). Replay 21.09 on
+  6 real leads before deploy: 4 got ladders, 3 of them had "nothing fits"
+  before.
+- **A shortlist is 2-3 listings when 2-3 FIT — never padded (owner, 2026-09-04).** (Rental with a budget: see the price ladder above.)
   Bedrooms, area and budget are filters, not preferences: nothing of another
   size, district or price rides along because the right one was missing. One
   fitting villa goes out alone; none means an EMPTY shortlist (since 14.09 the

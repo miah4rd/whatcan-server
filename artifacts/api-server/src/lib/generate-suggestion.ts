@@ -11,7 +11,8 @@ import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestio
 import { buildRentalPromptParts } from "./rental-prompt";
 import { buildSalesPromptParts } from "./sales-prompt";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
-import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, clientOwnWords, type PropertyPick, type BrokerIntent, type ShortlistOutcome, type RelaxHint, type RelaxExample } from "./property-catalog";
+import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, clientOwnWords, keyFeatureBits, priceOf, priceBandOf, PRICE_BANDS, type PriceBand, type SupabaseProperty, type ClientRequest, type PropertyPick, type BrokerIntent, type ShortlistOutcome, type RelaxHint, type RelaxExample } from "./property-catalog";
+import { parentAreaOf } from "./bali-areas";
 import { getMergedDialog } from "./merged-conversation";
 import { db, pendingSuggestionsTable, sentMessagesTable } from "@workspace/db";
 import { viewingReportPromptBlock } from "./viewing-report-context";
@@ -320,6 +321,8 @@ export type PickedAttachments = {
   proposedIds?: string[];
   /** The shortlist gate's decision for this message (null when a broker instruction or the ad opening decided). */
   gate?: ShortlistGate | null;
+  /** The client's own words about what they want (newest messages, form notes) — the ladder intro repeats their details. */
+  clientWords?: string[];
 };
 
 export async function pickPropertyAttachments(opts: PickOptions): Promise<GeneratedSuggestion["attachments"]> {
@@ -486,7 +489,8 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
       }
     }
     if (out.length === 0) logger.info({ leadId: opts.leadId, request: describeRequest(outcome.request) }, "property matcher returned nothing to attach");
-    return { attachments: out, outcome, skipped: false, excludeIds, proposedIds, gate };
+    const clientWords = [...recentLeadMessages.slice(0, 6), card?.answers?.notes ?? ""].map((t) => String(t ?? "").trim()).filter(Boolean);
+    return { attachments: out, outcome, skipped: false, excludeIds, proposedIds, gate, clientWords };
   } catch (err) {
     logger.warn({ err, leadId: opts.leadId }, "property matcher threw — sending the draft with no attachments");
     return { attachments: [], outcome: null, skipped: false, excludeIds, proposedIds };
@@ -495,7 +499,29 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
 
 export type GeneratedSuggestion = {
   text: string;
-  attachments: Array<{ type: "link"; label: string; url: string }>;
+  attachments: Array<{ type: "link"; label: string; url: string; ladder?: LadderInfo }>;
+};
+
+/**
+ * The price-ladder layout of a Rental shortlist (owner, 21.09.2026: "скопируй
+ * мой вариант как я скидывал скрины"). The text is only the lead-in — their
+ * request said back with its details, and why the prices differ; then a title
+ * message per price group, each villa as its own message "N. Area — Rp 40M"
+ * plus one line of checked facts above its link, and a last message asking
+ * which ones they like so availability can be checked. Nothing here says a
+ * villa is free: availability is checked after they choose.
+ *
+ * Stored on each link, so a broker removing one keeps the rest intact; the
+ * group titles are placed at send time (outbound-send.ts).
+ */
+export type LadderInfo = {
+  band: PriceBand;
+  /** "1. Tumbak Bayuh, Pererenan — Rp 40M\nMediterranean style, small garden." */
+  caption: string;
+  /** Group titles in the client's language, each sent before the first villa of its group. */
+  headers: Record<PriceBand, string>;
+  /** Sent after the last villa: which ones they like, so we can check availability. */
+  closing: string;
 };
 
 function toAttachments(picks: PropertyPick[]): GeneratedSuggestion["attachments"] {
@@ -1165,8 +1191,8 @@ export function shortlistPromptBlock(picked: PickedAttachments | null | undefine
     const above = inBand("above");
     const below = inBand("below");
     const ladder =
-      above.length > 0 || below.length > 0
-        ? ` These are chosen on purpose around their budget so they can compare prices:${below.length ? ` cheaper than their budget — ${below.map((t) => `"${t}"`).join(", ")};` : ""}${above.length ? ` ABOVE their budget — ${above.map((t) => `"${t}"`).join(", ")}; say plainly that these cost more than they planned and never call them within budget;` : ""} the rest are in their budget.`
+      Object.keys(bands).length > 0
+        ? ` THE VILLAS GO OUT AS THEIR OWN MESSAGES right after yours, each with its own caption and grouped by price around their budget (${above.length ? "some above it, " : ""}${below.length ? "some below it, " : ""}the rest within it). Write ONLY the lead-in: whatever you need to say back to the client, then that you've put together a few options for their request with its details. Do not list, name or describe the villas and never say one is available or free.`
         : "";
     return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it.${ladder} If you give a number of villas, it is exactly ${picked.attachments.length}.${advisory}`;
   }
@@ -1415,15 +1441,23 @@ export async function enforceRequestOnDraft(opts: {
           return !attachedTitles.has(title);
         });
 
-  const count = presentedVillaCount(sourceText);
+  // The price ladder (owner, 21.09.2026): the villas are named by their own
+  // captions, not by the text, so the text is not held to naming them.
+  const bands = opts.picked?.outcome?.priceBands ?? {};
+  const ladder = !!opts.rental && !!request && attachments.length > 0 && Object.keys(bands).length > 0;
+  const count = ladder ? null : presentedVillaCount(sourceText);
   const countWrong = count !== null && attachments.length > 0 && count !== attachments.length;
   const strays1 = strays(sourceText);
-  const force = dropped.length > 0 || !allAttachmentsNamed(sourceText, attachments) || countWrong || strays1.length > 0 || sourceText !== opts.text;
+  const force = ladder
+    ? strays1.length > 0 || sourceText !== opts.text
+    : dropped.length > 0 || !allAttachmentsNamed(sourceText, attachments) || countWrong || strays1.length > 0 || sourceText !== opts.text;
   const note = [
     countWrong ? `THE MESSAGE MUST PRESENT EXACTLY ${attachments.length} VILLA(S) — it currently speaks of ${count}. Fix the number.` : "",
     strays1.length > 0 ? `IT ALSO NAMES VILLAS THAT ARE NOT ATTACHED AND WERE NEVER SENT: ${strays1.map((id) => byId.get(id)?.title ?? id).join("; ")}. Remove every mention of them.` : "",
   ].filter(Boolean).join("\n");
-  let text = await reconcileTextWithAttachments(sourceText, attachments, force && attachments.length > 0 ? true : force, null, opts.language ?? null, note || undefined);
+  let text = ladder
+    ? sourceText
+    : await reconcileTextWithAttachments(sourceText, attachments, force && attachments.length > 0 ? true : force, null, opts.language ?? null, note || undefined);
 
   const strays2 = strays(text);
   if (strays2.length > 0) text = await removeVillaMentions(text, strays2.map((id) => byId.get(id)?.title ?? id), opts.leadId);
@@ -1434,10 +1468,144 @@ export async function enforceRequestOnDraft(opts: {
   }
   if (opts.rental) text = stripWhoIsItForQuestion(text, opts.leadId);
   const count2 = presentedVillaCount(text);
-  if (count2 !== null && attachments.length > 0 && count2 !== attachments.length) {
+  if (!ladder && count2 !== null && attachments.length > 0 && count2 !== attachments.length) {
     logger.warn({ leadId: opts.leadId, said: count2, attached: attachments.length }, "draft check: the text still gives a different number of villas than attached");
   }
+  if (ladder) {
+    const laid = await layoutPriceLadder({
+      leadId: opts.leadId,
+      text,
+      attachments,
+      bands,
+      request: request!,
+      byId,
+      clientWords: opts.picked?.clientWords ?? [],
+      language: opts.language ?? null,
+    });
+    text = laid.text;
+    attachments = laid.attachments;
+    if (opts.rental) text = stripWhoIsItForQuestion(text, opts.leadId);
+  }
   return { text, attachments, dropped };
+}
+
+const LADDER_FALLBACK_HEADERS: Record<PriceBand, string> = {
+  below: "A bit below your budget",
+  in: "Within your budget",
+  above: "A bit above your budget",
+};
+const LADDER_FALLBACK_CLOSING = "Let me know which ones you like overall, and I'll check their availability for you.";
+
+/** "Tumbak Bayuh, Pererenan" — the sub-area and its district, as the owner writes it. */
+function ladderAreaLabel(area: string | null | undefined): string {
+  const a = (area ?? "").split(",")[0]!.trim();
+  if (!a) return "Bali";
+  const parent = parentAreaOf(a);
+  return parent && parent.toLowerCase() !== a.toLowerCase() ? `${a}, ${parent}` : a;
+}
+
+function ladderMillions(price: number): string {
+  const m = Math.round(price / 100_000) / 10;
+  return Number.isInteger(m) ? String(m) : m.toFixed(1);
+}
+
+/** A draft whose links carry the ladder layout (captions do the naming, not the text). */
+export function isLadderLayout(attachments: ReadonlyArray<{ ladder?: unknown }> | null | undefined): boolean {
+  return (attachments ?? []).some((a) => !!a.ladder);
+}
+
+/**
+ * Lays a banded Rental shortlist out as the owner's messages: the draft becomes
+ * the lead-in, every villa gets its caption, the groups their titles and the
+ * list its closing line. Numbers, area and price come from code; the model
+ * writes the words only. On any failure the villas still go out as a ladder,
+ * with plain English titles and no detail line.
+ */
+async function layoutPriceLadder(opts: {
+  leadId: string;
+  text: string;
+  attachments: GeneratedSuggestion["attachments"];
+  bands: Record<string, PriceBand>;
+  request: ClientRequest;
+  byId: Map<string, SupabaseProperty>;
+  clientWords: string[];
+  language?: string | null;
+}): Promise<{ text: string; attachments: GeneratedSuggestion["attachments"] }> {
+  const items = opts.attachments.map((a) => {
+    const id = propertyIdOf(a.url);
+    const p = id ? opts.byId.get(id) : undefined;
+    const band = (id ? opts.bands[id] : undefined) ?? (p ? priceBandOf(priceOf(p), opts.request.budgetMaxIdr) : null);
+    return { a, id, p, band };
+  });
+  if (items.length === 0 || items.some((x) => !x.id || !x.p || !x.band)) return { text: opts.text, attachments: opts.attachments };
+  items.sort((x, y) => PRICE_BANDS.indexOf(x.band!) - PRICE_BANDS.indexOf(y.band!) || priceOf(x.p!) - priceOf(y.p!));
+  const present = PRICE_BANDS.filter((b) => items.some((x) => x.band === b));
+
+  type Layout = { intro?: string; headers?: Partial<Record<PriceBand, string>>; details?: Record<string, string>; closing?: string; million?: string };
+  let out: Layout = {};
+  try {
+    const villaLines = items
+      .map((x) => {
+        const p = x.p!;
+        const facts = [
+          p.title,
+          p.bedrooms ? `${p.bedrooms} bedrooms` : "",
+          p.bathrooms ? `${p.bathrooms} bathrooms` : "",
+          ...keyFeatureBits(p),
+        ].filter(Boolean).join("; ");
+        return `${x.id} [${x.band}] ${facts}`;
+      })
+      .join("\n");
+    out = await chatCompletionJSON<Layout>({
+      model: WRITER_MODEL,
+      label: "ladder-layout",
+      system: `You lay out a villa shortlist a Bali rental broker sends a client on WhatsApp, in the broker's own voice. The villas go out as separate messages right after the lead-in: a short title per price group, then each villa's link with a one-line caption, then one closing line.
+
+Return JSON only: {"intro": "...", "headers": {"below": "...", "in": "...", "above": "..."}, "details": {"<ID>": "..."}, "closing": "...", "million": "..."}
+
+intro — the lead-in message. Start from the DRAFT: keep what it says to the client that is not about these villas (their name, a thank-you, an answer to a question they asked). Remove every villa it lists, names or describes, every price of a villa, and any "here are" / "links below" phrasing. Then say you've put together ${items.length === 1 ? "an option" : `${items.length} options`} for their request (${items.length === 1 ? "ONE villa: never say \"a few\" or \"options\"" : "never a different number"}), saying their request back WITH ITS DETAILS in their own terms: bedrooms, area(s) and every preference they mentioned (a garden, an enclosed kitchen or living room, a place to work, quiet, near the beach, pets, a pool, anything). Clients want to hear that their details were heard; that is the point of this line. Then one line on the price spread, naming only the groups present (${present.join(", ")}): e.g. "some a bit below your budget, some within it and some a little above, so you can compare". Never say or imply a villa is available, free or free now; availability is checked after they choose. No question in the intro. Short WhatsApp paragraphs, no dashes, no sign-off, no bullet list.
+
+headers — for each group present, 2-5 words in the client's language: "A bit below your budget", "Within your budget", "A bit above your budget".
+
+details — for EACH villa ID, one short line (up to 15 words) built ONLY from its facts below: what stands out for this client first (what matches their preferences), then the rest. Never invent a feature, never mention availability, and never name the area, the district or the price: the caption line above it already says "Tumbak Bayuh, Pererenan — Rp 40M".
+
+closing — one line asking which ones they like overall, so you can check their availability. Nothing else.
+
+million — how a price in millions of rupiah is written short in the client's language: "M" in English, "млн" in Russian, "jt" in Indonesian.
+
+Language: ${opts.language ?? "the language the client writes in (the draft is already in it)"}.`,
+      messages: [
+        {
+          role: "user",
+          content: `CLIENT'S REQUEST (as read by our filter): ${describeRequest(opts.request)}\n\nCLIENT'S OWN WORDS (newest first):\n${opts.clientWords.slice(0, 7).map((t) => `- ${t.slice(0, 400)}`).join("\n") || "(none)"}\n\nDRAFT:\n${opts.text}\n\nVILLAS (ID [group] facts):\n${villaLines}`,
+        },
+      ],
+      max_tokens: 1200,
+      temperature: 0,
+    });
+  } catch (err) {
+    logger.warn({ err, leadId: opts.leadId }, "ladder layout: the wording call failed — plain titles, no detail lines");
+  }
+
+  const million = (out.million ?? "").trim();
+  const unit = million && million.length <= 5 && !/\d/.test(million) ? million : "M";
+  const headers: Record<PriceBand, string> = {
+    below: (out.headers?.below ?? "").trim() || LADDER_FALLBACK_HEADERS.below,
+    in: (out.headers?.in ?? "").trim() || LADDER_FALLBACK_HEADERS.in,
+    above: (out.headers?.above ?? "").trim() || LADDER_FALLBACK_HEADERS.above,
+  };
+  const closing = sanitizeSuggestion(out.closing ?? "").trim() || LADDER_FALLBACK_CLOSING;
+  const attachments = items.map((x, i) => {
+    const detail = sanitizeSuggestion(out.details?.[x.id!] ?? "").replace(/\s+/g, " ").trim();
+    const head = `${i + 1}. ${ladderAreaLabel(x.p!.area)} — Rp ${ladderMillions(priceOf(x.p!))}${unit === "M" ? "M" : ` ${unit}`}`;
+    return { ...x.a, ladder: { band: x.band!, caption: detail ? `${head}\n${detail}` : head, headers, closing } };
+  });
+  const intro = sanitizeSuggestion(out.intro ?? "").trim();
+  logger.info(
+    { leadId: opts.leadId, groups: present, villas: attachments.length, worded: !!intro },
+    "ladder layout: shortlist laid out as intro, group titles, captioned links and closing",
+  );
+  return { text: intro.length > 20 ? intro : opts.text, attachments };
 }
 
 /**
@@ -1713,6 +1881,10 @@ export async function applyViewingPush(
   ctx: ViewingPushContext,
 ): Promise<string> {
   if (!text.trim()) return text;
+  // A price-ladder shortlist ends on its own closing line (which villas they
+  // like, so availability can be checked); a viewing sentence in the lead-in
+  // would ask before they have seen a single villa.
+  if (isLadderLayout(attachments)) return text;
   const lastLeadText = ctx.lastLeadText ?? [...ctx.messages].reverse().find((m) => m.from === "lead")?.text ?? "";
   return enforceViewingProposal(text, attachments, {
     leadId: ctx.leadId,
