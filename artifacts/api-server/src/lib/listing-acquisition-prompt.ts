@@ -26,7 +26,7 @@
  * messages (owner-voice.ts), and nothing the thread already answers is asked
  * again (owner-thread-known.ts — in the prompt, and cut from the finished draft).
  */
-import { db, leadsSyncTable } from "@workspace/db";
+import { db, leadsSyncTable, brokerSettingsTable } from "@workspace/db";
 import { eq, isNull, and } from "drizzle-orm";
 import { chatCompletionJSON, WRITER_MODEL } from "./ai-client";
 import { brokerDisplayName } from "./broker-identity";
@@ -39,7 +39,8 @@ import {
   type ListingFacts,
 } from "./listing-card-fields";
 import { reconcileListingStage } from "./listing-stage-engine";
-import { getAmoLead } from "./amo-client";
+import { getAmoLead, amoPost } from "./amo-client";
+import { isMediaOnly } from "./media-message";
 import { LISTING_STAGE } from "./listing-status-week";
 import { latestInspectionSlot } from "./listing-progress";
 import { applyInspectionAsk, bookingPlan, inspectionBookingPromptBlock, type BookingPlan } from "./inspection-booking";
@@ -194,6 +195,27 @@ function hasWords(text: string, n: number): boolean {
   return text.replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(/\s+/).filter(Boolean).length >= n;
 }
 
+/**
+ * One note per burst of media on the card: "the owner sent 3 photos/screenshots in reply to: …".
+ * Keyed by lead + the count so a regenerated draft does not write it twice.
+ */
+async function noteMediaForBroker(leadId: string, markers: string[], ourQuestion: string | null): Promise<void> {
+  const key = `media_note:${leadId}:${markers.length}:${(ourQuestion ?? "").slice(0, 40)}`;
+  const [seen] = await db
+    .select({ key: brokerSettingsTable.key })
+    .from(brokerSettingsTable)
+    .where(eq(brokerSettingsTable.key, key))
+    .limit(1);
+  if (seen) return;
+  const what = markers.map((m) => m.replace(/^\[media:\s*/, "").replace(/\]$/, "")).join(", ");
+  const text =
+    `The owner replied with ${markers.length === 1 ? "a " : markers.length + " x "}${what} — the bot cannot read images, please check it in the chat.` +
+    (ourQuestion ? `\nOur last message was: "${ourQuestion.replace(/\s+/g, " ").slice(0, 300)}"` : "") +
+    `\nThe bot thanked the owner and will not ask the same question again.`;
+  await amoPost(`/api/v4/leads/${leadId}/notes`, [{ note_type: "common", params: { text } }]);
+  await db.insert(brokerSettingsTable).values({ key, value: new Date().toISOString() }).onConflictDoNothing();
+}
+
 export async function generateListingAcquisitionReply(
   opts: ListingAcquisitionOpts,
 ): Promise<{ text: string; contactType: ContactType }> {
@@ -228,6 +250,23 @@ export async function generateListingAcquisitionReply(
   // contact: the only text in the thread there is their own public ad.
   const weHaveSpoken = messages.some((m) => m.from === "us");
   const isFirstContact = opts.isFirstContact || !weHaveSpoken;
+
+  // The villa side answered with nothing but a photo, a screenshot or a file (Yudi, 21.09: owners
+  // send a screenshot of their price list and then get the same question again). The bot cannot
+  // read the picture (media-message.ts), so it does not pretend to: a short thanks in Yudi's words,
+  // and a note on the card telling him there is something to look at. No model, no question.
+  if (!isFirstContact) {
+    let lastUs = -1;
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i]!.from === "us") { lastUs = i; break; }
+    const theirs = messages.slice(lastUs + 1).filter((m) => m.from === "lead");
+    if (theirs.length && theirs.every((m) => isMediaOnly(m.text))) {
+      const lang = ownerThreadLanguage(messages.map((m) => ({ senderType: m.from === "lead" ? "lead" : "broker", text: m.text })));
+      const text = lang === "id" ? "Terima kasih kak, sudah kami terima 🙏" : "Thank you, received 🙏";
+      if (!replay) await noteMediaForBroker(opts.leadId, theirs.map((m) => m.text), messages[lastUs]?.text ?? null).catch(() => undefined);
+      logger.info({ leadId: opts.leadId, media: theirs.length }, "listing reply: the owner sent only media — thanks, and a note for the broker");
+      return { text, contactType: "unclear" };
+    }
+  }
 
   const leadContextBase = opts.leadNotes?.trim()
     ? `\nLISTING / LEAD CARD INFO (whatever is known about the property and contact):\n${opts.leadNotes.trim()}\n`

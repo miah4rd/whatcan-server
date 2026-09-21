@@ -25,6 +25,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { extractListingFacts, type ListingFacts } from "./listing-card-fields";
 import { chatCompletion, HELPER_MODEL } from "./ai-client";
 import { logger } from "./logger";
+import { isDocumentMedia } from "./media-message";
 
 export type OwnerPoint =
   | "bedrooms"
@@ -276,6 +277,13 @@ export function threadKnown(lines: ThreadLine[], facts: ListingFacts | null, asO
         if (answersUs && own.trim().split(/\s+/).length <= 12 && SHORT_ANSWER.test(own) && !QUESTION_SENTENCE.test(own.trim())) {
           const ourAsks = [...new Set((ourLast!.text ?? "").split(/(?<=[.!?])\s+|\n/).flatMap((s) => asksIn(s)))];
           if (ourAsks.length === 1) put(ourAsks[0]!, { how: "thread", said: `"${clip(own, 60)}" to our question about ${POINT_LABEL[ourAsks[0]!]}` });
+        }
+        // A screenshot, photo or file sent right after our question answers what we asked, as far as
+        // we can tell: we cannot read the picture (see media-message.ts), and asking again is exactly
+        // what the owner complains about ("I already sent you the screenshot"). A person reads it.
+        if (answersUs && isDocumentMedia(m.text)) {
+          const ourAsks = [...new Set((ourLast!.text ?? "").split(/(?<=[.!?])\s+|\n/).flatMap((s) => asksIn(s)))];
+          for (const p of ourAsks) put(p, { how: "thread", said: `sent a photo/screenshot in reply to our question about ${POINT_LABEL[p]}` });
         }
         if (engaged) lastEngagedAt = m.sentAt.getTime();
       }
