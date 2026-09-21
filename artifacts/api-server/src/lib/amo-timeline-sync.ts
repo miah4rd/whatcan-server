@@ -8,6 +8,7 @@
  * Types 90 = outgoing message (bot/broker)
  */
 import { db, leadMessagesTable, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
+import { mediaMarker } from "./media-message";
 import { eq, and, sql, isNotNull, not } from "drizzle-orm";
 import { createHash } from "crypto";
 import { logger } from "./logger";
@@ -159,7 +160,12 @@ export function parseTimelineEvents(leadId: string, events: TimelineEvent[]): Ra
     const data = ev.data;
     if (!data) continue;
 
-    const text = data.message?.text || "";
+    // A photo, screenshot or file has no text: keep it as a marker instead of dropping it, or an
+    // owner who answered with a screenshot has "said nothing" and gets the question again.
+    const text =
+      data.message?.text ||
+      mediaMarker(data.message?.type, (data.message as { media_file_name?: string } | undefined)?.media_file_name) ||
+      "";
     if (!text) continue;
 
     let senderName: string;

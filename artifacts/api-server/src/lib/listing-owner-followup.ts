@@ -209,51 +209,44 @@ export function ownerGreeting(owner: string, lang: OwnerLang, at: Date = new Dat
  * every round, but a short one, in the owner's language, with the price asked in the shape we need.
  */
 export function ownerAskLines(asks: NudgeAsk[], o: { lang: OwnerLang; villa: string; call?: string }): string[] {
-  const lines: string[] = [];
+  // One short question per line, in Yudi's own phrasings from his phone (owner, 21.09.2026: "нужно
+  // копировать стиль Юди"): "may i double check if this price is already included with 10% agency
+  // commission?", "Sampai kapan isi tamu ya?", "275 juta setahun itu sudah termasuk komisi kami 10%
+  // atau belum?", "Kira kira kapan bisa kita ajak client liat villanya?". The old template packed
+  // every open point into one 40–60 word sentence; his lines are 8–12 words.
   const has = (a: NudgeAsk) => asks.includes(a);
+  const lines: string[] = [];
   if (o.lang === "id") {
     const call = o.call || "kak";
-    const villa = spokenVilla(o.villa) || "villanya";
-    if (has("still_renting")) lines.push(`Untuk ${villa} apakah masih tersedia untuk sewa bulanan atau tahunan ya ${call}?`);
-    if (has("availability")) lines.push(`Kira-kira ${villa} kosong lagi mulai kapan ya ${call}?`);
-    const nouns = [
-      has("bedrooms") && "jumlah kamar tidurnya",
-      has("price") && "harga sewa bulanan dan tahunan yang sudah termasuk 10% komisi agensi",
-      has("price_plain") && "harga sewa bulanan dan tahunannya",
-      has("monthly_price") && !has("price") && !has("price_plain") && "harga sewa per bulannya (bukan per tahun)",
-      has("min_stay") && "minimal sewanya",
-      has("viewing") && "kapan kami bisa bawa client untuk lihat villanya",
-    ].filter((x): x is string => Boolean(x));
-    if (nouns.length) {
-      lines.push(`${has("still_renting") ? "Boleh" : `Untuk ${villa}, boleh`} di bantu info ${joinList(nouns, "dan")} ya ${call}?`);
-    }
-    if (has("commission") && !has("price") && !has("price_plain")) lines.push(`Untuk harganya apakah sudah termasuk 10% komisi agensi ya ${call}?`);
-    if (has("owner")) {
-      lines.push(`${lines.length ? "Dan apakah" : "Apakah"} ${call} owner villanya, tim dari owner, atau ada management company yang kelola?`);
-    }
+    const villa = spokenVilla(o.villa);
+    if (has("still_renting")) lines.push(`${villa ? `Untuk ${villa} masih` : "Villanya masih"} bisa disewa bulanan atau tahunan ya ${call}?`);
+    if (has("availability")) lines.push(`Kira-kira kosong lagi mulai kapan ya ${call}?`);
+    if (has("price")) lines.push(`Harga sewa bulanan dan tahunannya berapa ya ${call}, sudah termasuk komisi 10%?`);
+    if (has("price_plain")) lines.push(`Harga sewa bulanan dan tahunannya berapa ya ${call}?`);
+    if (has("monthly_price")) lines.push(`Kalau sewa bulanan harganya berapa ya ${call}?`);
+    if (has("commission") && !has("price")) lines.push(`Harganya sudah termasuk komisi 10% ya ${call}?`);
+    if (has("bedrooms")) lines.push(`Kamarnya ada berapa ya ${call}?`);
+    if (has("min_stay")) lines.push(`Minimal sewanya berapa lama ya ${call}?`);
+    if (has("viewing")) lines.push(`Kira-kira kapan bisa kami ajak client lihat villanya?`);
+    if (has("owner")) lines.push(`Ini dengan owner langsung atau ada management ya ${call}?`);
     return lines;
   }
-  const villa = spokenVilla(o.villa) || "your villa";
-  if (has("still_renting")) lines.push(`Is ${villa} still available for monthly or yearly rent?`);
-  if (has("availability")) lines.push(`Roughly from when will ${villa} be free again?`);
-  const nouns = [
-    has("bedrooms") && "the number of bedrooms",
-    has("price") && "the monthly and yearly price, already included with our 10% agency commission",
-    has("price_plain") && "the monthly and yearly price",
-    has("monthly_price") && !has("price") && !has("price_plain") && "the monthly price (not the yearly one)",
-    has("min_stay") && "the minimum rental period",
-    has("viewing") && "when we could bring a client to view the villa",
-  ].filter((x): x is string => Boolean(x));
-  if (nouns.length) lines.push(`${has("still_renting") ? "May I also know" : `For ${villa}, may I know`} ${joinList(nouns, "and")}?`);
-  if (has("commission") && !has("price") && !has("price_plain")) {
-    lines.push("May I double check if the price is already included with our 10% agency commission?");
-  }
-  if (has("owner")) {
-    // Yudi's length (19.09.2026): the old line was 22 words on its own.
-    lines.push(`${lines.length ? "Also, are" : "Are"} you the owner, or is it managed by a team or company?`);
-  }
+  const villa = spokenVilla(o.villa);
+  if (has("still_renting")) lines.push(`Is ${villa || "the villa"} still available for monthly or yearly rent?`);
+  if (has("availability")) lines.push(`Roughly when will it be free again?`);
+  if (has("price")) lines.push(`May I know the monthly and yearly price, including our 10% commission?`);
+  if (has("price_plain")) lines.push(`May I know the monthly and yearly price?`);
+  if (has("monthly_price")) lines.push(`May I know the monthly price?`);
+  if (has("commission") && !has("price")) lines.push(`May I double check if the price already includes our 10% commission?`);
+  if (has("bedrooms")) lines.push(`How many bedrooms does it have?`);
+  if (has("min_stay")) lines.push(`What's the minimum stay?`);
+  if (has("viewing")) lines.push(`When could we bring a client to see it?`);
+  if (has("owner")) lines.push(`Are you the owner, or is there a management company?`);
   return lines;
 }
+
+/** At most this many questions in one nudge; the rest wait for the next round (owner, 21.09.2026). */
+export const NUDGE_MAX_ASKS = 2;
 
 /**
  * The owner reads this: a greeting line, only the questions still open, a short thanks — the shape
@@ -264,8 +257,14 @@ export function ownerAskLines(asks: NudgeAsk[], o: { lang: OwnerLang; villa: str
 export function composeNudge(o: { owner: string; villa: string; lang: OwnerLang; asks: NudgeAsk[]; at?: Date }): string {
   if (!o.asks.length) return "";
   const g = ownerGreeting(o.owner, o.lang, o.at);
-  const asks = ownerAskLines(o.asks, { lang: o.lang, villa: o.villa, call: g.call });
-  return [g.line, ...asks, o.lang === "id" ? "Terimakasih" : "Thank you"].join("\n");
+  const lines = ownerAskLines(o.asks, { lang: o.lang, villa: o.villa, call: g.call }).slice(0, NUDGE_MAX_ASKS);
+  // Name the villa once, the way Yudi does ("For Villa Jangkar Canggu, may I know…"), unless the
+  // first line already says it: an owner with several villas has to know which one we mean.
+  const villa = spokenVilla(o.villa);
+  if (villa && lines[0] && !lines[0].includes(villa)) {
+    lines[0] = o.lang === "id" ? `Untuk ${villa}, ${lines[0].charAt(0).toLowerCase()}${lines[0].slice(1)}` : `For ${villa}, ${lines[0].charAt(0).toLowerCase()}${lines[0].slice(1)}`;
+  }
+  return [g.line, ...lines].join("\n");
 }
 
 /**
