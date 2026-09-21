@@ -62,7 +62,7 @@ export type ReportRow = {
   slot_id: string | null;
   property_code: string | null;
   visit_at: Date;
-  status: "due" | "checking" | "done" | "failed" | "not_listing";
+  status: "due" | "checking" | "done" | "failed" | "not_listing" | "cancelled";
   red_flags: string | null;
   green_flags: string | null;
   construction_nearby: boolean | null;
@@ -273,7 +273,18 @@ export async function runDuePass(opts: { dry?: boolean } = {}): Promise<Array<{ 
   }
   if (!opts.dry) {
     const open = await pool.query(`SELECT DISTINCT lead_id FROM inspection_reports WHERE status IN ('due', 'failed')`);
-    for (const r of open.rows) await ensurePlaceholder(String(r.lead_id)).catch(() => undefined);
+    for (const r of open.rows) {
+      const leadId = String(r.lead_id);
+      // A card a person closed after the visit owes no report (23590381, 21.09).
+      const lead = await getAmoLead(leadId).catch(() => null);
+      if (lead?.status_id && CLOSED.has(lead.status_id)) {
+        await pool.query(`UPDATE inspection_reports SET status = 'cancelled', updated_at = now() WHERE lead_id = $1 AND status IN ('due', 'failed')`, [leadId]);
+        await closeTaskAndPlaceholder(leadId, "Card closed — no inspection report needed").catch(() => undefined);
+        logger.info({ leadId }, "inspection report: card closed, report cancelled");
+        continue;
+      }
+      await ensurePlaceholder(leadId).catch(() => undefined);
+    }
   }
   return out;
 }
@@ -296,7 +307,12 @@ export async function announceDue(leadId: string, code: string | null, visitAt: 
  * passes retire drafts (a booking ask, an answered LIVE), so the due pass re-checks every open report.
  */
 async function ensurePlaceholder(leadId: string): Promise<void> {
-  const pending = await pool.query(`SELECT 1 FROM pending_suggestions WHERE lead_id = $1 AND status = 'pending' LIMIT 1`, [leadId]);
+  // Our placeholder, or any pending PUSH, carries the report; a stale hidden LIVE draft does not
+  // (Villa Markisa 23299143, 21.09: an old LIVE kept the card out of the inbox).
+  const pending = await pool.query(
+    `SELECT 1 FROM pending_suggestions WHERE lead_id = $1 AND status = 'pending' AND (kind = 'push' OR autopilot_skipped_reason = $2) LIMIT 1`,
+    [leadId, INSPECTION_REPORT_VERDICT],
+  );
   if (!pending.rows.length) {
     const sync = await pool.query(`SELECT responsible_user FROM leads_sync WHERE lead_id = $1`, [leadId]).catch(() => ({ rows: [] as any[] }));
     await pool.query(
