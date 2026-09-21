@@ -472,7 +472,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
     // R-YUD-050, a 3BR at 66M, went to 2BR-under-50M and Ubud-only requests.
     const stillOpening = opts.dialogMessages.filter((m) => m.from === "lead").length <= 1;
     const sent = new Set(excludeIds.map((i) => i.toUpperCase()));
-    if (adId && stillOpening && !sent.has(adId) && !out.some((a) => a.url.toUpperCase().includes(`/PROPERTY/${adId}`))) {
+    if (adId && stillOpening && out.length < 6 && !sent.has(adId) && !out.some((a) => a.url.toUpperCase().includes(`/PROPERTY/${adId}`))) {
       const villa = (await fetchAllPropertiesForPriceLookup().catch(() => [])).find((p) => p.id.toUpperCase() === adId);
       const misfits = villa ? requestMisfits(villa, outcome.request) : ["not in the published catalog"];
       if (villa && misfits.length === 0) {
@@ -1155,7 +1155,20 @@ export function shortlistPromptBlock(picked: PickedAttachments | null | undefine
       : "");
   if (picked.skipped || o.declined) return advisory;
   if (picked.attachments.length > 0) {
-    return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it. If you give a number of villas, it is exactly ${picked.attachments.length}.${advisory}`;
+    // The price ladder (owner, 21.09.2026): some villas may be cheaper or
+    // dearer than the budget on purpose. A fact for the words, never a
+    // licence to call a dearer villa "within budget".
+    const bands = o.priceBands ?? {};
+    const titleOf = (a: { label: string; url: string }) => a.label.split(" (")[0] ?? a.label;
+    const inBand = (b: string) =>
+      picked.attachments.filter((a) => bands[(a.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase()] === b).map(titleOf);
+    const above = inBand("above");
+    const below = inBand("below");
+    const ladder =
+      above.length > 0 || below.length > 0
+        ? ` These are chosen on purpose around their budget so they can compare prices:${below.length ? ` cheaper than their budget — ${below.map((t) => `"${t}"`).join(", ")};` : ""}${above.length ? ` ABOVE their budget — ${above.map((t) => `"${t}"`).join(", ")}; say plainly that these cost more than they planned and never call them within budget;` : ""} the rest are in their budget.`
+        : "";
+    return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it.${ladder} If you give a number of villas, it is exactly ${picked.attachments.length}.${advisory}`;
   }
   const question = relaxQuestion(o.hint);
   const exceptExample = o.hint?.example ? " except the one closest option the question below names" : "";

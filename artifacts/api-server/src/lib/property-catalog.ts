@@ -1773,10 +1773,40 @@ function requestAreaSet(r: ClientRequest): string[] {
 }
 
 /**
+ * The price ladder of a Rental shortlist (owner, 21.09.2026). A budget a
+ * client names is usually lower than what they will really pay, and a price is
+ * only understood beside other prices: two villas cheaper than the budget, two
+ * in it and two a little above, so the client compares and often picks one in
+ * budget and one above to view the same day. Around a stated monthly budget B
+ * (a range's upper figure): below = 70-90% of B, in = 90-100%, above = 100-125%.
+ * Bedrooms, area and dates stay strict filters; only the money is a corridor.
+ */
+export const PRICE_BAND_LOW = 0.7;
+export const PRICE_BAND_IN = 0.9;
+export const PRICE_BAND_HIGH = 1.25;
+export const PER_PRICE_BAND = 2;
+export type PriceBand = "below" | "in" | "above";
+export const PRICE_BANDS: PriceBand[] = ["below", "in", "above"];
+
+export function priceBandOf(price: number, budget: number | null | undefined): PriceBand | null {
+  if (!budget || budget <= 0 || price <= 0) return null;
+  if (price < budget * PRICE_BAND_LOW || price > budget * PRICE_BAND_HIGH) return null;
+  if (price < budget * PRICE_BAND_IN) return "below";
+  return price <= budget ? "in" : "above";
+}
+
+export const PRICE_BAND_LABEL: Record<PriceBand, string> = {
+  below: "BELOW BUDGET",
+  in: "IN BUDGET",
+  above: "ABOVE BUDGET",
+};
+
+/**
  * Why this villa is NOT inside the request — empty when it is. The one judge:
  * bedrooms exactly as asked (a range / "at least" as stated, never ±1), the
  * named areas only (neighbours only when the client said nearby is fine), the
- * published monthly price at or under the ceiling with no headroom, free on the
+ * published monthly price inside the price ladder (70-125% of the stated
+ * budget, see PRICE_BAND_*), free on the
  * move-in date and for the whole stay, a minimum stay no longer than theirs.
  */
 export function requestMisfitDims(p: SupabaseProperty, r: ClientRequest, now: Date = new Date()): Misfit[] {
@@ -1797,8 +1827,12 @@ export function requestMisfitDims(p: SupabaseProperty, r: ClientRequest, now: Da
   if (p.listing_type === "rent") {
     const price = priceOf(p);
     if (r.budgetMaxIdr !== null) {
+      // The price ladder (above): 70-125% of the stated budget is inside.
       if (price <= 0) out.push({ dim: "budget", why: "no published price" });
-      else if (price > r.budgetMaxIdr) out.push({ dim: "budget", why: `${millions(price)} is over ${millions(r.budgetMaxIdr)}` });
+      else if (price > Math.round(r.budgetMaxIdr * PRICE_BAND_HIGH))
+        out.push({ dim: "budget", why: `${millions(price)} is well over ${millions(r.budgetMaxIdr)}` });
+      else if (price < Math.round(r.budgetMaxIdr * PRICE_BAND_LOW))
+        out.push({ dim: "budget", why: `${millions(price)} is far under ${millions(r.budgetMaxIdr)}` });
     }
     if (r.budgetMinIdr !== null && price > 0 && price < Math.round(r.budgetMinIdr * 0.85)) {
       out.push({ dim: "budget", why: `${millions(price)} is well below their range` });
@@ -1963,6 +1997,8 @@ export type ShortlistOutcome = {
   sentOutside: OutsideVilla[];
   /** The villa the client named or clicked, when it is outside their own request. */
   namedOutside: OutsideVilla[];
+  /** Rental with a stated budget: the price group of each attached villa (id upper-cased). */
+  priceBands?: Record<string, PriceBand>;
 };
 
 export type OutsideVilla = { id: string; title: string; why: string[] };
@@ -2209,7 +2245,7 @@ export async function matchProperties(opts: MatchOptions): Promise<PropertyPick[
  * message carries none. Nothing is ever added to make up numbers.
  */
 export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ picks: PropertyPick[]; outcome: ShortlistOutcome }> {
-  const limit = opts.limit ?? 3;
+  let limit = opts.limit ?? 3;
   const excludeIds = opts.excludeIds ?? [];
   const exclude = new Set(excludeIds.map((id) => id.toUpperCase()));
 
@@ -2289,17 +2325,32 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
   );
 
   const budgetKnown = request.budgetMaxIdr !== null;
+  // The price ladder (owner, 21.09.2026): a bot's own Rental shortlist with a
+  // stated budget carries up to two villas in each price group. A broker's
+  // revision keeps its own limit — the broker is choosing, not the ladder.
+  const banded = opts.listingType === "rent" && budgetKnown && !opts.brokerInstruction;
+  const bandOf = (p: SupabaseProperty): PriceBand | null => (banded ? priceBandOf(priceOf(p), request.budgetMaxIdr) : null);
+  if (banded) limit = PER_PRICE_BAND * PRICE_BANDS.length;
+  const bandLine = (p: SupabaseProperty) => {
+    const b = bandOf(p);
+    return b ? `[${PRICE_BAND_LABEL[b]}] ` : "";
+  };
   try {
     // The top of the ranked pool, each with its reasons. No "this broker has used
     // these before" block any more: broker_property_picks is bumped by every
     // approve of the bot's OWN picks, so it fed the oldest villas back in.
     const whyOf = new Map(ranked.map((x) => [x.p.id, x.why]));
-    const catalogBlock = candidates
-      .slice(0, SHOWN_TO_MATCHER)
+    // With the ladder every price group gets its own share of the catalog —
+    // the ranking favours prices near the budget, so a flat top 12 could hold
+    // no cheaper villa at all.
+    const shown = banded
+      ? PRICE_BANDS.flatMap((b) => candidates.filter((p) => bandOf(p) === b).slice(0, 5))
+      : candidates.slice(0, SHOWN_TO_MATCHER);
+    const catalogBlock = shown
       .map((p, i) => {
         const style = styleHint(p);
         const why = (whyOf.get(p.id) ?? []).join("; ");
-        return `${i + 1}. ${summaryLine(p)}${why ? ` | why: ${why}` : ""}${style ? ` | ${style}` : ""}`;
+        return `${i + 1}. ${bandLine(p)}${summaryLine(p)}${why ? ` | why: ${why}` : ""}${style ? ` | ${style}` : ""}`;
       })
       .join("\n");
     const brokerRevision = opts.brokerInstruction
@@ -2317,7 +2368,11 @@ ${opts.mustAttach ? MUST_ATTACH_RULE : DECLINE_RULES}
 
 EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first: first by how closely the villa matches the request (an area they named over a neighbour, a price close to their budget without going over it, free on their dates, a minimum stay that suits them, and the key features they asked for — a garden, a place to work, an enclosed living room, a quiet street), then villas with green flags from our inspection go first, then, only between villas that match equally, by what we know about the villa (inspected (Listed), a video tour, a full photo set, dates confirmed recently). Villas with a red flag or construction nearby are only in the catalog when nothing else fits, and then they are at the bottom. How long a listing has been on the site plays no part: rentals come free again and again. Each line gives its reasons after "why:". Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, never because it is cheaper, older, newer or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously. A "checked:" part lists key features a person verified (garden, living room, workspace, quiet street, no construction next door); a feature missing from it is UNKNOWN, not absent.
 
-Pick up to ${limit} listing IDs, preferring ${MIN_SHORTLIST}-${limit} so the lead has something to compare. Never pad: if only one genuinely fits, return one.${
+${
+        banded
+          ? `THE SHORTLIST IS A PRICE LADDER around the client's budget of ${millions(request.budgetMaxIdr!)} a month: each catalog line is tagged BELOW BUDGET (70-90% of it), IN BUDGET (90-100%) or ABOVE BUDGET (up to 25% over). Clients name less than they will pay and understand a price only beside others, so pick up to ${PER_PRICE_BAND} from EACH group that has villas — up to ${limit} in all. A group with no villa is simply absent. Inside a group, prefer the top of the list.`
+          : `Pick up to ${limit} listing IDs, preferring ${MIN_SHORTLIST}-${limit} so the lead has something to compare. Never pad: if only one genuinely fits, return one.`
+      }${
         (opts.seenCount ?? 0) > 0
           ? `\n\nThis lead has already been shown ${opts.seenCount} listing(s) and those are excluded from the catalog below.`
           : ""
@@ -2360,6 +2415,30 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
         (p) => !ids.has(p.id.toUpperCase()) && !chosenTitles.has((p.title ?? p.id).trim().toLowerCase()),
       );
       picked.push(...rest.slice(0, MIN_SHORTLIST - picked.length));
+    }
+    if (banded) {
+      // Up to two per group, in the model's choice first, then the next ranked
+      // villa of the same group — every one of them inside the request.
+      const ladder: SupabaseProperty[] = [];
+      const titles = new Set<string>();
+      const add = (p: SupabaseProperty) => {
+        const t = (p.title ?? p.id).trim().toLowerCase();
+        if (titles.has(t)) return false;
+        titles.add(t);
+        ladder.push(p);
+        return true;
+      };
+      for (const b of PRICE_BANDS) {
+        let n = 0;
+        for (const p of picked) if (n < PER_PRICE_BAND && bandOf(p) === b && add(p)) n++;
+        for (const p of candidates) if (n < PER_PRICE_BAND && bandOf(p) === b && !ladder.includes(p) && add(p)) n++;
+      }
+      outcome.priceBands = Object.fromEntries(ladder.map((p) => [p.id.toUpperCase(), bandOf(p)!]));
+      logger.info(
+        { budget: request.budgetMaxIdr, ladder: ladder.map((p) => `${p.id}:${bandOf(p)}:${millions(priceOf(p))}`) },
+        "matchProperties: price ladder",
+      );
+      return done(ladder);
     }
     const final = budgetKnown ? picked : spreadByPrice(picked.slice(0, limit), candidates);
     return done(final.slice(0, limit));
