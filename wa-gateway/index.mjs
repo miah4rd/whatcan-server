@@ -175,6 +175,14 @@ async function startSession(name, { pairingPhone = null } = {}) {
         return;
       }
       if (s.stopped) return;
+      // 403 = WhatsApp refuses this account (banned or restricted). Retrying
+      // every minute only keeps knocking on it; stop and report.
+      if (code === 403) {
+        s.stopped = true;
+        emit({ kind: "session", session: name, status: "forbidden", code });
+        log.error({ name }, "WhatsApp refused the account (403) — not reconnecting");
+        return;
+      }
       s.retries += 1;
       const delay = Math.min(60000, 2000 * s.retries);
       emit({ kind: "session", session: name, status: "reconnecting", code, retries: s.retries });

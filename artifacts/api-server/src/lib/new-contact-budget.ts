@@ -64,7 +64,10 @@ function baliDateString(now: Date): string {
  * Yudi's first line saw 0–3 of 9–13 a day all week. Held until that is
  * explained; a card that notice closes may be a live owner.
  */
-const NO_NEW_CONTACTS = new Set<number>([62585]);
+// 900002 (Yudi 2, own bridge): WhatsApp refused the session (403) on 21.09.2026
+// at 10:12 Bali, ten minutes after nine cold first contacts left in a burst on a
+// three-day-old number. Held until the owner decides.
+const NO_NEW_CONTACTS = new Set<number>([62585, 900002]);
 
 /**
  * A ONE-DAY exception, granted by name, never a new rule.
