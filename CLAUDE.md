@@ -1798,6 +1798,26 @@ QUALIFIED только по входящему сообщению, своё ис
 audit still promotes, or a card whose owner gave everything and then got an answer from us could
 never qualify again.
 
+### Owners answer with screenshots; nudges are written the way Yudi writes (2026-09-21)
+
+Yudi: owners answer a price question with a screenshot of their price list, and the bot asks the
+same question again; and the bot writes long blocks nobody types on a phone.
+- **A message without text was dropped.** `parseTimelineEvents` skipped every type-89/90 event with an
+  empty `text`, and a photo, screenshot or file has none. It is now stored as a marker,
+  `[media: photo or screenshot]` / `[media: file <name>]` (`lib/media-message.ts`).
+- **The picture is not read yet.** amoCRM keeps chat media behind `drive-b.amocrm.ru/download/...`,
+  which redirects to VK Cloud storage (`hb.ru-msk.vkcloud-storage.ru`); this VPS cannot even open a
+  TCP connection to it (the Mac downloads the same file in 1.5 s), and Anthropic refuses the URL by
+  robots.txt. Reading it needs a relay that can reach VK Cloud (Cloudflare or a Supabase function).
+- **A photo/screenshot/file straight after our question answers what we asked** (`threadKnown`): the
+  nudge and `stripRepeatedAsks` stop asking those points. An owner reply that is ONLY media gets
+  "Thank you, received 🙏" / "Terima kasih kak, sudah kami terima 🙏" from the listing reply
+  generator (no model) and a note on the card telling the broker to look at it (once per burst,
+  key `media_note:<lead>:<count>:<question>` in broker_settings).
+- **Nudges** (`ownerAskLines`, `composeNudge`): one short question per line in Yudi's own phrasings,
+  at most `NUDGE_MAX_ASKS` = 2 per message, the villa named once; the rest wait for the next round.
+  The old template put every open point in one 40-60 word sentence (medians 25-29 words vs Yudi's 8).
+
 ### The autopilot check of 11.09: what "тупит" looked like
 
 The owner: "проверь как автопилот работает вчера, сегодня и двигает карты по
