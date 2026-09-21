@@ -279,7 +279,7 @@ export async function runDuePass(opts: { dry?: boolean } = {}): Promise<Array<{ 
 }
 
 /** The task, the push, and the placeholder draft that puts the card in Yudi's inbox. */
-async function announceDue(leadId: string, code: string | null, visitAt: Date, cardName: string | null, responsible?: number): Promise<void> {
+export async function announceDue(leadId: string, code: string | null, visitAt: Date, cardName: string | null, responsible?: number): Promise<void> {
   const villa = code ?? (cardName ?? `card #${leadId}`).slice(0, 60);
   await createAmoTask(
     leadId,
@@ -305,7 +305,7 @@ async function ensurePlaceholder(leadId: string): Promise<void> {
       [
         leadId,
         sync.rows[0]?.responsible_user ?? "Yudi",
-        "Thank you for having us at the villa today, it was great to see it in person. I'll let you know as soon as it's live on our website.",
+        "Thank you again for having us at the villa, it was great to see it in person. I'll let you know as soon as it's live on our website.",
         INSPECTION_REPORT_VERDICT,
       ],
     );

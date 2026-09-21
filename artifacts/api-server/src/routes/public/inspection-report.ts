@@ -2,6 +2,7 @@ import { Router } from "express";
 import { pool } from "@workspace/db";
 import {
   AMO_CARD_URL,
+  announceDue,
   closeNotListing,
   ensureTable,
   fileReport,
@@ -143,7 +144,11 @@ router.post("/admin/inspection-report/create", async (req, res) => {
   const code = String(req.query["code"] ?? "").trim().toUpperCase() || null;
   if (!/^\d+$/.test(lead) || Number.isNaN(at.getTime())) { res.status(400).json({ error: "lead and at (ISO) required" }); return; }
   await ensureTable();
+  const exists = await pool.query(`SELECT id FROM inspection_reports WHERE lead_id = $1 AND status IN ('due', 'checking', 'failed')`, [lead]);
+  if (exists.rows.length) { res.json({ id: exists.rows[0].id, existed: true }); return; }
   const r = await pool.query(`INSERT INTO inspection_reports (lead_id, property_code, visit_at) VALUES ($1, $2, $3) RETURNING id`, [lead, code, at]);
+  // ?announce=1: the same task, push and inbox card the scheduled pass gives a fresh inspection.
+  if (String(req.query["announce"] ?? "") === "1") await announceDue(lead, code, at, null).catch(() => undefined);
   res.json({ id: r.rows[0].id, url: `/m/inspection/${r.rows[0].id}` });
 });
 
