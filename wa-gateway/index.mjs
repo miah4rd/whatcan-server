@@ -151,6 +151,7 @@ async function startSession(name, { pairingPhone = null } = {}) {
     if (u.qr) {
       s.qr = u.qr;
       s.status = "qr";
+      s.retries = 0; // a fresh QR is not a failure
       if (pairingPhone && !state.creds.registered && !s.pairingCode) await requestPairing(s, pairingPhone);
     }
     if (u.connection === "open") {
@@ -181,6 +182,15 @@ async function startSession(name, { pairingPhone = null } = {}) {
         s.stopped = true;
         emit({ kind: "session", session: name, status: "forbidden", code });
         log.error({ name }, "WhatsApp refused the account (403) — not reconnecting");
+        return;
+      }
+      // 515 = "restart required" right after the phone scanned the QR / typed the
+      // code: WhatsApp expects the new login at once. Waiting (the retry counter
+      // had grown to 60 s while the QR sat unscanned) made it cancel the login:
+      // Amelia saw "Couldn't log in" on 21.09.2026 and the next connect got 401.
+      if (code === DisconnectReason.restartRequired || code === 515) {
+        s.retries = 0;
+        setTimeout(() => void startSession(name).catch((err) => log.error({ err, name }, "restart failed")), 300);
         return;
       }
       s.retries += 1;
