@@ -1074,7 +1074,7 @@ const PAGE_HTML = `<!doctype html>
   function addAttachmentLink(item, url) {
     item.attachments = item.attachments || [];
     for (var i = 0; i < item.attachments.length; i++) {
-      if (item.attachments[i].type === "link" && item.attachments[i].url === url) return false;
+      if (item.attachments[i].type === "link" && String(item.attachments[i].url || "").split("?")[0] === String(url).split("?")[0]) return false;
     }
     var m = url.match(/\\/property\\/([A-Za-z0-9-]+)/i);
     item.attachments.push({ type: "link", label: m ? m[1] : url, url: url, _broker: true });

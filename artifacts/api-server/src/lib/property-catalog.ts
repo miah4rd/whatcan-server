@@ -410,8 +410,18 @@ const PROPERTY_ID_REGEX = /\b([A-Z]{1,4}-[A-Z0-9-]+)\b/g;
  * to append ?currency=IDR, which was noise; the dollars the broker saw came
  * from OUR OWN label, built from the *_usd columns, not from the site.
  */
+/**
+ * The price version on every link the bot sends (owner, 21.09.2026). WhatsApp
+ * keeps a link's preview by its exact address and never looks again: Amelia
+ * sent R-YUD-071 to its owner and the banner said Rp 40M/month while the site
+ * said 34.1 — the preview of that same address from before the price changed.
+ * "?v=341" (the monthly price in hundreds of thousands of rupiah) makes a new
+ * price a new address, so the client always sees the price the site shows.
+ * The path stays /property/<ID>: every reader of sent links stops at the "?".
+ */
 function propertyUrl(p: SupabaseProperty): string {
-  return propertyUrlById(p.id);
+  const price = priceOf(p);
+  return price > 0 ? `${propertyUrlById(p.id)}?v=${Math.round(price / 100_000)}` : propertyUrlById(p.id);
 }
 
 /**
