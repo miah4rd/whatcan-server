@@ -24,6 +24,7 @@ import { sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { UNDELIVERABLE_LEAD_IDS } from "./undeliverable";
 import { brokerLines } from "./amo-messenger-field";
+import { ownLineSession } from "./wa-own-line-ids";
 
 /** Meta tolerates far more than this; the point is to stay unremarkable. */
 /**
@@ -62,7 +63,8 @@ const LINE_WARMUP_START: Record<number, string> = {
  * Day 1 = the Bali date the line is re-linked (set it here the day Yudi scans the QR again).
  */
 const LINE_WARMUP_LADDER: Record<number, { start: string; steps: Array<[lastDay: number, cap: number]> }> = {
-  // 900002: { start: "YYYY-MM-DD", steps: [[3, 3], [7, 5], [11, 7]] }, — set on re-link
+  // Owner, 22.09: "номер работает сегодня, аккуратно начинать".
+  900002: { start: "2026-09-22", steps: [[3, 3], [7, 5], [11, 7]] },
 };
 
 /**
@@ -89,7 +91,8 @@ function baliDateString(now: Date): string {
 // 900002 (Yudi 2, own bridge): WhatsApp refused the session (403) on 21.09.2026
 // at 10:12 Bali, ten minutes after nine cold first contacts left in a burst on a
 // three-day-old number. Held until the owner decides.
-const NO_NEW_CONTACTS = new Set<number>([62585, 900002]);
+// Lifted 22.09 onto the warm-up ladder above.
+const NO_NEW_CONTACTS = new Set<number>([62585]);
 
 /**
  * A ONE-DAY exception, granted by name, never a new rule.
@@ -193,6 +196,29 @@ function firstRow<T>(res: unknown): T | undefined {
  * not count however many messages it got today — repeat contact is not what
  * gets a number flagged.
  */
+/**
+ * A line on our own bridge opens nothing while its WhatsApp session is not linked and open: on 21.09
+ * WhatsApp unlinked Yudi 2 (403) and the gateway dropped the session, so a first contact routed there
+ * would only fail. Read from the gateway, cached a minute; unreadable = not open (fail closed — the
+ * primary line still sends).
+ */
+let bridgeCache: { at: number; open: Set<string> } | null = null;
+async function openBridgeSessions(): Promise<Set<string>> {
+  if (bridgeCache && Date.now() - bridgeCache.at < 60_000) return bridgeCache.open;
+  const open = new Set<string>();
+  try {
+    const res = await fetch(`${process.env.WA_GATEWAY_URL ?? "http://127.0.0.1:3100"}/sessions`, {
+      headers: { "x-wa-secret": process.env.WA_GATEWAY_SECRET ?? "" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) for (const x of (await res.json()) as Array<{ name: string; status: string }>) if (x.status === "open") open.add(x.name);
+  } catch {
+    /* gateway down: nothing on it is open */
+  }
+  bridgeCache = { at: Date.now(), open };
+  return open;
+}
+
 export type LineBudget = {
   line: number | null;
   used: number;
@@ -251,8 +277,11 @@ export async function lineBudgets(responsibleUser: string | null, now: Date = ne
     // cost real leads, and the broker would see only silence.
     logger.warn({ err, responsibleUser }, "new-contact budget: count failed — allowing the send");
   }
+  const bridgeOpen = lines.some((l) => ownLineSession(l)) ? await openBridgeSessions() : new Set<string>();
   return lines.map((line) => {
     const u = used.get(line) ?? 0;
+    const session = ownLineSession(line);
+    if (session && !bridgeOpen.has(session)) return { line, used: u, cap: dailyCapForLine(line, now), open: false };
     const cap = dailyCapForLine(line, now);
     const gapMin = line !== null ? LINE_MIN_GAP_MIN[line] : undefined;
     const last = lastAt.get(line);
