@@ -35,6 +35,7 @@ const INBOUND_URL = process.env.WA_INBOUND_URL ?? "http://127.0.0.1:5000/api/wa/
 const SESSIONS_DIR = path.join(DATA_DIR, "sessions");
 const MEDIA_DIR = path.join(DATA_DIR, "media");
 const OUTBOX_FILE = path.join(DATA_DIR, "outbox.json");
+const HISTORY_DAYS = Number(process.env.WA_HISTORY_DAYS ?? 14);
 
 if (!SECRET) {
   console.error("WA_GATEWAY_SECRET is not set — refusing to start");
@@ -210,6 +211,22 @@ async function startSession(name, { pairingPhone = null } = {}) {
     }
   });
 
+  // Past messages (the sync right after linking, or one chat asked for via
+  // POST /sessions/:name/history). They go to whatcan flagged `history`: stored
+  // with their real time, never mirrored on their own — an admin backfill puts
+  // them into the card. Before 22.09.2026 they were dropped, so Amelia's chats
+  // of 19–22.09 (typed on the phone while her number moved off Wahelp) never
+  // reached amoCRM and Copilot drafted from a conversation four days old.
+  sock.ev.on("messaging-history.set", async ({ messages, syncType }) => {
+    const cutoff = Date.now() / 1000 - HISTORY_DAYS * 86400;
+    let kept = 0;
+    for (const m of messages ?? []) {
+      if (Number(m.messageTimestamp ?? 0) < cutoff) continue;
+      try { await onMessage(name, sock, m, { history: true }); kept++; } catch (err) { log.error({ err: String(err), name, id: m.key?.id }, "history message failed"); }
+    }
+    log.info({ name, syncType, total: messages?.length ?? 0, kept }, "history received");
+  });
+
   sock.ev.on("messages.update", (updates) => {
     for (const { key, update } of updates) {
       if (!key?.fromMe || update?.status == null) continue;
@@ -255,7 +272,7 @@ const MEDIA_KINDS = {
   stickerMessage: "sticker",
 };
 
-async function onMessage(name, sock, m) {
+async function onMessage(name, sock, m, { history = false } = {}) {
   const jid = m.key?.remoteJid;
   if (!jid || !m.message) return;
   if (isJidGroup(jid) || isJidBroadcast(jid) || jid === "status@broadcast" || jid.endsWith("@newsletter")) return;
@@ -281,6 +298,7 @@ async function onMessage(name, sock, m) {
     type: "text",
     text: "",
     quotedId: body?.contextInfo?.stanzaId ?? null,
+    ...(history ? { history: true } : {}),
   };
 
   if (ctype === "conversation") {
@@ -298,6 +316,9 @@ async function onMessage(name, sock, m) {
     ev.type = "contact";
     const tel = /TEL[^:]*:([+\d\s-]+)/.exec(body.vcard ?? "")?.[1]?.replace(/[^\d+]/g, "") ?? "";
     ev.contact = { name: body.displayName ?? "", phone: tel };
+  } else if (MEDIA_KINDS[ctype] && history) {
+    // Old media is not downloaded: the chat only needs to show it was there.
+    ev.text = body.caption ? `[${MEDIA_KINDS[ctype]}] ${body.caption}` : `[${MEDIA_KINDS[ctype]}]`;
   } else if (MEDIA_KINDS[ctype]) {
     ev.type = ctype === "audioMessage" && body.ptt ? "voice" : MEDIA_KINDS[ctype];
     ev.text = body.caption ?? "";
@@ -431,6 +452,28 @@ const server = http.createServer(async (req, res) => {
         return res.end(await QRCode.toBuffer(s.qr, { width: 360, margin: 2 }));
       }
       if (req.method === "GET" && !parts[2]) return json(res, 200, view(name, s));
+      if (req.method === "POST" && parts[2] === "history") {
+        // Ask the phone for one chat's past messages; they arrive later as
+        // messaging-history.set. The anchor is "now" with an id the phone does
+        // not have, i.e. "everything before now". The chat may be keyed by the
+        // phone number or by its LID, so both are asked.
+        if (s.status !== "open") return json(res, 422, { error: "session_not_open" });
+        const body = await readBody(req);
+        const digits = String(body.phone ?? "").replace(/\D/g, "");
+        if (digits.length < 7) return json(res, 400, { error: "phone=" });
+        const count = Math.min(Number(body.count) || 100, 500);
+        const pn = `${digits}@s.whatsapp.net`;
+        const lid = await s.sock.signalRepository?.lidMapping?.getLIDForPN(pn).catch(() => null);
+        const jids = [pn, ...(lid ? [jidNormalizedUser(lid)] : [])];
+        const requested = [];
+        for (const jid of jids) {
+          const id = await s.sock.fetchMessageHistory(count, { remoteJid: jid, fromMe: false, id: crypto.randomBytes(10).toString("hex").toUpperCase() }, Date.now())
+            .catch((err) => { log.warn({ err: String(err), name, jid }, "history request failed"); return null; });
+          requested.push({ jid, requestId: id ?? null });
+        }
+        log.info({ name, requested }, "history requested");
+        return json(res, 200, { ok: true, requested });
+      }
       if (req.method === "POST" && parts[2] === "logout") {
         s.stopped = true;
         await s.sock.logout().catch(() => s.sock.end(undefined));

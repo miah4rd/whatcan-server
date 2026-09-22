@@ -188,7 +188,7 @@ router.post("/admin/wa/backfill", async (req, res) => {
   const apply = req.query.apply === "1";
   const since = req.query.since ? new Date(String(req.query.since)) : new Date(Date.now() - 2 * 86400_000);
   const rows = (await pool.query(
-    `SELECT id, wa_id, direction, phone, type, text, media_file, created_at FROM wa_messages
+    `SELECT id, wa_id, direction, phone, type, text, media_file, created_at, status FROM wa_messages
       WHERE session = $1 AND NOT mirrored AND wa_id IS NOT NULL AND direction IN ('in','out_phone')
         AND phone IS NOT NULL AND created_at >= $2 ORDER BY created_at`,
     [session, since.toISOString()],
@@ -206,6 +206,7 @@ router.post("/admin/wa/backfill", async (req, res) => {
         kind: "message", session, id: r.wa_id, fromMe: r.direction === "out_phone", chatJid: `${r.phone}@s.whatsapp.net`,
         phone: r.phone, pushName: null, timestamp: Math.floor(new Date(r.created_at).getTime() / 1000),
         type: r.type ?? "text", text: r.text ?? "", quotedId: null, media,
+        silentImport: r.status === "history",
       } as Parameters<typeof handleGatewayEvent>[0]);
       const m = await pool.query(`SELECT mirrored FROM wa_messages WHERE id = $1`, [r.id]);
       if (m.rows[0]?.mirrored) done++; else skipped++;
@@ -215,6 +216,16 @@ router.post("/admin/wa/backfill", async (req, res) => {
     }
   }
   res.json({ session, apply, candidates: rows.length, imported: done, noCard: skipped, failed });
+});
+
+// Ask the phone for one chat's past messages (they land as status 'history',
+// then /admin/wa/backfill?since=… puts them into the card silently).
+router.post("/admin/wa/history", async (req, res) => {
+  const session = String(req.query.session ?? "");
+  const phone = String(req.query.phone ?? "").replace(/\D/g, "");
+  if (!SESSION_RE.test(session) || phone.length < 7) { res.status(400).json({ error: "session= & phone=" }); return; }
+  const r = await gateway("POST", `/sessions/${session}/history`, { phone, count: Number(req.query.count) || 100 });
+  res.status(r.status).json(r.data);
 });
 
 router.get("/admin/wa/messages", async (req, res) => {
