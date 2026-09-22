@@ -357,6 +357,43 @@ router.post("/wa/send", async (req, res) => {
   res.status(r.data?.ok ? 200 : 422).json(r.data?.ok ? { ok: true, idMessage: r.data.id } : { ok: false, error: r.data?.error ?? "not sent" });
 });
 
+// Read side for the co-workers (owner, 22.09.2026): the replies to what they
+// sent. Everything the owner's number sends or receives is recorded by the
+// gateway in wa_messages (since it was linked, 16.09) — groups excepted.
+//   GET /api/wa/messages?chatId=6281138312020&count=20   (one chat, newest first)
+//   GET /api/wa/messages?since=2026-09-22T00:00:00Z       (every chat, newest first)
+router.get("/wa/messages", async (req, res) => {
+  if (!sendTokenOk(req)) { res.status(401).json({ ok: false, error: "bad token" }); return; }
+  const digits = String(req.query.chatId ?? req.query.phone ?? "").replace(/@.*$/, "").replace(/\D/g, "");
+  const count = Math.min(Math.max(Number(req.query.count) || 20, 1), 200);
+  const since = req.query.since ? new Date(String(req.query.since)) : null;
+  if (!digits && !(since && !isNaN(since.getTime()))) {
+    res.status(400).json({ ok: false, error: "need chatId (phone digits) or since (ISO time)" });
+    return;
+  }
+  const r = await pool.query(
+    `SELECT wa_id, direction, phone, type, text, media_file, status, created_at FROM wa_messages
+      WHERE session = $1
+        AND ($2::text = '' OR right(regexp_replace(coalesce(phone,''), '\\D', '', 'g'), 9) = right($2, 9))
+        AND ($3::timestamptz IS NULL OR created_at >= $3)
+      ORDER BY created_at DESC LIMIT $4`,
+    [ownerSession(), digits, since && !isNaN(since.getTime()) ? since.toISOString() : null, count],
+  );
+  res.json({
+    ok: true,
+    messages: r.rows.map((m) => ({
+      id: m.wa_id,
+      chatId: m.phone,
+      from: m.direction === "in" ? "them" : "me",
+      via: m.direction === "out_api" ? "api" : m.direction === "out_phone" ? "phone" : m.direction === "in" ? "whatsapp" : m.direction,
+      type: m.type,
+      text: m.text,
+      hasMedia: Boolean(m.media_file),
+      at: m.created_at,
+    })),
+  });
+});
+
 router.get("/wa/groups", async (req, res) => {
   if (!sendTokenOk(req)) { res.status(401).json({ ok: false, error: "bad token" }); return; }
   const r = await gateway("GET", `/groups/${ownerSession()}`).catch((err) => ({ status: 503, data: { error: String(err) } }));
