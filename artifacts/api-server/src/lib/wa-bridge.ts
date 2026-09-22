@@ -182,6 +182,10 @@ type GatewayEvent =
       pushName: string | null; timestamp: number; type: string; text: string; quotedId: string | null;
       media?: { file: string; mimetype: string; fileName: string; size: number; seconds: number | null } | null;
       location?: { lat: number; lon: number }; contact?: { name: string; phone: string };
+      /** A past message from the phone's history sync: stored, mirrored only by /admin/wa/backfill. */
+      history?: boolean;
+      /** Backfill of an old message: goes into the card without a new-message alert. */
+      silentImport?: boolean;
     };
 
 export function mediaUrl(file: string): string {
@@ -238,6 +242,21 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
 
   // message
   const direction = ev.fromMe ? "out_phone" : "in";
+  if (ev.history) {
+    // Real time of the message, status 'history'; a row that already exists
+    // (the message came live too) is left as it is.
+    const h = await pool.query(
+      `INSERT INTO wa_messages (session, wa_id, direction, phone, type, text, status, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'history', to_timestamp($7))
+       ON CONFLICT (session, wa_id) WHERE wa_id IS NOT NULL DO NOTHING RETURNING id`,
+      [ev.session, ev.id, direction, ev.phone, ev.type, ev.text, ev.timestamp],
+    );
+    if (h.rows.length && ev.phone && ev.type !== "reaction") {
+      const card = await cardForPhone(ev.phone, await resolveResponsibleId(ev.session));
+      if (card) await pool.query(`UPDATE wa_messages SET card_lead_id = $2 WHERE id = $1`, [h.rows[0].id, card.leadId]);
+    }
+    return;
+  }
   // On a retried event the row already exists: carry on unless it already
   // reached amoCRM (a failed import must be retried, not skipped).
   const ins = await pool.query(
@@ -288,7 +307,7 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
     conversation_id: convId,
     ...(conv?.amo_conversation_id && !conv.linked ? { conversation_ref_id: conv.amo_conversation_id } : {}),
     // A message the broker typed on the phone is history, not a new lead.
-    silent: ev.fromMe,
+    silent: ev.fromMe || Boolean(ev.silentImport),
     message: amoMessage(ev),
     ...(replyTo ? { reply_to: replyTo } : {}),
   };
