@@ -15,6 +15,10 @@ export const OWN_LINES: Record<number, { session: string; name: string }> = {
   // Yudi's second number +62 858-1241-0503, linked 19.09.2026 (owner: a second
   // nine first contacts a day for the listing manager, same responsible user).
   900002: { session: "yudi-2", name: "Yudi 2" },
+  // The brokers' main numbers, moved off Wahelp on 22.09.2026: Wahelp stopped
+  // delivering on 21.09 at ~15:06 (every send came back with delivery error 903).
+  900001: { session: "amelia", name: "Amelia" },
+  900003: { session: "yudi-main", name: "Yudi" },
 };
 
 export function isOwnLine(source: number | string | null | undefined): boolean {

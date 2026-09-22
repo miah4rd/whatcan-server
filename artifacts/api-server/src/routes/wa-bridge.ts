@@ -178,6 +178,45 @@ router.post("/admin/wa/sessions/:name/logout", async (req, res) => {
   res.status(r.status).json(r.data);
 });
 
+// Messages a number received or sent while it was in shadow mode (linked, not yet live) never
+// reached amoCRM. Replays them through the same rule as live traffic: only a person with an open
+// card whose responsible owns the number. 22.09.2026: Amelia and Yudi were linked hours before
+// they went live, after Wahelp had stopped delivering. Dry by default; ?apply=1 writes.
+router.post("/admin/wa/backfill", async (req, res) => {
+  const session = String(req.query.session ?? "");
+  if (!SESSION_RE.test(session)) { res.status(400).json({ error: "session=" }); return; }
+  const apply = req.query.apply === "1";
+  const since = req.query.since ? new Date(String(req.query.since)) : new Date(Date.now() - 2 * 86400_000);
+  const rows = (await pool.query(
+    `SELECT id, wa_id, direction, phone, type, text, media_file, created_at FROM wa_messages
+      WHERE session = $1 AND NOT mirrored AND wa_id IS NOT NULL AND direction IN ('in','out_phone')
+        AND phone IS NOT NULL AND created_at >= $2 ORDER BY created_at`,
+    [session, since.toISOString()],
+  )).rows;
+  const mimeOf = (f: string) => ({ jpg: "image/jpeg", png: "image/png", webp: "image/webp", mp4: "video/mp4", ogg: "audio/ogg", mp3: "audio/mpeg", m4a: "audio/mp4", pdf: "application/pdf" } as Record<string, string>)[f.split(".").pop() ?? ""] ?? "application/octet-stream";
+  let done = 0, skipped = 0, failed = 0;
+  for (const r of rows) {
+    if (!apply) continue;
+    let media: { file: string; mimetype: string; fileName: string; size: number; seconds: null } | null = null;
+    if (r.media_file) {
+      try { media = { file: r.media_file, mimetype: mimeOf(r.media_file), fileName: r.media_file, size: fs.statSync(path.join(MEDIA_DIR, r.media_file)).size, seconds: null }; } catch { media = null; }
+    }
+    try {
+      await handleGatewayEvent({
+        kind: "message", session, id: r.wa_id, fromMe: r.direction === "out_phone", chatJid: `${r.phone}@s.whatsapp.net`,
+        phone: r.phone, pushName: null, timestamp: Math.floor(new Date(r.created_at).getTime() / 1000),
+        type: r.type ?? "text", text: r.text ?? "", quotedId: null, media,
+      } as Parameters<typeof handleGatewayEvent>[0]);
+      const m = await pool.query(`SELECT mirrored FROM wa_messages WHERE id = $1`, [r.id]);
+      if (m.rows[0]?.mirrored) done++; else skipped++;
+    } catch (err) {
+      failed++;
+      logger.warn({ err: String(err), session, waId: r.wa_id }, "wa backfill: message not imported");
+    }
+  }
+  res.json({ session, apply, candidates: rows.length, imported: done, noCard: skipped, failed });
+});
+
 router.get("/admin/wa/messages", async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 500);
   const r = await pool.query(

@@ -89,7 +89,8 @@ const BROKER_LINES: Record<string, number[]> = {
   hos: [62249],
   nick: [62249],
   robert: [58745],
-  amelia: [56811],
+  // 22.09.2026: off Wahelp, main number on our bridge (session "amelia").
+  amelia: [900001],
   sharon: [56951],
   // First line first: a day's first contacts fill it before the second opens.
   // 62585 ("Yudi 2"): Salesbot 22127 had no branch for it until 13.09 ~14:55
@@ -101,7 +102,9 @@ const BROKER_LINES: Record<string, number[]> = {
   // two WhatsApp numbers"). The per-line code stays; re-enable = [59537, 62585].
   // Second line since 19.09.2026: 900002 = Yudi 2 on our own bridge
   // (wa-own-line-ids.ts), not the paused Wahelp 62585.
-  yudi: [59537, 900002],
+  // 22.09.2026: main number on our bridge (900003, session "yudi-main"). Yudi 2 (900002) is
+  // out until it is re-linked: its conversations continue from his main number.
+  yudi: [900003],
   saif: [59893],
   kristo: [61161],
   ferdian: [61191],

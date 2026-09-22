@@ -380,7 +380,7 @@ async function planCard(lead: AmoLead, link: LinkedListing | null, why: string):
 
   // Own-bridge lines (Yudi 2) open new conversations only; the weekly check to
   // an owner we already know stays on the broker's Wahelp line.
-  const own = brokerLines(sync.responsibleUser).filter((l) => !isOwnLine(l));
+  const own = brokerLines(sync.responsibleUser);
   // No thread in amoCRM. Checked anyway when the site knows this owner: the card's contact phone is the
   // linked listing's Internal data owner phone, and that owner is a person (owner, 15.09.2026: the live
   // cards imported from the site on 25.08 — Yudi dealt with those owners outside Copilot). Never a scout
