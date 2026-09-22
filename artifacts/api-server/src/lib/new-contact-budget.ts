@@ -125,7 +125,7 @@ const ONE_DAY_CAP: Record<string, Record<number, number>> = {
  * line opens cold conversations with villa owners — the outreach Meta polices —
  * and keeps its nine.
  */
-const UNCAPPED_LINES = new Set<number>([56811]);
+const UNCAPPED_LINES = new Set<number>([56811, 900001]);
 
 /** How many first contacts this line may open today. */
 export function dailyCapForLine(line: number | null, now: Date = new Date()): number {

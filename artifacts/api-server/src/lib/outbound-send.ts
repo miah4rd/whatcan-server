@@ -97,6 +97,12 @@ async function resolveMultiLineSource(
       why = "first contact — line with budget left today";
     }
   }
+  // The broker's own number runs on our bridge: a conversation that lived on its
+  // old Wahelp line (or on a bridge line that is gone) continues from it.
+  if (line === null && isOwnLine(lines[0])) {
+    line = lines[0]!;
+    why = "conversation continues on the broker's own number (bridge)";
+  }
   if (line === null) return { source: null };
 
   // Our own-bridge lines are not amoCRM sources: nothing is written into the
@@ -132,7 +138,7 @@ export async function resolveSendChannel(
   // on, and a first contact takes the number with budget left today.
   const lines = brokerLines(responsibleUser);
   let source: string | null = null;
-  if (lines.length > 1) {
+  if (lines.length > 1 || lines.some((l) => isOwnLine(l))) {
     const multi = await resolveMultiLineSource(leadId, responsibleUser, lines, log).catch((e) => {
       log.warn({ leadId, err: e }, "resolveMultiLineSource threw");
       return { refuse: true as const };
