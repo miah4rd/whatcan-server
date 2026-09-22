@@ -188,14 +188,28 @@ router.post("/admin/wa/backfill", async (req, res) => {
   const apply = req.query.apply === "1";
   const since = req.query.since ? new Date(String(req.query.since)) : new Date(Date.now() - 2 * 86400_000);
   const rows = (await pool.query(
-    `SELECT id, wa_id, direction, phone, type, text, media_file, created_at, status FROM wa_messages
+    `SELECT id, wa_id, direction, phone, type, text, media_file, created_at, status, card_lead_id FROM wa_messages
       WHERE session = $1 AND NOT mirrored AND wa_id IS NOT NULL AND direction IN ('in','out_phone')
         AND phone IS NOT NULL AND created_at >= $2 ORDER BY created_at`,
     [session, since.toISOString()],
   )).rows;
   const mimeOf = (f: string) => ({ jpg: "image/jpeg", png: "image/png", webp: "image/webp", mp4: "video/mp4", ogg: "audio/ogg", mp3: "audio/mpeg", m4a: "audio/mp4", pdf: "application/pdf" } as Record<string, string>)[f.split(".").pop() ?? ""] ?? "application/octet-stream";
-  let done = 0, skipped = 0, failed = 0;
+  let done = 0, skipped = 0, failed = 0, dup = 0;
   for (const r of rows) {
+    // A past message from the phone's history may already be in the card (it
+    // came through Wahelp, or Copilot sent it): same text within 5 minutes.
+    if (r.status === "history" && r.card_lead_id) {
+      const seen = await pool.query(
+        `SELECT 1 FROM lead_messages WHERE lead_id = $1 AND left(btrim(text), 60) = left(btrim($2), 60)
+            AND abs(extract(epoch FROM sent_at - $3::timestamptz)) < 300 LIMIT 1`,
+        [String(r.card_lead_id), r.text ?? "", r.created_at],
+      );
+      if (seen.rows.length) {
+        dup++;
+        if (apply) await pool.query(`UPDATE wa_messages SET status = 'history_dup' WHERE id = $1`, [r.id]);
+        continue;
+      }
+    }
     if (!apply) continue;
     let media: { file: string; mimetype: string; fileName: string; size: number; seconds: null } | null = null;
     if (r.media_file) {
@@ -215,7 +229,7 @@ router.post("/admin/wa/backfill", async (req, res) => {
       logger.warn({ err: String(err), session, waId: r.wa_id }, "wa backfill: message not imported");
     }
   }
-  res.json({ session, apply, candidates: rows.length, imported: done, noCard: skipped, failed });
+  res.json({ session, apply, candidates: rows.length, alreadyInCard: dup, imported: done, noCard: skipped, failed });
 });
 
 // Ask the phone for one chat's past messages (they land as status 'history',

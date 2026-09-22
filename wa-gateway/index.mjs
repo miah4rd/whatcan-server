@@ -123,6 +123,10 @@ async function startSession(name, { pairingPhone = null } = {}) {
   }
 
   const dir = path.join(SESSIONS_DIR, name);
+  // "<number>-hist" is a second linked device of <number>, linked only to pull
+  // the phone's history (sent on every new link) into <number>'s records; it
+  // never forwards live traffic, the main session does. Log it out afterwards.
+  const historyFor = name.endsWith("-hist") ? name.slice(0, -5) : null;
   const { state, saveCreds } = await useMultiFileAuthState(dir);
   const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: undefined }));
 
@@ -203,6 +207,7 @@ async function startSession(name, { pairingPhone = null } = {}) {
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify" && type !== "append") return;
+    if (historyFor) return;
     for (const m of messages) {
       // "append" also replays recent history right after linking; only keep
       // fresh ones (a message the broker typed on the phone a moment ago).
@@ -222,9 +227,9 @@ async function startSession(name, { pairingPhone = null } = {}) {
     let kept = 0;
     for (const m of messages ?? []) {
       if (Number(m.messageTimestamp ?? 0) < cutoff) continue;
-      try { await onMessage(name, sock, m, { history: true }); kept++; } catch (err) { log.error({ err: String(err), name, id: m.key?.id }, "history message failed"); }
+      try { await onMessage(historyFor ?? name, sock, m, { history: true }); kept++; } catch (err) { log.error({ err: String(err), name, id: m.key?.id }, "history message failed"); }
     }
-    log.info({ name, syncType, total: messages?.length ?? 0, kept }, "history received");
+    log.info({ name, historyFor, syncType, total: messages?.length ?? 0, kept }, "history received");
   });
 
   sock.ev.on("messages.update", (updates) => {
