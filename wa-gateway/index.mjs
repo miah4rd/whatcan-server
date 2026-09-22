@@ -488,7 +488,10 @@ const server = http.createServer(async (req, res) => {
         const jids = [pn, ...(lid ? [jidNormalizedUser(lid)] : [])];
         const requested = [];
         for (const jid of jids) {
-          const id = await s.sock.fetchMessageHistory(count, { remoteJid: jid, fromMe: false, id: crypto.randomBytes(10).toString("hex").toUpperCase() }, Date.now())
+          // A real message of the chat as the anchor when known (the phone ignores an unknown one).
+          const a = body.anchor;
+          const key = a?.id ? { remoteJid: jid, fromMe: Boolean(a.fromMe), id: String(a.id) } : { remoteJid: jid, fromMe: false, id: crypto.randomBytes(10).toString("hex").toUpperCase() };
+          const id = await s.sock.fetchMessageHistory(count, key, a?.ts ? Number(a.ts) * 1000 : Date.now())
             .catch((err) => { log.warn({ err: String(err), name, jid }, "history request failed"); return null; });
           requested.push({ jid, requestId: id ?? null });
         }
