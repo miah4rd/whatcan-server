@@ -53,6 +53,28 @@ const LINE_WARMUP_START: Record<number, string> = {
   62585: "2026-09-13",
 };
 
+/**
+ * Yudi 2 (900002, own bridge) after WhatsApp's 403 of 21.09.2026 — nine cold first contacts in one
+ * 10:00 burst on a three-day-old number. Owner, 22.09: start at 3 a day and climb slowly to nine.
+ * Warm-up practice for a fresh number (Green API, Whapi, WADesk guides): under ten new chats a day,
+ * spread over the day, at least ten days before full volume, "25-30 days of no suspicious activity"
+ * before the number is trusted. So: 3 for three days, 5 for four, 7 for four, then 9 from day 12.
+ * Day 1 = the Bali date the line is re-linked (set it here the day Yudi scans the QR again).
+ */
+const LINE_WARMUP_LADDER: Record<number, { start: string; steps: Array<[lastDay: number, cap: number]> }> = {
+  // 900002: { start: "YYYY-MM-DD", steps: [[3, 3], [7, 5], [11, 7]] }, — set on re-link
+};
+
+/**
+ * Minutes between two first contacts on a warming line. The 403 came ten minutes after nine cold
+ * messages left inside one minute; a person opens chats one at a time over the day. A line listed
+ * here opens its next conversation only this long after its previous one (plus up to half again
+ * at random, so the pattern is not a metronome).
+ */
+const LINE_MIN_GAP_MIN: Record<number, number> = {
+  900002: 45,
+};
+
 function baliDateString(now: Date): string {
   return new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
@@ -110,6 +132,13 @@ export function dailyCapForLine(line: number | null, now: Date = new Date()): nu
   // that was deliberately closed.
   const granted = line !== null ? ONE_DAY_CAP[baliDateString(now)]?.[line] : undefined;
   if (granted !== undefined) return granted;
+  const ladder = line !== null ? LINE_WARMUP_LADDER[line] : undefined;
+  if (ladder) {
+    const d = Math.round((Date.parse(baliDateString(now)) - Date.parse(ladder.start)) / 86_400_000) + 1;
+    if (d < 1) return 0;
+    for (const [lastDay, cap] of ladder.steps) if (d <= lastDay) return cap;
+    return NEW_CONTACT_DAILY_CAP;
+  }
   const start = line !== null ? LINE_WARMUP_START[line] : undefined;
   if (!start) return NEW_CONTACT_DAILY_CAP;
   const day = Math.round((Date.parse(baliDateString(now)) - Date.parse(start)) / 86_400_000) + 1;
@@ -164,7 +193,15 @@ function firstRow<T>(res: unknown): T | undefined {
  * not count however many messages it got today — repeat contact is not what
  * gets a number flagged.
  */
-export type LineBudget = { line: number | null; used: number; cap: number };
+export type LineBudget = {
+  line: number | null;
+  used: number;
+  cap: number;
+  /** May this line open a conversation RIGHT NOW: budget left and, on a warming line, its gap since the last one passed. */
+  open: boolean;
+  /** When a spaced line may open its next one (epoch ms), if it is waiting on the gap. */
+  nextAt?: number;
+};
 
 /**
  * Today's first contacts per WhatsApp line of this broker, primary line first.
@@ -181,9 +218,10 @@ export async function lineBudgets(responsibleUser: string | null, now: Date = ne
   const lines: Array<number | null> = brokerLines(responsibleUser);
   if (lines.length === 0) lines.push(null);
   const used = new Map<number | null, number>(lines.map((l) => [l, 0]));
+  const lastAt = new Map<number | null, number>();
   try {
     const res = await db.execute(sql`
-      SELECT f.source_id FROM (
+      SELECT f.source_id, (extract(epoch from f.created_at) * 1000)::float8 AS at_ms FROM (
         SELECT DISTINCT ON (lead_id) lead_id, created_at, responsible_user, source_id
         FROM sent_messages
         ORDER BY lead_id, created_at ASC
@@ -198,12 +236,14 @@ export async function lineBudgets(responsibleUser: string | null, now: Date = ne
         -- Yudi 2 sends of 13.09 that Salesbot had no branch for).
         AND f.lead_id NOT LIKE 'undelivered-%'
     `);
-    const rows = ((res as unknown as { rows?: Array<{ source_id: string | null }> }).rows ??
-      (Array.isArray(res) ? (res as unknown as Array<{ source_id: string | null }>) : []));
+    type Row = { source_id: string | null; at_ms: number | null };
+    const rows = ((res as unknown as { rows?: Row[] }).rows ?? (Array.isArray(res) ? (res as unknown as Row[]) : []));
     for (const r of rows) {
       const stamped = r.source_id !== null ? Number(r.source_id) : null;
       const line = stamped !== null && lines.includes(stamped) ? stamped : lines[0]!;
       used.set(line, (used.get(line) ?? 0) + 1);
+      const at = r.at_ms !== null ? Number(r.at_ms) : 0;
+      if (at > (lastAt.get(line) ?? 0)) lastAt.set(line, at);
     }
   } catch (err) {
     // Fail OPEN: this is a politeness cap, not a safety guard. Silently
@@ -211,7 +251,18 @@ export async function lineBudgets(responsibleUser: string | null, now: Date = ne
     // cost real leads, and the broker would see only silence.
     logger.warn({ err, responsibleUser }, "new-contact budget: count failed — allowing the send");
   }
-  return lines.map((line) => ({ line, used: used.get(line) ?? 0, cap: dailyCapForLine(line, now) }));
+  return lines.map((line) => {
+    const u = used.get(line) ?? 0;
+    const cap = dailyCapForLine(line, now);
+    const gapMin = line !== null ? LINE_MIN_GAP_MIN[line] : undefined;
+    const last = lastAt.get(line);
+    if (!gapMin || !last || u >= cap) return { line, used: u, cap, open: u < cap };
+    // Up to half the gap again, derived from the last send's own time so it is stable between
+    // checks (a random draw per check would let the next one through on the first lucky roll).
+    const jitter = ((last / 1000) % 97) / 97 / 2;
+    const nextAt = last + gapMin * 60_000 * (1 + jitter);
+    return { line, used: u, cap, open: now.getTime() >= nextAt, nextAt };
+  });
 }
 
 /** Leads this broker opened today across all of their lines. */
@@ -225,7 +276,7 @@ export async function newContactsToday(responsibleUser: string | null): Promise<
  * opens. Null when every line is spent today.
  */
 export async function pickLineForNewConversation(responsibleUser: string | null): Promise<number | null> {
-  return (await lineBudgets(responsibleUser)).find((b) => b.used < b.cap)?.line ?? null;
+  return (await lineBudgets(responsibleUser)).find((b) => b.open)?.line ?? null;
 }
 
 export type NewContactBudget = { ok: boolean; used: number; cap: number; lines: LineBudget[] };
@@ -242,7 +293,15 @@ export async function mayOpenNewConversation(
   const lines = await lineBudgets(responsibleUser);
   const used = lines.reduce((n, b) => n + b.used, 0);
   const cap = lines.reduce((n, b) => n + b.cap, 0);
-  if (!lines.some((b) => b.used < b.cap)) {
+  if (!lines.some((b) => b.open)) {
+    const spaced = lines.find((b) => b.used < b.cap && b.nextAt);
+    if (spaced) {
+      logger.info(
+        { responsibleUser, line: spaced.line, nextAt: new Date(spaced.nextAt!).toISOString() },
+        "new-contact budget: a warming line is waiting out its gap between first contacts",
+      );
+      return { ok: false, used, cap, lines };
+    }
     logger.warn(
       { responsibleUser, used, cap, lines },
       "new-contact budget spent for today — the draft stays in the inbox for the broker to send by hand",

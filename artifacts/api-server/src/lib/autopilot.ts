@@ -507,6 +507,13 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
           { leadId, used: budget.used, cap: budget.cap, lines: budget.lines },
           "autopilot held back — every line of this broker has already opened its day's worth of new conversations",
         );
+        // A warming line waiting out its gap is not "tomorrow": the drain must keep it near the front
+        // of its queue, or a spaced first contact sorts behind a day of others and never goes.
+        const spaced = budget.lines.find((b) => b.used < b.cap && b.nextAt);
+        if (spaced) {
+          const at = new Date(spaced.nextAt! + 8 * 3600_000).toISOString().slice(11, 16);
+          return decline(`waiting: the warming line opens its next first contact after ${at} Bali`);
+        }
         return decline(`waiting for tomorrow's new-contact budget (${budget.used}/${budget.cap})`);
       }
     }
