@@ -17,8 +17,10 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   downloadMediaMessage,
+  extractUrlFromText,
   fetchLatestBaileysVersion,
   getContentType,
+  getUrlInfo,
   isJidBroadcast,
   isJidGroup,
   jidNormalizedUser,
@@ -35,6 +37,7 @@ const INBOUND_URL = process.env.WA_INBOUND_URL ?? "http://127.0.0.1:5000/api/wa/
 const SESSIONS_DIR = path.join(DATA_DIR, "sessions");
 const MEDIA_DIR = path.join(DATA_DIR, "media");
 const OUTBOX_FILE = path.join(DATA_DIR, "outbox.json");
+const PREVIEW_UA = "WhatsApp/2.24.20.80 A";
 const HISTORY_DAYS = Number(process.env.WA_HISTORY_DAYS ?? 14);
 
 if (!SECRET) {
@@ -389,6 +392,19 @@ async function send({ session, to, text, media, quotedId, mentions }) {
   } else {
     if (!text) return { ok: false, error: "empty_message", code: 905 };
     payload = { text };
+    // The site gives a villa's own title and photo only to WhatsApp's user
+    // agent (anything else gets the generic homepage card), so the preview is
+    // fetched here as WhatsApp would; if that fails Baileys makes its own.
+    const url = extractUrlFromText(text);
+    if (url) {
+      const info = await getUrlInfo(url, {
+        thumbnailWidth: 192,
+        fetchOpts: { timeout: 5000, headers: { "user-agent": PREVIEW_UA } },
+        uploadImage: s.sock.waUploadToServer,
+        logger: baileysLog,
+      }).catch(() => undefined);
+      if (info) payload.linkPreview = info;
+    }
   }
 
   // @-mentions in a group: jids (or plain numbers) of the people tagged; the text carries "@<number>".
