@@ -114,6 +114,7 @@ export function ensureTable(): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`)
     .then(() => pool.query(`CREATE INDEX IF NOT EXISTS inspection_reports_lead ON inspection_reports (lead_id, status)`))
+    .then(() => pool.query(`ALTER TABLE inspection_reports ADD COLUMN IF NOT EXISTS drive_copies JSONB NOT NULL DEFAULT '{}'`))
     .then(() => undefined)
     .catch((err) => {
       ensured = null;
@@ -568,7 +569,7 @@ async function applyAndCheck(id: string): Promise<void> {
     const t0 = Date.now();
     try {
       // A step that hangs is a red line, not an endless "checking" (the first live run sat on one for minutes).
-      const limit = key === "card" ? 120_000 : key === "drive" ? 150_000 : 60_000;
+      const limit = key === "card" ? 120_000 : key === "drive" ? 600_000 : 60_000;
       let timer: NodeJS.Timeout | undefined;
       const [state, detail] = await Promise.race([
         fn(),
@@ -737,24 +738,57 @@ function reportNote(rep: ReportRow): string {
     .join("\n");
 }
 
+/**
+ * Every new photo and the video into the listing's Drive folder (owner, 23.09: "нужно делать копии в
+ * гугл драйве на всякий"). Make scenario 6374601: webhook → download from the site → Google Drive upload
+ * into the folder → answers {ok, id} per file. One call per file, so a big video does not sink the
+ * photos; a file already copied (drive_copies) is not sent again when the report is checked again.
+ */
 async function copyToDrive(rep: ReportRow): Promise<[CheckState, string]> {
-  const files = [...(rep.photos ?? []), ...(rep.video_url ? [rep.video_url] : [])];
+  const code = rep.property_code!;
+  const { property, priv } = await siteListing(code);
+  // The compressor replaces the uploaded video with its -web.mp4 and deletes the original.
+  let video = rep.video_url;
+  if (video && property?.video_url && property.video_url !== video && property.video_url.startsWith(video.replace(/\.[a-z0-9]+$/i, ""))) video = property.video_url;
+  const files = [...(rep.photos ?? []), ...(video ? [video] : [])];
   if (!files.length) return ["warn", "nothing new to copy"];
   const hook = (process.env["DRIVE_COPY_WEBHOOK_URL"] ?? "").trim();
   if (!hook) return ["warn", "Drive is not connected yet — files are on the site, copy them by hand for now"];
-  const { priv } = await siteListing(rep.property_code!);
   const folder = (priv?.drive_folder_url ?? "").match(/folders\/([A-Za-z0-9_-]{10,})/)?.[1];
-  if (!folder) return ["bad", "the listing has no Drive folder link in Internal data"];
-  const res = await fetch(hook, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ secret: process.env["DRIVE_COPY_WEBHOOK_SECRET"] ?? "", folderId: folder, files: files.map((url) => ({ url, name: url.split("/").pop() })) }),
-    signal: AbortSignal.timeout(120000),
-  }).catch(() => null);
-  const body = (res ? await res.json().catch(() => null) : null) as { ok?: boolean; copied?: number } | null;
-  if (!res?.ok || !body?.ok) return ["bad", `Drive copy did not confirm (${res?.status ?? "no answer"})`];
-  const copied = Number(body.copied ?? 0);
-  return copied >= files.length ? ["ok", `${copied} files in the listing's Drive folder`] : ["bad", `${copied} of ${files.length} files reached Drive`];
+  if (!folder) return ["bad", "the listing has no Drive folder link in Internal data — add it and check again"];
+  const done = new Map<string, string>(Object.entries((await pool.query(`SELECT drive_copies FROM inspection_reports WHERE id = $1`, [rep.id])).rows[0]?.drive_copies ?? {}));
+  const stamp = new Date(rep.visit_at).toISOString().slice(0, 10);
+  for (const url of files) {
+    if (done.has(url)) continue;
+    const name = `${code} inspection ${stamp} ${url.split("/").pop()}`;
+    const res = await fetch(hook, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret: process.env["DRIVE_COPY_WEBHOOK_SECRET"] ?? "", folderId: folder, url, name }),
+      signal: AbortSignal.timeout(170000),
+    }).catch(() => null);
+    const text = res ? await res.text().catch(() => "") : "";
+    let body: { ok?: boolean; id?: string } | null = null;
+    try { body = JSON.parse(text); } catch { body = null; }
+    if (!res?.ok || !body?.ok || !body.id) {
+      logger.warn({ id: rep.id, url, status: res?.status, text: text.slice(0, 200) }, "inspection report: Drive copy failed");
+      await pool.query(`UPDATE inspection_reports SET drive_copies = $2::jsonb WHERE id = $1`, [rep.id, JSON.stringify(Object.fromEntries(done))]);
+      return ["bad", `${done.size} of ${files.length} files reached Drive; ${url.split("/").pop()} did not (${res?.status ?? "no answer"}) — check again`];
+    }
+    done.set(url, body.id);
+  }
+  await pool.query(`UPDATE inspection_reports SET drive_copies = $2::jsonb WHERE id = $1`, [rep.id, JSON.stringify(Object.fromEntries(done))]);
+  return ["ok", `${files.length} file${files.length === 1 ? "" : "s"} in the listing's Drive folder (Drive answered with file ids)`];
+}
+
+/** Admin: copy a filed report's files to Drive now (reports filed before Drive was connected). */
+export async function recopyToDrive(id: string): Promise<{ ok: boolean; state?: CheckState; detail?: string; error?: string }> {
+  const rep = await getReport(id);
+  if (!rep) return { ok: false, error: "report not found" };
+  const [state, detail] = await copyToDrive(rep);
+  const checks = (rep.checks ?? []).map((c) => (c.key === "drive" ? { ...c, state, detail } : c));
+  await pool.query(`UPDATE inspection_reports SET checks = $2::jsonb WHERE id = $1`, [id, JSON.stringify(checks)]);
+  return { ok: state === "ok" || state === "warn", state, detail };
 }
 
 async function sessionOpen(name: string): Promise<boolean> {

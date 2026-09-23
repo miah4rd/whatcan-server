@@ -12,6 +12,7 @@ import {
   getReport,
   isRunning,
   missingFields,
+  recopyToDrive,
   NOT_LISTING_REASONS,
   runDuePass,
   saveDraft,
@@ -157,6 +158,11 @@ router.post("/public/inspection-report/schedule", async (req, res) => {
   const r = await recordBrokerVisit(leadId, at, req.body?.broker ? String(req.body.broker) : null);
   if (r.ok) await dropPrematureReports(leadId, at).catch(() => undefined);
   res.status(r.ok ? 200 : 422).json(r);
+});
+
+/** Copy a filed report's photos and video to Drive now (admin). */
+router.post("/admin/inspection-report/:id/drive", async (req, res) => {
+  res.json(await recopyToDrive(req.params.id));
 });
 
 /** Run the visit watch now (admin). */
