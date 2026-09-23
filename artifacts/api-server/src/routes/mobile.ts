@@ -405,6 +405,8 @@ const PAGE_HTML = `<!doctype html>
   var apPipeline = "";
   var items = { live: [], push: [], reach: [] };
   var openItem = null;
+  // A lead the bridge opened that carries no draft (see openLeadById).
+  var orphanLead = null;
   var editing = false;
   var editValue = "";
   var toastMsg = "";
@@ -3290,6 +3292,7 @@ const PAGE_HTML = `<!doctype html>
     }
     if (listingView) renderListing();
     else if (openItem) renderDetail();
+    else if (orphanLead) renderOrphan();
     else renderList();
 
     var oldToasts = document.querySelectorAll(".toast");
@@ -3318,7 +3321,29 @@ const PAGE_HTML = `<!doctype html>
       var match = (items[k] || []).find(function (i) { return String(i.lead_id) === String(leadId); });
       if (match) { found = match; foundKind = k; }
     });
-    if (found) { activeTab = foundKind; openDetail(found, foundKind); }
+    if (found) { activeTab = foundKind; orphanLead = null; openDetail(found, foundKind); return; }
+    // No draft on this card, so nothing to open — but a listing the broker has
+    // just inspected has no draft either, and he still needs the report button
+    // (Yudi, 23.09: "I don't see the button on co pilot nor the CRM").
+    orphanLead = String(leadId);
+    openItem = null;
+    listingView = false;
+    render();
+  }
+
+  // A card amoCRM opened that the inbox does not carry: one line and the
+  // inspection-report button, nothing else — the rest of the card lives in amoCRM.
+  function renderOrphan() {
+    var html = '<header><div class="top-row"><div class="brand"><span class="dot"></span>Copilot</div>' +
+      '<div class="top-actions"><span class="broker-chip">Broker: <b>' + esc(activeBroker()) + '</b></span></div></div></header><main>';
+    html += '<button class="back" id="orphan-back" style="background:none;border:0;color:#7dd3fc;font:inherit;padding:0 0 10px;cursor:pointer">&lsaquo; Inbox</button>';
+    html += '<div class="vr" style="border-color:#2a3146"><div class="vr-head" style="color:#8a93a8">Card #' + esc(orphanLead) + ' &middot; nothing pending in Copilot</div>';
+    html += '<div class="vr-row"><span class="vr-status">There is no draft on this card right now. If you have just inspected this villa, file the report here.</span></div>';
+    html += '<div class="vr-row"><button class="vr-opt" id="ir-start">&#x1F50D; Inspected this villa? File the report</button><span class="vr-status" id="ir-start-st"></span></div>';
+    html += '</div></main>';
+    document.body.innerHTML = html;
+    $("#orphan-back").onclick = function () { orphanLead = null; render(); };
+    bindInspectionStart({ lead_id: orphanLead });
   }
 
   function openDeepLinkedLead() {
