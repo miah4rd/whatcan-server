@@ -250,6 +250,10 @@ export async function lineBudgets(responsibleUser: string | null, now: Date = ne
       SELECT f.source_id, (extract(epoch from f.created_at) * 1000)::float8 AS at_ms FROM (
         SELECT DISTINCT ON (lead_id) lead_id, created_at, responsible_user, source_id
         FROM sent_messages
+        -- Only a send the channel accepted. A number with no WhatsApp, or a send our
+        -- own line could not make, opened no conversation and must not spend the day's
+        -- budget (owner, 23.09.2026; the same rule the hardcoded list below encodes).
+        WHERE webhook_status BETWEEN 200 AND 299
         ORDER BY lead_id, created_at ASC
       ) f
       WHERE f.created_at >= (date_trunc('day', now() AT TIME ZONE ${TZ}) AT TIME ZONE ${TZ})
