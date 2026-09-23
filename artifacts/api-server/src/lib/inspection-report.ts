@@ -45,8 +45,8 @@ const YUDI_SESSION = process.env["WA_YUDI_SESSION"] ?? "yudi";
 const OWNER_BROKER = "hos";
 const HOUR = 3600_000;
 const DUE_AFTER_MS = 30 * 60_000;
-/** A slot older than this is not turned into a report (the first run picks up the last two days). */
-const LOOKBACK_MS = 2 * 24 * HOUR;
+/** A visit older than this is not turned into a report. */
+const LOOKBACK_MS = 7 * 24 * HOUR;
 const PASS_EVERY_MS = 5 * 60_000;
 /** With fewer own photos than this, the photos found online stay after Yudi's instead of being hidden. */
 const REPLACE_AT = 6;
@@ -271,6 +271,31 @@ export async function runDuePass(opts: { dry?: boolean } = {}): Promise<Array<{ 
     out.push({ leadId: s.lead_id, code, visitAt: visitAt.toISOString(), action: "created" });
     logger.info({ leadId: s.lead_id, code, visitAt, reportId: ins.rows[0].id }, "inspection report: due");
   }
+  // Second source: the STAGE. A visit agreed by phone, in person or in a thread the reader could not
+  // parse leaves no slot, so the card reached "Inspection sceduled" with nothing owing a report — the
+  // hole Yudi hit on 23.09 ("listings with no inspection report button"). The stage is the broker's own
+  // act, so it is evidence enough; the form asks for the rest.
+  for (const lead of await cardsOnInspectionStage()) {
+    const has = await pool.query(
+      `SELECT 1 FROM inspection_reports WHERE lead_id = $1 AND (status IN ('due', 'checking', 'failed') OR COALESCE(done_at, filed_at) > now() - interval '7 days')`,
+      [String(lead.id)],
+    );
+    if (has.rows.length) continue;
+    const future = await pool.query(
+      `SELECT 1 FROM listing_inspection_slots WHERE lead_id = $1 AND status = 'scheduled' AND visit_at > now() - interval '30 minutes'`,
+      [String(lead.id)],
+    );
+    if (future.rows.length) continue; // the visit is still ahead — the slot pass will ask afterwards
+    const enteredAt = await stageEnteredAt(String(lead.id));
+    if (Date.now() - enteredAt.getTime() < DUE_AFTER_MS) continue;
+    const code = await codeForLead(String(lead.id), lead.name).catch(() => null);
+    if (opts.dry) { out.push({ leadId: String(lead.id), code, visitAt: enteredAt.toISOString(), action: "would create (from the stage, no slot)" }); continue; }
+    const ins = await pool.query(`INSERT INTO inspection_reports (lead_id, property_code, visit_at) VALUES ($1, $2, $3) RETURNING id`, [String(lead.id), code, enteredAt]);
+    await announceDue(String(lead.id), code, enteredAt, lead.name, lead.responsible_user_id).catch(() => undefined);
+    out.push({ leadId: String(lead.id), code, visitAt: enteredAt.toISOString(), action: "created (from the stage, no slot)" });
+    logger.info({ leadId: lead.id, code, reportId: ins.rows[0].id }, "inspection report: due from the stage (no slot recorded)");
+  }
+
   if (!opts.dry) {
     const open = await pool.query(`SELECT DISTINCT lead_id FROM inspection_reports WHERE status IN ('due', 'failed')`);
     for (const r of open.rows) {
@@ -287,6 +312,26 @@ export async function runDuePass(opts: { dry?: boolean } = {}): Promise<Array<{ 
     }
   }
   return out;
+}
+
+/** Cards sitting on "Inspection sceduled" right now. */
+async function cardsOnInspectionStage(): Promise<Array<{ id: number; name: string | null; responsible_user_id?: number }>> {
+  const q =
+    `/api/v4/leads?filter[statuses][0][pipeline_id]=${LISTINGS_PIPELINE_ID}` +
+    `&filter[statuses][0][status_id]=${LISTING_STAGE.INSPECTION_SCHEDULED}&limit=250`;
+  const d = await amoFetch<{ _embedded?: { leads?: Array<{ id: number; name: string | null; responsible_user_id?: number }> } }>(q).catch(() => null);
+  return d?._embedded?.leads ?? [];
+}
+
+/** When the card entered the inspection stage — our own journal, else now. */
+async function stageEnteredAt(leadId: string): Promise<Date> {
+  const r = await pool
+    .query(
+      `SELECT changed_at FROM stage_events WHERE lead_id = $1 AND to_stage ILIKE '%inspection%' ORDER BY changed_at DESC LIMIT 1`,
+      [leadId],
+    )
+    .catch(() => ({ rows: [] as Array<{ changed_at: Date }> }));
+  return r.rows[0]?.changed_at ? new Date(r.rows[0].changed_at) : new Date();
 }
 
 /** The task, the push, and the placeholder draft that puts the card in Yudi's inbox. */
