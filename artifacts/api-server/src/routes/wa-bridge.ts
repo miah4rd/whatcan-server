@@ -234,6 +234,34 @@ router.post("/admin/wa/backfill", async (req, res) => {
 
 // Ask the phone for one chat's past messages (they land as status 'history',
 // then /admin/wa/backfill?since=… puts them into the card silently).
+// A draft the broker already answered by hand. While Wahelp carried their number, what they typed
+// on the phone never reached us, so a LIVE draft could sit in the inbox for days after the client
+// had been answered (Amelia, 23.09.2026: "we visited already, that is error from AI"). Our own
+// record of their phone messages (wa_messages) can now settle it. Dry by default.
+router.post("/admin/wa/retire-answered", async (req, res) => {
+  const apply = req.query.apply === "1";
+  const rows = (await pool.query(
+    `SELECT p.id, p.lead_id, p.created_at, max(w.created_at) AS answered_at
+       FROM pending_suggestions p
+       JOIN wa_messages w ON w.card_lead_id::text = p.lead_id
+      WHERE p.status = 'pending' AND p.kind = 'live'
+        AND w.direction IN ('out_phone','out_copilot') AND w.created_at > p.created_at
+      GROUP BY p.id, p.lead_id, p.created_at
+      ORDER BY p.created_at`,
+  )).rows;
+  if (apply && rows.length) {
+    await pool.query(
+      `UPDATE pending_suggestions SET status = 'skipped',
+              autopilot_skipped_reason = 'the broker answered this from their phone — draft retired',
+              autopilot_skipped_at = now()
+        WHERE id = ANY($1::uuid[])`,
+      [rows.map((r) => r.id)],
+    );
+    logger.info({ count: rows.length }, "wa: stale drafts retired (answered from the phone)");
+  }
+  res.json({ apply, retired: rows.length, leads: [...new Set(rows.map((r) => r.lead_id))].slice(0, 40) });
+});
+
 router.post("/admin/wa/history", async (req, res) => {
   const session = String(req.query.session ?? "");
   const phone = String(req.query.phone ?? "").replace(/\D/g, "");
