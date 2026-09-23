@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { pool } from "@workspace/db";
+import { recordBrokerVisit } from "../../lib/listing-progress";
 import {
   AMO_CARD_URL,
   announceDue,
   cancelReport,
   closeNotListing,
+  dropPrematureReports,
   ensureTable,
   fileReport,
   getReport,
@@ -142,6 +144,25 @@ router.post("/public/inspection-report/start", async (req, res) => {
 router.post("/public/inspection-report/:id/cancel", async (req, res) => {
   const r = await cancelReport(req.params.id, req.body?.broker ? String(req.body.broker) : null);
   res.status(r.ok ? 200 : 422).json(r);
+});
+
+/**
+ * The broker sets the inspection date himself (a visit agreed by phone or in person): the slot, the
+ * stage and the calendar follow (lib/listing-progress.ts recordBrokerVisit). Body {leadId | reportId, at}.
+ */
+router.post("/public/inspection-report/schedule", async (req, res) => {
+  let leadId = String(req.body?.leadId ?? "").trim();
+  if (!leadId && req.body?.reportId) leadId = (await getReport(String(req.body.reportId)))?.lead_id ?? "";
+  const at = new Date(String(req.body?.at ?? ""));
+  const r = await recordBrokerVisit(leadId, at, req.body?.broker ? String(req.body.broker) : null);
+  if (r.ok) await dropPrematureReports(leadId, at).catch(() => undefined);
+  res.status(r.ok ? 200 : 422).json(r);
+});
+
+/** Run the visit watch now (admin). */
+router.post("/admin/visit-watch", async (_req, res) => {
+  const { runVisitWatch } = await import("../../lib/listing-progress");
+  res.json(await runVisitWatch());
 });
 
 // ── Admin ─────────────────────────────────────────────────────────────────────

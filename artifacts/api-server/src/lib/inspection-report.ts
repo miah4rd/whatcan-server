@@ -297,6 +297,15 @@ export async function runDuePass(opts: { dry?: boolean } = {}): Promise<Array<{ 
   }
 
   if (!opts.dry) {
+    // A placeholder whose report is gone (filed, dropped, deleted) is not work anyone owes (Menuai, 23.09).
+    await pool
+      .query(
+        `UPDATE pending_suggestions p SET status = 'skipped', autopilot_skipped_reason = 'inspection report closed', autopilot_skipped_at = now()
+          WHERE p.status = 'pending' AND p.autopilot_skipped_reason = $1
+            AND NOT EXISTS (SELECT 1 FROM inspection_reports r WHERE r.lead_id = p.lead_id AND r.status IN ('due', 'checking', 'failed'))`,
+        [INSPECTION_REPORT_VERDICT],
+      )
+      .catch(() => undefined);
     const open = await pool.query(`SELECT DISTINCT lead_id FROM inspection_reports WHERE status IN ('due', 'failed')`);
     for (const r of open.rows) {
       const leadId = String(r.lead_id);
@@ -827,6 +836,16 @@ export async function cancelReport(id: string, broker: string | null): Promise<{
   await closeTaskAndPlaceholder(rep.lead_id, `No inspection report: the visit did not happen (${broker ?? "broker"})`);
   logger.info({ id, leadId: rep.lead_id }, "inspection report: cancelled, the visit did not happen");
   return { ok: true };
+}
+
+/** The visit is set for later: an open report on this card is premature and goes; the slot pass asks again after the visit. */
+export async function dropPrematureReports(leadId: string, visitAt: Date): Promise<void> {
+  if (visitAt.getTime() <= Date.now()) return;
+  const r = await pool.query(
+    `UPDATE inspection_reports SET status = 'cancelled', updated_at = now() WHERE lead_id = $1 AND status IN ('due', 'failed') RETURNING id`,
+    [leadId],
+  );
+  if (r.rows.length) await closeTaskAndPlaceholder(leadId, "Inspection set for a later date — the report is asked after the visit");
 }
 
 // ── Not listing ───────────────────────────────────────────────────────────────

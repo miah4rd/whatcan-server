@@ -2538,7 +2538,7 @@ const PAGE_HTML = `<!doctype html>
       var listings = (it.pipeline || "").toLowerCase().indexOf("listing") >= 0;
       var live = /live|weekly|availability/i.test(it.lead_stage || "");
       if (!listings || live) return "";
-      return '<div class="vr" style="border-color:#2a3146"><div class="vr-row" style="margin-top:0"><button class="vr-opt" id="ir-start">&#x1F50D; Inspected this villa? File the report</button><span class="vr-status" id="ir-start-st"></span></div></div>';
+      return '<div class="vr" style="border-color:#2a3146"><div class="vr-row" style="margin-top:0"><button class="vr-opt" id="ir-start">&#x1F50D; Inspected this villa? File the report</button><span class="vr-status" id="ir-start-st"></span></div>' + scheduleHtml() + '</div>';
     }
     var failed = ir.status === "failed";
     var h = '<div class="vr">';
@@ -2627,6 +2627,29 @@ const PAGE_HTML = `<!doctype html>
           if (send && !it._vrUploads && send.getAttribute("data-ready") === "1") send.disabled = false;
         });
     });
+  }
+  // A visit agreed by phone or in person: the broker sets the date, the calendar follows.
+  function scheduleHtml() {
+    return '<div class="vr-row"><button class="vr-opt" id="sch-open">&#x1F4C5; Set the inspection date</button></div>' +
+      '<div class="vr-row" id="sch-row" hidden><input type="datetime-local" id="sch-at"><button class="vr-send" id="sch-save" style="padding:8px 14px">Save</button><span class="vr-status" id="sch-st"></span></div>';
+  }
+  function bindSchedule(leadId) {
+    var open = $("#sch-open");
+    if (!open) return;
+    open.onclick = function () { $("#sch-row").hidden = !$("#sch-row").hidden; };
+    $("#sch-save").onclick = function () {
+      var v = $("#sch-at").value;
+      if (!v) { $("#sch-st").textContent = "pick a date and time"; return; }
+      var at = new Date(v + ":00+08:00");
+      $("#sch-save").disabled = true; $("#sch-st").textContent = "saving...";
+      fetch(API + "/inspection-report/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: leadId, at: at.toISOString(), broker: activeBroker() }) })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          $("#sch-save").disabled = false;
+          $("#sch-st").textContent = d.ok ? "Saved - it goes to the calendar in a minute" : (d.detail || "not saved");
+        })
+        .catch(function () { $("#sch-save").disabled = false; $("#sch-st").textContent = "no connection"; });
+    };
   }
   function bindInspectionStart(it) {
     var btn = $("#ir-start");
@@ -2948,6 +2971,7 @@ const PAGE_HTML = `<!doctype html>
 
     bindViewingReport(it);
     bindInspectionStart(it);
+    bindSchedule(it.lead_id);
 
     $("#back-btn").onclick = function () { openItem = null; editing = false; render(); };
 
@@ -3340,10 +3364,12 @@ const PAGE_HTML = `<!doctype html>
     html += '<div class="vr" style="border-color:#2a3146"><div class="vr-head" style="color:#8a93a8">Card #' + esc(orphanLead) + ' &middot; nothing pending in Copilot</div>';
     html += '<div class="vr-row"><span class="vr-status">There is no draft on this card right now. If you have just inspected this villa, file the report here.</span></div>';
     html += '<div class="vr-row"><button class="vr-opt" id="ir-start">&#x1F50D; Inspected this villa? File the report</button><span class="vr-status" id="ir-start-st"></span></div>';
+    html += scheduleHtml();
     html += '</div></main>';
     document.body.innerHTML = html;
     $("#orphan-back").onclick = function () { orphanLead = null; render(); };
     bindInspectionStart({ lead_id: orphanLead });
+    bindSchedule(orphanLead);
   }
 
   function openDeepLinkedLead() {

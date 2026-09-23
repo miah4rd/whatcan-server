@@ -26,6 +26,7 @@ import { startInspectionCalendarSync } from "./lib/inspection-calendar";
 import { startViewingCalendarSync } from "./lib/viewing-calendar";
 import { startInspectionBookingPass } from "./lib/inspection-booking";
 import { startInspectionReportPass } from "./lib/inspection-report";
+import { startVisitWatch } from "./lib/listing-progress";
 import inspectionPageRouter from "./routes/inspection-page";
 import { startStageSyncCheckScheduler } from "./lib/stage-sync-check";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
@@ -119,6 +120,8 @@ startViewingCalendarSync();
 startInspectionBookingPass();
 // Inspection report due 30 minutes after an agreed inspection (lib/inspection-report.ts).
 startInspectionReportPass();
+// Agreed villa visits read again every 30 minutes, live cards included (lib/listing-progress.ts).
+startVisitWatch();
 // Meta Ads spend for the /kpi page, pulled through Make every 4 hours; see lib/kpi-dashboard.ts.
 startMetaSpendPull();
 // Morning quality-control report on Amelia and Yudi to the team chat, only while qc_enabled = on; see lib/quality-control.ts.

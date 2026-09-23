@@ -365,6 +365,7 @@ export async function confirmAgreedVisit(messages: ThreadMsg[], v: Visit): Promi
 
 true ONLY when one side named that specific day and the other side accepted it ("ok", "boleh", "bisa", "betul", "aman", "see you", "well noted"), or the villa side is clearly expecting us that day, and nothing later cancelled or moved it.
 The villa side naming ONE specific day for us to come ("you can visit the property on Wednesday pm", "besok jam 11 bisa") and our side accepting that day ("Wednesday afternoon works great", "ok see you then", "baik kak") IS settled, whoever named it first.
+Our side proposing a specific day (and maybe a time) and the villa side answering with a plain yes IS settled: "Us: besok jam 10 bisa ya kak?" → "Villa side: baik kak bisa" / "iya bisa" / "boleh" / "siap" / "aman" / "ok". So is the villa side saying that day is free and giving a time in answer to our ask ("Aman ka, tgl 13 kami masih kosong, setelah jam 2 ya"), and the villa side confirming they have us scheduled ("tanggal 7 kami jadwalkan inspeksi ya"). A short yes is enough; it does not need to repeat the day.
 
 false for:
 - an open offer or availability ("you can come to check before the 13th", "visit on 15 September is possible", "tomorrow can be checked") that our side never took up with a day of its own
@@ -813,4 +814,85 @@ export async function auditListingProgress(o: { apply: boolean; reportTaken?: bo
     }
   }
   return out;
+}
+
+
+// ── The visit the broker sets himself, and the watch that re-reads threads ─────────────────────────
+
+/**
+ * Yudi sets the inspection date in Copilot (23.09.2026): a visit agreed by phone or in person leaves
+ * nothing in the thread to read (Ortus Bali Villa, 22.09), and his calendar must still show it. His word
+ * is the agreement: QUALIFIED / TAKEN TO WORK move to Inspection sceduled with the slot; on Inspection
+ * sceduled or live the slot is recorded (or replaces the one on record). The calendar pass follows.
+ */
+export async function recordBrokerVisit(leadId: string, at: Date, broker: string | null): Promise<{ ok: boolean; detail: string }> {
+  if (!/^\d+$/.test(leadId) || Number.isNaN(at.getTime())) return { ok: false, detail: "bad card or date" };
+  if (at.getTime() < Date.now() - 14 * DAY || at.getTime() > Date.now() + 120 * DAY) return { ok: false, detail: "the date is too far from today" };
+  const lead = await getAmoLead(leadId).catch(() => null);
+  if (!lead?.status_id) return { ok: false, detail: "amoCRM did not return this card" };
+  if (lead.pipeline_id !== LISTINGS_PIPELINE_ID) return { ok: false, detail: "this card is not in Rental Listings" };
+  if (lead.status_id === 142 || lead.status_id === 143) return { ok: false, detail: "this card is closed" };
+  const visit: Visit = { visitAt: at, timeKnown: true, agreedAt: new Date(), quote: `set by ${broker || "the broker"} in Copilot`, why: "set by the broker" };
+  if (lead.status_id === LISTING_STAGE.QUALIFIED || lead.status_id === LISTING_STAGE.TAKEN_TO_WORK) {
+    const moved = await applyForwardPath(leadId, lead.status_id, [LISTING_STAGE.INSPECTION_SCHEDULED], { source: "broker", visit });
+    return { ok: moved.ok, detail: moved.detail };
+  }
+  const slot = await currentSlot(leadId);
+  const detail = await recordChangedVisit(leadId, slot, visit, "broker");
+  return { ok: !/could not/.test(detail), detail };
+}
+
+const WATCH_EVERY_MS = 30 * 60_000;
+const watchedUpTo = new Map<string, number>();
+let watching = false;
+
+/**
+ * Every 30 minutes: the listing cards where a visit can still be agreed (QUALIFIED, Inspection
+ * sceduled, live and after) are read again when their thread has news. Before this the thread was read
+ * only when a message arrived through a path that called it, and once a day for QUALIFIED / Inspection
+ * sceduled — so a visit agreed from Yudi's phone and synced late, or on a card already live (Casa Bumbak,
+ * "tanggal 7 kami jadwalkan inspeksi", 22.09), never reached the calendar. A card with nothing new costs
+ * no model call; the first look at a card reads its last three days.
+ */
+export async function runVisitWatch(): Promise<{ cards: number; decided: number }> {
+  if (watching) return { cards: 0, decided: 0 };
+  watching = true;
+  try {
+    const statuses = [LISTING_STAGE.QUALIFIED, LISTING_STAGE.INSPECTION_SCHEDULED, ...AFTER_LIVE];
+    const ids: string[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const q = statuses.map((st, i) => `filter[statuses][${i}][pipeline_id]=${LISTINGS_PIPELINE_ID}&filter[statuses][${i}][status_id]=${st}`).join("&");
+      const d = await amoFetch<{ _embedded?: { leads?: Array<{ id: number }> } }>(`/api/v4/leads?${q}&limit=250&page=${page}`);
+      const batch = d?._embedded?.leads ?? [];
+      ids.push(...batch.map((l) => String(l.id)));
+      if (batch.length < 250) break;
+    }
+    let decided = 0;
+    for (const id of ids) {
+      const newest = await db
+        .execute(sql`SELECT extract(epoch from max(sent_at)) * 1000 AS at FROM lead_messages WHERE lead_id = ${id}`)
+        .then((r) => Number((r.rows?.[0] as { at?: number | string | null } | undefined)?.at ?? 0))
+        .catch(() => 0);
+      const seen = watchedUpTo.get(id);
+      if (!newest || (seen !== undefined && newest <= seen)) continue;
+      try {
+        await advanceListingProgress(id, { source: "visit-watch", apply: true, checkedAt: new Date(seen ?? Date.now() - 3 * DAY) });
+        watchedUpTo.set(id, newest);
+        decided++;
+      } catch (err) {
+        logger.warn({ err, leadId: id }, "visit watch: card failed");
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    logger.info({ cards: ids.length, decided }, "visit watch pass complete");
+    return { cards: ids.length, decided };
+  } finally {
+    watching = false;
+  }
+}
+
+export function startVisitWatch(): void {
+  const tick = () => runVisitWatch().catch((err) => logger.warn({ err }, "visit watch failed"));
+  setTimeout(tick, 3 * 60_000);
+  setInterval(tick, WATCH_EVERY_MS);
 }
