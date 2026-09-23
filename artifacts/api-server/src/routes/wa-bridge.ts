@@ -9,8 +9,11 @@
 import { Router, type Request } from "express";
 import fs from "node:fs";
 import path from "node:path";
-import { pool } from "@workspace/db";
+import { db, pool, sentMessagesTable } from "@workspace/db";
 import { logger } from "../lib/logger";
+import { brokerLines } from "../lib/amo-messenger-field";
+import { isOwnLine } from "../lib/wa-own-line-ids";
+import { deliverViaOwnLine } from "../lib/wa-own-send";
 import crypto from "node:crypto";
 import { listPipelines, listUsers } from "../lib/wa-routing";
 import {
@@ -238,6 +241,48 @@ router.post("/admin/wa/backfill", async (req, res) => {
 // on the phone never reached us, so a LIVE draft could sit in the inbox for days after the client
 // had been answered (Amelia, 23.09.2026: "we visited already, that is error from AI"). Our own
 // record of their phone messages (wa_messages) can now settle it. Dry by default.
+// Wahelp stopped delivering on 21.09.2026 at ~15:06 and said nothing: Salesbot accepted every
+// send, amoCRM recorded it, and the client got nothing (delivery error 903 on the message event).
+// Copilot and the cards therefore show messages the client never received. This re-sends them
+// through the broker's own line and records the new send; a lead that has heard from us since is
+// left alone. Dry by default.
+router.post("/admin/wa/resend-failed", async (req, res) => {
+  const since = new Date(String(req.query.since ?? "2026-09-21T07:00:00Z"));
+  const until = new Date(String(req.query.until ?? "2026-09-22T14:00:00Z"));
+  const apply = req.query.apply === "1";
+  const rows = (await pool.query(
+    `SELECT s.id, s.lead_id, s.message_text, s.responsible_user, s.created_at, l.pipeline
+       FROM sent_messages s JOIN leads_sync l ON l.lead_id = s.lead_id
+      WHERE s.created_at BETWEEN $1 AND $2 AND s.webhook_status BETWEEN 200 AND 299
+        AND s.source_id IN ('56811','59537') AND l.pipeline IN ('Rental','Rental Listings')
+        AND s.message_text IS NOT NULL AND s.message_text <> ''
+      ORDER BY s.created_at`,
+    [since.toISOString(), until.toISOString()],
+  )).rows;
+  const out: Array<Record<string, unknown>> = [];
+  for (const r of rows) {
+    // Anything of ours that reached the client since then makes a re-send a repeat.
+    const later = await pool.query(
+      `SELECT 1 FROM wa_messages WHERE card_lead_id = $1::bigint AND direction IN ('out_phone','out_copilot')
+         AND created_at > $2 LIMIT 1`,
+      [r.lead_id, r.created_at],
+    );
+    if (later.rows.length) { out.push({ lead: r.lead_id, skipped: "answered since" }); continue; }
+    const line = brokerLines(r.responsible_user).find((l) => isOwnLine(l));
+    if (!line) { out.push({ lead: r.lead_id, skipped: "no bridge line for " + r.responsible_user }); continue; }
+    if (!apply) { out.push({ lead: r.lead_id, would_resend: String(r.message_text).slice(0, 60) }); continue; }
+    const sent = await deliverViaOwnLine(r.lead_id, String(line), String(r.message_text));
+    await db.insert(sentMessagesTable).values({
+      leadId: r.lead_id, kind: "resend-undelivered", messageText: String(r.message_text),
+      responsibleUser: r.responsible_user, sourceId: String(line),
+      webhookStatus: sent.hookStatus, webhookResponse: `resend of ${r.created_at.toISOString()}: ${sent.hookBody}`,
+    }).catch(() => undefined);
+    out.push({ lead: r.lead_id, resent: sent.chatSent, why: sent.hookBody });
+    await new Promise((x) => setTimeout(x, 2500));
+  }
+  res.json({ apply, candidates: rows.length, result: out });
+});
+
 router.post("/admin/wa/retire-answered", async (req, res) => {
   const apply = req.query.apply === "1";
   const rows = (await pool.query(
