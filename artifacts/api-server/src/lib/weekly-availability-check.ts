@@ -52,7 +52,7 @@ import { db, leadsSyncTable, leadMessagesTable, sentMessagesTable, brokerSetting
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { amoFetch, amoPost, updateLeadStatus, whatsappTalkLines } from "./amo-client";
-import { brokerLines } from "./amo-messenger-field";
+import { brokerLines, lineForExistingTalk } from "./amo-messenger-field";
 import { invalidatePropertyCache } from "./property-catalog";
 import { resolveSendChannel, deliverText } from "./outbound-send";
 import { isFirstOutbound } from "./new-contact-budget";
@@ -407,11 +407,17 @@ async function planCard(lead: AmoLead, link: LinkedListing | null, why: string):
   if (talks.length > 0) {
     // resolveSendChannel keeps a multi-line broker on a talk that exists on one of their own numbers;
     // with none, it would reassign the card to the broker's primary line and open a new chat.
-    const ownTalk = talks.find((t) => own.includes(t.sourceId));
-    if (!ownTalk) {
+    // A thread on the Wahelp line the broker used before 22.09 is the SAME chat on the owner's
+    // phone as the bridge line that replaced it (lineForExistingTalk) — not a second one.
+    let sendLine: number | null = null;
+    for (const t of talks) {
+      const line = lineForExistingTalk(sync.responsibleUser, t.sourceId);
+      if (line !== null) { sendLine = line; break; }
+    }
+    if (sendLine === null) {
       return { ...base, why: `the owner's conversation is only on line ${talks[0]!.sourceId}, not ${sync.responsibleUser}'s — would open a second chat` };
     }
-    base.line = String(ownTalk.sourceId);
+    base.line = String(sendLine);
   } else {
     base.line = String(own[0]);
   }

@@ -110,6 +110,28 @@ const BROKER_LINES: Record<string, number[]> = {
   ferdian: [61191],
 };
 
+/**
+ * The same physical WhatsApp number, before and after 22.09.2026: the brokers moved off Wahelp onto
+ * our own bridge, so amoCRM shows the old Wahelp thread on the old source id while everything new
+ * goes out through the bridge line. The chat on the owner's phone is one and the same — only
+ * amoCRM's record is split — so a rule that asks "is this conversation on one of the broker's
+ * lines?" must count the predecessor too. It did not, and the weekly availability check went silent
+ * on every live listing from 21.09 ("the owner's conversation is only on line 59537, not Yudi's").
+ */
+const LINE_SUCCEEDED_BY: Record<number, number> = {
+  59537: 900003, // Yudi's main number, Wahelp -> bridge session "yudi-main"
+  56811: 900001, // Amelia, Wahelp -> bridge session "amelia"
+  62585: 900002, // Yudi 2, Wahelp -> bridge session "yudi-2"
+};
+
+/** The line this broker uses TODAY for a conversation that amoCRM shows on `sourceId`, or null. */
+export function lineForExistingTalk(brokerName: string | null | undefined, sourceId: number): number | null {
+  const own = brokerLines(brokerName);
+  if (own.includes(sourceId)) return sourceId;
+  const now = LINE_SUCCEEDED_BY[sourceId];
+  return now !== undefined && own.includes(now) ? now : null;
+}
+
 /** Every WhatsApp line this broker sends from, primary first. Empty when unknown. */
 export function brokerLines(brokerName: string | null | undefined): number[] {
   if (!brokerName) return [];
