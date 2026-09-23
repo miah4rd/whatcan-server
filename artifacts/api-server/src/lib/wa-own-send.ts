@@ -13,6 +13,8 @@ import { amoFetch } from "./amo-client";
 import { logger } from "./logger";
 import { gateway, mirrorOwnSend } from "./wa-bridge";
 import { ownLineSession } from "./wa-own-line-ids";
+import { closeUndeliverable } from "./undeliverable";
+import { amoPost } from "./amo-client";
 
 type Contact = { contactId: number; phone: string; name: string };
 
@@ -62,6 +64,16 @@ export async function deliverViaOwnLine(leadId: string, source: string, text: st
 
   if (!waId) {
     const notOn = r.data?.error === "not_on_whatsapp";
+    // What Wahelp used to do for us: a number with no WhatsApp on it closes the card
+    // (owner, 23.09.2026). Our own line sees it directly — WhatsApp answers the check
+    // before anything is sent — so it says so on the card and closes it, unless the
+    // villa is published (undeliverable.ts keeps those and only leaves a note).
+    if (notOn) {
+      await amoPost(`/api/v4/leads/${leadId}/notes`, [
+        { note_type: "common", params: { text: `WhatsApp reports no account on ${contact.phone} — the message was not sent.` } },
+      ]).catch(() => null);
+      await closeUndeliverable(leadId).catch((err) => logger.warn({ err: String(err), leadId }, "own line: close on no-WhatsApp failed"));
+    }
     return {
       chatSent: false,
       hookStatus: notOn ? 404 : r.status >= 400 ? r.status : 500,
