@@ -256,7 +256,8 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
 
     h += '<div class="row" style="margin-top:16px"><button class="send" id="done"' + (m.length ? " disabled" : "") + ">Report done &rarr; live</button></div>" +
       '<div class="row">' + (m.length ? '<span class="missing">Still needed: ' + esc(m.join(", ")) + "</span>" : '<span class="status">Everything is filled. The bot applies it to the site, amoCRM and the chat, and checks each one.</span>') + "</div>" +
-      '<div class="row" style="margin-top:14px"><button class="link" id="lostlink">Villa doesn&rsquo;t fit &mdash; not listing &rsaquo;</button></div></div>';
+      '<div class="row" style="margin-top:14px"><button class="link" id="lostlink">Villa doesn&rsquo;t fit &mdash; not listing &rsaquo;</button></div>' +
+      '<div class="row" style="margin-top:6px"><button class="link" id="nogo" style="color:#8a93a8">The visit didn&rsquo;t happen &mdash; drop this report &rsaquo;</button></div></div>';
 
     if (lostOpen) {
       h += '<div class="vr lost"><div class="head" style="color:#f87171">&#x2715; Not listing &middot; <b style="color:#fca5a5">' + esc(S.code || "villa") + "</b></div>" +
@@ -307,6 +308,15 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     });
     $("#done").onclick = done;
     $("#lostlink").onclick = function () { lostOpen = !lostOpen; render(); if (lostOpen) window.scrollTo(0, document.body.scrollHeight); };
+    var ng = $("#nogo");
+    if (ng) ng.onclick = function () {
+      if (!confirm("Drop this report? Use it only when the inspection did not happen.")) return;
+      ng.disabled = true;
+      fetch(API + "/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ broker: BROKER }) })
+        .then(function (r) { return r.json(); })
+        .then(function (d) { if (d.ok) app.innerHTML = '<div class="empty">Report dropped. The card is unchanged.</div>'; else { alert(d.error || "could not drop"); ng.disabled = false; } })
+        .catch(function () { alert("No connection"); ng.disabled = false; });
+    };
     document.querySelectorAll("[data-reason]").forEach(function (b) { b.onclick = function () { lostReason = b.getAttribute("data-reason"); render(); window.scrollTo(0, document.body.scrollHeight); }; });
     var lg = $("#lostgo"); if (lg) lg.onclick = notListing;
   }
