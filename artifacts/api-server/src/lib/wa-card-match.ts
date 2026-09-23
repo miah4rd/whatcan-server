@@ -18,6 +18,10 @@ const HIT_TTL = 10 * 60 * 1000;
 // A card created a minute ago must be picked up quickly.
 const MISS_TTL = 2 * 60 * 1000;
 const CLOSED = new Set([142, 143]);
+// Owner, 23.09.2026: "только рентал, бизнес продажи пока не трогай". A chat reaches
+// amoCRM only through a rental card; a sales (UNICORN) card of the same person is not
+// a reason to put their WhatsApp into the CRM.
+const RENTAL_PIPELINES = new Set([11119150, 11180334]);
 
 const digits = (s: string) => String(s ?? "").replace(/\D+/g, "");
 /** Same person when the last 9 digits agree ("+62 812…", "0812…", "62812…"). */
@@ -62,10 +66,11 @@ export async function cardForPhone(phone: string | null, responsibleId: number |
     }
     let best: { m: CardMatch; updated: number } | null = null;
     for (const cand of candidates.slice(0, 10)) {
-      const lead = await amoFetch<{ id: number; status_id: number; responsible_user_id: number; updated_at: number; is_deleted?: boolean }>(
+      const lead = await amoFetch<{ id: number; status_id: number; pipeline_id: number; responsible_user_id: number; updated_at: number; is_deleted?: boolean }>(
         `/api/v4/leads/${cand.leadId}`,
       );
       if (!lead || CLOSED.has(lead.status_id) || lead.is_deleted) continue;
+      if (!RENTAL_PIPELINES.has(lead.pipeline_id)) continue;
       if (lead.responsible_user_id !== responsibleId) continue;
       if (!best || lead.updated_at > best.updated) {
         best = { m: { contactId: cand.contactId, leadId: lead.id, responsibleId }, updated: lead.updated_at };
