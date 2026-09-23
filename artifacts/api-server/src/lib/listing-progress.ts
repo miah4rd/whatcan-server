@@ -377,6 +377,7 @@ false for:
 JSON only: {"agreed": true|false, "why": "<10 words>"}`,
     messages: [{ role: "user", content: `${transcript(messages, 50).slice(-9000)}\n\nReading to check: a visit on ${day}, settled by "${v.quote}"` }],
   }).catch(() => null);
+  if (!out?.agreed) logger.info({ visitAt: v.visitAt, quote: v.quote, why: out?.why ?? "no answer" }, "listing-progress: second opinion — not agreed");
   return !!out && out.agreed === true;
 }
 
