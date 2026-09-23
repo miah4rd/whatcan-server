@@ -44,6 +44,7 @@ router.get("/suggestions", async (req, res) => {
               responsibleUser: leadsSyncTable.responsibleUser,
               content: leadsSyncTable.content,
               leadNotes: leadsSyncTable.leadNotes,
+              formAnswers: leadsSyncTable.formAnswers,
               leadStage: leadsSyncTable.leadStage,
               leadStageId: leadsSyncTable.leadStageId,
               lastMessageAt: leadsSyncTable.lastMessageAt,
@@ -272,6 +273,7 @@ router.get("/suggestions", async (req, res) => {
         recent_messages: recentMessages,
         lead_name: leadName,
         lead_notes: sync?.leadNotes ?? null,
+        form_answers: sync?.formAnswers ?? null,
         lead_stage: sync?.leadStage ?? null,
         lead_stage_id: sync?.leadStageId ?? null,
         viewing_report: (() => {

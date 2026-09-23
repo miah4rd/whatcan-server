@@ -49,14 +49,22 @@ router.post("/admin/line-retest", async (req, res) => {
     return;
   }
 
-  const [first] = rows<{ message_text: string; source_id: string | null; responsible_user: string | null }>(
+  const [first] = rows<{ message_text: string; source_id: string | null; responsible_user: string | null; attachments: unknown }>(
     await db.execute(sql`
-      SELECT message_text, source_id, responsible_user FROM sent_messages
-      WHERE lead_id = ${leadId} AND coalesce(kind, '') <> 'line-retest'
-      ORDER BY created_at ASC LIMIT 1`),
+      SELECT s.message_text, s.source_id, s.responsible_user, p.attachments FROM sent_messages s
+      LEFT JOIN pending_suggestions p ON p.id = s.suggestion_id
+      WHERE s.lead_id = ${leadId} AND coalesce(s.kind, '') <> 'line-retest'
+      ORDER BY s.created_at ASC LIMIT 1`),
   );
   if (!first) {
     res.status(409).json({ error: "no earlier send on this card to repeat" });
+    return;
+  }
+
+  // Never repeat a message whose property links this route would drop: it would
+  // reach the client as villa names with nothing to open.
+  if (Array.isArray(first.attachments) && first.attachments.length > 0) {
+    res.status(409).json({ error: "that message carries property links - re-send it through the resend route, which sends them too" });
     return;
   }
 

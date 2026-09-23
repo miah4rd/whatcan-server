@@ -25,7 +25,41 @@ type AmoLead = {
   pipeline_id: number;
   responsible_user_id: number;
   created_at?: number; // Unix timestamp from amoCRM
+  custom_fields_values?: Array<{ field_id?: number; field_name?: string; values?: Array<{ value?: unknown }> }> | null;
 };
+
+/**
+ * The Meta ad form's own questions, in the order the form asks them.
+ *
+ * These are the CLIENT'S words, not the bot's conclusions - the six
+ * "Request: ..." fields written by amo-request-fields.ts are deliberately left
+ * out, so a broker reading the card can always tell the two apart.
+ *
+ * A form-only lead never writes a message, so the card's conversation is empty
+ * and Amelia read that as the bot losing her chat history (23.09). These
+ * answers are the only thing such a client ever said, so they belong on the card.
+ */
+const FORM_FIELDS: Array<[number, string]> = [
+  [956449, "Budget"],
+  [959041, "Bedrooms"],
+  [959039, "Area"],
+  [968367, "Move-in"],
+  [968369, "Notes"],
+];
+
+function formAnswersOf(lead: AmoLead): Array<{ label: string; value: string }> | null {
+  const byId = new Map<number, string>();
+  for (const f of lead.custom_fields_values ?? []) {
+    const v = f?.values?.[0]?.value;
+    if (f?.field_id != null && v != null && String(v).trim() !== "") byId.set(f.field_id, String(v).trim());
+  }
+  const out: Array<{ label: string; value: string }> = [];
+  for (const [id, label] of FORM_FIELDS) {
+    const v = byId.get(id);
+    if (v) out.push({ label, value: v });
+  }
+  return out.length ? out : null;
+}
 
 type AmoStatus = { id: number; name: string };
 type AmoPipeline = {
@@ -198,6 +232,7 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
         : null;
 
       const amoCreatedAt = lead.created_at ? new Date(lead.created_at * 1000) : null;
+      const formAnswers = formAnswersOf(lead);
 
       await db
         .insert(leadsSyncTable)
@@ -209,6 +244,7 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
           updatedAt: now,
           nextFollowupAt: autoSchedule, // Auto-queue new leads for push scheduler
           amoCreatedAt,
+          formAnswers,
         })
         .onConflictDoUpdate({
           target: leadsSyncTable.leadId,
@@ -220,6 +256,9 @@ export async function syncLeadStages(): Promise<{ updated: number; total: number
             updatedAt: now,
             // Always update amoCreatedAt — amoCRM returns created_at for all leads
             amoCreatedAt,
+            // Only write answers we actually have: a lead fetched without its
+            // custom fields must not blank out what the form already told us.
+            ...(formAnswers ? { formAnswers } : {}),
             // Do NOT touch nextFollowupAt for existing leads — preserve scheduler state
           },
         });

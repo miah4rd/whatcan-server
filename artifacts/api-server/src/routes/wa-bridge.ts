@@ -14,6 +14,7 @@ import { logger } from "../lib/logger";
 import { brokerLines } from "../lib/amo-messenger-field";
 import { isOwnLine } from "../lib/wa-own-line-ids";
 import { deliverViaOwnLine } from "../lib/wa-own-send";
+import { sendAttachmentLinks } from "../lib/outbound-send";
 import crypto from "node:crypto";
 import { listPipelines, listUsers } from "../lib/wa-routing";
 import {
@@ -250,9 +251,16 @@ router.post("/admin/wa/resend-failed", async (req, res) => {
   const since = new Date(String(req.query.since ?? "2026-09-21T07:00:00Z"));
   const until = new Date(String(req.query.until ?? "2026-09-22T14:00:00Z"));
   const apply = req.query.apply === "1";
+  // A shortlist is text PLUS its property links. The first pass re-sent only the
+  // stored message_text, so clients got villa names with nothing to open —
+  // linksOnly re-sends just the links for the leads named in ?leads=.
+  const linksOnly = req.query.links_only === "1";
+  const onlyLeads = new Set(String(req.query.leads ?? "").split(",").map((x) => x.trim()).filter(Boolean));
   const rows = (await pool.query(
-    `SELECT s.id, s.lead_id, s.message_text, s.responsible_user, s.created_at, l.pipeline
+    `SELECT s.id, s.lead_id, s.message_text, s.responsible_user, s.created_at, l.pipeline,
+            p.attachments
        FROM sent_messages s JOIN leads_sync l ON l.lead_id = s.lead_id
+       LEFT JOIN pending_suggestions p ON p.id = s.suggestion_id
       WHERE s.created_at BETWEEN $1 AND $2
         AND (s.webhook_status BETWEEN 200 AND 299 OR s.webhook_response LIKE '%NOT DELIVERED: Wahelp%')
         AND s.source_id IN ('56811','59537') AND l.pipeline IN ('Rental','Rental Listings')
@@ -262,6 +270,17 @@ router.post("/admin/wa/resend-failed", async (req, res) => {
   )).rows;
   const out: Array<Record<string, unknown>> = [];
   for (const r of rows) {
+    if (onlyLeads.size && !onlyLeads.has(String(r.lead_id))) continue;
+    if (linksOnly) {
+      const links = Array.isArray(r.attachments) ? r.attachments : [];
+      const line = brokerLines(r.responsible_user).find((l) => isOwnLine(l));
+      if (!links.length) { out.push({ lead: r.lead_id, skipped: "no links on this message" }); continue; }
+      if (!line) { out.push({ lead: r.lead_id, skipped: "no bridge line for " + r.responsible_user }); continue; }
+      if (!apply) { out.push({ lead: r.lead_id, would_send_links: links.length }); continue; }
+      const n = await sendAttachmentLinks(String(r.lead_id), links as any, 0, null, "links after undelivered resend", req.log as any, null, String(line));
+      out.push({ lead: r.lead_id, links_sent: n, of: links.length });
+      continue;
+    }
     // Anything of ours that reached the client since then makes a re-send a repeat.
     const later = await pool.query(
       `SELECT 1 FROM wa_messages WHERE card_lead_id = $1::bigint AND direction IN ('out_phone','out_copilot')
@@ -278,7 +297,15 @@ router.post("/admin/wa/resend-failed", async (req, res) => {
       responsibleUser: r.responsible_user, sourceId: String(line),
       webhookStatus: sent.hookStatus, webhookResponse: `resend of ${r.created_at.toISOString()}: ${sent.hookBody}`,
     }).catch(() => undefined);
-    out.push({ lead: r.lead_id, resent: sent.chatSent, why: sent.hookBody });
+    // A shortlist is text PLUS its links. Re-sending the stored message_text on
+    // its own once left six clients with villa names and nothing to open, so the
+    // links travel with every re-send from here on.
+    const links = Array.isArray(r.attachments) ? r.attachments : [];
+    let linksSent = 0;
+    if (sent.chatSent && links.length) {
+      linksSent = await sendAttachmentLinks(String(r.lead_id), links as any, 0, null, "resend", req.log as any, null, String(line));
+    }
+    out.push({ lead: r.lead_id, resent: sent.chatSent, links: links.length ? `${linksSent}/${links.length}` : "none", why: sent.hookBody });
     await new Promise((x) => setTimeout(x, 2500));
   }
   res.json({ apply, candidates: rows.length, result: out });
@@ -286,6 +313,11 @@ router.post("/admin/wa/resend-failed", async (req, res) => {
 
 router.post("/admin/wa/retire-answered", async (req, res) => {
   const apply = req.query.apply === "1";
+  // A shortlist is text PLUS its property links. The first pass re-sent only the
+  // stored message_text, so clients got villa names with nothing to open —
+  // linksOnly re-sends just the links for the leads named in ?leads=.
+  const linksOnly = req.query.links_only === "1";
+  const onlyLeads = new Set(String(req.query.leads ?? "").split(",").map((x) => x.trim()).filter(Boolean));
   const rows = (await pool.query(
     `SELECT p.id, p.lead_id, p.created_at, max(w.created_at) AS answered_at
        FROM pending_suggestions p

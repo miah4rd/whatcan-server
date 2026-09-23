@@ -177,6 +177,11 @@ export const leadsSyncTable = pgTable("leads_sync", {
   reqMoveIn: text("req_move_in"),                      // free text as stated: "1 Nov", "mid-October", "asap"
   reqStay: text("req_stay"),                           // stay length as stated: "3 months", "a year"
   reqBudgetIdrMonthly: integer("req_budget_idr_monthly"),
+  /** What the client themselves answered in the Meta ad form, label and value,
+   * in the order the form asks. A lead who only filled the form and never wrote
+   * a word has no conversation to show — without this the card looks empty and
+   * reads as history the bot lost. */
+  formAnswers: jsonb("form_answers").$type<Array<{ label: string; value: string }>>(),
   reqUpdatedAt: timestamp("req_updated_at", { withTimezone: true }),
 });
 

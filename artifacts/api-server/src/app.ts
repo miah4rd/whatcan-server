@@ -238,7 +238,8 @@ pool.query(`
     ADD COLUMN IF NOT EXISTS profile_source_msg_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS discard_flagged_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS discard_reason TEXT,
-    ADD COLUMN IF NOT EXISTS live_dismissed_at TIMESTAMPTZ
+    ADD COLUMN IF NOT EXISTS live_dismissed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS form_answers JSONB
 `)
   .then(() => logger.info("startup migration: lead profile + discard columns ensured"))
   .catch((err) => logger.error({ err }, "startup migration: lead profile columns failed"));

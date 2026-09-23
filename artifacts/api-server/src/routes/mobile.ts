@@ -207,6 +207,9 @@ const PAGE_HTML = `<!doctype html>
   .tmsg.us .tbubble { background: rgba(33,150,243,.15); border: 1px solid rgba(33,150,243,.3); border-left: 3px solid #2196f3; color: #d4eaff; }
   .tmsg.lead .tbubble { background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.3); border-left: 3px solid #34d399; color: #c8f5e0; }
   .no-conv { color: #6b7488; font-size: 13px; text-align: center; padding: 10px; }
+  .form-ans { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .form-ans .fa { background: #16202e; border: 1px solid #23324a; border-radius: 8px; padding: 5px 8px; font-size: 12px; color: #c7d4e3; }
+  .form-ans .fa b { color: #5e7a96; font-weight: 700; margin-right: 5px; }
   label.section { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #8a93a8; margin: 0 0 6px; }
   .body-block { margin: 0 0 14px; }
   .msg-text { font-size: 14.5px; line-height: 1.6; white-space: pre-wrap; }
@@ -1726,6 +1729,7 @@ const PAGE_HTML = `<!doctype html>
       original: item.suggestion_text || "",
       _contextImage: null,
       recent_messages: Array.isArray(item.recent_messages) ? item.recent_messages : [],
+      form_answers: Array.isArray(item.form_answers) ? item.form_answers : null,
       attachments: Array.isArray(item.attachments) ? item.attachments.slice() : [],
       villa_flags: item.villa_flags || null,
       loading: false,
@@ -2758,6 +2762,19 @@ const PAGE_HTML = `<!doctype html>
       html += '<button class="temp-btn temp-' + _tk + (it.profile_temperature === _tk ? " active" : "") + '" data-settemp="' + _tk + '">' + _temps[_ti][1] + '</button>';
     }
     html += '</div>';
+
+    // What the client answered in the ad form. A form-only lead never writes a
+    // message, so without this the card shows an empty conversation and reads
+    // as history the bot lost (Amelia, 23.09).
+    var _fa = it.form_answers || [];
+    if (_fa.length) {
+      html += '<div class="thread-lbl">\\ud83d\\udccb From the ad form</div>';
+      html += '<div class="form-ans">';
+      for (var _fi = 0; _fi < _fa.length; _fi++) {
+        html += '<div class="fa"><b>' + esc(_fa[_fi].label) + '</b>' + esc(_fa[_fi].value) + '</div>';
+      }
+      html += '</div>';
+    }
 
     var msgs = it.recent_messages || [];
     html += '<div class="thread-lbl">\\ud83d\\udcac Conversation</div>';
