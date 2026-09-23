@@ -818,6 +818,17 @@ async function closeTaskAndPlaceholder(leadId: string, result: string): Promise<
     .catch(() => null);
 }
 
+/** The visit did not happen (cancelled, moved, nobody there): the report is dropped, the card is untouched. */
+export async function cancelReport(id: string, broker: string | null): Promise<{ ok: boolean; error?: string }> {
+  const rep = await getReport(id);
+  if (!rep) return { ok: false, error: "report not found" };
+  if (rep.status === "done" || rep.status === "not_listing") return { ok: false, error: "this report is already closed" };
+  await pool.query(`UPDATE inspection_reports SET status = 'cancelled', filed_by = COALESCE($2, filed_by), updated_at = now() WHERE id = $1`, [id, broker]);
+  await closeTaskAndPlaceholder(rep.lead_id, `No inspection report: the visit did not happen (${broker ?? "broker"})`);
+  logger.info({ id, leadId: rep.lead_id }, "inspection report: cancelled, the visit did not happen");
+  return { ok: true };
+}
+
 // ── Not listing ───────────────────────────────────────────────────────────────
 
 export const NOT_LISTING_REASONS = ["Owner changed mind", "Condition too poor", "Price too high", "Not as described", "Already rented", "Other"] as const;

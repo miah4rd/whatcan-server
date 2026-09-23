@@ -3,6 +3,7 @@ import { pool } from "@workspace/db";
 import {
   AMO_CARD_URL,
   announceDue,
+  cancelReport,
   closeNotListing,
   ensureTable,
   fileReport,
@@ -134,6 +135,12 @@ router.post("/public/inspection-report/:id/not-listing", async (req, res) => {
 /** The broker starts a report himself on a Rental Listings card that has none. */
 router.post("/public/inspection-report/start", async (req, res) => {
   const r = await startReport(String(req.body?.leadId ?? "").trim(), req.body?.broker ? String(req.body.broker) : null);
+  res.status(r.ok ? 200 : 422).json(r);
+});
+
+/** The visit did not happen: drop the report. */
+router.post("/public/inspection-report/:id/cancel", async (req, res) => {
+  const r = await cancelReport(req.params.id, req.body?.broker ? String(req.body.broker) : null);
   res.status(r.ok ? 200 : 422).json(r);
 });
 
