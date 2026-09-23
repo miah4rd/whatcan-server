@@ -253,7 +253,8 @@ router.post("/admin/wa/resend-failed", async (req, res) => {
   const rows = (await pool.query(
     `SELECT s.id, s.lead_id, s.message_text, s.responsible_user, s.created_at, l.pipeline
        FROM sent_messages s JOIN leads_sync l ON l.lead_id = s.lead_id
-      WHERE s.created_at BETWEEN $1 AND $2 AND s.webhook_status BETWEEN 200 AND 299
+      WHERE s.created_at BETWEEN $1 AND $2
+        AND (s.webhook_status BETWEEN 200 AND 299 OR s.webhook_response LIKE '%NOT DELIVERED: Wahelp%')
         AND s.source_id IN ('56811','59537') AND l.pipeline IN ('Rental','Rental Listings')
         AND s.message_text IS NOT NULL AND s.message_text <> ''
       ORDER BY s.created_at`,
