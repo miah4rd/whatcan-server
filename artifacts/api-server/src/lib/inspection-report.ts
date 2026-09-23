@@ -41,7 +41,7 @@ const AMO = "https://unicornproperty.amocrm.ru/leads/detail";
 /** Unicorn Rental — the team group the owner pointed at (screenshot, 19.09.2026). */
 const GROUP_JID = process.env["INSPECTION_REPORT_GROUP"] ?? "120363411017702009@g.us";
 /** Yudi's own WhatsApp, linked to wa-gateway as an extra device (shadow: nothing reaches amoCRM). */
-const YUDI_SESSION = process.env["WA_YUDI_SESSION"] ?? "yudi";
+const YUDI_SESSION = process.env["WA_YUDI_SESSION"] ?? "yudi-main";
 const OWNER_BROKER = "hos";
 const HOUR = 3600_000;
 const DUE_AFTER_MS = 30 * 60_000;
