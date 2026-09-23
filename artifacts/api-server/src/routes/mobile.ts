@@ -2530,7 +2530,14 @@ const PAGE_HTML = `<!doctype html>
   // form with uploads would lose its state on every re-render of this card.
   function renderInspectionReport(it) {
     var ir = it.inspection_report;
-    if (!ir) return "";
+    // A villa inspected without an agreed visit in the thread has no report of its own: the broker
+    // starts one here (Yudi, 23.09 - "listings with no inspection report button").
+    if (!ir) {
+      var listings = (it.pipeline || "").toLowerCase().indexOf("listing") >= 0;
+      var live = /live|weekly|availability/i.test(it.lead_stage || "");
+      if (!listings || live) return "";
+      return '<div class="vr" style="border-color:#2a3146"><div class="vr-row" style="margin-top:0"><button class="vr-opt" id="ir-start">&#x1F50D; Inspected this villa? File the report</button><span class="vr-status" id="ir-start-st"></span></div></div>';
+    }
     var failed = ir.status === "failed";
     var h = '<div class="vr">';
     h += '<div class="vr-head">&#x1F50D; Inspection report' + (ir.property_code ? ' &middot; <b>' + esc(ir.property_code) + '</b>' : '') + ' &middot; ' + esc(vrFmt(ir.visit_at)) + '</div>';
@@ -2619,6 +2626,22 @@ const PAGE_HTML = `<!doctype html>
         });
     });
   }
+  function bindInspectionStart(it) {
+    var btn = $("#ir-start");
+    if (!btn) return;
+    btn.onclick = function () {
+      btn.disabled = true;
+      $("#ir-start-st").textContent = "opening the report...";
+      fetch(API + "/inspection-report/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadId: it.lead_id, broker: activeBroker() }) })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d.ok || !d.id) { $("#ir-start-st").textContent = d.error || "could not start"; btn.disabled = false; return; }
+          location.href = "/m/inspection/" + encodeURIComponent(d.id) + "?broker=" + encodeURIComponent(activeBroker() || "");
+        })
+        .catch(function () { $("#ir-start-st").textContent = "no connection"; btn.disabled = false; });
+    };
+  }
+
   function bindViewingReport(it) {
     var box = $("#vr");
     if (!box || !it.viewing_report) return;
@@ -2922,6 +2945,7 @@ const PAGE_HTML = `<!doctype html>
     if (convEl) convEl.scrollTop = convEl.scrollHeight;
 
     bindViewingReport(it);
+    bindInspectionStart(it);
 
     $("#back-btn").onclick = function () { openItem = null; editing = false; render(); };
 

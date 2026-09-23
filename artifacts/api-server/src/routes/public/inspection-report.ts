@@ -13,6 +13,7 @@ import {
   runDuePass,
   saveDraft,
   signedUpload,
+  startReport,
   siteListing,
   tidyNotes,
   type ReportRow,
@@ -128,6 +129,12 @@ router.post("/public/inspection-report/:id/done", async (req, res) => {
 router.post("/public/inspection-report/:id/not-listing", async (req, res) => {
   const r = await closeNotListing(req.params.id, String(req.body?.reason ?? ""), String(req.body?.notes ?? ""), req.body?.broker ? String(req.body.broker) : null);
   res.status(r.ok || r.checks ? 200 : 422).json(r);
+});
+
+/** The broker starts a report himself on a Rental Listings card that has none. */
+router.post("/public/inspection-report/start", async (req, res) => {
+  const r = await startReport(String(req.body?.leadId ?? "").trim(), req.body?.broker ? String(req.body.broker) : null);
+  res.status(r.ok ? 200 : 422).json(r);
 });
 
 // ── Admin ─────────────────────────────────────────────────────────────────────

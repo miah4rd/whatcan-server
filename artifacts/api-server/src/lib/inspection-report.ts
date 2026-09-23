@@ -328,6 +328,28 @@ async function ensurePlaceholder(leadId: string): Promise<void> {
   }
 }
 
+/**
+ * A report the broker starts himself: a villa he inspected whose visit was never agreed in the thread,
+ * so no slot and no card in the inbox (Yudi, 23.09: "how can i edit the villa as inspected … with no
+ * inspection report button?"). Same row, task, push and inbox card as the scheduled pass creates.
+ */
+export async function startReport(leadId: string, broker: string | null): Promise<{ ok: boolean; id?: string; error?: string }> {
+  await ensureTable();
+  if (!/^\d+$/.test(leadId)) return { ok: false, error: "bad card id" };
+  const open = await pool.query(`SELECT id FROM inspection_reports WHERE lead_id = $1 AND status IN ('due', 'checking', 'failed')`, [leadId]);
+  if (open.rows.length) return { ok: true, id: String(open.rows[0].id) };
+  const lead = await amoFetch<{ id: number; name: string | null; status_id: number; pipeline_id: number; responsible_user_id?: number }>(`/api/v4/leads/${leadId}`);
+  if (!lead) return { ok: false, error: "amoCRM did not return this card" };
+  if (lead.pipeline_id !== LISTINGS_PIPELINE_ID) return { ok: false, error: "this card is not in Rental Listings" };
+  if (CLOSED.has(lead.status_id)) return { ok: false, error: "this card is closed" };
+  const code = await codeForLead(leadId, lead.name).catch(() => null);
+  const visitAt = new Date();
+  const ins = await pool.query(`INSERT INTO inspection_reports (lead_id, property_code, visit_at) VALUES ($1, $2, $3) RETURNING id`, [leadId, code, visitAt]);
+  await announceDue(leadId, code, visitAt, lead.name, lead.responsible_user_id).catch(() => undefined);
+  logger.info({ leadId, code, broker }, "inspection report: started by the broker");
+  return { ok: true, id: String(ins.rows[0].id) };
+}
+
 export function startInspectionReportPass(): void {
   const tick = () => runDuePass().catch((err) => logger.warn({ err }, "inspection report: due pass failed"));
   setTimeout(tick, 45_000);
