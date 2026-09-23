@@ -338,6 +338,15 @@ export async function startReport(leadId: string, broker: string | null): Promis
   if (!/^\d+$/.test(leadId)) return { ok: false, error: "bad card id" };
   const open = await pool.query(`SELECT id FROM inspection_reports WHERE lead_id = $1 AND status IN ('due', 'checking', 'failed')`, [leadId]);
   if (open.rows.length) return { ok: true, id: String(open.rows[0].id) };
+  // A report filed days ago is this villa's report: the button must not open a second one (23.09).
+  const recent = await pool.query(
+    `SELECT done_at FROM inspection_reports WHERE lead_id = $1 AND status IN ('done', 'not_listing') AND COALESCE(done_at, filed_at) > now() - interval '7 days' ORDER BY COALESCE(done_at, filed_at) DESC LIMIT 1`,
+    [leadId],
+  );
+  if (recent.rows.length) {
+    const when = new Date(recent.rows[0].done_at ?? Date.now()).toLocaleDateString("en-GB", { timeZone: "Asia/Makassar", day: "2-digit", month: "short" });
+    return { ok: false, error: `the report for this villa was already filed on ${when}` };
+  }
   const lead = await amoFetch<{ id: number; name: string | null; status_id: number; pipeline_id: number; responsible_user_id?: number }>(`/api/v4/leads/${leadId}`);
   if (!lead) return { ok: false, error: "amoCRM did not return this card" };
   if (lead.pipeline_id !== LISTINGS_PIPELINE_ID) return { ok: false, error: "this card is not in Rental Listings" };
