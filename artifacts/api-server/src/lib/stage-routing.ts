@@ -199,6 +199,17 @@ export function resolveStageGroup(rawStage: string): StageGroup {
  * and the card is re-judged: "free from November" is not long term, and an
  * owner filed under co-broke is not a co-broke.
  */
+/**
+ * The listing funnel after live: "live", "Weekly Check Sent", "Update Availability Received".
+ * The owner's split (24.09.2026): the bot works everything up to QUALIFIED AND everything from live
+ * on (the weekly availability check); the broker approves only QUALIFIED -> live (inspection and
+ * listing). A reply the bot writes to an owner of a live villa is sent by the bot, not approved.
+ */
+export function isAfterLiveListingStage(rawStage: string | null | undefined): boolean {
+  const s = (rawStage ?? "").trim().toLowerCase();
+  return s === "live" || s.includes("weekly check") || s.includes("update availability");
+}
+
 export function isParkedListingStage(rawStage: string | null | undefined): boolean {
   const s = (rawStage ?? "").toLowerCase();
   return s.includes("long term") || s.includes("co-broke");
