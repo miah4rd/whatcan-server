@@ -26,7 +26,7 @@ import { db, leadsSyncTable, pendingSuggestionsTable, sentMessagesTable, leadMes
 import { eq, and, sql, desc, gt } from "drizzle-orm";
 import { logger } from "./logger";
 import { getPipelineStages } from "./stage-classifier";
-import { isParkedListingStage, isBacklogListingStage, isAfterLiveListingStage } from "./stage-routing";
+import { isParkedListingStage, isBacklogListingStage } from "./stage-routing";
 import { isListingAcquisition } from "./pipelines";
 import { guardOwnerDraft } from "./owner-thread-known";
 import { isAutomaticReply } from "./humanize-layout";
@@ -140,7 +140,7 @@ export async function autopilotStageNames(pipeline: string): Promise<string[] | 
   const delegated = await delegatedStageNames(pipeline);
   if (!delegated) return null;
   const stages = await getPipelineStages(pipeline);
-  const parked = (stages?.all ?? []).map((st) => st.name).filter((n) => isParkedListingStage(n) || isAfterLiveListingStage(n));
+  const parked = (stages?.all ?? []).map((st) => st.name).filter((n) => isParkedListingStage(n));
   return [...delegated, ...parked.filter((n) => !delegated.includes(n))];
 }
 
@@ -285,10 +285,7 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
     // the bot's; a push there is not (the dated availability check is written
     // for a person and carries its own verdict, which must survive this pass).
     const parked = isParkedListingStage(lead.leadStage);
-    // After live the card is the bot's again (owner, 24.09.2026): the weekly check and every reply to
-    // a live villa's owner go out without the broker. Only QUALIFIED -> live is the broker's.
-    const afterLive = isListingAcquisition(lead.pipeline) && isAfterLiveListingStage(lead.leadStage);
-    if (leadIdx >= capIdx && !parked && !afterLive) {
+    if (leadIdx >= capIdx && !parked) {
       return { sent: false, reason: `handed over to the broker at ${lead.leadStage}` };
     }
 
