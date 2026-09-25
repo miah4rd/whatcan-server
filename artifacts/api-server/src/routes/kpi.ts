@@ -123,7 +123,38 @@ tr.group td:first-child { background: var(--soft); }
 .toast.on { opacity: 1; }
 .err { background: var(--card); border: 1px solid var(--bad); color: var(--bad); padding: 12px; border-radius: 10px; }
 footer { color: var(--muted); font-size: 12px; padding: 4px 2px 24px; }
+/* Inside Unicorn OS (?host=os) the page wears the OS look; the team-chat link is unchanged. */
+html.os { --bg: #F6F4EF; --card: #FFFFFF; --ink: #1E1A16; --muted: #8C8479; --line: #E4DFD5; --accent: #96782F; --good: #1E8E5A; --warn: #C27A0A; --bad: #D64545; --soft: #F1EEE7; --sel: #F3EBD6; color-scheme: light; }
+html.os[data-theme=dark] { --bg: #1B1612; --card: #241E19; --ink: #F1ECE4; --muted: #857C70; --line: #352D25; --accent: #C9A85C; --good: #3FB37B; --warn: #E0A23B; --bad: #EF6B6B; --soft: #2D2620; --sel: #3A3020; color-scheme: dark; }
+html.os body { font: 13px/1.45 "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+html.os .wrap { max-width: none; padding: 4px 2px; }
+html.os h1 { font-size: 16px; font-weight: 600; }
+html.os section h2, html.os .person h3 { font-size: 13px; font-weight: 600; }
+html.os .tile { border-radius: 10px; padding: 10px 12px; }
+html.os .tile .label { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+html.os .tile .value { font-size: 22px; font-weight: 600; }
+html.os .tile .note, html.os .sub, html.os section .hint, html.os footer { font-size: 11.5px; }
+html.os section { border-radius: 10px; padding: 12px 14px; }
+html.os button.primary { color: #1E1A16; }
+html.os button, html.os input[type=date], html.os select { border-radius: 6px; min-height: 30px; padding: 4px 10px; }
 </style>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  if (q.get("host") !== "os") return;
+  var root = document.documentElement;
+  root.classList.add("os");
+  root.setAttribute("data-theme", q.get("theme") === "dark" ? "dark" : "light");
+  var l = document.createElement("link");
+  l.rel = "stylesheet";
+  l.href = "https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap";
+  document.head.appendChild(l);
+  window.addEventListener("message", function (e) {
+    var d = e.data;
+    if (d && d.source === "copilot-bridge" && d.type === "theme") root.setAttribute("data-theme", d.theme === "dark" ? "dark" : "light");
+  });
+})();
+</script>
 </head>
 <body>
 <div class="wrap">

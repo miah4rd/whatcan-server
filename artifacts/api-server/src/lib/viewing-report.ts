@@ -330,7 +330,7 @@ export async function dueReportForLead(leadId: string) {
 // действие: провёл, получил фидбек, отправил через анкету". This replaces the
 // 09.09 canon that the report is information only. Nothing else sets that
 // stage: not a timer, not the thread, not the classifier.
-const OUTCOME_LABEL: Record<ViewingOutcome, string> = {
+export const OUTCOME_LABEL: Record<ViewingOutcome, string> = {
   go: "Going ahead",
   think: "Liked it, needs time",
   no: "Not this one",

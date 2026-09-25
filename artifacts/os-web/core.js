@@ -308,7 +308,7 @@ export function currentTheme() {
 }
 /** The Copilot inside the OS wears the OS look; it follows the theme when it changes. */
 export function syncCopilotTheme() {
-  document.querySelectorAll("iframe.copilot-frame").forEach((f) => {
+  document.querySelectorAll("iframe.copilot-frame, iframe.kpi").forEach((f) => {
     try {
       f.contentWindow.postMessage({ source: "copilot-bridge", type: "theme", theme: currentTheme() }, S.meta.copilotOrigin);
     } catch (e) {

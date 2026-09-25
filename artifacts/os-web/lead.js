@@ -240,19 +240,45 @@ function threadHtml(d) {
     .join("")}</div>`;
 }
 
-function viewingsSection(d) {
+const OUTCOME = {
+  go: ["Going ahead", "ok"],
+  think: ["Liked it, needs time", "warn"],
+  no: ["Not this one", "bad"],
+  no_show: ["Client didn't show", "bad"],
+  cancelled: ["Cancelled by the villa", ""],
+  rescheduled: ["Rescheduled", ""],
+};
+/** A viewing report, whole: how it went, the client's words, what did not work, the next step. */
+export function reportHtml(r, { client } = {}) {
+  const cats = S.meta.objectionCategories || {};
+  const [label, cls] = OUTCOME[r.outcome] || [r.outcome || (r.status === "due" ? "Report not filed yet" : "—"), r.status === "due" ? "bad" : ""];
+  const objections = r.objections || [];
+  const steps = r.nextSteps || r.next_steps || [];
+  const by = r.nextBy || r.next_by;
+  return `<div class="report">
+    <div class="rh"><b>${esc(fmtDT(r.viewingAt || r.viewing_at))}</b>${(r.propertyCode || r.property_code) ? ` · <a href="#" data-open-villa="${esc(r.propertyCode || r.property_code)}" class="mono">${esc(r.propertyCode || r.property_code)}</a>` : ""}<span class="pill ${cls}">${esc(label)}</span></div>
+    ${client ? `<div class="faint">${client}</div>` : ""}
+    <div class="rf"><div class="sect-h">What the client said</div><div class="rtext">${esc(r.feedback || "") || `<span class="faint">No feedback written.</span>`}</div></div>
+    ${objections.length ? `<div class="rf"><div class="sect-h">What did not work for them</div><div class="stack">${objections.map((o) => `<div class="robj"><span class="pill">${esc(cats[o.category] || o.category)}</span>${o.quote ? ` “${esc(o.quote)}”` : ""}</div>`).join("")}</div></div>` : ""}
+    <div class="rf"><div class="sect-h">Next step</div>${steps.length ? `${esc(steps.join(", "))}${by ? ` <span class="faint">by ${esc(by)}</span>` : ""}` : `<span class="faint">none set</span>`}</div>
+    ${(r.filedBy || r.filed_by) ? `<div class="faint rby">Filed by ${esc(r.filedBy || r.filed_by)}${(r.filedAt || r.filed_at) ? ` · ${esc(fmtDT(r.filedAt || r.filed_at))}` : ""}</div>` : ""}
+  </div>`;
+}
+
+function viewingsSection(d, { open } = {}) {
   const slots = d.viewings?.slots || [];
   const reps = d.viewings?.reports || [];
-  if (!slots.length && !reps.length) return "";
-  return `<div><div class="sect-h">Viewings <span class="faint">${slots.length}</span></div><div class="stack">${slots
-    .map((s) => {
-      const rp = reps.find((r) => r.viewing_at === s.viewing_at);
-      return `<div class="panel"><h3>${fmtDT(s.viewing_at)} <span class="pill ${s.status === "scheduled" ? "ok" : ""}">${esc(s.status)}</span></h3><dl class="props">
-        <dt>Villa</dt><dd>${s.property_code ? `<a href="#" data-open-villa="${esc(s.property_code)}" class="mono">${esc(s.property_code)}</a>` : "—"}</dd>
-        <dt>Agreed</dt><dd>${fmtDT(s.agreed_at)} <span class="faint">${esc(s.source || "")}</span></dd>
-        <dt>Report</dt><dd>${rp ? (rp.status === "due" ? `<span class="pill warn">due, file it in the Copilot</span>` : `<b>${esc(rp.outcome || "")}</b> ${esc(rp.feedback || "")}<br><span class="faint">next: ${esc((rp.next_steps || []).join(", ") || "—")} · by ${esc(rp.next_by || "—")}</span>`) : "<span class='faint'>opens 30 minutes after the slot</span>"}</dd></dl></div>`;
-    })
-    .join("")}</div></div>`;
+  if (!slots.length && !reps.length) return open ? `<div class="empty">No viewing agreed yet. After a shortlist every Copilot draft asks for one; the slot is read from the chat.</div>` : "";
+  const seen = new Set();
+  const items = slots.map((s) => {
+    const rp = reps.find((r) => r.viewing_at === s.viewing_at);
+    if (rp) seen.add(rp.id);
+    return rp
+      ? reportHtml(rp)
+      : `<div class="report"><div class="rh"><b>${esc(fmtDT(s.viewing_at))}</b>${s.property_code ? ` · <a href="#" data-open-villa="${esc(s.property_code)}" class="mono">${esc(s.property_code)}</a>` : ""}<span class="pill ${s.status === "scheduled" ? "ok" : ""}">${esc(s.status)}</span></div><div class="faint">Agreed ${esc(fmtDT(s.agreed_at))} · the report opens 30 minutes after the slot.</div></div>`;
+  });
+  for (const r of reps) if (!seen.has(r.id)) items.push(reportHtml(r));
+  return `<div><div class="sect-h">Viewings <span class="faint">${Math.max(slots.length, reps.length)}</span></div><div class="stack">${items.join("")}</div></div>`;
 }
 
 function historyHtml(d) {
@@ -281,8 +307,18 @@ peeks.lead = {
     // the panel holds both: the Copilot (conversation and reply) and the card.
     const inInbox = (S.route?.screen || "") === "inbox";
     const draft = d.drafts?.[0];
-    const tabs = inInbox ? [] : [["copilot", "Copilot"], ["card", "Card"]];
-    const tab = inInbox ? "card" : tabs.some((t) => t[0] === st.tab) ? st.tab : draft ? "copilot" : "card";
+    const nView = Math.max((d.viewings?.slots || []).length, (d.viewings?.reports || []).length);
+    const tabs = inInbox
+      ? []
+      : [
+          ["copilot", "Copilot"],
+          ["chat", `Chat · ${d.messages?.length || 0}`],
+          ["overview", "Overview"],
+          ["viewings", `Viewings${nView ? " · " + nView : ""}`],
+          ["tasks", `Tasks · ${(d.tasks || []).length}`],
+          ["history", "History"],
+        ];
+    const tab = inInbox ? "card" : tabs.some((t) => t[0] === st.tab) ? st.tab : st.tab === "card" ? "overview" : draft ? "copilot" : "overview";
     if (!inInbox) S.peek.tabByType = { ...(S.peek.tabByType || {}), lead: tab };
     el.innerHTML = `<div class="resize-x" id="peek-resize2" title="Drag to resize"></div>
       <div class="ph"><div class="avatar ${isListingPipe(d.pipeline) ? "villa" : ""}">${esc((d.name || "?").slice(0, 2).toUpperCase())}</div>
@@ -296,6 +332,41 @@ peeks.lead = {
     resizer(el.querySelector("#peek-resize2"), { varName: "--peek-w", min: 360, max: Math.max(420, window.innerWidth - 200), invert: true });
     const body = el.querySelector("#peek-body");
     const refresh = () => ctl.setTab(tab);
+    on(el, "click", "a[data-open-villa]", (e, a) => {
+      e.preventDefault();
+      emit("open-peek", { type: "villa", id: a.dataset.openVilla });
+    });
+    if (tab === "chat") {
+      body.innerHTML = `${threadHtml(d)}<div class="help" style="margin:0 12px 12px">Replies go out from the Copilot tab (draft, then Approve), so every message passes the same checks and is recorded.</div>`;
+      setTimeout(() => (body.scrollTop = body.scrollHeight), 0);
+      return;
+    }
+    if (tab === "overview") {
+      body.classList.add("pad");
+      body.innerHTML = await summaryHtml(d);
+      bindSummary(body, d, refresh);
+      return;
+    }
+    if (tab === "viewings") {
+      body.classList.add("pad");
+      body.innerHTML = viewingsSection(d, { open: true });
+      return;
+    }
+    if (tab === "tasks") {
+      body.classList.add("pad");
+      body.innerHTML = `<div class="row"><button class="btn primary sm" id="new-task">${I.plus} New task</button><span class="faint" style="font-size:12px">amoCRM tasks: the follow-up scheduler reads them.</span></div>
+        <div class="stack" id="card-tasks">${(d.tasks || []).map((t) => taskRow(t)).join("") || `<div class="empty">No open tasks.</div>`}</div>`;
+      body.querySelector("#new-task").onclick = async () => {
+        if (await newTask(d.leadId)) refresh();
+      };
+      bindTasks(body, () => d.tasks || [], d.leadId, refresh);
+      return;
+    }
+    if (tab === "history") {
+      body.classList.add("pad");
+      body.innerHTML = historyHtml(d);
+      return;
+    }
     if (tab === "copilot") {
       if (draft) {
         body.innerHTML = `<div class="frame-wrap" id="peek-copilot"></div>`;
@@ -303,7 +374,7 @@ peeks.lead = {
         mountCopilot(body.querySelector("#peek-copilot"), brokerForLead(d.responsible), d.leadId);
       } else {
         // No draft to approve: the conversation, read-only, and why there is no reply box.
-        body.innerHTML = `<div class="help" style="margin:10px 12px 0">No draft on this card now. The Copilot writes one when the client writes or a follow-up falls due; a task on the Card tab brings the card back sooner.</div>${threadHtml(d)}`;
+        body.innerHTML = `<div class="help" style="margin:10px 12px 0">No draft on this card now. The Copilot writes one when the client writes or a follow-up falls due; a task brings the card back sooner. The conversation is on the Chat tab.</div>`;
         setTimeout(() => (body.scrollTop = body.scrollHeight), 0);
       }
       return;
@@ -321,7 +392,31 @@ peeks.lead = {
       if (await newTask(d.leadId)) refresh();
     };
     bindTasks(body.querySelector("#card-tasks"), () => d.tasks || [], d.leadId, refresh);
-    on(body, "click", "a[data-open-villa]", (e, a) => {
+  },
+};
+
+// ── one viewing report in the side panel ──
+peeks.vreport = {
+  defaultTab: "report",
+  async render(el, st, ctl) {
+    let r;
+    try {
+      r = await api(`/viewing-reports/${encodeURIComponent(st.id)}`);
+    } catch (e) {
+      el.innerHTML = `<div class="ph"><h2>Viewing report</h2><button class="iconbtn" data-close>${I.x}</button></div><div class="empty">${esc(e.message)}</div>`;
+      el.querySelector("[data-close]").onclick = ctl.close;
+      return;
+    }
+    const who = r.clientName || r.leadName || "#" + r.leadId;
+    const req = r.request || {};
+    el.innerHTML = `<div class="resize-x" id="vr-resize" title="Drag to resize"></div>
+      <div class="ph"><div style="min-width:0;flex:1"><h2>Viewing report · ${esc(who)}</h2><div class="faint" style="font-size:12px">${esc(r.stage || "")} · ${esc(r.responsible || "")}${req.bedrooms || req.areas ? ` · asked for ${esc([req.bedrooms ? req.bedrooms + "BR" : null, req.areas, req.budget ? money(req.budget) : null].filter(Boolean).join(" · "))}` : ""}</div></div>
+        <button class="btn sm" id="vr-card">Client's card</button><button class="iconbtn" data-close title="Close (Esc)">${I.x}</button></div>
+      <div class="pb pad">${reportHtml(r)}</div>`;
+    el.querySelector("[data-close]").onclick = ctl.close;
+    el.querySelector("#vr-card").onclick = () => emit("open-peek", { type: "lead", id: r.leadId, tab: "overview" });
+    resizer(el.querySelector("#vr-resize"), { varName: "--peek-w", min: 360, max: Math.max(420, window.innerWidth - 200), invert: true });
+    on(el, "click", "a[data-open-villa]", (e, a) => {
       e.preventDefault();
       emit("open-peek", { type: "villa", id: a.dataset.openVilla });
     });

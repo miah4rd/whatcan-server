@@ -31,6 +31,7 @@ import { logger } from "../logger";
 import { audit, brokerScope, isStaff, type OsUser } from "./auth";
 import { recordCloseReason } from "./analytics";
 import { projectNotifications } from "./projects";
+import { OUTCOME_LABEL } from "../viewing-report";
 
 const lc = (s: unknown) => String(s ?? "").trim().toLowerCase();
 const iso = (d: unknown) => (d ? new Date(d as string).toISOString() : null);
@@ -324,7 +325,11 @@ export async function leadDetail(user: OsUser, leadId: string) {
     safe("slots", async () => (await pool.query(
       `SELECT id, viewing_at, property_code, status, agreed_at, source FROM viewing_slots WHERE lead_id = $1 ORDER BY viewing_at DESC LIMIT 20`, [leadId])).rows, [] as Record<string, unknown>[]),
     safe("reports", async () => (await pool.query(
-      `SELECT id, property_code, viewing_at, status, outcome, feedback, next_steps, next_by, filed_by, filed_at FROM viewing_reports WHERE lead_id = $1 ORDER BY viewing_at DESC LIMIT 20`, [leadId])).rows, [] as Record<string, unknown>[]),
+      `SELECT r.id, r.property_code, r.viewing_at, r.status, r.outcome, r.feedback, r.next_steps, r.next_by, r.filed_by, r.filed_at,
+              (SELECT coalesce(json_agg(json_build_object('category', o.category, 'quote', o.quote)), '[]'::json) FROM os_objections o
+                WHERE o.source = 'viewing-report' AND o.source_ref = r.id::text) AS objections
+         FROM viewing_reports r WHERE r.lead_id = $1 ORDER BY r.viewing_at DESC LIMIT 20`, [leadId]).catch(() =>
+      pool.query(`SELECT id, property_code, viewing_at, status, outcome, feedback, next_steps, next_by, filed_by, filed_at FROM viewing_reports WHERE lead_id = $1 ORDER BY viewing_at DESC LIMIT 20`, [leadId]))).rows, [] as Record<string, unknown>[]),
     safe("commitments", async () => (await pool.query(
       `SELECT id, promise_text, due_at, status, source_excerpt FROM lead_commitments WHERE lead_id = $1 ORDER BY due_at DESC LIMIT 20`, [leadId])).rows, [] as Record<string, unknown>[]),
     safe("stages", async () => (await pool.query(
@@ -702,4 +707,47 @@ export async function activeBrokers(): Promise<string[]> {
      ORDER BY 1`,
   );
   return [...new Set(rows.map((r) => String(r.b)))];
+}
+
+// ── One viewing report, whole ────────────────────────────────────────────────
+
+/** A filed viewing report with what the client objected to in it, for the report panel. */
+export async function viewingReportDetail(user: OsUser, id: string) {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("Unknown report.");
+  const { rows } = await pool.query(
+    `SELECT r.id, r.lead_id, r.property_code, r.viewing_at, r.status, r.outcome, r.feedback, r.next_steps, r.next_by, r.rescheduled_to, r.filed_by, r.filed_at,
+            l.responsible_user, l.lead_stage, l.pipeline, l.req_bedrooms, l.req_areas, l.req_budget_idr_monthly,
+            (SELECT sender_name FROM lead_messages m WHERE m.lead_id = r.lead_id AND m.sender_type = 'lead' AND coalesce(m.sender_name,'') <> '' ORDER BY sent_at LIMIT 1) AS client_name
+       FROM viewing_reports r LEFT JOIN leads_sync l ON l.lead_id = r.lead_id WHERE r.id = $1`,
+    [id],
+  );
+  const r = rows[0];
+  if (!r) throw new Error("This report no longer exists.");
+  const scope = brokerScope(user);
+  if (scope && lc(r.responsible_user) !== lc(scope)) throw new Error("This report is not on your card.");
+  const obj = await pool
+    .query(`SELECT category, quote FROM os_objections WHERE source = 'viewing-report' AND source_ref = $1 ORDER BY id`, [id])
+    .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+  const names = await amoLeadNames([String(r.lead_id)]).catch(() => new Map<string, string>());
+  return {
+    id: String(r.id),
+    leadId: String(r.lead_id),
+    leadName: names.get(String(r.lead_id)) ?? null,
+    clientName: (r.client_name as string) ?? null,
+    responsible: (r.responsible_user as string) ?? null,
+    stage: (r.lead_stage as string) ?? null,
+    request: { bedrooms: r.req_bedrooms ?? null, areas: r.req_areas ?? null, budget: r.req_budget_idr_monthly ?? null },
+    propertyCode: (r.property_code as string) ?? null,
+    viewingAt: iso(r.viewing_at),
+    status: String(r.status),
+    outcome: (r.outcome as string) ?? null,
+    outcomeLabel: r.outcome ? (OUTCOME_LABEL as Record<string, string>)[String(r.outcome)] ?? String(r.outcome) : null,
+    feedback: (r.feedback as string) ?? "",
+    nextSteps: (r.next_steps as string[]) ?? [],
+    nextBy: (r.next_by as string) ?? null,
+    rescheduledTo: iso(r.rescheduled_to),
+    filedBy: (r.filed_by as string) ?? null,
+    filedAt: iso(r.filed_at),
+    objections: obj.rows.map((o) => ({ category: String(o.category), quote: (o.quote as string) ?? "" })),
+  };
 }

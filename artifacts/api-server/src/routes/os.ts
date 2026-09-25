@@ -45,6 +45,7 @@ import {
   matchingClients,
   cleanupCount,
   activeBrokers,
+  viewingReportDetail,
 } from "../lib/os/data";
 import {
   listListings,
@@ -306,6 +307,9 @@ api.post(
   }),
 );
 
+// One viewing report, whole: feedback, what did not work, next step.
+api.get("/viewing-reports/:id", signedIn, h(async (req) => viewingReportDetail(req.osUser!, String(req.params["id"]))));
+
 // ── Analytics ────────────────────────────────────────────────────────────────
 const scopeBroker = (req: Request) => (isStaff(req.osUser) ? ((req.query["broker"] as string) || null) : req.osUser!.brokerKey);
 api.get("/analytics/objections", signedIn, h(async (req) => objectionsSummary({ days: Math.min(180, Number(req.query["days"] ?? 30) || 30), broker: scopeBroker(req) })));
@@ -342,10 +346,16 @@ api.get(
 // Each funnel on its own: the people in it, their week against targets and the team, and why.
 api.get(
   "/analytics/team",
-  staffOnly,
+  signedIn,
   h(async (req) => {
-    const w = String(req.query["week"] ?? "current");
-    return teamScorecard(String(req.query["funnel"] ?? "rental") as FunnelKey, w === "current" ? undefined : w);
+    const w = String(req.query["date"] ?? req.query["week"] ?? "");
+    const card = await teamScorecard(String(req.query["funnel"] ?? "rental") as FunnelKey, { period: String(req.query["period"] ?? "week"), date: /^\d{4}-\d{2}-\d{2}$/.test(w) ? w : undefined });
+    // A broker sees their own row and the team's totals, not the others one by one.
+    if (!isStaff(req.osUser)) {
+      const me = String(req.osUser!.brokerKey ?? "").toLowerCase();
+      card.people = card.people.filter((p) => p.name.toLowerCase() === me);
+    }
+    return card;
   }),
 );
 api.post(
@@ -360,6 +370,7 @@ api.post(
       value: b.value === null || b.value === "" || b.value === undefined ? null : Number(b.value),
       floor: b.floor === null || b.floor === "" || b.floor === undefined ? null : Number(b.floor),
       from: String(b.from ?? ""),
+      period: String(b.period ?? "week"),
       note: b.note ? String(b.note) : undefined,
     });
     return { ok: true };

@@ -87,6 +87,21 @@ const GATES: Record<FunnelKey, Array<[string, string, string]>> = {
   ],
 };
 
+export type Period = "week" | "month" | "quarter" | "year";
+export const PERIODS: Period[] = ["week", "month", "quarter", "year"];
+/** The calendar period holding a day, as [first day, first day after]. */
+export function periodRange(period: Period, day: string): { from: string; to: string } {
+  const [y, m] = day.split("-").map(Number);
+  const iso = (Y: number, M: number) => new Date(Date.UTC(Y, M - 1, 1)).toISOString().slice(0, 10);
+  if (period === "month") return { from: iso(y, m), to: iso(y, m + 1) };
+  if (period === "quarter") {
+    const q = Math.floor((m - 1) / 3) * 3 + 1;
+    return { from: iso(y, q), to: iso(y, q + 3) };
+  }
+  if (period === "year") return { from: iso(y, 1), to: iso(y + 1, 1) };
+  const ws = mondayOf(day);
+  return { from: ws, to: addDays(ws, 7) };
+}
 const addDays = (day: string, n: number) => {
   const d = new Date(`${day}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);
@@ -139,10 +154,10 @@ export async function funnelPeople(f: FunnelKey): Promise<string[]> {
   return names;
 }
 
-/** Counts for one week, per person. */
-async function weekCounts(f: FunnelKey, ws: string, names: string[]): Promise<Counts> {
-  const from = baliStart(ws);
-  const to = baliStart(addDays(ws, 7));
+/** Counts for one period [fromDay, toDay), per person. */
+async function periodCounts(f: FunnelKey, fromDay: string, toDay: string, names: string[]): Promise<Counts> {
+  const from = baliStart(fromDay);
+  const to = baliStart(toDay);
   const p = PIPELINE_NAME[f];
   const c: Counts = new Map();
   const add = (list: Record<string, unknown>[], metric: string) => list.forEach((x) => bump(c, who(x.who), metric, Number(x.n ?? 1)));
@@ -309,8 +324,8 @@ const LEGACY: Record<string, string> = {
   "yudi.inspections": "rental-listings:inspections_held:yudi",
 };
 export type Target = { value: number; floor: number | null; from: string; note: string | null };
-/** Targets in force on a day for a funnel: person(lc) or "team" -> metric -> target. */
-export async function funnelTargets(f: FunnelKey, day: string): Promise<Record<string, Record<string, Target>>> {
+/** Targets of one period type in force on a day for a funnel: person(lc) or "team" -> metric -> target. */
+export async function funnelTargets(f: FunnelKey, day: string, period: Period = "week"): Promise<Record<string, Record<string, Target>>> {
   await ensureAnalyticsTables();
   const legacyKeys = Object.keys(LEGACY).filter((k) => LEGACY[k].startsWith(`${f}:`));
   const r = await rows(
@@ -320,14 +335,16 @@ export async function funnelTargets(f: FunnelKey, day: string): Promise<Record<s
   const out: Record<string, Record<string, Target>> = {};
   for (const x of r) {
     const key = LEGACY[String(x.key)] ?? String(x.key);
-    const [, metric, person] = key.split(":");
-    if (!metric || !person) continue;
+    const [, metric, person, per] = key.split(":");
+    if (!metric || !person || (per || "week") !== period) continue;
     // Rows come oldest first: the latest one in force wins.
     (out[person] ??= {})[metric] = { value: Number(x.value), floor: x.floor == null ? null : Number(x.floor), from: new Date(String(x.effective_from)).toISOString().slice(0, 10), note: (x.note as string) ?? null };
   }
   return out;
 }
-export async function setFunnelTarget(by: string, input: { funnel: string; metric: string; who: string; value: number | null; floor?: number | null; from: string; note?: string }) {
+export async function setFunnelTarget(by: string, input: { funnel: string; metric: string; who: string; value: number | null; floor?: number | null; from: string; period?: string; note?: string }) {
+  const period = (PERIODS as string[]).includes(String(input.period ?? "week")) ? (String(input.period ?? "week") as Period) : null;
+  if (!period) throw new Error("Pick week, month, quarter or year.");
   const f = input.funnel as FunnelKey;
   if (!FUNNEL_METRICS[f]) throw new Error("Unknown funnel.");
   if (!FUNNEL_METRICS[f].some((m) => m.key === input.metric && m.target)) throw new Error("No target can be set on that number.");
@@ -336,7 +353,9 @@ export async function setFunnelTarget(by: string, input: { funnel: string; metri
   if (!person || !/^[\p{L}\p{N} ._-]{1,40}$/u.test(person)) throw new Error("Pick a person or the team.");
   if (input.value != null && (!Number.isFinite(input.value) || input.value < 0 || input.value > 100000)) throw new Error("The target is a count per week.");
   await ensureAnalyticsTables();
-  const key = `${f}:${input.metric}:${person}`;
+  // A target starts with its period: a month target set on the 17th counts from the 1st.
+  input.from = periodRange(period, input.from).from;
+  const key = period === "week" ? `${f}:${input.metric}:${person}` : `${f}:${input.metric}:${person}:${period}`;
   if (input.value == null) {
     // "No target" from that week on: a zero row would read as a target of 0, so the row says so in its note.
     await pool.query(
@@ -355,17 +374,31 @@ export async function setFunnelTarget(by: string, input: { funnel: string; metri
 
 // ── The scorecard ────────────────────────────────────────────────────────────
 
-export async function teamScorecard(f: FunnelKey, weekStart?: string) {
+export async function teamScorecard(f: FunnelKey, opts: { period?: string; date?: string } = {}) {
   if (!FUNNEL_METRICS[f]) throw new Error("Unknown funnel.");
-  const today = baliDate();
-  const ws = weekStart && /^\d{4}-\d{2}-\d{2}$/.test(weekStart) ? mondayOf(weekStart) : mondayOf(today);
-  const prevWs = addDays(ws, -7);
+  const period: Period = (PERIODS as string[]).includes(String(opts.period)) ? (opts.period as Period) : "week";
+  const day = opts.date && /^\d{4}-\d{2}-\d{2}$/.test(opts.date) ? opts.date : baliDate();
+  const range = periodRange(period, day);
+  const prevRange = periodRange(period, addDays(range.from, -1));
+  const ws = range.from;
+  const lastDay = addDays(range.to, -1);
   const names = await funnelPeople(f);
-  const [cur, prev, targetsRaw] = await Promise.all([weekCounts(f, ws, names), weekCounts(f, prevWs, names), funnelTargets(f, addDays(ws, 6))]);
+  const [cur, prev, targetsRaw, weekly] = await Promise.all([
+    periodCounts(f, range.from, range.to, names),
+    periodCounts(f, prevRange.from, prevRange.to, names),
+    funnelTargets(f, lastDay, period),
+    period === "week" ? Promise.resolve({} as Record<string, Record<string, Target>>) : funnelTargets(f, lastDay, "week"),
+  ]);
   await nowHabits(f, cur);
-  // A cleared target (value -1) means none.
-  const targets: Record<string, Record<string, Target>> = {};
-  for (const [p, ms] of Object.entries(targetsRaw)) for (const [m, t] of Object.entries(ms)) if (t.value >= 0) (targets[p] ??= {})[m] = t;
+  // A cleared target (value -1) means none. With no target for a longer period,
+  // the weekly one scaled to its length stands in, marked as implied.
+  const days = Math.round((Date.parse(range.to) - Date.parse(range.from)) / 86400_000);
+  const targets: Record<string, Record<string, Target & { implied?: boolean }>> = {};
+  for (const [p, ms] of Object.entries(weekly)) for (const [m, t] of Object.entries(ms)) if (t.value > 0) (targets[p] ??= {})[m] = { ...t, value: Math.round((t.value * days) / 7), floor: t.floor == null ? null : Math.round((t.floor * days) / 7), implied: true };
+  for (const [p, ms] of Object.entries(targetsRaw)) for (const [m, t] of Object.entries(ms)) {
+    if (t.value >= 0) (targets[p] ??= {})[m] = t;
+    else if (targets[p]) delete targets[p][m];
+  }
 
   const metrics = FUNNEL_METRICS[f];
   const val = (c: Counts, p: string, m: string) => c.get(lc(p))?.get(m) ?? 0;
@@ -425,5 +458,5 @@ export async function teamScorecard(f: FunnelKey, weekStart?: string) {
     if (parts.length) teamTargets[m.key] = { value: parts.reduce((a, b) => a + b, 0), floor: null, from: ws, note: null, summed: true };
   }
   const gates = GATES[f].map(([a, b, label]) => ({ from: a, to: b, label, teamRate: rate(cur, null, a, b), base: teamSum(cur, a) }));
-  return { funnel: f, weekStart: ws, metrics, habits: HABITS, people, team: { values: teamValues, targets: teamTargets }, gates };
+  return { funnel: f, period, from: range.from, to: range.to, weekStart: ws, metrics, habits: HABITS, people, team: { values: teamValues, targets: teamTargets }, gates };
 }
