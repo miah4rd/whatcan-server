@@ -224,7 +224,10 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
        ON CONFLICT (name) DO UPDATE SET status = EXCLUDED.status, phone = COALESCE(EXCLUDED.phone, wa_sessions.phone), updated_at = now()`,
       [ev.session, ev.status, ev.me ?? null],
     );
-    if (ev.status === "logged_out") logger.error({ session: ev.session }, "wa-bridge: number unlinked or banned — relink required");
+    if (ev.status === "logged_out" || ev.status === "forbidden") {
+      logger.error({ session: ev.session, status: ev.status }, "wa-bridge: number unlinked or banned — relink required");
+      if (WATCHED_SESSIONS.includes(ev.session)) void alertSessionDown(ev.session, ev.status).catch(() => undefined);
+    }
     return;
   }
 
@@ -487,4 +490,56 @@ export async function newLinkToken(session: string, hours = 2): Promise<string> 
 export async function sessionForToken(token: string): Promise<string | null> {
   const r = await pool.query(`SELECT session FROM wa_link_tokens WHERE token = $1 AND expires_at > now()`, [token]);
   return (r.rows[0]?.session as string) ?? null;
+}
+
+
+// ── Session watchdog ───────────────────────────────────────────────────────────
+/**
+ * The brokers' numbers must be linked at all times (owner, 25.09.2026: "2 номера должны работать
+ * всегда"). On 24.09 Yudi's main number was unlinked at 12:43 and nobody knew until the next day:
+ * the bridge only wrote a log line. Now a broker session that is unlinked, banned, or simply not
+ * open for 10 minutes sends the owner a WhatsApp from his own number (self-chat) with a fresh
+ * 24-hour relink link — at once on an unlink event, otherwise every 3 hours while it stays down.
+ */
+const WATCHED_SESSIONS = (process.env.WA_WATCHED_SESSIONS ?? "yudi-main,yudi-2,amelia").split(",").map((x) => x.trim()).filter(Boolean);
+const downSince = new Map<string, number>();
+const lastAlertAt = new Map<string, number>();
+
+async function alertSessionDown(name: string, status: string): Promise<void> {
+  const last = lastAlertAt.get(name) ?? 0;
+  if (Date.now() - last < 3 * 3600_000) return;
+  lastAlertAt.set(name, Date.now());
+  const list = await gateway("GET", "/sessions").then((r) => (Array.isArray(r.data) ? r.data : [])).catch(() => []);
+  const owner = (list as Array<{ name: string; status: string; me: string | null }>).find((x) => x.name === OWNER_SESSION);
+  const url = await newLinkToken(name, 24).catch(() => null);
+  const text =
+    `⚠️ WhatsApp "${name}" is disconnected from the bot (${status}). Nothing is being sent from this number.` +
+    (url ? `\nRelink (valid 24 h): ${url}\nScan with the phone of THAT number: WhatsApp → Linked Devices → Link a Device.` : "");
+  logger.error({ session: name, status }, "wa-bridge watchdog: broker number is down — owner alerted");
+  if (owner?.status === "open" && owner.me) {
+    await gateway("POST", "/send", { session: OWNER_SESSION, to: owner.me, text }).catch((err) =>
+      logger.error({ err, session: name }, "wa-bridge watchdog: could not message the owner"),
+    );
+  }
+}
+
+async function watchSessions(): Promise<void> {
+  const r = await gateway("GET", "/sessions").catch(() => null);
+  const list = (Array.isArray(r?.data) ? r!.data : []) as Array<{ name: string; status: string }>;
+  if (!r) return; // gateway down: its own restart is pm2's job; do not spam
+  for (const name of WATCHED_SESSIONS) {
+    const s = list.find((x) => x.name === name);
+    if (s?.status === "open") {
+      downSince.delete(name);
+      continue;
+    }
+    const since = downSince.get(name) ?? Date.now();
+    downSince.set(name, since);
+    if (Date.now() - since >= 10 * 60_000) await alertSessionDown(name, s?.status ?? "not started").catch(() => undefined);
+  }
+}
+
+export function startSessionWatchdog(): void {
+  setTimeout(() => void watchSessions().catch(() => undefined), 60_000);
+  setInterval(() => void watchSessions().catch(() => undefined), 5 * 60_000);
 }

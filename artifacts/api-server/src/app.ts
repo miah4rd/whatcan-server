@@ -31,7 +31,7 @@ import inspectionPageRouter from "./routes/inspection-page";
 import { startStageSyncCheckScheduler } from "./lib/stage-sync-check";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
-import { connectChannel, ensureWaTables } from "./lib/wa-bridge";
+import { connectChannel, ensureWaTables, startSessionWatchdog } from "./lib/wa-bridge";
 
 const app: Express = express();
 
@@ -167,6 +167,7 @@ pool.query(`UPDATE stage_events e
 // channel — amoCRM drops the link whenever the integration is reinstalled.
 ensureWaTables()
   .then(() => connectChannel())
+  .then(() => startSessionWatchdog())
   .catch((err) => logger.error({ err }, "wa-bridge: startup failed"));
 
 pool.query(`CREATE TABLE IF NOT EXISTS autopilot_settings (
