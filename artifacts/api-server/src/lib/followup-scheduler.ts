@@ -1352,6 +1352,7 @@ export async function processUnansweredLive(): Promise<void> {
       botExcluded: leadsSyncTable.botExcluded,
       pipeline: leadsSyncTable.pipeline,
       profileSourceMsgAt: leadsSyncTable.profileSourceMsgAt,
+      lastMessageAt: leadsSyncTable.lastMessageAt,
       profileTemperature: leadsSyncTable.profileTemperature,
       profilePotential: leadsSyncTable.profilePotential,
       profileIntent: leadsSyncTable.profileIntent,
@@ -1410,6 +1411,43 @@ export async function processUnansweredLive(): Promise<void> {
       ),
     );
   const alreadyHasLive = new Set(existingLive.map((r) => r.leadId));
+
+  // A LIVE the autopilot retired was the answer to the lead's last message. The lead
+  // still reads "unanswered" here, so the next tick wrote the same draft again, the
+  // autopilot retired it again, and the broker got a push each round. 24-25.09.2026:
+  // two villas whose only reply was a WhatsApp auto-reply (Anaya Villa, The Bija) went
+  // round ~205 times overnight: ~$8 of API credit and ~400 pushes to Yudi. Held until
+  // the lead writes something after the retirement.
+  const retiredLive = new Set<string>();
+  const unansweredIds = unanswered.map((l) => l.leadId);
+  if (unansweredIds.length > 0) {
+    const retired = await db
+      .select({ leadId: pendingSuggestionsTable.leadId, at: sql<string>`max(${pendingSuggestionsTable.autopilotSkippedAt})` })
+      .from(pendingSuggestionsTable)
+      .where(
+        and(
+          inArray(pendingSuggestionsTable.leadId, unansweredIds),
+          eq(pendingSuggestionsTable.kind, "live"),
+          eq(pendingSuggestionsTable.status, "skipped"),
+          isNotNull(pendingSuggestionsTable.autopilotSkippedAt),
+        ),
+      )
+      .groupBy(pendingSuggestionsTable.leadId);
+    if (retired.length > 0) {
+      const lastIn = await db
+        .select({ leadId: leadMessagesTable.leadId, at: sql<string>`max(${leadMessagesTable.createdAt})` })
+        .from(leadMessagesTable)
+        .where(and(inArray(leadMessagesTable.leadId, retired.map((r) => r.leadId)), eq(leadMessagesTable.direction, "inbound")))
+        .groupBy(leadMessagesTable.leadId);
+      const lastInAt = new Map(lastIn.map((r) => [r.leadId, r.at ? new Date(r.at).getTime() : 0]));
+      const syncAt = new Map(unanswered.map((l) => [l.leadId, l.lastMessageAt ? new Date(l.lastMessageAt).getTime() : 0]));
+      for (const r of retired) {
+        const retiredAt = r.at ? new Date(r.at).getTime() : 0;
+        const leadAt = Math.max(lastInAt.get(r.leadId) ?? 0, syncAt.get(r.leadId) ?? 0);
+        if (retiredAt > 0 && retiredAt >= leadAt) retiredLive.add(r.leadId);
+      }
+    }
+  }
 
   // `content` only refreshes when an amoCRM webhook fires, and for some channels
   // (Instagram especially) it silently doesn't. The timeline poll meanwhile
@@ -1495,6 +1533,7 @@ export async function processUnansweredLive(): Promise<void> {
   // PASS 2: For genuinely unanswered leads that don't yet have a LIVE suggestion, generate one.
   const toProcess = genuinelyUnanswered.filter((l) => {
     if (alreadyHasLive.has(l.leadId)) return false;
+    if (retiredLive.has(l.leadId)) return false;
     // The broker asked for a draft on this lead by hand — leave it alone.
     if (requestedByBroker.has(l.leadId)) return false;
     if (l.botExcluded) return false;
