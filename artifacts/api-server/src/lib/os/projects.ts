@@ -489,11 +489,16 @@ export async function deleteTask(user: OsUser, id: number) {
 export async function restoreTask(user: OsUser, id: number) {
   await ensureProjectTables();
   if (!isStaff(user)) throw new Error("Only managers can restore tasks.");
-  const { rows } = await pool.query(`SELECT deleted_at FROM os_ptasks WHERE id = $1`, [id]);
-  if (!rows[0]?.deleted_at) throw new Error("Nothing to restore.");
-  await pool.query(`UPDATE os_ptasks SET deleted_at = NULL WHERE deleted_at = $1`, [rows[0].deleted_at]);
+  // Compared inside SQL: a JS Date drops the microseconds and would match nothing.
+  const { rowCount } = await pool.query(
+    `UPDATE os_ptasks SET deleted_at = NULL WHERE deleted_at = (SELECT deleted_at FROM os_ptasks WHERE id = $1 AND deleted_at IS NOT NULL)`,
+    [id],
+  );
+  if (!rowCount) throw new Error("Nothing to restore.");
   await audit(user, "ptask.restore", String(id), null);
-  return (await loadTask(id))!;
+  const t = await loadTask(id);
+  if (!t) throw new Error("Restored, but the task could not be read back.");
+  return t;
 }
 
 export async function addComment(user: OsUser, id: number, body: Record<string, unknown>) {

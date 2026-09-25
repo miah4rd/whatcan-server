@@ -50,6 +50,16 @@ function avatars(ids, max = 3) {
 const projectName = (id) => P.projects.find((p) => p.id === id)?.name || "";
 
 function recount() {
+  // Sub-task counters follow the loaded tasks, so a new sub-task shows at once.
+  const kids = new Map();
+  for (const t of P.tasks) {
+    if (!t.parentId || t.status === "Archived") continue;
+    const k = kids.get(t.parentId) || { total: 0, done: 0 };
+    k.total += 1;
+    if (t.status === "Done") k.done += 1;
+    kids.set(t.parentId, k);
+  }
+  for (const t of P.tasks) t.subtasks = kids.get(t.id) || { total: 0, done: 0 };
   for (const p of P.projects) {
     const ts = P.tasks.filter((t) => t.projectId === p.id && !t.parentId && t.status !== "Archived");
     const done = ts.filter((t) => t.status === "Done").length;
@@ -172,6 +182,7 @@ screens.projects = {
     let view = store.get("proj-view", "board");
     let q = "";
     const o = opts();
+    const pv = () => view === "projects" || view === "timeline";
     const drawTools = () => {
       const oo = opts();
       tools.innerHTML = `<div class="views">${[
@@ -187,22 +198,23 @@ screens.projects = {
       ]
         .map(([k, ic, l]) => `<button data-view="${k}" class="${view === k ? "active" : ""}">${ic}${l}</button>`)
         .join("")}</div>
-      ${
-        view === "projects" || view === "timeline"
+      <button class="btn sm primary" id="pj-new">${I.plus}${pv() ? "New project" : "New task"}</button>`;
+      // Filters sit above the view, the way Notion puts them over a database.
+      filters.innerHTML = `${
+        pv()
           ? ""
           : `<select class="chip" id="pj-project"><option value="">All projects</option><option value="none" ${oo.project === "none" ? "selected" : ""}>No project</option>${P.projects
               .map((p) => `<option value="${p.id}" ${String(oo.project) === String(p.id) ? "selected" : ""}>${esc(p.name)}</option>`)
               .join("")}</select>`
       }
-      <select class="chip" id="pj-person"><option value="">Everyone</option><option value="me" ${oo.person === "me" ? "selected" : ""}>Mine</option>${
-        view === "projects" || view === "timeline" ? "" : `<option value="none" ${oo.person === "none" ? "selected" : ""}>Unassigned</option>`
+      <select class="chip" id="pj-person"><option value="">${pv() ? "Any owner" : "Everyone"}</option><option value="me" ${oo.person === "me" ? "selected" : ""}>Mine</option>${
+        pv() ? "" : `<option value="none" ${oo.person === "none" ? "selected" : ""}>Unassigned</option>`
       }${people()
         .filter((p) => p.id !== S.user.id)
         .map((p) => `<option value="${p.id}" ${String(oo.person) === String(p.id) ? "selected" : ""}>${esc(p.name)}</option>`)
         .join("")}</select>
-      ${view === "projects" || view === "timeline" ? "" : `<button class="chip ${oo.subtasks ? "on" : ""}" id="pj-sub" title="Show sub-tasks as their own cards">Sub-tasks</button><button class="chip ${oo.archived ? "on" : ""}" id="pj-arch">Archived</button>`}
-      <input class="in" id="pj-q" placeholder="Search…" style="width:150px;padding:5px 8px" value="${esc(q)}">
-      <button class="btn sm primary" id="pj-new">${I.plus}${view === "projects" || view === "timeline" ? "New project" : "New task"}</button>`;
+      ${pv() ? "" : `<button class="chip ${oo.subtasks ? "on" : ""}" id="pj-sub" title="Show sub-tasks as their own cards">Sub-tasks</button><button class="chip ${oo.archived ? "on" : ""}" id="pj-arch">Archived</button>`}
+      <input class="in" id="pj-q" placeholder="Search…" value="${esc(q)}">`;
       tools.querySelectorAll("[data-view]").forEach((b) =>
         b.addEventListener("click", () => {
           view = b.dataset.view;
@@ -221,7 +233,7 @@ screens.projects = {
         ar.onclick = async () => {
           setOpts({ archived: !opts().archived });
           ar.classList.toggle("on");
-          el.innerHTML = `<div class="loading">Loading…</div>`;
+          body.innerHTML = `<div class="loading">Loading…</div>`;
           await load(true).catch(fail);
           draw();
         };
@@ -230,22 +242,24 @@ screens.projects = {
         clearTimeout(tm);
         tm = setTimeout(() => ((q = e.target.value.trim().toLowerCase()), draw()), 150);
       };
-      document.getElementById("pj-new").onclick = () => (view === "projects" || view === "timeline" ? newProjectDialog() : newTaskDialog());
+      document.getElementById("pj-new").onclick = () => (pv() ? newProjectDialog() : newTaskDialog());
     };
     const draw = () => {
       const oo = opts();
-      if (view === "projects") return drawProjects(el, oo, q);
-      if (view === "timeline") return drawTimeline(el, oo, q);
+      if (view === "projects") return drawProjects(body, oo, q);
+      if (view === "timeline") return drawTimeline(body, oo, q);
       const list = P.tasks.filter((t) => matches(t, oo, q));
-      if (view === "table") drawTable(el, list);
-      else if (view === "calendar") drawCalendar(el, list);
-      else drawBoard(el, list, oo);
+      if (view === "table") drawTable(body, list);
+      else if (view === "calendar") drawCalendar(body, list);
+      else drawBoard(body, list, oo);
     };
-    el.innerHTML = `<div class="loading">Loading projects…</div>`;
+    el.innerHTML = `<div class="pj-wrap"><div class="row pj-filters" id="pj-filters"></div><div class="pj-body" id="pj-body"><div class="loading">Loading projects…</div></div></div>`;
+    const filters = el.querySelector("#pj-filters");
+    const body = el.querySelector("#pj-body");
     try {
       await load(true);
     } catch (e) {
-      el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+      body.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
       return;
     }
     recount();
@@ -637,7 +651,8 @@ function drawTimeline(el, o, q) {
     ${undated.length ? `<div class="sect-h" style="margin-top:14px">No dates</div><div class="row">${undated.map((p) => `<a href="#" class="chip" data-pj="${p.id}">${esc(p.name)}</a>`).join("")}</div>` : ""}`;
   on(el, "click", "[data-pj]", (e, a) => (e.preventDefault(), emit("open-peek", { type: "project", id: a.dataset.pj })));
   const grid = el.querySelector(".tl-grid");
-  grid.scrollLeft = Math.max(0, px(today()) - 140);
+  // Scroll only when today would sit past most of the visible width.
+  if (px(today()) > grid.clientWidth * 0.7) grid.scrollLeft = Math.max(0, px(today()) - grid.clientWidth * 0.3);
 }
 
 // ── Task peek ──

@@ -415,6 +415,11 @@ iframe.kpi{width:100%;height:calc(100vh - 170px);border:1px solid var(--border);
 .preview-bar button{margin-left:auto;font-size:16px;line-height:1;color:var(--accent-text);padding:0 4px}
 
 /* ---------- projects (goals and tasks) ---------- */
+.pj-wrap{display:flex;flex-direction:column;gap:10px;height:100%;min-height:0}
+.pj-filters{flex:0 0 auto}
+.pj-filters .in{width:180px;padding:4px 8px}
+.pj-body{flex:1;min-height:0;overflow:auto}
+.pj-body > .board{height:100%}
 .board.pj .col{flex-basis:280px}
 .card.pt .ct .nm,.card.pcard .ct .nm{white-space:normal;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;line-height:1.3}
 .card.pt.done .ct .nm{color:var(--text-3);text-decoration:line-through}
@@ -464,6 +469,7 @@ iframe.kpi{width:100%;height:calc(100vh - 170px);border:1px solid var(--border);
 .tl .bar.warn{background:var(--push-bg);color:var(--push)}
 .tl .now{position:absolute;top:0;bottom:0;width:2px;background:var(--hot);opacity:.7;pointer-events:none}
 /* task and project peek */
+.pt-peek > *{flex-shrink:0}
 .pt-peek .pt-title{border:0;background:transparent;font-size:20px;font-weight:600;line-height:1.3;resize:none;padding:0;width:100%;overflow:hidden;font-family:var(--brand)}
 .pt-peek .pt-title:focus{outline:none}
 .pprops{grid-template-columns:96px minmax(0,1fr);align-items:center;gap:4px 8px}
