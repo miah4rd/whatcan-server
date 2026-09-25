@@ -450,6 +450,8 @@ export type ProgressOpts = {
   checkedAt?: Date | null;
   /** Report a scheduled visit on a TAKEN TO WORK card (never moved). */
   reportTaken?: boolean;
+  /** Backfill: also record a visit whose hour passed up to this many days ago (admin ?past=N). */
+  pastDays?: number;
 };
 
 const inFlight = new Map<string, Promise<ProgressDecision>>();
@@ -558,7 +560,7 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
       logger.info({ leadId, visitAt: v.visitAt, windowStart }, "listing-progress: agreed visit predates qualification — ignored");
     } else if (!v.agreedAt || v.agreedAt.getTime() < windowStart.getTime() - DAY) {
       logger.info({ leadId, visitAt: v.visitAt, agreedAt: v.agreedAt, windowStart }, "listing-progress: no settling line after qualification — ignored");
-    } else if (holdsSlot && !isNewTime(v, slot, arrivedScheduled)) {
+    } else if (holdsSlot && !isNewTime(v, slot, arrivedScheduled, o.pastDays)) {
       // the visit on record, read again — not a change
     } else if (!(await confirmAgreedVisit(thread, v))) {
       logger.info({ leadId, visitAt: v.visitAt, quote: v.quote }, "listing-progress: second opinion says the visit is not agreed — ignored");
@@ -618,8 +620,8 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
  * on record (or after the card arrived, when it has none), and a real shift: 30 minutes or more, or a
  * clock time where the record had none.
  */
-function isNewTime(v: Visit, slot: SlotRecord | null, arrivedAt: number | null): boolean {
-  if (v.visitAt.getTime() < Date.now() - 12 * HOUR) return false;
+function isNewTime(v: Visit, slot: SlotRecord | null, arrivedAt: number | null, pastDays?: number): boolean {
+  if (v.visitAt.getTime() < Date.now() - (pastDays ? pastDays * DAY : 12 * HOUR)) return false;
   if (!slot) return !arrivedAt || (v.agreedAt ?? v.visitAt).getTime() >= arrivedAt - WINDOW_SLACK_MS;
   const settledAfter = (v.agreedAt?.getTime() ?? 0) > (slot.agreedAt ?? slot.createdAt).getTime() + MIN;
   if (!settledAfter) return false;

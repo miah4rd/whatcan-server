@@ -23,8 +23,11 @@ router.post("/admin/listing-progress", async (req, res) => {
   const apply = String(req.query["apply"] ?? "") === "1";
   const lead = String(req.query["lead"] ?? "").trim();
   const reportTaken = String(req.query["taken"] ?? "") === "1";
+  // ?past=N (with lead=): also record a visit whose hour passed up to N days ago (max 14) — calendar backfill.
+  const pastRaw = Number(req.query["past"] ?? 0);
+  const pastDays = Number.isFinite(pastRaw) && pastRaw > 0 ? Math.min(pastRaw, 14) : undefined;
   const decisions = lead
-    ? [await advanceListingProgress(lead, { source: "admin", apply, full: true, reportTaken })]
+    ? [await advanceListingProgress(lead, { source: "admin", apply, full: true, reportTaken, pastDays })]
     : await auditListingProgress({ apply, reportTaken, source: "admin" });
   const brief = decisions.map((d) => ({
     leadId: d.leadId,

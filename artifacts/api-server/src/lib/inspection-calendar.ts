@@ -134,7 +134,12 @@ async function buildPlan(): Promise<{ desired: Map<string, Desired>; stored: Sto
                                         FROM listing_inspection_slots WHERE status = 'scheduled'
                                         ORDER BY lead_id, created_at DESC, visit_at DESC`);
   const latest = (slotsRes.rows ?? []) as SlotRow[];
-  const candidates = latest.filter((s) => asDate(s.visit_at)!.getTime() >= now.getTime() - RECENT_MS);
+  // A slot recorded within the last day is written even when its visit was up to 14 days ago (backfill).
+  const candidates = latest.filter(
+    (s) =>
+      asDate(s.visit_at)!.getTime() >= now.getTime() - RECENT_MS ||
+      (asDate(s.created_at)!.getTime() >= now.getTime() - RECENT_MS && asDate(s.visit_at)!.getTime() >= now.getTime() - 14 * DAY),
+  );
   const storedRes = await db.execute(sql`SELECT sync_key, slot_id, lead_ids, visit_at, event_id, payload_hash, status FROM inspection_calendar_events`);
   const stored = (storedRes.rows ?? []) as StoredRow[];
   const desired = new Map<string, Desired>();
