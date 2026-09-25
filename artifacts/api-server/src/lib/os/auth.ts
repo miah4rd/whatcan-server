@@ -137,7 +137,10 @@ export async function login(req: Request, res: Response): Promise<void> {
   await ensureOsTables();
   const loginName = String(req.body?.login ?? "").trim().toLowerCase();
   const password = String(req.body?.password ?? "");
-  const ip = String(req.headers["cf-connecting-ip"] ?? req.headers["x-forwarded-for"] ?? req.ip ?? "").split(",")[0].trim();
+  // Through the site's /os proxy every request comes from Cloudflare; the worker
+  // passes the visitor's address in x-os-client-ip. A forged header only dodges
+  // the per-address limit — the per-login limit still holds.
+  const ip = String(req.headers["x-os-client-ip"] ?? req.headers["cf-connecting-ip"] ?? req.headers["x-forwarded-for"] ?? req.ip ?? "").split(",")[0].trim();
   if (!loginName || !password) {
     res.status(400).json({ error: "Enter your login and password." });
     return;

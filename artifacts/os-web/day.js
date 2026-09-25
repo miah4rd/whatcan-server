@@ -1,5 +1,5 @@
 // Unicorn OS — My day: what needs you now, in the order it costs us if left.
-import { S, api, esc, I, screens, on, fmtDT, fmtTime, rel, isStaff, queueOf, go, emit, store } from "./core.js";
+import { S, api, esc, I, screens, on, fmtDT, fmtTime, rel, isStaff, queueOf, go, emit, store, baliToday, fail } from "./core.js";
 import { taskRow, bindTasks } from "./lead.js";
 
 function startOfDay(offset = 0) {
@@ -25,14 +25,26 @@ screens.day = {
       const n = document.getElementById("day-cleanup");
       if (n && r.count) n.textContent = `${r.count} more open tasks sit on closed or deleted cards — clean-up, not work (close them in amoCRM when convenient).`;
     }).catch(() => undefined);
-    const [tasksR, cal, notif, drafts, waitsR, waitsL] = await Promise.all([
+    const [tasksR, cal, notif, drafts, waitsR, waitsL, mineR] = await Promise.all([
       api(`/tasks${staff && scopeAll ? "?all=1" : ""}`).catch(() => ({ items: [] })),
       api(`/calendar?from=${startOfDay(0).toISOString()}&to=${startOfDay(2).toISOString()}`).catch(() => ({ events: [] })),
       api("/notifications").catch(() => ({ items: [] })),
       Promise.all(brokers.map((b) => api(`/p/suggestions?responsibleUser=${encodeURIComponent(b)}`).then((r) => r.items || []).catch(() => []))).then((x) => x.flat()),
       api(`/analytics/waits?pipeline=Rental`).catch(() => ({ stages: [] })),
       api(`/analytics/waits?pipeline=Rental%20Listings`).catch(() => ({ stages: [] })),
+      api(`/ptasks?assignee=me`).catch(() => ({ items: [] })),
     ]);
+    // Project tasks given to me (the Projects boards): late, today, this week, in progress.
+    const td = baliToday();
+    const in7 = new Date(Date.parse(td + "T00:00:00Z") + 7 * 86400e3).toISOString().slice(0, 10);
+    const mine = (mineR.items || [])
+      .filter((t) => (t.status === "Not started" || t.status === "In progress") && ((t.dueEnd || t.dueStart) ? (t.dueEnd || t.dueStart) <= in7 : t.status === "In progress"))
+      .sort((a, b) => String(a.dueEnd || a.dueStart || "9999").localeCompare(String(b.dueEnd || b.dueStart || "9999")));
+    const ptRow = (t) => {
+      const due = t.dueEnd || t.dueStart;
+      const late = due && due < td;
+      return `<div class="task"><button class="cb" data-pt-done="${t.id}" title="Mark done"></button><div><div class="tt" data-pt-open="${t.id}" style="cursor:pointer">${esc(t.title)}</div><div class="ts">${t.status === "In progress" ? `<span class="pill stage">In progress</span>` : ""}${t.priority ? `<span>${esc(t.priority)}</span>` : ""}</div></div><div class="due ${late ? "over" : ""}">${due ? (due === td ? "today" : esc(new Date(due + "T00:00:00Z").toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }))) : ""}</div></div>`;
+    };
     const tasks = tasksR.items || [];
     const now = new Date();
     const endToday = startOfDay(1);
@@ -81,6 +93,7 @@ screens.day = {
           ${today.length ? `<div class="sect-h">Today</div>${today.map((t) => taskRow(t, { showLead: true })).join("")}` : ""}
           ${tomorrow.length ? `<div class="sect-h">Tomorrow</div>${tomorrow.map((t) => taskRow(t, { showLead: true })).join("")}` : ""}
           ${!overdue.length && !today.length && !tomorrow.length ? `<div class="empty">No tasks for today or tomorrow.</div>` : ""}</div><p class="faint" id="day-cleanup" style="font-size:12px;margin:8px 0 0"></p></div>
+        ${mine.length || isStaff() ? `<div class="panel" id="day-ptasks"><h3>My project tasks <span class="faint">${mine.length}</span></h3><div class="stack">${mine.map(ptRow).join("") || `<div class="empty">No project tasks due this week.${isStaff() ? ` <a href="#/projects">Open Projects</a>` : ""}</div>`}</div></div>` : ""}
         <div class="panel"><h3>Visits today <span class="faint">${events.length}</span></h3><div class="stack">${
           events.map((e) => `<div class="note" style="cursor:pointer" data-open-lead="${esc(e.leadId || "")}"><b>${esc(fmtTime(e.at))} · ${esc(e.title)}</b>${e.sub ? `<br><span class="faint">${esc(e.sub)}</span>` : ""}</div>`).join("") ||
           `<div class="empty">No viewings or inspections today.</div>`
@@ -101,6 +114,17 @@ screens.day = {
       if (c.dataset.openLead) emit("open-peek", { type: "lead", id: c.dataset.openLead });
     });
     on(el, "click", "[data-board]", (e, r) => go("pipeline", r.dataset.board));
+    on(el, "click", "[data-pt-open]", (e, t) => emit("open-peek", { type: "ptask", id: t.dataset.ptOpen }));
+    on(el, "click", "[data-pt-done]", async (e, b) => {
+      b.disabled = true;
+      try {
+        await api(`/ptasks/${b.dataset.ptDone}`, { method: "PATCH", body: { status: "Done" } });
+        b.closest(".task").remove();
+      } catch (err) {
+        b.disabled = false;
+        fail(err);
+      }
+    });
     bindTasks(document.getElementById("day-tasks"), () => tasks, null, () => screens.day.render({ el, tools }));
   },
 };

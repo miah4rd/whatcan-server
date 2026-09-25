@@ -30,6 +30,7 @@ import { aiHealth } from "../ai-health";
 import { logger } from "../logger";
 import { audit, brokerScope, isStaff, type OsUser } from "./auth";
 import { recordCloseReason } from "./analytics";
+import { projectNotifications } from "./projects";
 
 const lc = (s: unknown) => String(s ?? "").trim().toLowerCase();
 const iso = (d: unknown) => (d ? new Date(d as string).toISOString() : null);
@@ -569,8 +570,11 @@ export async function calendar(user: OsUser, from: Date, to: Date) {
 
 export async function notifications(user: OsUser) {
   const scope = brokerScope(user) ?? (isStaff(user) ? null : user.brokerKey);
-  const items: Array<{ id: string; kind: string; title: string; body: string; at: string; leadId: string | null; severity: "info" | "warn" | "bad" }> = [];
+  const items: Array<{ id: string; kind: string; title: string; body: string; at: string; leadId: string | null; ptaskId?: number; severity: "info" | "warn" | "bad" }> = [];
   const q = async (sql: string, params: unknown[]) => (await pool.query(sql, params).catch(() => ({ rows: [] as Record<string, unknown>[] }))).rows;
+
+  // Project tasks (the OS's own boards): due, late, handed to me, commented.
+  items.push(...(await projectNotifications(user).catch(() => [])));
 
   const live = await q(
     `SELECT p.id, p.lead_id, p.created_at, p.kind, l.responsible_user

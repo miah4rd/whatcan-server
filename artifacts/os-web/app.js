@@ -8,6 +8,7 @@ import "./calendar.js";
 import "./analytics.js";
 import "./automations.js";
 import "./settings.js";
+import { searchProjects, warmProjects } from "./projects.js";
 
 const app = document.getElementById("app");
 applySizes();
@@ -73,6 +74,7 @@ function navItems() {
     { id: "pipeline/rental-listings", label: "Rental Listings", dot: "var(--reach)" },
     { id: "pipeline/unicorn", label: "UNICORN sales", dot: "var(--accent)", staffOnly: true },
     { sec: "Workspace" },
+    { id: "projects", label: "Projects", icon: I.goal, staffOnly: true },
     { id: "villas", label: "Villas", icon: I.villa },
     { id: "calendar", label: "Calendar", icon: I.cal },
     { id: "analytics", label: "Analytics", icon: I.chart },
@@ -189,7 +191,7 @@ function renderNav() {
       ["more", "More", I.gear],
     ];
     mn.innerHTML = tabs
-      .map(([id, l, ic, c]) => `<button data-go="${id}" class="${cur === id || (id === "more" && ["calendar", "analytics", "automations", "settings", "more"].includes(cur)) ? "active" : ""}">${ic}<span>${l}</span>${c ? `<span class="cnt">${c}</span>` : ""}</button>`)
+      .map(([id, l, ic, c]) => `<button data-go="${id}" class="${cur === id || (id === "more" && ["projects", "calendar", "analytics", "automations", "settings", "more"].includes(cur)) ? "active" : ""}">${ic}<span>${l}</span>${c ? `<span class="cnt">${c}</span>` : ""}</button>`)
       .join("");
   }
 }
@@ -237,6 +239,7 @@ async function route() {
   }
   if (r.q.lead && name !== "inbox") openPeek("lead", r.q.lead);
   if (r.q.villa) openPeek("villa", r.q.villa);
+  if (r.q.ptask) openPeek("ptask", r.q.ptask);
 }
 window.addEventListener("hashchange", route);
 onBus("route", route);
@@ -289,6 +292,7 @@ async function refreshNotif() {
         n.onclick = () => {
           window.focus();
           if (f.leadId) openPeek("lead", f.leadId);
+          else if (f.ptaskId) openPeek("ptask", f.ptaskId);
         };
       } catch (e) {
         /* some browsers only allow notifications from the service worker */
@@ -296,7 +300,7 @@ async function refreshNotif() {
     }
     // Counters for the sidebar.
     const live = S.notif.items.filter((i) => i.kind === "live").length;
-    const due = S.notif.items.filter((i) => ["promise", "task", "viewing-report", "inspection-report"].includes(i.kind)).length;
+    const due = S.notif.items.filter((i) => ["promise", "task", "viewing-report", "inspection-report"].includes(i.kind) || String(i.id).startsWith("pt-due:")).length;
     S.cache["counts"] = { at: Date.now(), value: { inbox: live, day: due } };
     renderNav();
     if (S.notif.open) renderNotif();
@@ -313,7 +317,7 @@ function renderNotif() {
       ? items
           .map(
             (i) =>
-              `<div class="it ${!S.notif.seenAt || i.at > S.notif.seenAt ? "new" : ""} ${i.severity}" data-lead="${esc(i.leadId || "")}" data-kind="${esc(i.kind)}"><i></i><div><b>${esc(i.title)}</b><div class="muted">${esc(i.body)}</div><small>${rel(i.at)}</small></div></div>`,
+              `<div class="it ${!S.notif.seenAt || i.at > S.notif.seenAt ? "new" : ""} ${i.severity}" data-lead="${esc(i.leadId || "")}" data-ptask="${esc(i.ptaskId || "")}" data-kind="${esc(i.kind)}"><i></i><div><b>${esc(i.title)}</b><div class="muted">${esc(i.body)}</div><small>${rel(i.at)}</small></div></div>`,
           )
           .join("")
       : `<div class="empty">Nothing needs you right now.</div>`
@@ -321,6 +325,7 @@ function renderNotif() {
   on(el, "click", ".it", (e, t) => {
     toggleNotif();
     if (t.dataset.lead) openPeek("lead", t.dataset.lead);
+    else if (t.dataset.ptask) openPeek("ptask", t.dataset.ptask);
   });
   document.getElementById("notif-push").onclick = enablePush;
 }
@@ -408,6 +413,7 @@ function openPalette() {
       const hay = `${v.id} ${v.title} ${v.area}`.toLowerCase();
       if (q && hay.includes(q)) out.push({ grp: "Villas", label: `${v.id} · ${v.title}`, sub: `${v.bedrooms}BR · ${v.area}`, act: () => openPeek("villa", v.id) });
     }
+    out.push(...searchProjects(q));
     if (/^\d{6,}$/.test(q)) out.unshift({ grp: "Open", label: `Card #${q}`, sub: "by amoCRM id", act: () => openPeek("lead", q) });
     list = out.slice(0, 60);
     hi = Math.min(hi, Math.max(0, list.length - 1));
@@ -467,6 +473,7 @@ screens.more = {
   title: "More",
   render({ el }) {
     el.innerHTML = `<div class="stack" style="max-width:480px">${[
+      ...(isStaff() ? [["projects", "Projects", I.goal]] : []),
       ["calendar", "Calendar", I.cal],
       ["analytics", "Analytics", I.chart],
       ["pipeline/rental-listings", "Rental Listings", I.board],
@@ -499,6 +506,7 @@ async function boot() {
   refreshNotif();
   setInterval(refreshNotif, 60_000);
   resyncPush();
+  warmProjects();
   onBus("lead-changed", () => setTimeout(refreshNotif, 1500));
 }
 boot();

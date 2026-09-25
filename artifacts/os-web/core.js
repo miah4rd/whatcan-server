@@ -148,6 +148,10 @@ export const I = {
   moon: svg('<path d="M13 9.5A5.5 5.5 0 1 1 6.5 3a4.5 4.5 0 0 0 6.5 6.5z"/>'),
   out: svg('<path d="M6 13H3V3h3M10 11l3-3-3-3M13 8H6"/>'),
   plus: svg('<path d="M8 3v10M3 8h10"/>', 1.7),
+  goal: svg('<circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2.5"/><path d="M8 8l4.5-4.5"/>'),
+  timeline: svg('<path d="M2 4h6M5 8h7M3.5 12h8"/>', 2),
+  trash: svg('<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/>'),
+  check: svg('<path d="M3.5 8.5l3 3 6-7"/>', 2),
   wa: '<svg class="ic" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5A6.5 6.5 0 0 0 2.4 11.3L1.5 14.5l3.3-.9A6.5 6.5 0 1 0 8 1.5zm0 1.3a5.2 5.2 0 1 1-2.7 9.6l-.3-.2-1.9.5.5-1.8-.2-.3A5.2 5.2 0 0 1 8 2.8z"/></svg>',
 };
 

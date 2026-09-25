@@ -80,6 +80,26 @@ import {
 } from "../lib/os/analytics";
 import { baliDate } from "../lib/kpi-dashboard";
 import { automations, setAutomation } from "../lib/os/automations";
+import {
+  ensureProjectTables,
+  seedFromNotion,
+  people,
+  listProjects,
+  createProject,
+  updateProject,
+  deleteProject,
+  listTasks as listProjectTasks,
+  taskDetail as projectTaskDetail,
+  createTask as createProjectTask,
+  updateTask as updateProjectTask,
+  deleteTask as deleteProjectTask,
+  restoreTask as restoreProjectTask,
+  addComment as addProjectComment,
+  TASK_STATUSES,
+  PROJECT_STATUSES,
+  PRIORITIES,
+  ESTIMATES,
+} from "../lib/os/projects";
 import { logger } from "../lib/logger";
 import { REACH_STAGE_KEYWORDS } from "../lib/pipelines";
 
@@ -87,7 +107,10 @@ const router = Router();
 const COPILOT_ORIGIN = process.env["PUBLIC_BASE_URL"] || "https://copilot.globalapplab.ru";
 const webDir = path.resolve(__dirname, "../../os-web");
 
-ensureOsTables().catch(() => undefined);
+ensureOsTables()
+  .then(() => ensureProjectTables())
+  .then(() => seedFromNotion())
+  .catch((err) => logger.warn({ err }, "os tables"));
 
 // Every handler answers JSON errors in words a person can act on.
 const h =
@@ -133,6 +156,8 @@ api.get(
       objectionCategories: OBJECTION_CATEGORIES,
       closeReasons: CLOSE_REASONS,
       reachStages: REACH_STAGE_KEYWORDS,
+      people: await people(),
+      projectFormat: { taskStatuses: TASK_STATUSES, projectStatuses: PROJECT_STATUSES, priorities: PRIORITIES, estimates: ESTIMATES },
       listingFields: describeFields(),
     };
   }),
@@ -339,6 +364,34 @@ api.get(
     return { url: key ? `${COPILOT_ORIGIN}/kpi?k=${encodeURIComponent(key)}` : null };
   }),
 );
+
+// ── Projects: goals and tasks (the owner's Notion boards, moved in) ─────────
+const idp = (req: Request) => {
+  const n = Number(req.params["id"]);
+  if (!Number.isInteger(n) || n <= 0) throw new Error("Unknown id.");
+  return n;
+};
+api.get("/projects", signedIn, h(async (req) => ({ items: await listProjects(req.osUser!, { includeDone: req.query["done"] !== "0" }) })));
+api.post("/projects", staffOnly, h(async (req) => createProject(req.osUser!, req.body ?? {})));
+api.patch("/projects/:id", staffOnly, h(async (req) => updateProject(req.osUser!, idp(req), req.body ?? {})));
+api.delete("/projects/:id", staffOnly, h(async (req) => deleteProject(req.osUser!, idp(req))));
+api.get(
+  "/ptasks",
+  signedIn,
+  h(async (req) => ({
+    items: await listProjectTasks(req.osUser!, {
+      projectId: req.query["project"] ? String(req.query["project"]) : undefined,
+      assignee: req.query["assignee"] ? String(req.query["assignee"]) : undefined,
+      archived: req.query["archived"] === "1",
+    }),
+  })),
+);
+api.get("/ptasks/:id", signedIn, h(async (req) => projectTaskDetail(req.osUser!, idp(req))));
+api.post("/ptasks", staffOnly, h(async (req) => createProjectTask(req.osUser!, req.body ?? {})));
+api.patch("/ptasks/:id", signedIn, h(async (req) => updateProjectTask(req.osUser!, idp(req), req.body ?? {})));
+api.delete("/ptasks/:id", staffOnly, h(async (req) => deleteProjectTask(req.osUser!, idp(req))));
+api.post("/ptasks/:id/restore", staffOnly, h(async (req) => restoreProjectTask(req.osUser!, idp(req))));
+api.post("/ptasks/:id/comments", signedIn, h(async (req) => addProjectComment(req.osUser!, idp(req), req.body ?? {})));
 
 // ── Automations, team, integrations ─────────────────────────────────────────
 api.get("/automations", signedIn, h(async (req) => automations(isStaff(req.osUser))));
