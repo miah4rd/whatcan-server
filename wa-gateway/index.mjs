@@ -382,17 +382,25 @@ const PACE = {
 };
 const paceState = new Map();
 
+// Amelia answers people who wrote to us (ad and form leads) and sends shortlists as a text plus a
+// link per villa: a person's approve must not hit a wall. Her line gets a looser pace; Yudi's lines,
+// which open cold conversations with villa owners, keep the strict one (25.09.2026).
+const PACE_BY_SESSION = {
+  amelia: { minGapMs: 3000, jitterMs: 3000, maxWaitMs: 40000, per10Min: 45, perHour: 200 },
+};
+
 async function paceSend(session) {
   if (PACE.exempt.has(session)) return null;
+  const cfg = { ...PACE, ...(PACE_BY_SESSION[session] ?? {}) };
   const now = Date.now();
   const st = paceState.get(session) ?? { next: 0, sent: [] };
   st.sent = st.sent.filter((t) => now - t < 3600000);
   const last10 = st.sent.filter((t) => now - t < 600000).length;
-  if (st.sent.length >= PACE.perHour) return { ok: false, error: "rate_limited_hour", code: 905 };
-  if (last10 >= PACE.per10Min) return { ok: false, error: "rate_limited_10min", code: 905 };
+  if (st.sent.length >= cfg.perHour) return { ok: false, error: "rate_limited_hour", code: 905 };
+  if (last10 >= cfg.per10Min) return { ok: false, error: "rate_limited_10min", code: 905 };
   const at = Math.max(now, st.next);
-  if (at - now > PACE.maxWaitMs) return { ok: false, error: "rate_limited", code: 905 };
-  st.next = at + PACE.minGapMs + Math.floor(Math.random() * PACE.jitterMs);
+  if (at - now > cfg.maxWaitMs) return { ok: false, error: "rate_limited", code: 905 };
+  st.next = at + cfg.minGapMs + Math.floor(Math.random() * cfg.jitterMs);
   st.sent.push(at);
   paceState.set(session, st);
   if (at > now) await new Promise((r) => setTimeout(r, at - now));
