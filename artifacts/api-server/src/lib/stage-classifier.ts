@@ -22,6 +22,7 @@
  *    weight, so it's surfaced pre-filled for the broker to confirm.
  *  - A broker's own explicit stage pick always wins over the classification.
  */
+import { pool } from "@workspace/db";
 import { HELPER_MODEL, chatCompletionJSON } from "./ai-client";
 import { amoFetch } from "./amo-client";
 import { logger } from "./logger";
@@ -204,8 +205,28 @@ let cache: {
 } | null = null;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * Stage descriptions the owner rewrote in Unicorn OS (Automations → the funnel's
+ * stage map), keyed "pipeline|stage name". They replace the built-in meaning of
+ * a stage the classifier already chooses from; they never make a rule-owned or
+ * person-only stage choosable. No row, no change: the table starts empty.
+ */
+async function loadMeaningOverrides(): Promise<Map<string, string>> {
+  try {
+    const { rows } = await pool.query(`SELECT pipeline, stage, meaning FROM os_stage_rules WHERE coalesce(meaning, '') <> ''`);
+    return new Map(rows.map((r) => [`${String(r.pipeline)}|${String(r.stage).trim().toLowerCase()}`, String(r.meaning)]));
+  } catch {
+    return new Map();
+  }
+}
+/** Drop the cached pipeline map so an edited description is used on the next classification. */
+export function clearStageMapCache(): void {
+  cache = null;
+}
+
 async function loadPipelines(): Promise<Map<string, PipelineStages>> {
   if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.byPipeline;
+  const overrides = await loadMeaningOverrides();
 
   const data = await amoFetch<{ _embedded: { pipelines: AmoPipeline[] } }>(
     "/api/v4/leads/pipelines?limit=50",
@@ -237,6 +258,8 @@ async function loadPipelines(): Promise<Map<string, PipelineStages>> {
       // Rule-owned stages: one mechanism per stage, see above.
       .filter((s) => !isListingAcquisition(key) || !RULE_OWNED_ACQUISITION_STAGES.test(s.name))
       .map((s) => {
+        const own = overrides.get(`${key}|${s.name.trim().toLowerCase()}`);
+        if (own) return { name: s.name, id: s.id, meaning: own };
         // The owner's Rental funnel uses "Need Assessed" as "the first outreach
         // was made" — not the generic "requirements are known". Wrong meaning
         // here made the classifier hold cards in New LEAD after the welcome.

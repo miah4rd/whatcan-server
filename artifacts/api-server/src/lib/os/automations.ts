@@ -198,7 +198,9 @@ export async function setAutomation(user: OsUser, id: string, body: Record<strin
     let upTo: string | null = null;
     if (mode !== "off") {
       const st = await getPipelineStages(r.switch.pipeline);
-      const found = (st?.selectable ?? []).find((s) => s.name.trim().toLowerCase() === String(body["upToStageName"] ?? "").trim().toLowerCase());
+      // The autopilot measures its line against every stage (lib/autopilot.ts uses stages.all),
+      // including rule-owned ones like QUALIFIED that the classifier never chooses.
+      const found = (st?.all ?? []).find((s) => s.name.trim().toLowerCase() === String(body["upToStageName"] ?? "").trim().toLowerCase());
       if (!found || /closed|won|lost/i.test(found.name)) throw new Error("Pick the stage the bot stops before.");
       upTo = found.name;
     }

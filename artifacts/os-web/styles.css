@@ -567,3 +567,31 @@ details.objcat{border:1px solid var(--border);border-radius:8px;padding:8px 12px
 details.objcat summary{cursor:pointer;list-style:none}
 details.objcat summary::-webkit-details-marker{display:none}
 details.objcat[open] summary{margin-bottom:4px}
+
+/* ---------- automations: the funnel's stage map ---------- */
+.ap-panel{margin-bottom:12px}
+.stage-map{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.stage-row{display:grid;grid-template-columns:118px minmax(0,1fr) auto;gap:12px;align-items:start;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.stage-row .sn{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.stage-row .how{font-size:12.5px;margin-top:4px;line-height:1.45}
+.stage-row .sa{display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+.mode{display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;white-space:nowrap}
+.mode.bot{background:var(--live-bg);color:var(--live)}
+.mode.dry{background:var(--push-bg);color:var(--push)}
+.mode.people{background:var(--accent-bg);color:var(--accent-text)}
+.mode.person{background:var(--surface-3);color:var(--text-2)}
+.apline{display:flex;align-items:center;gap:8px;color:var(--live);font-size:11.5px;font-weight:600;margin:2px 0}
+.apline::before,.apline::after{content:"";flex:1;border-top:2px dashed var(--live)}
+.ready{display:flex;flex-direction:column;gap:4px;margin-top:6px;font-size:12px}
+.ready .rbar{display:flex;height:6px;border-radius:99px;overflow:hidden;background:var(--surface-3);max-width:420px}
+.ready .rbar i{display:block;height:100%}
+.ready .rbar i.w{background:var(--live)} .ready .rbar i.e{background:var(--push)} .ready .rbar i.s{background:var(--border-2)}
+@media (max-width: 860px){ .stage-row{grid-template-columns:1fr} .stage-row .sa{align-items:flex-start;flex-direction:row;flex-wrap:wrap} }
+
+/* ---------- analytics: bot and people ---------- */
+.wsbars{display:flex;flex-direction:column;gap:5px}
+.wsbars .row{display:grid;grid-template-columns:110px minmax(0,1fr) 48px 48px;gap:8px;align-items:center;font-size:12px}
+.stackbar{display:flex;height:12px;border-radius:4px;overflow:hidden;background:var(--surface-2)}
+.stackbar i{display:block;height:100%}
+.stackbar i.a{background:var(--live)} .stackbar i.t{background:var(--reach)} .stackbar i.w{background:var(--accent)} .stackbar i.e{background:var(--push)} .stackbar i.h{background:var(--border-2)}
+.panel h3 .tin{width:52px;padding:1px 4px;border:1px solid var(--border-2);border-radius:5px;background:var(--surface);text-align:right}

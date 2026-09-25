@@ -27,12 +27,13 @@ const SECTIONS = {
     ["waits", "Funnel & waits"],
   ],
   company: [
+    ["work", "Bot and people"],
     ["brief", "Weekly brief"],
     ["daily", "Daily numbers"],
     ["cost", "AI cost"],
   ],
 };
-const STAFF_ONLY = new Set(["team", "brief", "daily", "cost"]);
+const STAFF_ONLY = new Set(["team", "work", "brief", "daily", "cost"]);
 
 const pct = (a, b) => (b ? Math.round((a / b) * 100) + "%" : "—");
 const nameOf = (x) => (x.name || x.client_name || x.clientName || "").replace(/\s*\(клиент.*$/i, "") || `#${x.leadId || x.lead_id}`;
@@ -419,6 +420,69 @@ const VIEWS = {
   },
 
   // ── Company-wide ──
+  // What the bot did and what people did, and the time it saved (owner, 26.09).
+  async work(el) {
+    const days = Number(store.get("ws-days", 30));
+    const funnel = store.get("ws-funnel", "");
+    const by = store.get("ws-by", "week");
+    const mins = store.get("ws-mins", { hand: 4, approve: 0.5, edit: 2 });
+    const r = await api(`/analytics/workshare?days=${days}${funnel ? `&funnel=${funnel}` : ""}`);
+    const keyOf = (d) => (by === "day" ? d : by === "month" ? d.slice(0, 7) : (() => {
+      const x = new Date(d + "T00:00:00Z");
+      x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7));
+      return x.toISOString().slice(0, 10);
+    })());
+    const F = ["written", "autopilot", "as_written", "edited", "skipped", "people_msgs", "bot_msgs", "bot_moves", "people_moves"];
+    const groups = new Map();
+    for (const row of r.rows) {
+      const k = keyOf(row.day);
+      const g = groups.get(k) || Object.fromEntries(F.map((f) => [f, 0]));
+      for (const f of F) g[f] += Number(row[f] || 0);
+      groups.set(k, g);
+    }
+    const derive = (g) => {
+      const hand = Math.max(0, g.people_msgs - g.as_written - g.edited);
+      const otherBot = Math.max(0, g.bot_msgs - g.autopilot);
+      const out = g.autopilot + otherBot + g.as_written + g.edited + hand;
+      const human = hand * mins.hand + g.as_written * mins.approve + g.edited * mins.edit;
+      const allByHand = out * mins.hand;
+      return { ...g, hand, otherBot, out, noHuman: g.autopilot + otherBot, byBot: g.autopilot + otherBot + g.as_written + g.edited, humanMin: human, savedMin: Math.max(0, allByHand - human), moves: g.bot_moves + g.people_moves };
+    };
+    const rows = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([k, g]) => ({ k, ...derive(g) }));
+    const total = derive(Object.fromEntries(F.map((f) => [f, rows.reduce((a, x) => a + x[f], 0)])));
+    const pc = (a, b) => (b ? Math.round((a / b) * 100) + "%" : "—");
+    const hrs = (m) => (m >= 60 ? `${(m / 60).toFixed(1)} h` : `${Math.round(m)} min`);
+    const label = (k) => (by === "month" ? new Date(k + "-01T00:00:00Z").toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" }) : fmtDay(k + "T04:00:00Z"));
+    const maxOut = Math.max(1, ...rows.map((x) => x.out));
+    const seg = (n, cls) => (n ? `<i class="${cls}" style="width:${(n / maxOut) * 100}%" title="${n}"></i>` : "");
+    el.innerHTML = `<div class="page stack" style="gap:12px">
+      <div class="row an-filters"><select class="chip" id="ws-days">${[30, 90, 180, 365].map((d) => `<option value="${d}" ${d === days ? "selected" : ""}>Last ${d} days</option>`).join("")}</select>
+        <select class="chip" id="ws-funnel"><option value="">All funnels</option>${FUNNELS.map(([k, l]) => `<option value="${k}" ${k === funnel ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
+        <div class="views">${[["day", "Days"], ["week", "Weeks"], ["month", "Months"]].map(([k, l]) => `<button data-by="${k}" class="${k === by ? "active" : ""}">${l}</button>`).join("")}</div></div>
+      <div class="kpis">
+        <div class="kpi"><div class="l">Messages out</div><div class="v num">${total.out}</div><div class="d">to clients and owners</div></div>
+        <div class="kpi"><div class="l">Written by the bot</div><div class="v num">${pc(total.byBot, total.out)}</div><div class="d">${total.byBot} drafts, templates and autopilot sends</div></div>
+        <div class="kpi"><div class="l">Sent with no person</div><div class="v num">${pc(total.noHuman, total.out)}</div><div class="d">${total.autopilot} autopilot · ${total.otherBot} templates</div></div>
+        <div class="kpi"><div class="l">Stage moves by the bot</div><div class="v num">${pc(total.bot_moves, total.moves)}</div><div class="d">${total.bot_moves} of ${total.moves}</div></div>
+        <div class="kpi"><div class="l">People's time</div><div class="v num">${hrs(total.humanMin)}</div><div class="d">spent on messages</div></div>
+        <div class="kpi"><div class="l">Time saved</div><div class="v num">${hrs(total.savedMin)}</div><div class="d">against writing all by hand</div></div>
+      </div>
+      <div class="panel"><h3>Messages out per ${by} <span class="legend" style="margin:0"><span><i style="background:var(--live)"></i>autopilot</span><span><i style="background:var(--reach)"></i>templates</span><span><i style="background:var(--accent)"></i>draft as written</span><span><i style="background:var(--push)"></i>draft edited</span><span><i style="background:var(--border-2)"></i>by hand</span></span></h3>
+        <div class="wsbars">${rows
+          .map((x) => `<div class="row"><span>${esc(label(x.k))}</span><div class="stackbar">${seg(x.autopilot, "a")}${seg(x.otherBot, "t")}${seg(x.as_written, "w")}${seg(x.edited, "e")}${seg(x.hand, "h")}</div><span class="num">${x.out}</span><span class="num faint">${pc(x.byBot, x.out)}</span></div>`)
+          .join("") || `<div class="empty">No messages in this period.</div>`}</div></div>
+      <div class="panel"><h3>Per ${by} <span class="faint">minutes per message: <label>by hand <input class="tin" type="number" step="0.5" min="0" id="m-hand" value="${mins.hand}"></label> · <label>approve <input class="tin" type="number" step="0.5" min="0" id="m-approve" value="${mins.approve}"></label> · <label>edit <input class="tin" type="number" step="0.5" min="0" id="m-edit" value="${mins.edit}"></label></span></h3>
+        <div class="tbl-wrap" style="max-height:none"><table class="grid"><thead><tr><th>${by === "day" ? "Day" : by === "week" ? "Week of" : "Month"}</th><th>Drafts written</th><th>Autopilot sent</th><th>Sent as written</th><th>Edited</th><th>Skipped</th><th>By hand</th><th>Templates</th><th>Written by the bot</th><th>Stage moves bot / people</th><th>People's time</th><th>Saved</th></tr></thead><tbody>${rows
+          .map((x) => `<tr><td>${esc(label(x.k))}</td><td class="num">${x.written}</td><td class="num">${x.autopilot}</td><td class="num">${x.as_written}</td><td class="num">${x.edited}</td><td class="num">${x.skipped}</td><td class="num">${x.hand}</td><td class="num">${x.otherBot}</td><td class="num"><b>${pc(x.byBot, x.out)}</b></td><td class="num">${x.bot_moves} / ${x.people_moves}</td><td class="num">${hrs(x.humanMin)}</td><td class="num">${hrs(x.savedMin)}</td></tr>`)
+          .join("")}</tbody></table></div>
+        <p class="faint" style="font-size:11.5px;margin:8px 0 0">"By hand" is the people's messages that did not come from a draft (sent from the phone or typed in amoCRM). Templates are the bot's own messages, such as the welcome. Time uses the minutes above, kept on this device.</p></div></div>`;
+    el.querySelector("#ws-days").onchange = (e) => (store.set("ws-days", Number(e.target.value)), rerender());
+    el.querySelector("#ws-funnel").onchange = (e) => (store.set("ws-funnel", e.target.value), rerender());
+    on(el, "click", "[data-by]", (e, b) => (store.set("ws-by", b.dataset.by), rerender()));
+    for (const [id, k] of [["m-hand", "hand"], ["m-approve", "approve"], ["m-edit", "edit"]])
+      el.querySelector("#" + id).onchange = (e) => (store.set("ws-mins", { ...mins, [k]: Math.max(0, Number(e.target.value) || 0) }), rerender());
+  },
+
   async brief(el) {
     const week = store.get("an-brief-week", shiftWeek(thisMonday(), -1));
     const briefs = await api("/analytics/briefs").catch(() => ({ items: [] }));

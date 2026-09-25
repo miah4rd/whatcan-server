@@ -82,6 +82,7 @@ import {
 import { baliDate } from "../lib/kpi-dashboard";
 import { automations, setAutomation } from "../lib/os/automations";
 import { teamScorecard, setFunnelTarget, type FunnelKey } from "../lib/os/team";
+import { stageMap, setStageRule, workShare, AUTOPILOT_RULE_ID, type FunnelKey as MapFunnel } from "../lib/os/automation-map";
 import {
   ensureProjectTables,
   seedFromNotion,
@@ -433,6 +434,28 @@ api.post("/ptasks/:id/comments", signedIn, h(async (req) => addProjectComment(re
 
 // ── Automations, team, integrations ─────────────────────────────────────────
 api.get("/automations", signedIn, h(async (req) => automations(isStaff(req.osUser))));
+// A funnel as the automation sees it: who moves cards into each stage, the autopilot line, readiness.
+api.get("/automations/map", signedIn, h(async (req) => stageMap(String(req.query["funnel"] ?? "rental") as MapFunnel)));
+api.post(
+  "/automations/stage-rule",
+  staffOnly,
+  h(async (req) => setStageRule(req.osUser!, String(req.body?.funnel ?? "") as MapFunnel, String(req.body?.stage ?? ""), req.body?.meaning == null ? null : String(req.body.meaning))),
+);
+api.post(
+  "/automations/autopilot",
+  staffOnly,
+  h(async (req) => {
+    const f = String(req.body?.funnel ?? "") as MapFunnel;
+    if (!AUTOPILOT_RULE_ID[f]) throw new Error("Unknown funnel.");
+    await setAutomation(req.osUser!, AUTOPILOT_RULE_ID[f], req.body ?? {});
+    return stageMap(f);
+  }),
+);
+api.get(
+  "/analytics/workshare",
+  staffOnly,
+  h(async (req) => workShare({ days: Number(req.query["days"] ?? 30) || 30, funnel: (req.query["funnel"] as MapFunnel) || null })),
+);
 api.post("/automations/:id", staffOnly, h(async (req) => setAutomation(req.osUser!, String(req.params["id"]), req.body ?? {})));
 api.get("/integrations", staffOnly, h(async () => integrations()));
 api.get("/team", staffOnly, h(async () => ({ items: await listUsers() })));
