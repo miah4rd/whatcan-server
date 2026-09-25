@@ -324,6 +324,9 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
   const r = await amojo("POST", `/v2/origin/custom/${SCOPE_ID}`, { event_type: "new_message", payload });
   if (r.status === 200) {
     await pool.query(`UPDATE wa_messages SET mirrored = true, amo_msg_id = $2 WHERE id = $1`, [ins.rows[0].id, r.data?.new_message?.msgid ?? null]);
+    // Bring it into the Copilot in seconds, not on the next poll (amo-timeline-sync.ts, refreshLeadSoon).
+    // Loaded at call time: the sync module sits above this one in the import graph.
+    void import("./amo-timeline-sync").then((m) => m.refreshLeadSoon(String(card.leadId))).catch(() => undefined);
     if (conv?.amo_conversation_id && !conv.linked) {
       await pool.query(`UPDATE wa_conversations SET linked = true WHERE session = $1 AND phone = $2`, [ev.session, ev.phone]);
     }

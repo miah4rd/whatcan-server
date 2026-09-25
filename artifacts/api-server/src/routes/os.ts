@@ -12,6 +12,8 @@
  * here, so the app and its cookie live on the agency's own domain.
  */
 import path from "node:path";
+import fs from "node:fs";
+import crypto from "node:crypto";
 import express, { Router, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
 import publicRouter from "./public";
@@ -516,11 +518,48 @@ router.get("/os/sw.js", (_req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(webDir, "sw.js"));
 });
+// Every script and stylesheet carries the build in its address, imports between
+// scripts included. Cloudflare gives browsers a 4-hour cache on the site's
+// domain: on 26.09 a fresh app.js met a cached core.js without the functions it
+// imports, and the OS stopped at "Loading" until a hard reload. With the build
+// in every address a deploy means new addresses, so old and new never mix.
+let buildId = "";
+function currentBuild(): string {
+  if (!buildId) {
+    const h = crypto.createHash("sha1");
+    for (const f of fs.readdirSync(webDir).sort()) {
+      const p = path.join(webDir, f);
+      if (fs.statSync(p).isFile()) h.update(f).update(fs.readFileSync(p));
+    }
+    buildId = h.digest("hex").slice(0, 10);
+  }
+  return buildId;
+}
+const versioned = new Map<string, Buffer>();
+const IMPORT_SPEC = /((?:from|import)\s*\(?\s*")(\.\/[a-z0-9-]+\.js)(")/g;
+router.get(/^\/os\/([a-z0-9-]+\.(?:js|css))$/, (req, res, next) => {
+  const name = String((req.params as Record<string, string>)[0] ?? "");
+  if (name === "sw.js") return next();
+  const file = path.join(webDir, name);
+  if (!fs.existsSync(file)) return next();
+  let body = versioned.get(name);
+  if (!body) {
+    const raw = fs.readFileSync(file, "utf8");
+    body = Buffer.from(name.endsWith(".js") ? raw.replace(IMPORT_SPEC, (_m, a: string, spec: string, b: string) => `${a}${spec}?v=${currentBuild()}${b}`) : raw);
+    versioned.set(name, body);
+  }
+  res.type(name.endsWith(".css") ? "text/css" : "application/javascript");
+  // A versioned address never changes: cache it for good. Any other is checked every time.
+  res.setHeader("Cache-Control", req.query["v"] === currentBuild() ? "public, max-age=31536000, immutable" : "no-cache");
+  res.send(body);
+});
 router.use("/os", express.static(webDir, { index: false, maxAge: "5m", fallthrough: true }));
 // Express 5 (path-to-regexp 8) rejects "/os/*" at startup; a regex is the SPA fallback.
+let indexHtml = "";
 router.get(/^\/os(\/.*)?$/, (_req, res) => {
+  if (!indexHtml) indexHtml = fs.readFileSync(path.join(webDir, "index.html"), "utf8").replace(/\?v=[0-9a-z]+/g, `?v=${currentBuild()}`);
   res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(webDir, "index.html"));
+  res.type("html").send(indexHtml);
 });
 
 export default router;

@@ -888,7 +888,7 @@ export async function refreshLeadFromTimeline(
   const authHeader = await getAmoAuth();
   if (!authHeader) return { ok: false, error: "no amoCRM cookies" };
   try {
-    const r = await processQuickPollLead(authHeader, leadId);
+    const r = await processLeadOnce(authHeader, leadId);
     logger.info({ leadId, ...r }, "refreshLeadFromTimeline: done");
     return { ok: true, ...r };
   } catch (err) {
@@ -926,6 +926,63 @@ async function knownIncomingNeverAnswered(leadId: string, incomingTs: number): P
     return Number(row.drafts) === 0 && Number(row.answered) === 0;
   } catch {
     return false;
+  }
+}
+
+/**
+ * One run per lead at a time. The quick poll, the per-lead refresh and the
+ * WhatsApp gateway's fast path can all reach the same lead within seconds;
+ * two runs side by side could both see the client's message as new and write
+ * two LIVE drafts. A second caller shares the run already going.
+ */
+const leadRuns = new Map<string, Promise<{ stored: number; detected: boolean; liveCreated: boolean }>>();
+function processLeadOnce(authHeader: string, leadId: string): Promise<{ stored: number; detected: boolean; liveCreated: boolean }> {
+  const running = leadRuns.get(leadId);
+  if (running) return running;
+  const run = processQuickPollLead(authHeader, leadId).finally(() => leadRuns.delete(leadId));
+  leadRuns.set(leadId, run);
+  return run;
+}
+
+/**
+ * The fast path from our own WhatsApp gateway (owner, 26.09: WhatsApp and the
+ * OS must feel like one tool). The gateway hands a message to amoCRM the
+ * moment it arrives, but lead_messages learned of it only on the 45-second
+ * poll or the sweep: a client's message took 24 s (median) to reach the
+ * Copilot, a broker's reply typed on the phone 110 s, sometimes half an hour,
+ * while the Copilot still showed the client as waiting. Now the gateway asks
+ * for this one lead a few seconds later (amoCRM shows the message by then),
+ * through the same per-lead refresh the poll uses, so nothing is done twice.
+ * A burst of messages on one lead is one refresh; at most two run at once, so
+ * amoCRM's rate limit is left to the sends.
+ */
+const fastTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const fastQueue: string[] = [];
+let fastActive = 0;
+export function refreshLeadSoon(leadId: string, delayMs = 4000): void {
+  const t = fastTimers.get(leadId);
+  if (t) clearTimeout(t);
+  fastTimers.set(
+    leadId,
+    setTimeout(() => {
+      fastTimers.delete(leadId);
+      if (!fastQueue.includes(leadId)) fastQueue.push(leadId);
+      pumpFast();
+    }, delayMs),
+  );
+}
+function pumpFast(): void {
+  while (fastActive < 2 && fastQueue.length) {
+    const leadId = fastQueue.shift()!;
+    fastActive++;
+    const started = Date.now();
+    refreshLeadFromTimeline(leadId)
+      .then((r) => logger.info({ leadId, ms: Date.now() - started, stored: r.stored, live: r.liveCreated }, "fast refresh from the WhatsApp gateway"))
+      .catch(() => undefined)
+      .finally(() => {
+        fastActive--;
+        pumpFast();
+      });
   }
 }
 
@@ -1179,7 +1236,7 @@ async function runQuickPollInner(): Promise<void> {
     const results = await Promise.allSettled(
       batch.map((leadId) =>
         Promise.race([
-          processQuickPollLead(authHeader, leadId),
+          processLeadOnce(authHeader, leadId),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error(`lead ${leadId} timed out`)), 20_000)
           ),
