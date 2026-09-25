@@ -80,6 +80,7 @@ import {
 } from "../lib/os/analytics";
 import { baliDate } from "../lib/kpi-dashboard";
 import { automations, setAutomation } from "../lib/os/automations";
+import { teamScorecard, setFunnelTarget, type FunnelKey } from "../lib/os/team";
 import {
   ensureProjectTables,
   seedFromNotion,
@@ -330,12 +331,38 @@ api.get(
     const ws = weekParam(req);
     const [targets, g1, g2, y, drafts] = await Promise.all([
       targetsAt(ws),
-      gateOptionsToViewing(ws).catch((e) => ({ error: String(e) })),
-      gateViewingToDeal(ws).catch((e) => ({ error: String(e) })),
+      gateOptionsToViewing(ws, scopeBroker(req)).catch((e) => ({ error: String(e) })),
+      gateViewingToDeal(ws, scopeBroker(req)).catch((e) => ({ error: String(e) })),
       isStaff(req.osUser) || /yudi/i.test(req.osUser!.brokerKey ?? "") ? gateYudi(ws).catch((e) => ({ error: String(e) })) : Promise.resolve(null),
       isStaff(req.osUser) ? draftsDecided(ws) : Promise.resolve([]),
     ]);
     return { weekStart: ws, targets, gateOptionsToViewing: g1, gateViewingToDeal: g2, gateYudi: y, drafts };
+  }),
+);
+// Each funnel on its own: the people in it, their week against targets and the team, and why.
+api.get(
+  "/analytics/team",
+  staffOnly,
+  h(async (req) => {
+    const w = String(req.query["week"] ?? "current");
+    return teamScorecard(String(req.query["funnel"] ?? "rental") as FunnelKey, w === "current" ? undefined : w);
+  }),
+);
+api.post(
+  "/analytics/team-targets",
+  staffOnly,
+  h(async (req) => {
+    const b = req.body ?? {};
+    await setFunnelTarget(req.osUser!.login, {
+      funnel: String(b.funnel ?? ""),
+      metric: String(b.metric ?? ""),
+      who: String(b.who ?? ""),
+      value: b.value === null || b.value === "" || b.value === undefined ? null : Number(b.value),
+      floor: b.floor === null || b.floor === "" || b.floor === undefined ? null : Number(b.floor),
+      from: String(b.from ?? ""),
+      note: b.note ? String(b.note) : undefined,
+    });
+    return { ok: true };
   }),
 );
 api.get("/analytics/supply", signedIn, h(async (req) => supplyGaps(Math.min(60, Number(req.query["days"] ?? 14) || 14))));

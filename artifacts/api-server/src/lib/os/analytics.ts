@@ -309,7 +309,8 @@ export async function objectionsSummary(opts: { days: number; broker?: string | 
          FROM os_objections o LEFT JOIN leads_sync l ON l.lead_id = o.lead_id WHERE ${w("o.")}
         ORDER BY o.said_at DESC LIMIT 150`, p),
     pool.query(
-      `SELECT r.lead_id, r.property_code, r.viewing_at, r.outcome, r.feedback, r.next_steps, r.next_by, r.filed_by, r.filed_at, l.responsible_user, l.lead_stage
+      `SELECT r.id AS report_id, r.lead_id, r.property_code, r.viewing_at, r.outcome, r.feedback, r.next_steps, r.next_by, r.filed_by, r.filed_at, l.responsible_user, l.lead_stage,
+              (SELECT sender_name FROM lead_messages m WHERE m.lead_id = r.lead_id AND m.sender_type = 'lead' AND coalesce(m.sender_name,'') <> '' ORDER BY sent_at LIMIT 1) AS client_name
          FROM viewing_reports r LEFT JOIN leads_sync l ON l.lead_id = r.lead_id
         WHERE r.status <> 'due' AND r.viewing_at > now() - ($1 || ' days')::interval AND ($2::text IS NULL OR lower(coalesce(l.responsible_user,'')) = lower($2))
         ORDER BY r.viewing_at DESC LIMIT 80`, p),
@@ -323,6 +324,49 @@ export async function objectionsSummary(opts: { days: number; broker?: string | 
       `SELECT reason, count(*)::int AS n FROM os_close_reasons WHERE closed_at > now() - ($1 || ' days')::interval GROUP BY reason ORDER BY n DESC`, [String(opts.days)]),
     pool.query(`SELECT max(scanned_at) AS at, count(*)::int AS n FROM os_objection_scan`),
   ]);
+  // The ranking of pains: each kind with how many clients, the change against
+  // the period before, the clients who say it most, and a few quotes.
+  const [all, prev] = await Promise.all([
+    pool.query(
+      `SELECT o.category, o.lead_id, o.quote, o.said_at, l.req_bedrooms, l.req_areas, l.req_budget_idr_monthly
+         FROM os_objections o LEFT JOIN leads_sync l ON l.lead_id = o.lead_id WHERE ${w("o.")} ORDER BY o.said_at DESC LIMIT 3000`,
+      p,
+    ),
+    pool.query(
+      `SELECT category, count(DISTINCT lead_id)::int AS leads FROM os_objections
+        WHERE said_at <= now() - ($1 || ' days')::interval AND said_at > now() - (($1::int * 2) || ' days')::interval
+          AND ($2::text IS NULL OR lower(coalesce(broker,'')) = lower($2)) GROUP BY category`,
+      p,
+    ),
+  ]);
+  const band = (b: number | null) => (b == null ? null : b <= 30e6 ? "≤30M" : b <= 50e6 ? "30–50M" : b <= 70e6 ? "50–70M" : b <= 100e6 ? "70–100M" : "100M+");
+  const prevBy = new Map(prev.rows.map((x) => [String(x.category), Number(x.leads)]));
+  const groups = new Map<string, Array<Record<string, unknown>>>();
+  for (const x of all.rows) groups.set(String(x.category), [...(groups.get(String(x.category)) ?? []), x]);
+  const clientsTotal = new Set(all.rows.map((x) => String(x.lead_id))).size;
+  const pains = [...groups.entries()]
+    .map(([category, list]) => {
+      const leads = new Map<string, Record<string, unknown>>();
+      for (const x of list) if (!leads.has(String(x.lead_id))) leads.set(String(x.lead_id), x);
+      const seg = new Map<string, number>();
+      for (const x of leads.values()) {
+        const area = String(x.req_areas ?? "").split(/[,/;]| or /i)[0].trim();
+        const parts = [x.req_bedrooms ? `${x.req_bedrooms}BR` : null, area || null, band(x.req_budget_idr_monthly == null ? null : Number(x.req_budget_idr_monthly))].filter(Boolean);
+        if (parts.length >= 2) seg.set(parts.join(" · "), (seg.get(parts.join(" · ")) ?? 0) + 1);
+      }
+      const topSeg = [...seg.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, n]) => ({ segment: k, clients: n }));
+      const seen = new Set<string>();
+      const quotes: Array<{ quote: string; leadId: string; at: unknown }> = [];
+      for (const x of list) {
+        const q = String(x.quote ?? "").trim();
+        if (q.length < 6 || seen.has(q.toLowerCase())) continue;
+        seen.add(q.toLowerCase());
+        quotes.push({ quote: q, leadId: String(x.lead_id), at: x.said_at });
+        if (quotes.length >= 3) break;
+      }
+      return { category, label: OBJECTION_CATEGORIES[category] ?? category, mentions: list.length, clients: leads.size, prevClients: prevBy.get(category) ?? 0, share: clientsTotal ? Math.round((leads.size / clientsTotal) * 100) : 0, segments: topSeg, quotes };
+    })
+    .sort((a, b) => b.clients - a.clients);
   return {
     categories: OBJECTION_CATEGORIES,
     closeReasons: CLOSE_REASONS,
@@ -334,6 +378,8 @@ export async function objectionsSummary(opts: { days: number; broker?: string | 
     lostReasons: reasons.rows,
     lastScanAt: scan.rows[0]?.at ?? null,
     scanned: scan.rows[0]?.n ?? 0,
+    pains,
+    clientsTotal,
   };
 }
 
@@ -411,7 +457,7 @@ const baliStart = (day: string) => new Date(`${day}T00:00:00+08:00`);
 
 const VIEW_WORDS = "(viewing|to view|view (it|them|the|some)|visit|come and see|show you|see (it|the villa|them) in person|lihat villa|survey)";
 
-export async function gateOptionsToViewing(ws: string) {
+export async function gateOptionsToViewing(ws: string, broker: string | null = null) {
   const from = baliStart(ws);
   const to = baliStart(addDays(ws, 7));
   const { rows } = await pool.query(
@@ -431,8 +477,9 @@ export async function gateOptionsToViewing(ws: string) {
             (SELECT sender_name FROM lead_messages m WHERE m.lead_id = f.lead_id AND m.sender_type = 'lead' AND coalesce(m.sender_name,'') <> '' ORDER BY sent_at LIMIT 1) AS client_name
        FROM first_link f JOIN leads_sync l ON l.lead_id = f.lead_id
       WHERE lower(coalesce(l.pipeline,'')) = 'rental' AND f.at >= $1 AND f.at < $2
-        AND l.lead_id NOT IN ('23509507','23499347')`,
-    [from, to, VIEW_WORDS],
+        AND l.lead_id NOT IN ('23509507','23499347')
+        AND ($4::text IS NULL OR lower(coalesce(l.responsible_user,'')) = lower($4))`,
+    [from, to, VIEW_WORDS, broker],
   );
   const n = (k: string) => rows.filter((r) => r[k]).length;
   const steps = [
@@ -460,24 +507,25 @@ export async function gateOptionsToViewing(ws: string) {
 
 // ── Gate: Viewing → Deal (Amelia) ───────────────────────────────────────────
 
-export async function gateViewingToDeal(ws: string) {
+export async function gateViewingToDeal(ws: string, broker: string | null = null) {
   const { rows } = await pool.query(
-    `SELECT s.lead_id, s.viewing_at, s.property_code, r.status AS report_status, r.outcome, r.feedback, r.next_steps, r.next_by, r.filed_at,
+    `SELECT s.lead_id, s.viewing_at, s.property_code, r.id AS report_id, r.filed_by, r.status AS report_status, r.outcome, r.feedback, r.next_steps, r.next_by, r.filed_at,
             l.lead_stage, l.responsible_user,
             (SELECT sender_name FROM lead_messages m WHERE m.lead_id = s.lead_id AND m.sender_type = 'lead' AND coalesce(m.sender_name,'') <> '' ORDER BY sent_at LIMIT 1) AS client_name
        FROM viewing_slots s
        LEFT JOIN viewing_reports r ON r.lead_id = s.lead_id AND r.viewing_at = s.viewing_at
        LEFT JOIN leads_sync l ON l.lead_id = s.lead_id
       WHERE s.viewing_at >= $1 AND s.viewing_at < $2 AND s.viewing_at < now() AND s.status NOT IN ('cancelled','rescheduled')
+        AND ($3::text IS NULL OR lower(coalesce(l.responsible_user,'')) = lower($3))
       ORDER BY s.viewing_at`,
-    [baliStart(ws), baliStart(addDays(ws, 7))],
+    [baliStart(ws), baliStart(addDays(ws, 7)), broker],
   );
   const outcomes: Record<string, number> = {};
   for (const r of rows) outcomes[String(r.outcome ?? (r.report_status === "due" ? "report missing" : "no report"))] = (outcomes[String(r.outcome ?? (r.report_status === "due" ? "report missing" : "no report"))] ?? 0) + 1;
   const deals = await pool.query(
     `SELECT count(DISTINCT lead_id)::int AS n FROM stage_events WHERE lower(coalesce(pipeline,'')) = 'rental' AND (to_stage ILIKE '%contract signed%' OR to_stage ILIKE '%closed%won%' OR to_stage ILIKE 'успешно%')
-      AND changed_at >= $1 AND changed_at < $2`,
-    [baliStart(ws), baliStart(addDays(ws, 7))],
+      AND changed_at >= $1 AND changed_at < $2 AND ($3::text IS NULL OR lower(coalesce(responsible_user,'')) = lower($3))`,
+    [baliStart(ws), baliStart(addDays(ws, 7)), broker],
   );
   return { weekStart: ws, viewings: rows, outcomes, contractsSigned: deals.rows[0]?.n ?? 0 };
 }

@@ -25,7 +25,7 @@ function env() {
   return { url, key };
 }
 
-async function site<T>(path: string, init?: RequestInit & { prefer?: string }): Promise<T> {
+export async function site<T>(path: string, init?: RequestInit & { prefer?: string }): Promise<T> {
   const { url, key } = env();
   const res = await fetch(`${url}/rest/v1/${path}`, {
     ...init,
