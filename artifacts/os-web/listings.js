@@ -3,6 +3,7 @@
 // the admin all come from the site (unicorn-properties.com); the OS adds the
 // list with every criterion and the clients a listing fits.
 import { S, api, esc, I, screens, peeks, store, on, money, fmtDate, rel, coverUrl, emit, baliToday } from "./core.js";
+import { gridTable } from "./grid.js";
 
 // On the agency's domain the site is same-origin; on the Copilot host it is the full address.
 export const SITE = location.hostname.endsWith("unicorn-properties.com") ? "" : "https://unicorn-properties.com";
@@ -142,86 +143,73 @@ screens.listings = {
 // Old links (#/villas) land on Listings.
 screens.villas = { title: "Listings", render: () => (location.hash = "#/listings") };
 
-let vsort = store.get("villa-sort", { k: "updated_at", dir: -1 });
+// The list: every field of a listing, the internal data included; the person picks the columns,
+// their order and width (grid.js). Defaults are what the owner asked for on 26.09.
+const P = (v) => v.private || {};
+const faintDash = `<span class="faint">—</span>`;
+const checked = (x) => (x == null || x === "" ? `<span class="faint">not checked</span>` : x === true ? "yes" : x === false ? "no" : esc(x));
+const link = (url, label) => (url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${label}</a>` : faintDash);
+const lines = (x) => (x ? esc(String(x).replace(/\n+/g, " · ")) : faintDash);
+const waDigits = (p) => String(p || "").replace(/[^0-9]/g, "");
+const LISTING_COLUMNS = [
+  { k: "cover", label: "", w: 64, sortable: false, defaultOn: true, cell: (v) => `<img class="thumb" src="${esc(coverUrl(v.images, 300))}" alt="" loading="lazy">` },
+  { k: "id", label: "Code", group: "Listing", w: 110, defaultOn: true, cell: (v) => `<span class="mono">${esc(v.id)}</span>` },
+  { k: "title", label: "Title", group: "Listing", w: 260, defaultOn: true },
+  { k: "area", label: "Area", group: "Listing", w: 120, defaultOn: true },
+  { k: "type", label: "Type", group: "Listing", w: 90 },
+  { k: "bedrooms", label: "BR", group: "Listing", w: 56, align: "right", defaultOn: true },
+  { k: "bathrooms", label: "BA", group: "Listing", w: 56, align: "right" },
+  { k: "land_size", label: "Land m²", group: "Listing", w: 84, align: "right", cell: (v) => (v.land_size ? esc(v.land_size) : faintDash) },
+  { k: "build_size", label: "Build m²", group: "Listing", w: 84, align: "right", cell: (v) => (v.build_size ? esc(v.build_size) : faintDash) },
+  { k: "tags", label: "Highlights", group: "Listing", w: 200, val: (v) => (v.tags || []).join(", "), cell: (v) => ((v.tags || []).length ? esc(v.tags.join(", ")) : faintDash) },
+  { k: "status", label: "Status", group: "Listing", w: 100, defaultOn: true, val: (v) => (v.is_draft ? "draft" : v.pre_listed ? "pre" : "listed"), cell: statusPill },
+  { k: "listing_source", label: "Source", group: "Listing", w: 90 },
+  { k: "ownership", label: "Ownership", group: "Listing", w: 100 },
+  { k: "monthly_price_idr", label: "Monthly", group: "Price and terms", w: 104, align: "right", defaultOn: true, cell: (v) => `<span class="num">${money(v.monthly_price_idr)}</span>` },
+  { k: "yearly_price_idr", label: "Yearly", group: "Price and terms", w: 110, align: "right", cell: (v) => `<span class="num">${money(v.yearly_price_idr)}</span>` },
+  { k: "min_stay_months", label: "Min stay", group: "Price and terms", w: 80, align: "right", cell: (v) => (v.min_stay_months ? `${esc(v.min_stay_months)} mo` : faintDash) },
+  { k: "rental_included", label: "Included", group: "Price and terms", w: 220, cell: (v) => lines(v.rental_included) },
+  { k: "rental_excluded", label: "Excluded", group: "Price and terms", w: 200, cell: (v) => lines(v.rental_excluded) },
+  { k: "freeFrom", label: "Free from", group: "Availability", w: 130, defaultOn: true, val: (v) => v.freeFrom || "0000", cell: freeLabel },
+  { k: "photos", label: "Photos", group: "Media", w: 70, align: "right", val: (v) => (v.images || []).length, cell: (v) => `<span class="num ${(v.images || []).length < 8 ? "faint" : ""}">${(v.images || []).length}</span>` },
+  { k: "video", label: "Video", group: "Media", w: 64, val: (v) => (v.video_url ? 1 : 0), cell: (v) => (v.video_url ? I.video : faintDash) },
+  { k: "garden", label: "Garden", group: "Checked on site", w: 96, cell: (v) => checked(v.garden) },
+  { k: "workspace", label: "Workspace", group: "Checked on site", w: 100, cell: (v) => checked(v.workspace) },
+  { k: "living_room", label: "Living", group: "Checked on site", w: 96, cell: (v) => checked(v.living_room) },
+  { k: "pool_sun", label: "Pool sun", group: "Checked on site", w: 96, cell: (v) => checked(v.pool_sun) },
+  { k: "quiet_area", label: "Quiet area", group: "Checked on site", w: 96, cell: (v) => checked(v.quiet_area) },
+  { k: "owner_name", label: "Owner", group: "Internal data", w: 200, defaultOn: true, val: (v) => P(v).owner_name || null, cell: (v) => (P(v).owner_name ? esc(P(v).owner_name) : faintDash) },
+  { k: "owner_phone", label: "Owner phone", group: "Internal data", w: 160, defaultOn: true, val: (v) => P(v).owner_phone || null, cell: (v) => (P(v).owner_phone ? `<a href="https://wa.me/${esc(waDigits(P(v).owner_phone))}" target="_blank" rel="noopener" class="mono" title="Open in WhatsApp">${esc(P(v).owner_phone)}</a>` : faintDash) },
+  { k: "owner_email", label: "Owner email", group: "Internal data", w: 200, val: (v) => P(v).owner_email || null, cell: (v) => (P(v).owner_email ? `<a href="mailto:${esc(P(v).owner_email)}">${esc(P(v).owner_email)}</a>` : faintDash) },
+  { k: "drive_folder_url", label: "Drive", group: "Internal data", w: 76, defaultOn: true, val: (v) => (P(v).drive_folder_url ? 1 : 0), cell: (v) => link(P(v).drive_folder_url, `${I.drive} Open`) },
+  { k: "google_maps_url", label: "Maps", group: "Internal data", w: 76, defaultOn: true, val: (v) => (P(v).google_maps_url ? 1 : 0), cell: (v) => link(P(v).google_maps_url, "Map") },
+  { k: "exact_address", label: "Address", group: "Internal data", w: 240, val: (v) => P(v).exact_address || null, cell: (v) => lines(P(v).exact_address) },
+  { k: "notes", label: "Notes", group: "Internal data", w: 260, val: (v) => P(v).notes || null, cell: (v) => lines(P(v).notes) },
+  { k: "red_flags", label: "Red flags", group: "Internal data", w: 220, val: (v) => P(v).red_flags || null, cell: (v) => lines(P(v).red_flags) },
+  { k: "green_flags", label: "Green flags", group: "Internal data", w: 220, val: (v) => P(v).green_flags || null, cell: (v) => lines(P(v).green_flags) },
+  { k: "construction_nearby", label: "Construction nearby", group: "Internal data", w: 120, val: (v) => P(v).construction_nearby ?? null, cell: (v) => (P(v).construction_nearby === true ? `<span class="pill bad">yes</span>` : checked(P(v).construction_nearby)) },
+  { k: "construction_checked_on", label: "Construction checked", group: "Internal data", w: 120, val: (v) => P(v).construction_checked_on || null, cell: (v) => (P(v).construction_checked_on ? esc(fmtDate(P(v).construction_checked_on)) : faintDash) },
+  { k: "crm", label: "CRM card", group: "Links", w: 100, defaultOn: true, val: (v) => v.crmLeadId, cell: (v) => (v.crmLeadId ? `<a href="#" data-open-lead="${esc(v.crmLeadId)}">#${esc(v.crmLeadId)}</a>` : faintDash) },
+  { k: "url", label: "Site page", group: "Links", w: 84, sortable: false, cell: (v) => link(`${SITE_ABS}/property/${encodeURIComponent(v.id)}`, `${I.ext} Open`) },
+  { k: "views", label: "Page views", group: "Activity", w: 90, align: "right" },
+  { k: "created_at", label: "Created", group: "Activity", w: 100, cell: (v) => `<span class="age">${esc(rel(v.created_at))}</span>` },
+  { k: "updated_at", label: "Updated", group: "Activity", w: 100, defaultOn: true, cell: (v) => `<span class="age">${esc(rel(v.updated_at))}</span>` },
+];
+
 function drawTable(el, list) {
-  const cols = [
-    ["cover", ""],
-    ["id", "Code"],
-    ["title", "Title"],
-    ["area", "Area"],
-    ["bedrooms", "BR"],
-    ["bathrooms", "BA"],
-    ["monthly_price_idr", "Monthly"],
-    ["yearly_price_idr", "Yearly"],
-    ["min_stay_months", "Min stay"],
-    ["freeFrom", "Free from"],
-    ["status", "Status"],
-    ["photos", "Photos"],
-    ["video", "Video"],
-    ["garden", "Garden"],
-    ["workspace", "Workspace"],
-    ["living_room", "Living"],
-    ["owner", "Owner"],
-    ["crm", "CRM card"],
-    ["updated_at", "Updated"],
-  ];
-  const val = (v, k) =>
-    k === "photos" ? (v.images || []).length : k === "video" ? (v.video_url ? 1 : 0) : k === "owner" ? v.private?.owner_name || null : k === "status" ? (v.is_draft ? "draft" : v.pre_listed ? "pre" : "listed") : k === "crm" ? v.crmLeadId : v[k] ?? null;
-  const sorted = [...list].sort((a, b) => {
-    const x = val(a, vsort.k);
-    const y = val(b, vsort.k);
-    if (x == null && y == null) return 0;
-    if (x == null) return 1;
-    if (y == null) return -1;
-    return (x > y ? 1 : x < y ? -1 : 0) * vsort.dir;
-  });
-  const cell = (v, k) => {
-    switch (k) {
-      case "cover":
-        return `<img class="thumb" src="${esc(coverUrl(v.images, 300))}" alt="" loading="lazy">`;
-      case "id":
-        return `<span class="mono">${esc(v.id)}</span>`;
-      case "monthly_price_idr":
-      case "yearly_price_idr":
-        return `<span class="num">${money(v[k])}</span>`;
-      case "freeFrom":
-        return freeLabel(v);
-      case "status":
-        return statusPill(v);
-      case "photos":
-        return `<span class="num ${(v.images || []).length < 8 ? "faint" : ""}">${(v.images || []).length}</span>`;
-      case "video":
-        return v.video_url ? I.video : `<span class="faint">—</span>`;
-      case "garden":
-      case "workspace":
-      case "living_room":
-        return v[k] ? esc(v[k]) : `<span class="faint">not checked</span>`;
-      case "owner":
-        return esc(v.private?.owner_name || "");
-      case "crm":
-        return v.crmLeadId ? `<a href="#" data-open-lead="${esc(v.crmLeadId)}">#${esc(v.crmLeadId)}</a>` : `<span class="faint">—</span>`;
-      case "updated_at":
-        return `<span class="age">${esc(rel(v.updated_at))}</span>`;
-      default:
-        return esc(v[k] ?? "");
-    }
-  };
-  el.innerHTML = `<div class="tbl-wrap"><table class="grid"><thead><tr>${cols.map(([k, l]) => `<th data-sort="${k}" class="${vsort.k === k ? "sorted" : ""}">${esc(l)}${vsort.k === k ? (vsort.dir > 0 ? " ↑" : " ↓") : ""}</th>`).join("")}</tr></thead>
-    <tbody>${sorted.map((v) => `<tr data-villa="${esc(v.id)}">${cols.map(([k]) => `<td class="${k === "title" ? "ellip" : ""}">${cell(v, k)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
-    <p class="faint" style="font-size:11.5px;margin:8px 2px">${sorted.length} listings · "not checked" is empty in the database, never "no" · free-from is read from the site's availability calendar · a row opens the listing's page from the site.</p>`;
-  on(el, "click", "[data-sort]", (e, th) => {
-    const k = th.dataset.sort;
-    if (k === "cover") return;
-    vsort = { k, dir: vsort.k === k ? -vsort.dir : -1 };
-    store.set("villa-sort", vsort);
-    drawTable(el, list);
-  });
-  on(el, "click", "tr[data-villa]", (e, tr) => {
-    if (e.target.closest("[data-open-lead]")) return;
-    emit("open-peek", { type: "villa", id: tr.dataset.villa });
+  gridTable(el, {
+    id: "listings",
+    rows: list,
+    columns: LISTING_COLUMNS,
+    sort: { k: "updated_at", dir: -1 },
+    rowAttr: (v) => `data-villa="${esc(v.id)}"`,
+    count: (n) => `${n} listing${n === 1 ? "" : "s"}`,
+    note: '"not checked" is empty in the database, never "no". Free-from is read from the site\'s availability calendar. A row opens the listing\'s page from the site.',
+    onRow: (e, tr) => emit("open-peek", { type: "villa", id: tr.dataset.villa }),
   });
   on(el, "click", "[data-open-lead]", (e, a) => {
     e.preventDefault();
+    e.stopPropagation();
     emit("open-peek", { type: "lead", id: a.dataset.openLead });
   });
 }

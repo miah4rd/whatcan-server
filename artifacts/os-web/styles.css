@@ -533,7 +533,8 @@ select.uselect-open{border-color:var(--accent)!important}
 
 /* ---------- listings: the site inside the OS ---------- */
 .site-frame{display:block;width:100%;height:100%;border:0;background:#fff}
-.list-wrap{padding:16px;height:100%;overflow:auto}
+.list-wrap{padding:12px 16px 10px;height:100%;min-height:0;display:flex;flex-direction:column;gap:8px}
+.list-wrap > .loading,.list-wrap > .empty{flex:0 0 auto}
 
 /* ---------- viewing report ---------- */
 .report{border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:var(--surface);display:flex;flex-direction:column;gap:10px}
@@ -657,3 +658,32 @@ details.objcat[open] summary{margin-bottom:4px}
   .cp-actions{padding:10px 12px calc(10px + env(safe-area-inset-bottom))}
   .cp-add{flex-wrap:wrap}
 }
+
+/* ── grid.js: the one table (columns picked, ordered and sized by the person) ── */
+.grid-bar{display:flex;align-items:center;gap:8px;font-size:12px;flex:0 0 auto}
+.grid-scroll{flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}
+table.grid.gt{table-layout:fixed;min-width:100%}
+table.grid.gt th{position:sticky;top:0;overflow:hidden;text-overflow:ellipsis;padding-right:14px}
+table.grid.gt th .gl{display:block;overflow:hidden;text-overflow:ellipsis}
+table.grid.gt td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:none}
+table.grid.gt.wrap td{white-space:normal;overflow-wrap:anywhere;vertical-align:top;line-height:1.4}
+table.grid.gt .r{text-align:right}
+table.grid.gt td a{color:var(--text);text-decoration:underline;text-decoration-color:var(--border-2);text-underline-offset:2px}
+table.grid.gt td a:hover{text-decoration-color:currentColor}
+table.grid.gt td a svg{width:13px;height:13px;vertical-align:-2px}
+.col-rs{position:absolute;top:0;right:0;bottom:0;width:7px;cursor:col-resize;z-index:2}
+.col-rs::after{content:"";position:absolute;top:22%;bottom:22%;right:3px;width:1px;background:var(--border-2)}
+.col-rs:hover::after,.col-resizing .col-rs::after{background:var(--accent);width:2px;right:2px}
+body.col-resizing,body.col-resizing *{cursor:col-resize !important;user-select:none}
+table.grid.gt th.dragging{opacity:.4}
+table.grid.gt th.drop-l{box-shadow:inset 3px 0 0 var(--accent)}
+table.grid.gt th.drop-r{box-shadow:inset -3px 0 0 var(--accent)}
+.gmenu{position:fixed;z-index:70;width:280px;max-height:min(560px,80vh);display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);padding:8px}
+.gmenu > .in{padding:6px 9px;margin-bottom:6px}
+.gm-list{overflow:auto;min-height:0;flex:1}
+.gm-h{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);font-weight:600;padding:8px 6px 3px}
+.gm-row{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;font-size:12.5px;cursor:pointer}
+.gm-row:hover{background:var(--surface-2)}
+.gm-row input{accent-color:var(--accent);margin:0}
+.gm-foot{border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;flex-direction:column;gap:4px}
+.gm-note{font-size:11px;line-height:1.4;padding:2px 6px}
