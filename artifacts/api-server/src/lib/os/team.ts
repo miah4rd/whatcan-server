@@ -269,7 +269,7 @@ async function periodCounts(f: FunnelKey, fromDay: string, toDay: string, names:
     `WITH m AS (
        SELECT lm.lead_id, lm.sender_type, lm.sent_at, lag(lm.sender_type) OVER (PARTITION BY lm.lead_id ORDER BY lm.sent_at) AS prev_type
          FROM lead_messages lm JOIN leads_sync l ON l.lead_id = lm.lead_id
-        WHERE lower(coalesce(l.pipeline,'')) = $3 AND lm.sent_at >= $1 - interval '3 days' AND lm.sent_at < $2)
+        WHERE lower(coalesce(l.pipeline,'')) = $3 AND lm.sent_at >= $1::timestamptz - interval '3 days' AND lm.sent_at < $2)
      SELECT l.responsible_user AS who,
             percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (r.at - m.sent_at)) / 60) AS med
        FROM m JOIN leads_sync l ON l.lead_id = m.lead_id
