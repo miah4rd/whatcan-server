@@ -365,9 +365,49 @@ async function saveMedia(sock, m, body, ctype) {
 
 // ── Sending ──────────────────────────────────────────────────────────────────
 
+// ── Pacing ─────────────────────────────────────────────────────────────────────
+// WhatsApp unlinks a companion device that sends like a machine. 24.09.2026 12:30-12:43: 94 messages
+// in 13 minutes from Yudi's main number (a backlog drain) and WhatsApp removed the device
+// ("conflict: device_removed"); 21.09: nine cold messages in one minute got Yudi 2 a 403. So every
+// send on a broker's number is spaced here, the one place all of them pass: 15-25 s apart, at most
+// 15 per 10 minutes and 60 per hour. A send that would wait past 40 s is refused (the caller's
+// request to us times out at 60 s, and a refused send is retried by autopilot in 30 minutes).
+const PACE = {
+  minGapMs: 15000,
+  jitterMs: 10000,
+  maxWaitMs: 40000,
+  per10Min: 15,
+  perHour: 60,
+  exempt: new Set((process.env.WA_UNPACED_SESSIONS ?? "pilot1").split(",").map((x) => x.trim()).filter(Boolean)),
+};
+const paceState = new Map();
+
+async function paceSend(session) {
+  if (PACE.exempt.has(session)) return null;
+  const now = Date.now();
+  const st = paceState.get(session) ?? { next: 0, sent: [] };
+  st.sent = st.sent.filter((t) => now - t < 3600000);
+  const last10 = st.sent.filter((t) => now - t < 600000).length;
+  if (st.sent.length >= PACE.perHour) return { ok: false, error: "rate_limited_hour", code: 905 };
+  if (last10 >= PACE.per10Min) return { ok: false, error: "rate_limited_10min", code: 905 };
+  const at = Math.max(now, st.next);
+  if (at - now > PACE.maxWaitMs) return { ok: false, error: "rate_limited", code: 905 };
+  st.next = at + PACE.minGapMs + Math.floor(Math.random() * PACE.jitterMs);
+  st.sent.push(at);
+  paceState.set(session, st);
+  if (at > now) await new Promise((r) => setTimeout(r, at - now));
+  return null;
+}
+
 async function send({ session, to, text, media, quotedId, mentions }) {
   const s = sessions.get(session);
   if (!s || s.status !== "open") return { ok: false, error: "session_not_open", code: 902 };
+  const paced = await paceSend(session);
+  if (paced) {
+    log.warn({ session, error: paced.error }, "send refused by pacing");
+    return paced;
+  }
+  if (s.status !== "open") return { ok: false, error: "session_not_open", code: 902 };
 
   let jid;
   if (/@g\.us$/.test(String(to))) {
