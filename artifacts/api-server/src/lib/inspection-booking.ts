@@ -37,6 +37,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "./logger";
+import { diskMap } from "./disk-memo";
 import { getAmoLead, getOpenAmoTasks } from "./amo-client";
 import { chatCompletion, chatCompletionJSON, HELPER_MODEL, WRITER_MODEL } from "./ai-client";
 import { correctionsPromptBlock } from "./broker-corrections";
@@ -288,7 +289,11 @@ export async function proposeInspectionTimes(leadId: string, listing: BookingLis
 
 // ── the villa side's stance ───────────────────────────────────────────────────
 
-const stanceCache = new Map<string, { key: number; stance: Stance }>();
+// On disk: a restart used to re-ask the model the stance of every QUALIFIED card (disk-memo.ts).
+const stances = diskMap<{ key: number; stance: Stance }>("/var/tmp/whatcan-visit-stance.json", {
+  revive: (v) => ({ ...v, stance: { ...v.stance, notBefore: v.stance.notBefore ? new Date(v.stance.notBefore) : null } }),
+});
+const stanceCache = stances.map;
 
 /**
  * Where a visit by our side stands, from the villa side's words: agreed, declined, deferred (until when),
@@ -323,6 +328,7 @@ JSON only: {"stance": "agreed|declined|deferred|open|none", "not_before": "2026-
   const nb = out?.not_before ? new Date(`${out.not_before}T00:00:00+08:00`) : null;
   const stance: Stance = { stance: kind, notBefore: nb && !Number.isNaN(nb.getTime()) ? nb : null, why: String(out?.why ?? "").slice(0, 120) };
   stanceCache.set(leadId, { key, stance });
+  stances.touch();
   return stance;
 }
 

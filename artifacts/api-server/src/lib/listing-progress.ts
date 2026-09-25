@@ -30,6 +30,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "./logger";
+import { diskMap } from "./disk-memo";
 import { amoFetch, amoPost, getAmoLead, updateLeadStatus } from "./amo-client";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { isUndeliverableNotice } from "./undeliverable";
@@ -838,7 +839,9 @@ export async function recordBrokerVisit(leadId: string, at: Date, broker: string
 }
 
 const WATCH_EVERY_MS = 30 * 60_000;
-const watchedUpTo = new Map<string, number>();
+// On disk: a restart used to forget every card and re-read three days of each thread (disk-memo.ts).
+const watched = diskMap<number>("/var/tmp/whatcan-visit-watch.json");
+const watchedUpTo = watched.map;
 let watching = false;
 
 /**
@@ -875,6 +878,7 @@ export async function runVisitWatch(): Promise<{ cards: number; decided: number 
       try {
         await advanceListingProgress(id, { source: "visit-watch", apply: true, checkedAt: new Date(seen ?? Date.now() - 3 * DAY) });
         watchedUpTo.set(id, newest);
+        watched.touch();
         decided++;
       } catch (err) {
         logger.warn({ err, leadId: id }, "visit watch: card failed");
