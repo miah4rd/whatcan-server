@@ -104,7 +104,8 @@ const BROKER_LINES: Record<string, number[]> = {
   // (wa-own-line-ids.ts), not the paused Wahelp 62585.
   // 22.09.2026: main number on our bridge (900003, session "yudi-main"). Yudi 2 (900002) is
   // out until it is re-linked: its conversations continue from his main number.
-  yudi: [900003],
+  // 25.09.2026: Yudi 2 (900002) back in work on the warm-up ladder (new-contact-budget.ts).
+  yudi: [900003, 900002],
   saif: [59893],
   kristo: [61161],
   ferdian: [61191],

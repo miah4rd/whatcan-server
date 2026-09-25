@@ -64,7 +64,7 @@ const LINE_WARMUP_START: Record<number, string> = {
  */
 const LINE_WARMUP_LADDER: Record<number, { start: string; steps: Array<[lastDay: number, cap: number]> }> = {
   // Owner, 22.09: "номер работает сегодня, аккуратно начинать".
-  900002: { start: "2026-09-22", steps: [[3, 3], [7, 5], [11, 7]] },
+  900002: { start: "2026-09-25", steps: [[3, 3], [7, 5], [11, 7]] }, // re-linked 25.09
 };
 
 /**
