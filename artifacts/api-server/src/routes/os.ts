@@ -381,7 +381,8 @@ router.get("/os/sw.js", (_req, res) => {
   res.sendFile(path.join(webDir, "sw.js"));
 });
 router.use("/os", express.static(webDir, { index: false, maxAge: "5m", fallthrough: true }));
-router.get(["/os", "/os/*"], (_req, res) => {
+// Express 5 (path-to-regexp 8) rejects "/os/*" at startup; a regex is the SPA fallback.
+router.get(/^\/os(\/.*)?$/, (_req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(webDir, "index.html"));
 });
