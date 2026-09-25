@@ -21,6 +21,8 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "./logger";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { yudiStyleExamples, yudiExamplesBlock, type OwnerLang } from "./yudi-voice";
 import { chatCompletionJSON, WRITER_MODEL } from "./ai-client";
 
@@ -117,9 +119,31 @@ export async function ownerVoiceBlock(o: { lang: OwnerLang }): Promise<string> {
 const TIGHT_WORDS = 22;
 const HARD_MAX_WORDS = 30;
 const wordCount = (s: string) => (s.trim() ? s.trim().split(/\s+/).length : 0);
-// The autopilot judges a waiting draft again every few minutes: a rewrite that
-// was rejected once is not paid for again.
-const rejected = new Map<string, number>();
+// The autopilot judges a waiting draft again every few minutes: a text this pass already judged —
+// rewritten (its output) or rejected — is not paid for again. Kept on disk: the in-memory map died
+// with every restart, and a draft waiting behind the daily cap was re-sent to the model each pass
+// (24.09.2026: 562 calls in three days, 62% of them rejected at the same length).
+const SEEN_FILE = "/var/tmp/whatcan-owner-tighten-seen.json";
+const seen = new Map<string, number>();
+try {
+  for (const [k, v] of Object.entries(JSON.parse(readFileSync(SEEN_FILE, "utf8")) as Record<string, number>)) seen.set(k, Number(v));
+} catch { /* first start or unreadable: start empty */ }
+let seenSave: ReturnType<typeof setTimeout> | null = null;
+const seenKey = (t: string) => createHash("sha1").update(t.trim()).digest("hex");
+function rememberJudged(...texts: string[]): void {
+  if (seen.size > 3000) {
+    const keep = [...seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 1500);
+    seen.clear();
+    for (const [k, v] of keep) seen.set(k, v);
+  }
+  for (const t of texts) if (t && t.trim()) seen.set(seenKey(t), Date.now());
+  if (!seenSave) {
+    seenSave = setTimeout(() => {
+      seenSave = null;
+      try { writeFileSync(SEEN_FILE, JSON.stringify(Object.fromEntries(seen))); } catch { /* best effort */ }
+    }, 5000);
+  }
+}
 
 /**
  * Owner, 19.09.2026: "сделай тексты короче как у Юди, в целом копируй его стиль". Measured the same
@@ -135,7 +159,7 @@ const rejected = new Map<string, number>();
 export async function tightenInYudiVoice(text: string, o: { lang: OwnerLang; leadId?: string }): Promise<string> {
   const before = (text ?? "").trim();
   if (wordCount(before) <= TIGHT_WORDS) return before;
-  if (rejected.has(before)) return before;
+  if (seen.has(seenKey(before))) return before;
   try {
     const examples = await yudiStyleExamples({ lang: o.lang, limit: 14, minLen: 12, maxLen: 140 });
     const r = await chatCompletionJSON<{ text?: string }>({
@@ -154,11 +178,11 @@ export async function tightenInYudiVoice(text: string, o: { lang: OwnerLang; lea
     const ok = after && wordCount(after) < wordCount(before) && wordCount(after) <= HARD_MAX_WORDS + 5 && (!askedBefore || /\?/.test(after));
     if (!ok) {
       logger.warn({ leadId: o.leadId, before: wordCount(before), after: wordCount(after) }, "owner tighten: rewrite rejected — draft kept as written");
-      if (rejected.size > 500) rejected.clear();
-      rejected.set(before, Date.now());
+      rememberJudged(before);
       return before;
     }
     logger.info({ leadId: o.leadId, before: wordCount(before), after: wordCount(after) }, "owner tighten: draft shortened in Yudi's voice");
+    rememberJudged(before, after);
     return after;
   } catch (err) {
     logger.warn({ err: String(err), leadId: o.leadId }, "owner tighten failed — draft kept as written");

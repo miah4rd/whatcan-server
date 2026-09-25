@@ -414,7 +414,10 @@ A VISIT TO THIS VILLA BY OUR AGENT IS SCHEDULED (card stage: Inspection schedule
   // lessons come after it and win.
   const lang: OwnerLang = known?.ownerReplied ? ownerThreadLanguage(known.lines) : "en";
   const voice = await ownerVoiceBlock({ lang }).catch(() => "");
-  const system = SYSTEM_PROMPT + identityRule + voice + learned;
+  // SYSTEM_PROMPT is the same bytes on every call (~2.5k tokens): sent as the cached prefix it is
+  // read at a tenth of the price inside the hour instead of paid in full on every reply (25.09.2026).
+  // The voice and the lessons change with Yudi's messages and stay outside the cache.
+  const system = identityRule + voice + learned;
 
   // A number the villa side handed us (listing-referral.ts): the opener names
   // who passed it on instead of pretending we read an ad.
@@ -450,6 +453,7 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
     chatCompletionJSON<{ reply?: string; contact_type?: string }>({
       model: WRITER_MODEL,
       label: "listing-acquisition",
+      cachePrefix: SYSTEM_PROMPT,
       system,
       messages: [{ role: "user", content: prompt + extra }],
       max_tokens: 400,
