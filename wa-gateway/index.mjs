@@ -378,7 +378,8 @@ const PACE = {
   maxWaitMs: 40000,
   per10Min: 15,
   perHour: 60,
-  exempt: new Set((process.env.WA_UNPACED_SESSIONS ?? "pilot1").split(",").map((x) => x.trim()).filter(Boolean)),
+  // Amelia: no limits at all (owner, 25.09.2026 — her daily cap was lifted on 19.09 too).
+  exempt: new Set((process.env.WA_UNPACED_SESSIONS ?? "pilot1,amelia").split(",").map((x) => x.trim()).filter(Boolean)),
 };
 const paceState = new Map();
 
