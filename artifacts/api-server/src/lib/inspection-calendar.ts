@@ -281,7 +281,8 @@ async function writeRow(d: Desired, status: string, eventId: string | null, erro
     VALUES (${d.key}, ${d.slot.id}, ${d.leads.map((l) => l.id).join(",")}, ${d.visitAt.toISOString()}, ${eventId}, ${calendarConfig().calendarId},
             ${eventId ? d.hash : null}, ${status}, ${error ? error.slice(0, 500) : null}, ${d.body.summary}, ${d.body.start}, now())
     ON CONFLICT (sync_key) DO UPDATE SET slot_id = EXCLUDED.slot_id, lead_ids = EXCLUDED.lead_ids, visit_at = EXCLUDED.visit_at,
-      event_id = COALESCE(EXCLUDED.event_id, inspection_calendar_events.event_id), calendar_id = EXCLUDED.calendar_id,
+      event_id = CASE WHEN EXCLUDED.visit_at IS DISTINCT FROM inspection_calendar_events.visit_at THEN EXCLUDED.event_id
+                      ELSE COALESCE(EXCLUDED.event_id, inspection_calendar_events.event_id) END, calendar_id = EXCLUDED.calendar_id,
       payload_hash = COALESCE(EXCLUDED.payload_hash, inspection_calendar_events.payload_hash), status = EXCLUDED.status,
       last_error = EXCLUDED.last_error, summary = EXCLUDED.summary, start_at = EXCLUDED.start_at, updated_at = now()`);
 }
@@ -324,9 +325,12 @@ export async function syncInspectionCalendar(o: { apply: boolean; reason?: strin
     for (const d of desired.values()) {
       const row = storedByKey.get(d.key);
       const base: CalendarAction = { action: "skipped", key: d.key, summary: d.body.summary, start: d.body.start, location: d.body.location || undefined, leads: d.leads.map((l) => String(l.id)) };
-      const live = !!row?.event_id && ["synced", "retired", "error"].includes(row.status);
+      // One key per villa: a later visit to the same villa (Villa Tilu 13.09, then 25.09) is a NEW event —
+      // the row's event is for the visit at its visit_at, and that event stays in the calendar.
+      const sameVisit = !!row && asDate(row.visit_at)?.getTime() === d.visitAt.getTime();
+      const live = !!row?.event_id && sameVisit && ["synced", "retired", "error"].includes(row.status);
       // `creating` left by a crash is as unknown as a lost reply.
-      const unknown = !row?.event_id && (row?.status === "uncertain" || row?.status === "creating");
+      const unknown = sameVisit && !row?.event_id && (row?.status === "uncertain" || row?.status === "creating");
       if (unknown && !o.retryUncertain) {
         actions.push({ ...base, action: "uncertain", detail: "an earlier create may have written this event — check the calendar, then ?apply=1&retry=1" });
         continue;

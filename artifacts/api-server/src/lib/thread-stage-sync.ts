@@ -41,7 +41,7 @@ import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { undeliverableVerdict, closeUndeliverable, isUndeliverableNotice } from "./undeliverable";
 import { shouldSuppressPush } from "./stage-routing";
 import { refreshLeadMessages } from "./amo-timeline-sync";
-import { advanceListingProgress } from "./listing-progress";
+import { advanceListingProgress, VISIT_CUE } from "./listing-progress";
 import { queueViewingCalendarSync } from "./viewing-calendar";
 import { villaSideCard } from "./villa-side";
 
@@ -734,8 +734,19 @@ export async function syncStageFromThread(
     // Pre-filtered by the stored name so the ~200 cards before qualification cost
     // no amoCRM call per message. ("Details ased" was deleted on 14.09.2026.)
     const asOf = new Date();
+    // Other open stages only RECORD an agreed visit (calendar, inspection report), never move — asked only
+    // when a message since the last check talks about a visit or a time, so quiet cards cost no amoCRM call.
+    // 25.09.2026: Ophelia (TAKEN TO WORK), Lestari and Akra (BACKLOG) were agreed and never reached the calendar.
     if (!/qualified|inspection|sceduled|scheduled/i.test(row.leadStage ?? "") && !o.sources.includes("backfill")) {
-      return nothing(`listing funnel, "${row.leadStage}" — the stage engine's, nothing after qualification to decide`);
+      if (/closed|lost|won/i.test(row.leadStage ?? "")) return nothing(`listing funnel, "${row.leadStage}" — closed`);
+      const since = row.stageCheckedAt ?? new Date(Date.now() - 24 * 3600_000);
+      const recent = await db
+        .select({ text: leadMessagesTable.text })
+        .from(leadMessagesTable)
+        .where(and(eq(leadMessagesTable.leadId, leadId), gte(leadMessagesTable.sentAt, since)));
+      if (!recent.some((m) => VISIT_CUE.test(m.text ?? ""))) {
+        return nothing(`listing funnel, "${row.leadStage}" — no visit talk since the last check`);
+      }
     }
     if (o.refresh !== false) {
       await refreshLeadMessages(leadId).catch((err) => logger.warn({ err, leadId }, "listing-progress: timeline refresh failed — judging what is stored"));

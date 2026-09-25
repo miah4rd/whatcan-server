@@ -70,8 +70,6 @@ const ORDER: number[] = [
 const rank = (id: number | null | undefined) => (id == null ? -1 : ORDER.indexOf(id));
 
 /** Past Inspection scheduled: a visit agreed here is recorded for the calendar, the card never moves. */
-const AFTER_LIVE = new Set<number>([LISTING_STAGE.LIVE, LISTING_STAGE.WEEKLY_CHECK_SENT, LISTING_STAGE.AVAILABILITY_RECEIVED]);
-
 /** Words that can call a visit off — only a cue for the yes/no below, never a verdict. */
 const CALL_OFF_CUE =
   /\b(cancel|postpone|reschedul|another (time|day)|next time|not (tomorrow|today)|can'?t (come|make)|lain kali|batal|ga jadi|gak jadi|nggak jadi|tidak jadi|belum bisa|tidak bisa|ga bisa|gak bisa|nggak bisa|tunda|diundur|waktu lain|hari lain|jangan dulu|terganggu)\b/i;
@@ -508,35 +506,36 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
   const from = where?.stage ?? stageLabel(statusId);
   Object.assign(base, { statusId, from });
   if (lead.pipeline_id !== LISTINGS_PIPELINE_ID) return done({ reason: "not a Rental Listings card" });
-  const taken = statusId === LISTING_STAGE.TAKEN_TO_WORK;
   const scheduled = statusId === LISTING_STAGE.INSPECTION_SCHEDULED;
   // Past Inspection scheduled a visit still happens (Villa Markisa, live, 15.09: "kalau jam 10 bisa?" —
   // "Besok bisa diliat" — "saya kesana besok"), and Yudi's calendar needs it. Recorded, never moved.
-  const afterLive = AFTER_LIVE.has(statusId);
-  if (statusId !== LISTING_STAGE.QUALIFIED && !scheduled && !afterLive && !(taken && o.reportTaken)) {
-    return done({ reason: `"${from}" is not QUALIFIED, Inspection scheduled or live — nothing here moves it` });
-  }
+  // Every other open stage (Initial Contact, TAKEN TO WORK, BACKLOG, long term, co-broke…) only RECORDS an
+  // agreed visit for the calendar and the inspection report — never moves. Owner, 25.09.2026: Yudi agreed
+  // Ophelia (TAKEN TO WORK), Lestari and Akra (BACKLOG) in the thread and none reached the calendar.
+  const closed = statusId === LISTING_STAGE.WON || statusId === LISTING_STAGE.LOST;
+  if (closed) return done({ reason: `"${from}" is closed — nothing recorded` });
+  const recordOnly = statusId !== LISTING_STAGE.QUALIFIED && !scheduled;
 
   const messages = await loadMessages(leadId);
   if (messages.length === 0) return done({ reason: "no messages in the thread" });
   const fresh = o.full || !o.checkedAt ? messages : messages.filter((m) => m.sentAt.getTime() > o.checkedAt!.getTime());
   if (fresh.length === 0) return done({ reason: "nothing new in the thread since the last check" });
 
-  const events = taken || afterLive ? [] : await statusEvents(leadId);
-  if (!taken && !afterLive && !events) return done({ reason: "amoCRM events could not be read — nothing decided", applied: "nothing" });
-  const qualAt = taken || afterLive ? null : qualificationStart(events!);
+  const events = recordOnly ? [] : await statusEvents(leadId);
+  if (!recordOnly && !events) return done({ reason: "amoCRM events could not be read — nothing decided", applied: "nothing" });
+  const qualAt = recordOnly ? null : qualificationStart(events!);
   const arrivedScheduled = scheduled
     ? events!.filter((e) => e.to === LISTING_STAGE.INSPECTION_SCHEDULED).map((e) => e.at).pop() ?? null
     : null;
-  const windowStart = taken || afterLive
+  const windowStart = recordOnly
     ? new Date(Date.now() - 21 * DAY)
     : qualAt
       ? new Date(qualAt.getTime() - WINDOW_SLACK_MS)
       : new Date(Date.now() - DAY);
   base.windowStart = windowStart;
-  const stepBack = taken || scheduled || afterLive ? null : lastStepBack(events!, statusId);
-  /** Cards whose visit is only recorded (and called off), never moved: Inspection scheduled and live onwards. */
-  const holdsSlot = scheduled || afterLive;
+  const stepBack = recordOnly || scheduled ? null : lastStepBack(events!, statusId);
+  /** Cards whose visit is only recorded (and called off), never moved: every open stage but QUALIFIED. */
+  const holdsSlot = scheduled || recordOnly;
   const slot = holdsSlot ? await currentSlot(leadId) : null;
 
   let visit: Visit | null = null;
@@ -582,13 +581,6 @@ async function progressOnce(leadId: string, o: ProgressOpts): Promise<ProgressDe
         return done({ reason, applied: await recordCalledOff(leadId, slot, off, o.source) });
       }
     }
-  }
-
-  if (taken) {
-    return done({
-      reason: visit ? `TAKEN TO WORK with a visit agreed for ${fmt(visit.visitAt)} — reported, never moved` : "TAKEN TO WORK, no agreed visit",
-      applied: "report only",
-    });
   }
 
   if (holdsSlot) {

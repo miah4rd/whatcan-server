@@ -132,7 +132,10 @@ async function buildPlan(sinceDays?: number): Promise<{ desired: Map<string, Des
       LEFT JOIN viewing_reports r ON r.id = s.report_id
       LEFT JOIN leads_sync ls ON ls.lead_id = s.lead_id
      WHERE s.status IN ('scheduled', 'reported')
-       AND s.viewing_at >= ${since.toISOString()}::timestamptz
+       AND (s.viewing_at >= ${since.toISOString()}::timestamptz
+            -- recorded after the fact (a report from the phone, 23.09 for 21.09 17:30): still written, up to 14 days back
+            OR (s.created_at >= ${new Date(now.getTime() - RECENT_MS).toISOString()}::timestamptz
+                AND s.viewing_at >= ${new Date(now.getTime() - 14 * DAY).toISOString()}::timestamptz))
        AND coalesce(r.feedback, '') NOT ILIKE 'TEST:%'
      ORDER BY s.viewing_at, s.id`);
   const slots = (slotsRes.rows ?? []) as SlotRow[];
