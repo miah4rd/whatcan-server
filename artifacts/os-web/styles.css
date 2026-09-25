@@ -687,3 +687,18 @@ table.grid.gt th.drop-r{box-shadow:inset -3px 0 0 var(--accent)}
 .gm-row input{accent-color:var(--accent);margin:0}
 .gm-foot{border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;flex-direction:column;gap:4px}
 .gm-note{font-size:11px;line-height:1.4;padding:2px 6px}
+
+/* ── Funnels (26.09): stage structure, drag to order, planned changes ── */
+.nav.quiet{color:var(--text-3)}
+.nav.quiet svg{opacity:.7}
+.fn-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.fn-head .pt{margin:0}
+.fn-foot{margin:4px 0 14px}
+.stage-row .grip{cursor:grab;color:var(--text-3);font-size:12px;letter-spacing:-2px;margin-right:6px;user-select:none}
+.stage-row .sl{display:flex;align-items:center}
+.stage-row[draggable="true"]:hover .grip{color:var(--text)}
+.stage-row.dragging{opacity:.45}
+.stage-row.drop-before{box-shadow:0 -3px 0 0 var(--accent)}
+.stage-row.drop-after{box-shadow:0 3px 0 0 var(--accent)}
+.stage-row.removed{opacity:.6}
+.stage-row.removed .sn b{text-decoration:line-through}

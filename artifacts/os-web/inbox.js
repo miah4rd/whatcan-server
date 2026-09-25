@@ -1,7 +1,7 @@
 // Unicorn OS — Tasks (called Inbox until 26.09): the day's work, one client at a time. The Copilot's
 // queues on the left, the Copilot itself in the middle, the card docked on the right.
 // Owner, 26.09: "Inbox" read as incoming messages; this is the board a broker clears every day.
-import { S, api, esc, I, screens, store, on, resizer, rel, initials, isStaff, brokerForLead, queueOf, onBus, fail } from "./core.js";
+import { S, api, esc, I, screens, store, on, resizer, rel, initials, isStaff, brokerForLead, queueOf, onBus, fail, isPhone } from "./core.js";
 import { mountNativeCopilot } from "./copilot.js";
 import { isListingPipe } from "./lead.js";
 
@@ -64,7 +64,8 @@ function listHtml() {
  * place for the card's facts, viewings, tasks and history. It has no Copilot
  * or chat tab here, because the Copilot in the middle already shows both.
  */
-const desktop = () => window.innerWidth > 860;
+// On a phone a task opens the Copilot alone, as the amoCRM Copilot does; the card stays a tap away.
+const desktop = () => !isPhone();
 function showCard() {
   if (!st.sel || !st.showCtx || !desktop()) return;
   window.UOS.openPeek("lead", st.sel);
@@ -78,7 +79,7 @@ function select(leadId) {
   if (host) mountNativeCopilot(host, { leadId: st.sel, broker: brokerForLead(it?.responsible_user), onDone: () => nextAfter(st.sel) });
   document.querySelector(".inbox")?.classList.add("show-copilot");
   const back = document.getElementById("m-back");
-  if (back) back.hidden = window.innerWidth > 860;
+  if (back) back.hidden = desktop();
   showCard();
 }
 
@@ -111,7 +112,7 @@ async function refreshList(keepSel = true) {
   el.scrollTop = scroll;
   if (!keepSel || !st.sel) {
     const first = st.items.find((i) => st.tab === "all" || i._q === st.tab);
-    if (first && window.innerWidth > 860) select(first.lead_id);
+    if (first && desktop()) select(first.lead_id);
   }
 }
 

@@ -1,6 +1,7 @@
 // Unicorn OS — pipelines as a board and as a table of the same cards.
 import { S, api, esc, I, screens, store, on, rel, money, initials, isStaff, onBus, fmtDay, stageOwner, dropCache, emit, fail, dropColumn, boardListen } from "./core.js";
 import { moveStage, pipelineOf, isListingPipe, daysInStage } from "./lead.js";
+import { osFunnel, renderOsBoard } from "./funnels.js";
 
 const PARKED = /long term|co-broke|live|weekly check|availability received|check in|contract signed|backlog/i;
 const rotLimit = (stage) => (/new lead|initial contact|need assessed|taken to work|viewing suggested/i.test(stage) ? 3 : 7);
@@ -51,11 +52,12 @@ function cardHtml(c, selId) {
 }
 
 screens.pipeline = {
-  title: (r) => pipelineOf(r.parts[0] || "rental")?.name || "Pipeline",
+  title: (r) => pipelineOf(r.parts[0] || "rental")?.name || osFunnel(r.parts[0])?.name || "Pipeline",
   flush: false,
   async render({ el, tools, route }) {
     const key = route.parts[0] || "rental";
     const p = (S.meta.pipelines || []).find((x) => x.key === key);
+    if (!p && osFunnel(key)) return renderOsBoard({ el, tools, key });
     if (!p) {
       el.innerHTML = `<div class="empty">Unknown funnel.</div>`;
       return;
@@ -70,6 +72,7 @@ screens.pipeline = {
       <button class="chip ${opts.closed ? "on" : ""}" id="pf-closed">Show closed</button>
       <button class="chip ${opts.all ? "on" : ""}" id="pf-all" title="By default the board shows cards active in the last 90 days">All time</button>
       <input class="in" id="pf-q" placeholder="Search…" style="width:160px;padding:5px 8px">
+      <a class="btn sm ghost" href="#/funnels/${esc(key)}" title="Funnel settings: stages, what moves a card into each, the autopilot">${I.gear} Settings</a>
       <button class="btn sm ghost" id="pf-refresh">Refresh</button>`;
     el.innerHTML = `<div class="loading">Loading ${esc(p.name)}…</div>`;
     let cards = [];

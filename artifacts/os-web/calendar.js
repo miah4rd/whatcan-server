@@ -1,7 +1,7 @@
 // Unicorn OS — calendar: the client viewings and villa inspections agreed in the chats.
 // The same slots go one way to the Brokers Google Calendar. amoCRM tasks are not
 // shown here: they come to the Inbox as Push drafts.
-import { S, api, esc, I, screens, store, on, fmtTime, emit } from "./core.js";
+import { S, api, esc, I, screens, store, on, fmtTime, emit, isPhone } from "./core.js";
 
 const TZ_OFF = 8 * 3600e3;
 const FIRST = 8;
@@ -72,7 +72,7 @@ screens.calendar = {
           <span class="faint">From the slots agreed in the chats. The same visits are added to the Brokers Google Calendar; a visit typed straight into Google does not show here.</span></div>`;
         const evHtml = (e, style) =>
           `<div class="ev ${e.kind}" data-lead="${esc(e.leadId || "")}" title="${esc(e.title)}${e.sub ? " · " + esc(e.sub) : ""}" ${style ? `style="${style}"` : ""}><b>${esc(fmtTime(e.at))} ${esc(e.title.replace(/^(Viewing|Inspection) · /, ""))}</b>${e.sub ? `<span>${esc(e.sub)}</span>` : ""}</div>`;
-        if (window.innerWidth <= 860) {
+        if (isPhone()) {
           el.innerHTML = `<div class="calwrap">${legend}<div class="agenda">${days
             .map((dd, i) => {
               const evs = events.filter((e) => baliDayIndex(e.at, start) === i);

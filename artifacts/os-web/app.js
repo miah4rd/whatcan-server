@@ -5,7 +5,7 @@ import "./pipelines.js";
 import "./listings.js";
 import "./calendar.js";
 import "./analytics.js";
-import "./automations.js";
+import "./funnels.js";
 import "./settings.js";
 import { searchProjects, warmProjects } from "./projects.js";
 
@@ -71,13 +71,16 @@ function navItems() {
     { id: "pipeline/rental", label: "Rental leads", dot: "var(--live)" },
     { id: "pipeline/rental-listings", label: "Rental Listings", dot: "var(--reach)" },
     { id: "pipeline/unicorn", label: "UNICORN sales", dot: "var(--accent)", staffOnly: true },
+    // The OS's own funnels (26.09), then a way to make one.
+    ...(S.meta.osFunnels || []).map((f) => ({ id: `pipeline/${f.key}`, label: f.name, dot: f.color || "var(--text-3)" })),
+    { id: "funnels/new", label: "New funnel", icon: I.plus, staffOnly: true, quiet: true },
     { sec: "Workspace" },
     { id: "projects", label: "Projects", icon: I.goal },
     { id: "listings", label: "Listings", icon: I.villa },
     { id: "calendar", label: "Calendar", icon: I.cal },
     { id: "analytics", label: "Analytics", icon: I.chart },
     { sec: "System" },
-    { id: "automations", label: "Automations", icon: I.auto },
+    { id: "funnels", label: "Funnels", icon: I.auto },
     { id: "settings", label: "Settings", icon: I.gear },
   ];
   return items.filter((x) => !x.staffOnly || staff);
@@ -174,7 +177,7 @@ function renderNav() {
     .map((n) => {
       if (n.sec) return `<div class="nav-section">${n.sec}</div>`;
       const badge = n.id === "tasks" && counts.inbox ? `<span class="badge live">${counts.inbox}</span>` : "";
-      return `<a href="#/${n.id}" class="nav ${cur === n.id ? "active" : ""}" data-go="${n.id}" title="${esc(n.label)}">${n.dot ? `<span class="dot" style="background:${n.dot}"></span>` : n.icon}<span class="lbl">${esc(n.label)}</span>${badge}</a>`;
+      return `<a href="#/${n.id}" class="nav ${cur === n.id ? "active" : ""} ${n.quiet ? "quiet" : ""}" data-go="${n.id}" title="${esc(n.label)}">${n.dot ? `<span class="dot" style="background:${n.dot}"></span>` : n.icon}<span class="lbl">${esc(n.label)}</span>${badge}</a>`;
     })
     .join("");
   const nav = document.getElementById("nav");
@@ -189,7 +192,7 @@ function renderNav() {
       ["more", "More", I.gear],
     ];
     mn.innerHTML = tabs
-      .map(([id, l, ic, c]) => `<button data-go="${id}" class="${cur === id || (id === "more" && ["projects", "analytics", "automations", "settings", "more"].includes(cur)) ? "active" : ""}">${ic}<span>${l}</span>${c ? `<span class="cnt">${c}</span>` : ""}</button>`)
+      .map(([id, l, ic, c]) => `<button data-go="${id}" class="${cur === id || (id === "more" && ["projects", "analytics", "funnels", "settings", "more"].includes(cur)) ? "active" : ""}">${ic}<span>${l}</span>${c ? `<span class="cnt">${c}</span>` : ""}</button>`)
       .join("");
   }
 }
@@ -481,7 +484,7 @@ screens.more = {
       ["analytics", "Analytics", I.chart],
       ["pipeline/rental-listings", "Rental Listings", I.board],
       ...(isStaff() ? [["pipeline/unicorn", "UNICORN sales", I.board]] : []),
-      ["automations", "Automations", I.auto],
+      ["funnels", "Funnels", I.auto],
       ["settings", "Settings", I.gear],
     ]
       .map(([id, l, ic]) => `<a class="btn" style="justify-content:flex-start;padding:12px" href="#/${id}">${ic} ${l}</a>`)

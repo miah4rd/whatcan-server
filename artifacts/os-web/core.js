@@ -10,6 +10,12 @@ export const S = {
 };
 
 export const TZ = "Asia/Makassar";
+/**
+ * A phone layout: the same test the stylesheet uses. window.innerWidth is not: iOS Safari reports
+ * the zoomed-out visual width (980 and more) when a page loads wider than the screen, and Tasks
+ * then opened the card over the Copilot on phones (owner, 26.09).
+ */
+export const isPhone = () => matchMedia("(max-width: 860px)").matches;
 
 // ── storage (per-viewer conveniences only) ──
 export const store = {

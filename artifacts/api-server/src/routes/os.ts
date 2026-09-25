@@ -106,6 +106,23 @@ import {
   PRIORITIES,
   ESTIMATES,
 } from "../lib/os/projects";
+import {
+  listFunnels,
+  createFunnel,
+  updateFunnel,
+  archiveFunnel,
+  discardPlan,
+  startPlan,
+  addStage,
+  updateStage,
+  reorderStages,
+  removeStage,
+  listCards,
+  createCard,
+  cardDetail as osCardDetail,
+  updateCard,
+  osFunnelsBrief,
+} from "../lib/os/funnels";
 import { logger } from "../lib/logger";
 import { REACH_STAGE_KEYWORDS } from "../lib/pipelines";
 
@@ -152,12 +169,13 @@ api.get(
   signedIn,
   h(async (req) => {
     const u = req.osUser!;
-    const [pl, brokers] = await Promise.all([pipelines(), activeBrokers()]);
+    const [pl, brokers, osFunnels] = await Promise.all([pipelines(), activeBrokers(), osFunnelsBrief().catch(() => [])]);
     return {
       user: u,
       staff: isStaff(u),
       copilotOrigin: COPILOT_ORIGIN,
       pipelines: pl,
+      osFunnels,
       brokers,
       objectionCategories: OBJECTION_CATEGORIES,
       closeReasons: CLOSE_REASONS,
@@ -437,6 +455,23 @@ api.patch("/ptasks/:id", signedIn, h(async (req) => updateProjectTask(req.osUser
 api.delete("/ptasks/:id", staffOnly, h(async (req) => deleteProjectTask(req.osUser!, idp(req))));
 api.post("/ptasks/:id/restore", staffOnly, h(async (req) => restoreProjectTask(req.osUser!, idp(req))));
 api.post("/ptasks/:id/comments", signedIn, h(async (req) => addProjectComment(req.osUser!, idp(req), req.body ?? {})));
+
+// ── Funnels: stages set up in the OS (amoCRM untouched), and the OS's own funnels and cards ──
+const keyp = (req: Request) => String(req.params["key"] ?? "");
+api.get("/funnels", signedIn, h(async () => listFunnels()));
+api.post("/funnels", staffOnly, h(async (req) => createFunnel(req.osUser!, req.body ?? {})));
+api.patch("/funnels/:key", staffOnly, h(async (req) => updateFunnel(req.osUser!, keyp(req), req.body ?? {})));
+api.delete("/funnels/:key", staffOnly, h(async (req) => archiveFunnel(req.osUser!, keyp(req))));
+api.post("/funnels/:key/plan", staffOnly, h(async (req) => startPlan(req.osUser!, keyp(req))));
+api.post("/funnels/:key/discard-plan", staffOnly, h(async (req) => discardPlan(req.osUser!, keyp(req))));
+api.post("/funnels/:key/stages", staffOnly, h(async (req) => addStage(req.osUser!, keyp(req), req.body ?? {})));
+api.post("/funnels/:key/stage-order", staffOnly, h(async (req) => reorderStages(req.osUser!, keyp(req), req.body?.ids)));
+api.patch("/funnels/:key/stages/:id", staffOnly, h(async (req) => updateStage(req.osUser!, keyp(req), idp(req), req.body ?? {})));
+api.post("/funnels/:key/stages/:id/remove", staffOnly, h(async (req) => removeStage(req.osUser!, keyp(req), idp(req), req.body ?? {})));
+api.get("/funnels/:key/cards", signedIn, h(async (req) => listCards(req.osUser!, keyp(req))));
+api.post("/funnels/:key/cards", signedIn, h(async (req) => createCard(req.osUser!, keyp(req), req.body ?? {})));
+api.get("/cards/:id", signedIn, h(async (req) => osCardDetail(req.osUser!, idp(req))));
+api.patch("/cards/:id", signedIn, h(async (req) => updateCard(req.osUser!, idp(req), req.body ?? {})));
 
 // ── Automations, team, integrations ─────────────────────────────────────────
 api.get("/automations", signedIn, h(async (req) => automations(isStaff(req.osUser))));
