@@ -174,7 +174,7 @@ export async function boardCards(user: OsUser, opts: { pipeline: string; broker?
       WHERE lower(coalesce(pipeline, '')) = lower($1)
         AND ($2::text IS NULL OR lower(coalesce(responsible_user, '')) = lower($2))
         AND ($3::boolean OR coalesce(lead_stage, '') NOT ILIKE '%closed%')
-        AND ($4::int IS NULL OR greatest(coalesce(last_message_at, 'epoch'), coalesce(amo_created_at, 'epoch'), coalesce(updated_at, 'epoch')) > now() - ($4::int || ' days')::interval)
+        AND ($4::int IS NULL OR greatest(coalesce(last_message_at, 'epoch'), coalesce(amo_created_at, 'epoch')) > now() - ($4::int || ' days')::interval)
       ORDER BY last_message_at DESC NULLS LAST
       LIMIT 2000`,
     [pipelineName, scope, Boolean(opts.closed), opts.activeDays ?? null],
@@ -465,14 +465,20 @@ export async function tasksFor(user: OsUser, opts: { all?: boolean; includeClean
       : list.filter((t) => lc(t.responsible) === lc(user.brokerKey) || lc(t.responsible) === lc(user.name));
   const allIds = [...new Set(mine.map((t) => t.leadId))];
   const info = allIds.length
-    ? await pool.query(`SELECT lead_id, lead_stage, pipeline, responsible_user FROM leads_sync WHERE lead_id = ANY($1)`, [allIds])
+    ? await pool.query(
+        `SELECT lead_id, lead_stage, pipeline, responsible_user,
+                greatest(coalesce(last_message_at, 'epoch'), coalesce(amo_created_at, 'epoch')) > now() - interval '60 days' AS recent
+           FROM leads_sync WHERE lead_id = ANY($1)`,
+        [allIds],
+      )
     : { rows: [] as Record<string, unknown>[] };
   const byId = new Map(info.rows.map((r) => [String(r.lead_id), r]));
   // A task on a closed, deleted or untracked card is clean-up, not work (the /kpi rule):
   // 2,628 of 2,840 open amoCRM tasks were overdue on 26.09, almost all of them on dead cards.
+  // Live work = an open card, not parked, with a message or creation in the last 60 days.
   const live = (t: OsTask) => {
     const r = byId.get(t.leadId);
-    return !!r && !/closed|won|lost/i.test(String(r.lead_stage ?? ""));
+    return !!r && !!r.recent && !/closed|won|lost|co-broke|long term|backlog/i.test(String(r.lead_stage ?? ""));
   };
   const working = opts.includeCleanup ? mine : mine.filter(live);
   const ids = [...new Set(working.map((t) => t.leadId))];
