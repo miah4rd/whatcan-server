@@ -696,6 +696,26 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
   SIGINT/SIGTERM (and on an uncaught exception) with PM2's `kill_timeout` at
   25s to allow it; a stray unhandled rejection is logged, not fatal. Never move
   the delivery record back behind the attachment loop.
+- **A link send that stops halfway is finished, never left (25.09.2026).**
+  Two of Amelia's shortlists went out as a lead-in with no villas under it
+  (Kurito 0 of 6, Olya 2 of 4): the gateway refused messages for pacing (15 per
+  10 minutes, lifted for her line at 11:56), `sendAttachmentLinks` stopped, and
+  the broker saw "sent". Any refusal does that — pacing, a session reconnecting
+  (three in an hour that morning), the network. Now: on our own lines every
+  message is checked against what left the number since the send
+  (`wa_messages`, the broker's phone included), so a villa, a group title or
+  the closing already out is never sent twice; a closing that fails keeps the
+  last link "not done". `lib/link-resume.ts` runs every minute: a delivery
+  record "links k/n" with k < n, older than 90 s and not in flight
+  (`linkSendsInFlight`) is resumed from k, every 2 minutes, up to 10 times,
+  then the broker gets a push and the record is marked `resume-gave-up`. Only
+  sends after `RESUME_FROM` (25.09 04:30 UTC). Verified offline against a fake
+  gateway refusing on cue (8 cases: mid-group, on a title, on the closing,
+  every other message, a villa sent by hand meanwhile) — every message once,
+  in order — and dry on the live table (it finds exactly Olya and Kurito from
+  21.09, nothing from the cutoff). The timeline can miss an own-line send
+  (Maria 23589149, all six sent, none in lead_messages): judge delivery by
+  `wa_messages`, not `lead_messages`.
 - **The stage-change block must not erase the follow-up clock a send just set.**
   Approving a reply sets `nextFollowupAt`; the stage block in the SAME request
   used to write `nextFollowupAt: null` unconditionally. While auto-stage was off

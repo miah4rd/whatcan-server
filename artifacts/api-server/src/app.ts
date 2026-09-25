@@ -23,6 +23,7 @@ import { startReportScheduler } from "./lib/report-scheduler";
 import { startVideoCompressScheduler } from "./lib/video-compress";
 import { startListingStatusPass } from "./lib/listing-status-pass";
 import { startInspectionCalendarSync } from "./lib/inspection-calendar";
+import { startLinkResume } from "./lib/link-resume";
 import { startViewingCalendarSync } from "./lib/viewing-calendar";
 import { startInspectionBookingPass } from "./lib/inspection-booking";
 import { startInspectionReportPass } from "./lib/inspection-report";
@@ -114,6 +115,8 @@ startPhotoVariantScheduler();
 startListingStatusPass();
 // Agreed villa inspections → the shared Brokers Google Calendar; see lib/inspection-calendar.ts.
 startInspectionCalendarSync();
+// Property-link sends that stopped halfway are finished here (lib/link-resume.ts).
+startLinkResume();
 // Agreed client viewings (Rental) → the same calendar in green; see lib/viewing-calendar.ts.
 startViewingCalendarSync();
 // QUALIFIED listing cards: a PUSH draft for Yudi asking the owner to let him inspect, in his own words; see lib/inspection-booking.ts.

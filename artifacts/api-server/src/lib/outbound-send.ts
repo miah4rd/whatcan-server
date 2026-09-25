@@ -16,7 +16,7 @@
  *   3. sendAttachmentLinks — each property link as its own message.
  */
 import { db, sentMessagesTable } from "@workspace/db";
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { updateLeadCustomField, triggerSalesbot } from "./amo-chat-client";
 import {
   resolveOutboundSource,
@@ -31,7 +31,7 @@ import { isFirstOutbound, pickLineForNewConversation } from "./new-contact-budge
 import { stripEmojiForDelivery } from "./message-delivery.js";
 import { isOwnLine } from "./wa-own-line-ids";
 import { humanizeLayout } from "./humanize-layout";
-import { deliverViaOwnLine } from "./wa-own-send";
+import { deliverViaOwnLine, type OwnSendResult } from "./wa-own-send";
 import { fetchTimeline, parseTimelineEvents, getAmoAuth } from "./amo-timeline-sync.js";
 
 /** amoCRM custom field the Salesbot reads the outgoing text from. */
@@ -371,6 +371,39 @@ function ladderMessagesAt(attachments: LadderedLink[], i: number): { before: str
   return { before, body: lad.caption ? `${lad.caption}\n${a.url}` : a.url, after };
 }
 
+/**
+ * Link sends running in this process. The resume pass (link-resume.ts) never
+ * touches one that is still going.
+ */
+export const linkSendsInFlight = new Set<string>();
+
+/**
+ * Everything that left this lead's number since `since` and was not refused:
+ * Copilot's own-line sends and what the broker typed on the phone
+ * (wa_messages, the gateway's own record — the timeline can miss a send).
+ */
+async function ownLineTextsSince(leadId: string, since: Date): Promise<string[]> {
+  const id = Number(leadId);
+  if (!Number.isFinite(id)) return [];
+  const res = await db.execute(sql`
+    SELECT text FROM wa_messages
+     WHERE card_lead_id = ${id} AND direction IN ('out_copilot', 'out_phone')
+       AND coalesce(status, '') <> 'error' AND text IS NOT NULL AND created_at >= ${since.toISOString()}`);
+  const rows = ((res as unknown as { rows?: Array<{ text: string }> }).rows ?? []) as Array<{ text: string }>;
+  return rows.map((r) => String(r.text ?? ""));
+}
+
+const villaIdOf = (url: string): string | null => url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1]?.toUpperCase() ?? null;
+
+export type LinkSendOptions = {
+  /** The original send's time — only what left after it counts as "already out". Default: a minute ago. */
+  since?: Date;
+  /** Tests only: stand-ins for the gateway and for what already left the number. */
+  deliver?: (text: string) => Promise<OwnSendResult>;
+  sentSince?: () => Promise<string[]>;
+  pauseMs?: number;
+};
+
 export async function sendAttachmentLinks(
   leadId: string,
   attachments: LadderedLink[],
@@ -385,31 +418,83 @@ export async function sendAttachmentLinks(
    */
   precedingText: string | null = null,
   source?: string | null,
+  opts: LinkSendOptions = {},
+): Promise<number> {
+  if (sentMessageId) linkSendsInFlight.add(sentMessageId);
+  try {
+    return await sendAttachmentLinksInner(leadId, attachments, startIndex, sentMessageId, hookBody, log, precedingText, source, opts);
+  } finally {
+    if (sentMessageId) linkSendsInFlight.delete(sentMessageId);
+  }
+}
+
+async function sendAttachmentLinksInner(
+  leadId: string,
+  attachments: LadderedLink[],
+  startIndex: number,
+  sentMessageId: string | null,
+  hookBody: string,
+  log: Log,
+  precedingText: string | null,
+  source: string | null | undefined,
+  opts: LinkSendOptions,
 ): Promise<number> {
   const total = attachments.length;
   let delivered = startIndex;
   if (source && isOwnLine(source)) {
     // Own line: each link is its own WhatsApp message straight through the
     // gateway — no shared field to protect, so no waiting on the timeline.
+    //
+    // A refused message (pacing, a session reconnecting, the network) stops
+    // the send where it is; the progress marker says how far it got and the
+    // resume pass finishes it (Olya and Kurito, 25.09.2026: two shortlists cut
+    // off by the gateway's pacing, the rest never followed and the broker saw
+    // "sent"). So every message is checked against what already left the
+    // number since this send: a villa whose link is out (from us, or typed by
+    // the broker on the phone) is not sent again, nor a group title or the
+    // closing already there.
+    const deliver = opts.deliver ?? ((text: string) => deliverViaOwnLine(leadId, source, text));
+    const pause = opts.pauseMs ?? 2000;
+    const since = opts.since ?? new Date(Date.now() - 60_000);
+    const already = await (opts.sentSince ?? (() => ownLineTextsSince(leadId, since)))().catch(() => [] as string[]);
+    const said = (v: string) => already.some((t) => normalise(t) === normalise(v));
+    const villaOut = (url: string) => {
+      const id = villaIdOf(url);
+      return !!id && already.some((t) => t.toUpperCase().includes(`/PROPERTY/${id}`));
+    };
+    const sendOne = async (value: string): Promise<OwnSendResult> => {
+      await new Promise((r) => setTimeout(r, pause));
+      const r = await deliver(value);
+      if (r.chatSent) already.push(value);
+      return r;
+    };
     for (let i = startIndex; i < total; i++) {
       const url = attachments[i]?.url;
       if (url) {
         const m = ladderMessagesAt(attachments, i);
-        let ok = true;
-        for (const value of [m.before, m.body]) {
-          if (!value) continue;
-          await new Promise((r) => setTimeout(r, 2000));
-          const r = await deliverViaOwnLine(leadId, source, value);
-          if (!r.chatSent) {
-            log.warn({ leadId, url, body: r.hookBody }, "own line: link not sent — stopping");
-            ok = false;
-            break;
+        let refused: string | null = null;
+        if (villaOut(url)) {
+          log.warn({ leadId, url }, "own line: this villa's link already left the number — not sent again");
+        } else {
+          if (m.before && !said(m.before)) {
+            const r = await sendOne(m.before);
+            if (!r.chatSent) refused = r.hookBody;
+          }
+          if (!refused && m.body) {
+            const r = await sendOne(m.body);
+            if (!r.chatSent) refused = r.hookBody;
           }
         }
-        if (!ok) break;
-        if (m.after) {
-          await new Promise((r) => setTimeout(r, 2000));
-          await deliverViaOwnLine(leadId, source, m.after);
+        // The closing belongs to the last link: if it does not go, the last
+        // link stays "not done" so the resume pass comes back for it (the
+        // villa itself is then skipped as already out).
+        if (!refused && m.after && !said(m.after)) {
+          const r = await sendOne(m.after);
+          if (!r.chatSent) refused = r.hookBody;
+        }
+        if (refused) {
+          log.warn({ leadId, url, body: refused, delivered, total }, "own line: link not sent — stopping, the resume pass will finish it");
+          break;
         }
       }
       delivered = i + 1;
