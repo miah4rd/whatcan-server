@@ -7,12 +7,13 @@ const rotLimit = (stage) => (/new lead|initial contact|need assessed|taken to wo
 
 async function loadBoard(key, force) {
   const opts = store.get("board-opts:" + key, {});
-  const ck = `board:${key}:${opts.broker || ""}:${opts.closed ? 1 : 0}`;
+  const ck = `board:${key}:${opts.broker || ""}:${opts.closed ? 1 : 0}:${opts.all ? "all" : 90}`;
   const c = S.cache[ck];
   if (!force && c && Date.now() - c.at < 60_000) return c.value;
   const qs = new URLSearchParams({ pipeline: key });
   if (opts.broker) qs.set("broker", opts.broker);
   if (opts.closed) qs.set("closed", "1");
+  qs.set("active", opts.all ? "all" : "90");
   const r = await api("/leads?" + qs.toString());
   S.cache[ck] = { at: Date.now(), value: r.items };
   return r.items;
@@ -67,6 +68,7 @@ screens.pipeline = {
       ${isListingPipe(p.name) ? "" : `<select class="chip" id="pf-temp"><option value="">Any temperature</option>${["hot", "warm", "cold"].map((t) => `<option ${t === f.temp ? "selected" : ""}>${t}</option>`).join("")}</select>`}
       <button class="chip ${f.onlyDrafts ? "on" : ""}" id="pf-drafts">Has a draft</button>
       <button class="chip ${opts.closed ? "on" : ""}" id="pf-closed">Show closed</button>
+      <button class="chip ${opts.all ? "on" : ""}" id="pf-all" title="By default the board shows cards active in the last 90 days">All time</button>
       <input class="in" id="pf-q" placeholder="Search…" style="width:160px;padding:5px 8px">
       <button class="btn sm ghost" id="pf-refresh">Refresh</button>`;
     el.innerHTML = `<div class="loading">Loading ${esc(p.name)}…</div>`;
@@ -120,6 +122,11 @@ screens.pipeline = {
     document.getElementById("pf-q").oninput = (e) => {
       clearTimeout(t);
       t = setTimeout(() => ((f.q = e.target.value), draw()), 150);
+    };
+    document.getElementById("pf-all").onclick = (e) => {
+      setOpt("all", !opts.all);
+      e.target.classList.toggle("on", !!opts.all);
+      rerender(true);
     };
     document.getElementById("pf-refresh").onclick = () => rerender(true);
     screens.pipeline._redraw = () => rerender(true);

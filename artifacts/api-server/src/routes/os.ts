@@ -43,6 +43,8 @@ import {
   markNotificationsSeen,
   integrations,
   matchingClients,
+  cleanupCount,
+  activeBrokers,
 } from "../lib/os/data";
 import {
   listListings,
@@ -121,18 +123,13 @@ api.get(
   signedIn,
   h(async (req) => {
     const u = req.osUser!;
-    const [pl, brokers] = await Promise.all([
-      pipelines(),
-      pool.query(
-        `SELECT DISTINCT responsible_user AS b FROM leads_sync WHERE responsible_user IS NOT NULL AND coalesce(lead_stage,'') NOT ILIKE '%closed%' ORDER BY 1`,
-      ),
-    ]);
+    const [pl, brokers] = await Promise.all([pipelines(), activeBrokers()]);
     return {
       user: u,
       staff: isStaff(u),
       copilotOrigin: COPILOT_ORIGIN,
       pipelines: pl,
-      brokers: brokers.rows.map((r) => String(r.b)),
+      brokers,
       objectionCategories: OBJECTION_CATEGORIES,
       closeReasons: CLOSE_REASONS,
       reachStages: REACH_STAGE_KEYWORDS,
@@ -150,6 +147,7 @@ api.get(
       pipeline: String(req.query["pipeline"] ?? "rental"),
       broker: (req.query["broker"] as string) || null,
       closed: req.query["closed"] === "1",
+      activeDays: req.query["active"] === "all" ? null : Math.min(3650, Number(req.query["active"] ?? 90) || 90),
     }),
   })),
 );
@@ -186,6 +184,7 @@ api.post(
 
 // ── Tasks (amoCRM's own) ─────────────────────────────────────────────────────
 api.get("/tasks", signedIn, h(async (req) => ({ items: await tasksFor(req.osUser!, { all: req.query["all"] === "1" }) })));
+api.get("/tasks/cleanup", signedIn, h(async (req) => ({ count: await cleanupCount(req.osUser!) })));
 api.post(
   "/tasks",
   signedIn,

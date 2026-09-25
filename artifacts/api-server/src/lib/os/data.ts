@@ -105,7 +105,7 @@ export type OsTask = {
 
 let tasksCache: { at: number; list: OsTask[] } | null = null;
 export async function openTasks(force = false): Promise<OsTask[]> {
-  if (!force && tasksCache && Date.now() - tasksCache.at < 60_000) return tasksCache.list;
+  if (!force && tasksCache && Date.now() - tasksCache.at < 180_000) return tasksCache.list;
   const users = await amoUsers();
   const list: OsTask[] = [];
   for (let page = 1; page <= 20; page++) {
@@ -162,7 +162,7 @@ export type OsCard = {
   nextTaskDue: string | null;
 };
 
-export async function boardCards(user: OsUser, opts: { pipeline: string; broker?: string | null; closed?: boolean }): Promise<OsCard[]> {
+export async function boardCards(user: OsUser, opts: { pipeline: string; broker?: string | null; closed?: boolean; activeDays?: number | null }): Promise<OsCard[]> {
   const pipelineName = pipelineNameFromKey(opts.pipeline) ?? opts.pipeline;
   const scope = brokerScope(user) ?? (opts.broker ? opts.broker : null);
   const { rows } = await pool.query(
@@ -174,9 +174,10 @@ export async function boardCards(user: OsUser, opts: { pipeline: string; broker?
       WHERE lower(coalesce(pipeline, '')) = lower($1)
         AND ($2::text IS NULL OR lower(coalesce(responsible_user, '')) = lower($2))
         AND ($3::boolean OR coalesce(lead_stage, '') NOT ILIKE '%closed%')
+        AND ($4::int IS NULL OR greatest(coalesce(last_message_at, 'epoch'), coalesce(amo_created_at, 'epoch'), coalesce(updated_at, 'epoch')) > now() - ($4::int || ' days')::interval)
       ORDER BY last_message_at DESC NULLS LAST
       LIMIT 2000`,
-    [pipelineName, scope, Boolean(opts.closed)],
+    [pipelineName, scope, Boolean(opts.closed), opts.activeDays ?? null],
   );
   const ids = rows.map((r) => String(r.lead_id));
   if (!ids.length) return [];
@@ -454,7 +455,7 @@ export async function setTemperature(user: OsUser, leadId: string, temperature: 
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
-export async function tasksFor(user: OsUser, opts: { all?: boolean }) {
+export async function tasksFor(user: OsUser, opts: { all?: boolean; includeCleanup?: boolean }) {
   const list = await openTasks();
   const scope = brokerScope(user);
   const mine = scope
@@ -462,13 +463,21 @@ export async function tasksFor(user: OsUser, opts: { all?: boolean }) {
     : opts.all
       ? list
       : list.filter((t) => lc(t.responsible) === lc(user.brokerKey) || lc(t.responsible) === lc(user.name));
-  const ids = [...new Set(mine.map((t) => t.leadId))];
-  const info = ids.length
-    ? await pool.query(`SELECT lead_id, lead_stage, pipeline, responsible_user, left(content, 3000) AS head FROM leads_sync WHERE lead_id = ANY($1)`, [ids])
+  const allIds = [...new Set(mine.map((t) => t.leadId))];
+  const info = allIds.length
+    ? await pool.query(`SELECT lead_id, lead_stage, pipeline, responsible_user FROM leads_sync WHERE lead_id = ANY($1)`, [allIds])
     : { rows: [] as Record<string, unknown>[] };
   const byId = new Map(info.rows.map((r) => [String(r.lead_id), r]));
+  // A task on a closed, deleted or untracked card is clean-up, not work (the /kpi rule):
+  // 2,628 of 2,840 open amoCRM tasks were overdue on 26.09, almost all of them on dead cards.
+  const live = (t: OsTask) => {
+    const r = byId.get(t.leadId);
+    return !!r && !/closed|won|lost/i.test(String(r.lead_stage ?? ""));
+  };
+  const working = opts.includeCleanup ? mine : mine.filter(live);
+  const ids = [...new Set(working.map((t) => t.leadId))];
   const names = await amoLeadNames(ids);
-  return mine
+  return working
     .map((t) => {
       const r = byId.get(t.leadId);
       return { ...t, leadName: names.get(t.leadId) ?? `#${t.leadId}`, stage: (r?.lead_stage as string) ?? null, pipeline: (r?.pipeline as string) ?? null };
@@ -673,4 +682,22 @@ export async function matchingClients(user: OsUser, listing: { area?: unknown; t
     if (out.length >= 30) break;
   }
   return out;
+}
+
+/** Open amoCRM tasks sitting on closed, deleted or untracked cards — shown as a count to clean up. */
+export async function cleanupCount(user: OsUser): Promise<number> {
+  const all = await tasksFor(user, { all: isStaff(user), includeCleanup: true });
+  const live = await tasksFor(user, { all: isStaff(user) });
+  return all.length - live.length;
+}
+
+/** People the Copilot works for right now: owners of open cards touched in the last 60 days, or of pending drafts. */
+export async function activeBrokers(): Promise<string[]> {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT responsible_user AS b FROM leads_sync
+      WHERE responsible_user IS NOT NULL AND coalesce(lead_stage,'') NOT ILIKE '%closed%' AND last_message_at > now() - interval '60 days'
+     UNION SELECT DISTINCT responsible_user FROM pending_suggestions WHERE status = 'pending' AND responsible_user IS NOT NULL AND created_at > now() - interval '30 days'
+     ORDER BY 1`,
+  );
+  return [...new Set(rows.map((r) => String(r.b)))];
 }

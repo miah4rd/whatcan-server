@@ -21,6 +21,10 @@ screens.day = {
       };
     el.innerHTML = `<div class="loading">Gathering your day…</div>`;
     const brokers = staff && scopeAll ? S.meta.brokers : [S.user.brokerKey].filter(Boolean);
+    api("/tasks/cleanup").then((r) => {
+      const n = document.getElementById("day-cleanup");
+      if (n && r.count) n.textContent = `${r.count} more open tasks sit on closed or deleted cards — clean-up, not work (close them in amoCRM when convenient).`;
+    }).catch(() => undefined);
     const [tasksR, cal, notif, drafts, waitsR, waitsL] = await Promise.all([
       api(`/tasks${staff && scopeAll ? "?all=1" : ""}`).catch(() => ({ items: [] })),
       api(`/calendar?from=${startOfDay(0).toISOString()}&to=${startOfDay(2).toISOString()}`).catch(() => ({ events: [] })),
@@ -76,7 +80,7 @@ screens.day = {
           ${overdue.length ? `<div class="sect-h">Overdue</div>${overdue.slice(0, 40).map((t) => taskRow(t, { showLead: true })).join("")}` : ""}
           ${today.length ? `<div class="sect-h">Today</div>${today.map((t) => taskRow(t, { showLead: true })).join("")}` : ""}
           ${tomorrow.length ? `<div class="sect-h">Tomorrow</div>${tomorrow.map((t) => taskRow(t, { showLead: true })).join("")}` : ""}
-          ${!overdue.length && !today.length && !tomorrow.length ? `<div class="empty">No tasks for today or tomorrow.</div>` : ""}</div></div>
+          ${!overdue.length && !today.length && !tomorrow.length ? `<div class="empty">No tasks for today or tomorrow.</div>` : ""}</div><p class="faint" id="day-cleanup" style="font-size:12px;margin:8px 0 0"></p></div>
         <div class="panel"><h3>Visits today <span class="faint">${events.length}</span></h3><div class="stack">${
           events.map((e) => `<div class="note" style="cursor:pointer" data-open-lead="${esc(e.leadId || "")}"><b>${esc(fmtTime(e.at))} · ${esc(e.title)}</b>${e.sub ? `<br><span class="faint">${esc(e.sub)}</span>` : ""}</div>`).join("") ||
           `<div class="empty">No viewings or inspections today.</div>`
