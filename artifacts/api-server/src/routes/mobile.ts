@@ -368,6 +368,133 @@ const PAGE_HTML = `<!doctype html>
     try { return window.self !== window.top; } catch (e) { return true; }
   })();
   var _qs = new URLSearchParams(location.search);
+  // Inside Unicorn OS (host=os) this page takes the OS look: its colours,
+  // font and light/dark theme, so the Copilot reads as part of the OS and not
+  // as a second app. The logic is untouched. The amoCRM panel and the phone
+  // app never pass host=os and keep this page exactly as it was.
+  var OS_SKIN = EMBEDDED && _qs.get("host") === "os";
+  var OS_COLORS = [["#0f1320","var(--bg)"],["#141827","var(--surface-2)"],["#141828","var(--surface-2)"],["#181d2e","var(--surface)"],["#1d2338","var(--surface-2)"],["#1a2032","var(--surface-2)"],["#16202e","var(--surface-2)"],["#23293b","var(--surface-3)"],["#232a3d","var(--border)"],["#222839","var(--border)"],["#2a3146","var(--border)"],["#3b445e","var(--border-2)"],["#3a4462","var(--border-2)"],["#3b4a63","var(--border-2)"],["#23324a","var(--border)"],["#454c60","var(--text-3)"],["#e6e8ee","var(--text)"],["#cfd4e2","var(--text)"],["#cfd5e3","var(--text)"],["#c7d4e3","var(--text)"],["#d4eaff","var(--text)"],["#c8f5e0","var(--text)"],["#b6bccd","var(--text-2)"],["#8a93a8","var(--text-2)"],["#9aa3b8","var(--text-2)"],["#8b95ad","var(--text-2)"],["#94a3b8","var(--text-2)"],["#cbd5e1","var(--text-2)"],["#6b7488","var(--text-3)"],["#7a8699","var(--text-3)"],["#5e7a96","var(--text-3)"],["#5e7a99","var(--text-3)"],["#2dd4bf","var(--accent)"],["#06121a","var(--on-accent)"],["#5eead4","var(--accent-text)"],["#6ee7b7","var(--live)"],["#7dd3fc","var(--accent-text)"],["#64b5f6","var(--accent-text)"],["#2196f3","var(--accent)"],["#34d399","var(--live)"],["#fbbf24","var(--push)"],["#fde68a","var(--push)"],["#241a04","var(--on-accent)"],["#fdba74","var(--push)"],["#f87171","var(--bad)"],["#ef4444","var(--bad)"],["#fca5a5","var(--hot)"],["#4a1f24","var(--hot-bg)"],["#6b2b32","var(--hot-bg)"],["#b45252","var(--bad)"],["#4ade80","var(--live)"],["#86efac","var(--live)"],["#1f3a2e","var(--live-bg)"],["#93c5fd","var(--reach)"],["#a78bfa","var(--accent-text)"],["rgba(33,150,243,.15)","var(--accent-bg)"],["rgba(33,150,243,.3)","var(--accent-2)"],["rgba(52,211,153,.12)","var(--surface-2)"],["rgba(52,211,153,.3)","var(--border)"],["rgba(45,212,191,.08)","var(--accent-bg)"],["rgba(45,212,191,.1)","var(--accent-bg)"],["rgba(45,212,191,.14)","var(--accent-bg)"],["rgba(45,212,191,.16)","var(--accent-bg)"],["rgba(45,212,191,.2)","var(--accent-2)"],["rgba(45,212,191,.25)","var(--accent-2)"],["rgba(45,212,191,.28)","var(--accent-2)"],["rgba(45,212,191,.4)","var(--accent-2)"],["rgba(251,191,36,.06)","var(--push-bg)"],["rgba(251,191,36,.1)","var(--push-bg)"],["rgba(251,191,36,.14)","var(--push-bg)"],["rgba(251,191,36,.3)","var(--push)"],["rgba(251,191,36,.35)","var(--push)"],["rgba(239,68,68,.15)","var(--hot-bg)"],["rgba(239,68,68,.16)","var(--hot-bg)"],["rgba(239,68,68,.5)","var(--bad)"],["rgba(248,113,113,.08)","var(--hot-bg)"],["rgba(248,113,113,.1)","var(--hot-bg)"],["rgba(248,113,113,.14)","var(--hot-bg)"],["rgba(248,113,113,.35)","var(--bad)"],["rgba(248,113,113,.45)","var(--bad)"],["rgba(74,222,128,.08)","var(--live-bg)"],["rgba(74,222,128,.1)","var(--live-bg)"],["rgba(74,222,128,.3)","var(--live)"],["rgba(74,222,128,.35)","var(--live)"],["rgba(251,146,60,.16)","var(--push-bg)"],["rgba(251,146,60,.5)","var(--push)"],["rgba(96,165,250,.14)","var(--reach-bg)"],["rgba(96,165,250,.5)","var(--reach)"],["rgba(139,92,246,.18)","var(--accent-bg)"],["rgba(148,163,184,.16)","var(--surface-3)"],["rgba(255,255,255,.04)","var(--surface-2)"],["rgba(255,255,255,.05)","var(--surface-2)"],["rgba(255,255,255,.06)","var(--surface-3)"]];
+  function osSkinText(s) {
+    for (var i = 0; i < OS_COLORS.length; i++) s = s.split(OS_COLORS[i][0]).join(OS_COLORS[i][1]);
+    return s;
+  }
+  function osSetTheme(t) {
+    var theme = t === "light" ? "light" : "dark";
+    document.documentElement.setAttribute("data-os-theme", theme);
+    document.documentElement.style.colorScheme = theme;
+  }
+  if (OS_SKIN) {
+    document.documentElement.classList.add("os-skin");
+    osSetTheme(_qs.get("theme"));
+    var osSheets = document.querySelectorAll("style");
+    for (var osi = 0; osi < osSheets.length; osi++) osSheets[osi].textContent = osSkinText(osSheets[osi].textContent);
+    var osTok = document.createElement("style");
+    osTok.textContent = 'html.os-skin{--bg:#F6F4EF;--surface:#FFFFFF;--surface-2:#F1EEE7;--surface-3:#E9E5DC;--text:#1E1A16;--text-2:#5C554D;--text-3:#8C8479;--border:#E4DFD5;--border-2:#D3CCBF;--accent:#96782F;--accent-2:#B69A54;--accent-bg:#F3EBD6;--accent-text:#6E561C;--on-accent:#1E1A16;--live:#1E8E5A;--live-bg:#E4F4EB;--reach:#2F6FED;--reach-bg:#E6EEFD;--push:#C27A0A;--push-bg:#FBEFD9;--hot:#D64545;--hot-bg:#FBE5E5;--bad:#D64545}html.os-skin[data-os-theme=dark]{--bg:#1B1612;--surface:#241E19;--surface-2:#2D2620;--surface-3:#372F27;--text:#F1ECE4;--text-2:#B8AFA3;--text-3:#857C70;--border:#352D25;--border-2:#4A4035;--accent:#C9A85C;--accent-2:#B69A54;--accent-bg:#3A3020;--accent-text:#E3C77E;--on-accent:#1E1A16;--live:#3FB37B;--live-bg:#1B3327;--reach:#6A93F5;--reach-bg:#1D2A45;--push:#E0A23B;--push-bg:#3A2E16;--hot:#EF6B6B;--hot-bg:#3E2222;--bad:#EF6B6B}html.os-skin body{font-family:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:13px;background:var(--surface);color:var(--text);-webkit-font-smoothing:antialiased}html.os-skin main{max-width:none;padding:14px 16px}html.os-skin .back-btn{display:none}html.os-skin .detail-header{justify-content:flex-end}html.os-skin .lead-hdr-name{font-size:15px;font-weight:600}html.os-skin .msg-text,html.os-skin textarea{font-size:13.5px}html.os-skin .tbubble{font-size:13px;border-radius:10px}html.os-skin button.act{padding:9px 10px;font-size:13px;font-weight:600;border-radius:8px}html.os-skin .openlead-btn,html.os-skin .ctx-btn,html.os-skin .mini,html.os-skin .temp-btn,html.os-skin .lc-copy{font-weight:500}html.os-skin textarea:focus,html.os-skin .att-add-input:focus{border-color:var(--accent)}html.os-skin .thread-lbl,html.os-skin label.section{color:var(--text-3);letter-spacing:.07em}html.os-skin body{line-height:1.45}html.os-skin .thread-lbl,html.os-skin label.section,html.os-skin .vr .section{font-size:11px;font-weight:600;letter-spacing:.07em}html.os-skin .tsender{font-size:10.5px;font-weight:600}html.os-skin .tat{font-size:11px}html.os-skin .lead-contact{font-size:12.5px}html.os-skin .temp-ctl-lbl,html.os-skin .temp-btn,html.os-skin .openlead-btn,html.os-skin .ctx-btn,html.os-skin .mini,html.os-skin .att-pick-btn,html.os-skin .att-add-btn,html.os-skin .lc-copy{font-size:12px;font-weight:500}html.os-skin .badge{font-size:10.5px;font-weight:600}html.os-skin .vr-head{font-size:12.5px;font-weight:600}html.os-skin .vr-send,html.os-skin .li-btn,html.os-skin .ai-send-btn{font-weight:600}html.os-skin select:not([multiple]){appearance:none;-webkit-appearance:none;background-image:url(data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2016%2016%22%20fill=%22none%22%20stroke=%22%238C8479%22%20stroke-width=%221.7%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22%3E%3Cpath%20d=%22M4%206l4%204%204-4%22/%3E%3C/svg%3E);background-repeat:no-repeat;background-position:right 7px center;background-size:12px;padding-right:24px;cursor:pointer}html.os-skin .os-menu{position:fixed;z-index:1000;background:var(--surface);border:1px solid var(--border-2);border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.2),0 8px 24px rgba(0,0,0,.25);padding:4px;max-height:300px;overflow:auto;font-size:12.5px}html.os-skin .os-opt{padding:6px 10px;border-radius:6px;cursor:pointer;white-space:nowrap}html.os-skin .os-opt:hover{background:var(--surface-2)}html.os-skin .os-opt.sel{font-weight:600;color:var(--accent-text)}html.os-skin .os-opt.dis{opacity:.45;cursor:default}';
+    document.head.appendChild(osTok);
+    var osFont = document.createElement("link");
+    osFont.rel = "stylesheet";
+    osFont.href = "https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap";
+    document.head.appendChild(osFont);
+    // Rows built later carry inline colours too; they get the same palette.
+    var osFix = function (node) {
+      if (!node || node.nodeType !== 1) return;
+      if (node.tagName === "STYLE") { var tx = osSkinText(node.textContent); if (tx !== node.textContent) node.textContent = tx; return; }
+      var list = [node];
+      var inner = node.querySelectorAll("[style]");
+      for (var q = 0; q < inner.length; q++) list.push(inner[q]);
+      for (var r = 0; r < list.length; r++) {
+        var a = list[r].getAttribute("style");
+        if (!a) continue;
+        var b = osSkinText(a);
+        if (a !== b) list[r].setAttribute("style", b);
+      }
+    };
+    // Buttons and labels lose the emoji the phone app uses as icons: the OS
+    // has its own icon set. Messages themselves are never touched.
+    var OS_CHROME = "button, .thread-lbl, label.section, .vr-head, .openlead-btn, .ctx-btn, .att-pick-btn, .stage-toggle, .temp-btn, .mini, .section, .stage-hint";
+    var OS_ICON_RE = /^[\\p{Extended_Pictographic}\\u2190-\\u21FF\\u2713-\\u2716\\u270E\\u270F\\uFE0F\\u200D\\s]+/u;
+    var osStripIcon = function (el) {
+      var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      var tn = walker.nextNode();
+      while (tn && !tn.nodeValue.trim()) tn = walker.nextNode();
+      if (!tn) return;
+      var v = tn.nodeValue.replace(OS_ICON_RE, "");
+      if (v !== tn.nodeValue && v.trim()) tn.nodeValue = v;
+    };
+    var osChrome = function (node) {
+      if (!node) return;
+      if (node.nodeType === 3) { if (node.parentElement && node.parentElement.matches(OS_CHROME)) osStripIcon(node.parentElement); return; }
+      if (node.nodeType !== 1) return;
+      if (node.matches(OS_CHROME)) osStripIcon(node);
+      var els = node.querySelectorAll(OS_CHROME);
+      for (var ci = 0; ci < els.length; ci++) osStripIcon(els[ci]);
+    };
+    osChrome(document.body);
+    // Dropdowns open the OS list, not the system one; the select keeps its value and events.
+    var osMenu = null;
+    var osCloseMenu = function () {
+      if (osMenu && osMenu.parentNode) osMenu.parentNode.removeChild(osMenu);
+      osMenu = null;
+    };
+    var osOpenMenu = function (sel) {
+      osCloseMenu();
+      var m = document.createElement("div");
+      m.className = "os-menu";
+      for (var oi = 0; oi < sel.options.length; oi++) {
+        var o = sel.options[oi];
+        var row = document.createElement("div");
+        row.className = "os-opt" + (oi === sel.selectedIndex ? " sel" : "") + (o.disabled ? " dis" : "");
+        row.textContent = o.text;
+        row.setAttribute("data-i", String(oi));
+        m.appendChild(row);
+      }
+      document.body.appendChild(m);
+      var rc = sel.getBoundingClientRect();
+      m.style.minWidth = Math.max(160, rc.width) + "px";
+      var mh = Math.min(m.offsetHeight, 300);
+      m.style.top = (window.innerHeight - rc.bottom < mh + 10 && rc.top > mh ? rc.top - mh - 4 : rc.bottom + 4) + "px";
+      m.style.left = Math.max(6, Math.min(rc.left, window.innerWidth - m.offsetWidth - 6)) + "px";
+      m.addEventListener("mousedown", function (ev) { ev.preventDefault(); });
+      m.addEventListener("click", function (ev) {
+        var t = ev.target.closest(".os-opt");
+        if (!t || t.className.indexOf("dis") !== -1) return;
+        var idx = Number(t.getAttribute("data-i"));
+        if (sel.selectedIndex !== idx) {
+          sel.selectedIndex = idx;
+          sel.dispatchEvent(new Event("input", { bubbles: true }));
+          sel.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        osCloseMenu();
+      });
+      osMenu = m;
+      osMenu.sel = sel;
+    };
+    var osSelectOf = function (t) {
+      var s2 = t && t.closest ? t.closest("select") : null;
+      return s2 && !s2.multiple && !s2.disabled ? s2 : null;
+    };
+    document.addEventListener("pointerdown", function (e) {
+      var wasOpen = osMenu && osMenu.sel;
+      if (osMenu && !osMenu.contains(e.target)) osCloseMenu();
+      var sel = osSelectOf(e.target);
+      if (!sel || e.button !== 0) return;
+      e.preventDefault();
+      if (wasOpen === sel) return;
+      sel.focus();
+      osOpenMenu(sel);
+    }, true);
+    document.addEventListener("mousedown", function (e) { if (osSelectOf(e.target)) e.preventDefault(); }, true);
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") osCloseMenu(); }, true);
+    window.addEventListener("resize", osCloseMenu);
+    document.addEventListener("scroll", function (e) { if (osMenu && !osMenu.contains(e.target)) osCloseMenu(); }, true);
+    osFix(document.body);
+    new MutationObserver(function (ms) {
+      for (var mi = 0; mi < ms.length; mi++) {
+        if (ms[mi].type === "attributes") osFix(ms[mi].target);
+        for (var ni = 0; ni < ms[mi].addedNodes.length; ni++) { osFix(ms[mi].addedNodes[ni]); osChrome(ms[mi].addedNodes[ni]); }
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["style"] });
+  }
   // The bridge knows the broker authoritatively (re-verified against the
   // live amoCRM session on every load) — trust its URL param over whatever
   // localStorage says, so an iframe never shows a stale or wrong broker's
@@ -3429,6 +3556,7 @@ const PAGE_HTML = `<!doctype html>
     // open) from before this lead's suggestion/attachments were ready, and
     // openLeadById only ever searched whatever was already in memory.
     if (d.type === "lead" && d.leadId) fetchInbox().then(function () { openLeadById(d.leadId); });
+    if (d.type === "theme" && OS_SKIN) osSetTheme(d.theme);
     if (d.type === "broker-replied" && d.leadId) {
       if (openItem && String(openItem.lead_id) === String(d.leadId)) { openItem = null; render(); }
       fetchInbox();

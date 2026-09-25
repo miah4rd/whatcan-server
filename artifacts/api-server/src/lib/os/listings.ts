@@ -66,7 +66,21 @@ export type Availability = { status: string | null; start_date: string | null; e
 
 const today = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
 
+// The catalog changes a few times a day; four Supabase reads from Germany took
+// 2.8 s per open of Villas. A minute of cache, dropped on every edit made here.
+const listCache = new Map<string, { at: number; value: Awaited<ReturnType<typeof loadListings>> }>();
+export function clearListingsCache() {
+  listCache.clear();
+}
 export async function listListings(opts: { type?: "rent" | "sale" | "all"; drafts?: boolean }) {
+  const key = `${opts.type ?? "all"}:${opts.drafts ? 1 : 0}`;
+  const hit = listCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.value;
+  const value = await loadListings(opts);
+  listCache.set(key, { at: Date.now(), value });
+  return value;
+}
+async function loadListings(opts: { type?: "rent" | "sale" | "all"; drafts?: boolean }) {
   const filters: string[] = [];
   if (opts.type && opts.type !== "all") filters.push(`listing_type=eq.${opts.type}`);
   if (!opts.drafts) filters.push(`is_draft=eq.false`);
@@ -235,11 +249,13 @@ export async function updateListing(user: OsUser, id: string, patch: Record<stri
     }
   }
   invalidatePropertyCache();
+  clearListingsCache();
   await audit(user, "listing.update", id, body);
   return getListing(id);
 }
 
 export async function updatePrivate(user: OsUser, id: string, patch: Record<string, unknown>) {
+  clearListingsCache();
   const body = clean(patch, PRIVATE_RULES);
   if (!Object.keys(body).length) return getListing(id);
   const exists = await site<Array<{ property_id: string }>>(`property_private?select=property_id&property_id=eq.${encodeURIComponent(id)}`);
@@ -253,6 +269,7 @@ export async function updatePrivate(user: OsUser, id: string, patch: Record<stri
 }
 
 export async function setAvailability(user: OsUser, id: string, input: { freeFrom?: string | null; occupiedNoDate?: boolean }) {
+  clearListingsCache();
   const t = today();
   let res: { written: boolean; detail: string };
   if (input.occupiedNoDate) {

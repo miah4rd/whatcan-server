@@ -127,11 +127,12 @@ select.chip{border-style:solid;padding:3px 6px}
 .btn.primary:hover{filter:brightness(1.05)}
 .btn.ghost{border-color:transparent;background:transparent}
 .btn.sm{padding:3px 8px;font-size:12px}
+.btn.ghost.on{background:var(--surface-2);color:var(--text);border-color:var(--border)}
 .btn.danger{color:var(--bad)}
 .btn.rec{color:var(--bad);border-color:var(--bad)}
 .content{flex:1;min-height:0;overflow:auto;padding:16px;position:relative}
 .content.flush{padding:0;overflow:hidden}
-.page{max-width:1280px}
+.page{max-width:none}
 h1.pt{font-size:18px;margin:0 0 4px;font-weight:600;letter-spacing:-.01em}
 p.pd{margin:0 0 14px;color:var(--text-2);max-width:78ch}
 .empty{color:var(--text-3);padding:28px 16px;text-align:center}
@@ -159,8 +160,7 @@ p.pd{margin:0 0 14px;color:var(--text-2);max-width:78ch}
 .age.rot{color:var(--hot);font-weight:600}
 
 /* ---------- inbox ---------- */
-.inbox{display:grid;grid-template-columns:var(--list-w) minmax(320px,1fr) var(--ctx-w);height:100%;min-height:0}
-.inbox.noctx{grid-template-columns:var(--list-w) minmax(320px,1fr)}
+.inbox{display:grid;grid-template-columns:var(--list-w) minmax(320px,1fr);height:100%;min-height:0}
 .pane{min-height:0;overflow:auto;border-right:1px solid var(--border);display:flex;flex-direction:column;position:relative;background:var(--bg)}
 .pane:last-child{border-right:0}
 .pane > .resize-x{right:-3px}
@@ -218,7 +218,7 @@ table.grid tr.group-h td{background:var(--surface-2);font-weight:600;color:var(-
 
 /* ---------- board ---------- */
 .board{display:flex;gap:10px;align-items:flex-start;height:100%;overflow:auto;padding-bottom:8px}
-.col{flex:0 0 260px;background:var(--surface-2);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:8px;max-height:100%;border:1px solid transparent}
+.col{flex:0 0 260px;background:var(--surface-2);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:8px;max-height:100%;border:1px solid transparent;align-self:stretch}
 .col.over{border-color:var(--accent)}
 .col.collapsed{flex:0 0 44px;cursor:pointer}
 .col.collapsed h3{writing-mode:vertical-rl;transform:rotate(180deg)}
@@ -241,6 +241,15 @@ table.grid tr.group-h td{background:var(--surface-2);font-weight:600;color:var(-
 /* ---------- peek ---------- */
 .peek{position:absolute;top:0;right:0;bottom:0;width:var(--peek-w);max-width:100%;background:var(--surface);border-left:1px solid var(--border);box-shadow:var(--shadow);display:flex;flex-direction:column;z-index:20}
 .peek > .resize-x{left:-3px}
+/* Desktop: the panel is docked beside the screen, not laid over it. Dragging
+   its edge narrows or widens the screen next to it (owner, 26.09). In the
+   Inbox it is the card beside the Copilot. */
+@media (min-width: 861px){
+  .body > .content{min-width:0}
+  .peek{position:relative;top:auto;right:auto;bottom:auto;flex:0 0 var(--peek-w);width:auto;max-width:calc(100% - 380px);box-shadow:none;z-index:5}
+  .body.peek-open:has(.inbox) .peek{max-width:calc(100% - 560px)}
+  .body.peek-open .inbox{grid-template-columns:minmax(220px,var(--list-w)) minmax(300px,1fr)}
+}
 .peek .ph{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border)}
 .peek .ph h2{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .peek .pb{overflow:auto;flex:1;min-height:0;display:flex;flex-direction:column}
@@ -297,19 +306,24 @@ table.grid tr.group-h td{background:var(--surface-2);font-weight:600;color:var(-
 .diff .to{color:var(--text);overflow-wrap:anywhere}
 
 /* ---------- calendar ---------- */
-.cal{display:grid;grid-template-columns:52px repeat(7,minmax(120px,1fr));border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);overflow:auto;max-height:calc(100vh - 150px)}
+.calwrap{display:flex;flex-direction:column;height:100%;min-height:0}
+.cal{display:grid;grid-template-columns:52px repeat(7,minmax(110px,1fr));border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);overflow:auto;flex:1;min-height:0}
+.cal-empty{margin:8px 0 0;font-size:12px}
 .cal .hd{position:sticky;top:0;background:var(--surface-2);padding:8px 6px;font-size:11.5px;font-weight:600;color:var(--text-2);border-bottom:1px solid var(--border);border-left:1px solid var(--border);text-align:center;z-index:2}
 .cal .hd b{display:block;font-size:16px;color:var(--text);font-weight:600}
 .cal .hd.today b{color:var(--accent-text)}
-.cal .hr{font-size:10.5px;color:var(--text-3);padding:2px 6px;text-align:right;border-bottom:1px solid var(--border);height:46px}
-.cal .slot{border-left:1px solid var(--border);border-bottom:1px solid var(--border);height:46px;position:relative}
-.cal .ev{position:absolute;left:3px;right:3px;border-radius:6px;padding:3px 6px;font-size:11px;line-height:1.25;overflow:hidden;cursor:pointer;border-left:3px solid;z-index:1}
+.cal .hr{font-size:10.5px;color:var(--text-3);padding:2px 6px;text-align:right;border-bottom:1px solid var(--border)}
+.cal .hr.allday-h{display:flex;align-items:center;justify-content:flex-end}
+.cal .slot{border-left:1px solid var(--border);border-bottom:1px solid var(--border);position:relative;min-height:44px}
+.cal .slot.today{background:color-mix(in srgb,var(--accent-bg) 35%,transparent)}
+.cal .ev{position:absolute;border-radius:6px;padding:3px 6px;font-size:11px;line-height:1.25;overflow:hidden;cursor:pointer;border-left:3px solid;z-index:1;min-height:22px}
+.cal .ev:hover{z-index:3;box-shadow:var(--shadow)}
 .cal .ev b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cal .ev span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.85}
 .cal .ev.viewing{background:var(--live-bg);color:var(--live);border-color:var(--live)}
 .cal .ev.inspection{background:var(--accent-bg);color:var(--accent-text);border-color:var(--accent)}
-.cal .ev.task{background:var(--push-bg);color:var(--push);border-color:var(--push)}
 .cal .allday{border-left:1px solid var(--border);border-bottom:1px solid var(--border);padding:4px;min-height:30px;display:flex;flex-direction:column;gap:3px}
-.cal .allday .ev{position:static}
+.cal .allday .ev{position:static;width:auto}
 .legend{display:flex;gap:12px;font-size:11.5px;color:var(--text-2);margin-bottom:10px;flex-wrap:wrap;align-items:center}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .agenda{display:flex;flex-direction:column;gap:12px}
@@ -380,10 +394,6 @@ iframe.kpi{width:100%;height:calc(100vh - 170px);border:1px solid var(--border);
 .mobile-nav{display:none}
 .backbtn{display:none}
 
-@media (max-width: 1180px){
-  .inbox{grid-template-columns:var(--list-w) minmax(300px,1fr)}
-  .inbox .pane.ctx-pane{display:none}
-}
 @media (max-width: 860px){
   .shell,.shell.rail,.shell.hidden{grid-template-columns:1fr}
   .sidebar{display:none}
@@ -398,7 +408,7 @@ iframe.kpi{width:100%;height:calc(100vh - 170px);border:1px solid var(--border);
   .content.flush{padding:0}
   .topbar{padding:0 10px;gap:6px}
   .topbar .hide-m{display:none}
-  .inbox,.inbox.noctx{grid-template-columns:1fr}
+  .inbox{grid-template-columns:1fr}
   .inbox .pane{border-right:0}
   .inbox .pane > .resize-x{display:none}
   .inbox.show-copilot .pane.list-pane{display:none}
@@ -412,7 +422,6 @@ iframe.kpi{width:100%;height:calc(100vh - 170px);border:1px solid var(--border);
   .tbl-wrap{max-height:none}
   .cal{max-height:none}
 }
-@media (prefers-reduced-motion: reduce){.shell.hidden .sidebar{transition:none}}
 
 .preview-bar{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:6px 14px;font-size:12px;background:var(--accent-bg);color:var(--accent-text);border-bottom:1px solid var(--border)}
 .preview-bar button{margin-left:auto;font-size:16px;line-height:1;color:var(--accent-text);padding:0 4px}
@@ -502,3 +511,25 @@ iframe.kpi{width:100%;height:calc(100vh - 170px);border:1px solid var(--border);
   .mcal .ev{font-size:10px;padding:1px 4px}
   .tl{grid-template-columns:120px minmax(0,1fr)}
 }
+
+/* ---------- dropdowns: one look everywhere (core.js opens the list) ---------- */
+select:not([multiple]){appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%238C8479' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 7px center;background-size:12px;padding-right:24px!important;cursor:pointer}
+select.uselect-open{border-color:var(--accent)!important}
+.uselect-menu{position:fixed;z-index:90;background:var(--surface);border:1px solid var(--border-2);border-radius:10px;box-shadow:var(--shadow);padding:4px;max-width:min(420px,calc(100vw - 16px));display:flex;flex-direction:column}
+.uselect-menu .list{max-height:300px;overflow:auto}
+.uselect-menu .uselect-q{margin:2px 2px 4px;padding:6px 8px;border:1px solid var(--border-2);border-radius:6px;background:var(--surface-2);font-size:12.5px;outline:none}
+.uselect-menu .uselect-q:focus{border-color:var(--accent)}
+.uselect-menu .opt{display:flex;align-items:center;gap:6px;padding:6px 10px 6px 6px;border-radius:6px;cursor:pointer;font-size:12.5px;white-space:nowrap}
+.uselect-menu .opt .ck{width:14px;flex:0 0 14px;display:grid;place-items:center;color:var(--accent-text)}
+.uselect-menu .opt .ck .ic{width:12px;height:12px}
+.uselect-menu .opt .tx{overflow:hidden;text-overflow:ellipsis}
+.uselect-menu .opt.hi,.uselect-menu .opt:hover{background:var(--surface-2)}
+.uselect-menu .opt.sel{font-weight:600;color:var(--text)}
+.uselect-menu .opt.dis{opacity:.45;cursor:default}
+.uselect-menu .grp{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);font-weight:600;padding:8px 10px 4px}
+.uselect-menu .none{padding:8px 10px;color:var(--text-3);font-size:12px}
+@media (prefers-reduced-motion: reduce){.shell.hidden .sidebar{transition:none}}
+
+/* ---------- listings: the site inside the OS ---------- */
+.site-frame{display:block;width:100%;height:100%;border:0;background:#fff}
+.list-wrap{padding:16px;height:100%;overflow:auto}

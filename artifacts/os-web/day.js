@@ -19,21 +19,27 @@ screens.day = {
         store.set("day-all", e.target.value === "all");
         screens.day.render({ el, tools });
       };
-    el.innerHTML = `<div class="loading">Gathering your day…</div>`;
     const brokers = staff && scopeAll ? S.meta.brokers : [S.user.brokerKey].filter(Boolean);
-    api("/tasks/cleanup").then((r) => {
-      const n = document.getElementById("day-cleanup");
-      if (n && r.count) n.textContent = `${r.count} more open tasks sit on closed or deleted cards — clean-up, not work (close them in amoCRM when convenient).`;
-    }).catch(() => undefined);
-    const [tasksR, cal, notif, drafts, waitsR, waitsL, mineR] = await Promise.all([
+    // The last day shown appears at once; fresh numbers replace it when they arrive.
+    const memoKey = `day:${scopeAll ? "all" : "me"}`;
+    const memo = S.cache[memoKey];
+    if (memo) paint(memo.value);
+    else el.innerHTML = `<div class="loading">Gathering your day…</div>`;
+    const fresh = await Promise.all([
       api(`/tasks${staff && scopeAll ? "?all=1" : ""}`).catch(() => ({ items: [] })),
       api(`/calendar?from=${startOfDay(0).toISOString()}&to=${startOfDay(2).toISOString()}`).catch(() => ({ events: [] })),
       api("/notifications").catch(() => ({ items: [] })),
-      Promise.all(brokers.map((b) => api(`/p/suggestions?responsibleUser=${encodeURIComponent(b)}`).then((r) => r.items || []).catch(() => []))).then((x) => x.flat()),
+      Promise.all(brokers.map((b) => api(`/p/suggestions?lite=1&responsibleUser=${encodeURIComponent(b)}`).then((r) => r.items || []).catch(() => []))).then((x) => x.flat()),
       api(`/analytics/waits?pipeline=Rental`).catch(() => ({ stages: [] })),
       api(`/analytics/waits?pipeline=Rental%20Listings`).catch(() => ({ stages: [] })),
       api(`/ptasks?assignee=me`).catch(() => ({ items: [] })),
+      api("/tasks/cleanup").catch(() => ({ count: 0 })),
     ]);
+    S.cache[memoKey] = { at: Date.now(), value: fresh };
+    if (S.route.screen !== "day") return;
+    paint(fresh);
+
+    function paint([tasksR, cal, notif, drafts, waitsR, waitsL, mineR, cleanupR]) {
     // Project tasks given to me (the Projects boards): late, today, this week, in progress.
     const td = baliToday();
     const in7 = new Date(Date.parse(td + "T00:00:00Z") + 7 * 86400e3).toISOString().slice(0, 10);
@@ -45,13 +51,17 @@ screens.day = {
       const late = due && due < td;
       return `<div class="task"><button class="cb" data-pt-done="${t.id}" title="Mark done"></button><div><div class="tt" data-pt-open="${t.id}" style="cursor:pointer">${esc(t.title)}</div><div class="ts">${t.status === "In progress" ? `<span class="pill stage">In progress</span>` : ""}${t.priority ? `<span>${esc(t.priority)}</span>` : ""}</div></div><div class="due ${late ? "over" : ""}">${due ? (due === td ? "today" : esc(new Date(due + "T00:00:00Z").toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }))) : ""}</div></div>`;
     };
-    const tasks = tasksR.items || [];
+    // A due date outside 2000–2100 is broken data in amoCRM, not a real deadline.
+    const tasks = (tasksR.items || []).filter((t) => {
+      const y = new Date(t.due).getUTCFullYear();
+      return y >= 2000 && y <= 2100;
+    });
     const now = new Date();
     const endToday = startOfDay(1);
     const overdue = tasks.filter((t) => new Date(t.due) < now);
     const today = tasks.filter((t) => new Date(t.due) >= now && new Date(t.due) < endToday);
     const tomorrow = tasks.filter((t) => new Date(t.due) >= endToday && new Date(t.due) < startOfDay(2));
-    const q = { live: [], reach: [], push: [] };
+    const q = { live: [], push: [] };
     for (const it of drafts) q[queueOf(it)].push(it);
     const promises = (notif.items || []).filter((i) => i.kind === "promise");
     const reports = (notif.items || []).filter((i) => i.kind === "viewing-report" || i.kind === "inspection-report");
@@ -75,14 +85,14 @@ screens.day = {
       <div class="kpis">
         ${kpi("Clients waiting", q.live.length, "they wrote, a draft is ready", "inbox")}
         ${kpi("Promises due", promises.length, "things we said we'd do", "")}
-        ${kpi("Overdue tasks", overdue.length, overdue.length ? `oldest ${rel(overdue[0]?.due)}` : "none", "")}
+        ${kpi("Overdue tasks", overdue.length, overdue.length ? `oldest ${rel(overdue.reduce((a, t) => (t.due < a ? t.due : a), overdue[0].due))}` : "none", "")}
         ${kpi("Due today", today.length, `${tomorrow.length} tomorrow`, "")}
         ${kpi("Visits today", events.length, "viewings and inspections", "calendar")}
         ${kpi("Reports to file", reports.length, "after viewings / inspections", "")}
       </div>
       <div class="day-grid">
         <div class="panel"><h3>Clients waiting for an answer <span class="faint">${q.live.length}</span></h3><div class="stack">${draftRows(q.live) || `<div class="empty">Nobody is waiting. Good.</div>`}</div>
-          ${q.reach.length || q.push.length ? `<p class="faint" style="margin:8px 0 0;font-size:12px">${q.reach.length} Reach and ${q.push.length} Push drafts are in the <a href="#/inbox">Inbox</a>.</p>` : ""}</div>
+          ${q.push.length ? `<p class="faint" style="margin:8px 0 0;font-size:12px">${q.push.length} Push drafts are in the <a href="#/inbox">Inbox</a>.</p>` : ""}</div>
         <div class="panel"><h3>Promises and reports <span class="faint">${promises.length + reports.length}</span></h3><div class="stack">${
           [...promises, ...reports]
             .map((i) => `<div class="note" style="cursor:pointer" data-open-lead="${esc(i.leadId || "")}"><b>${esc(i.title)}</b><br>${esc(i.body)}<br><span class="faint">${fmtDT(i.at)}</span></div>`)
@@ -126,5 +136,8 @@ screens.day = {
       }
     });
     bindTasks(document.getElementById("day-tasks"), () => tasks, null, () => screens.day.render({ el, tools }));
+    const cl = document.getElementById("day-cleanup");
+    if (cl && cleanupR?.count) cl.textContent = `${cleanupR.count} more open tasks sit on closed or deleted cards — clean-up, not work (close them in amoCRM when convenient).`;
+    }
   },
 };

@@ -1,15 +1,15 @@
 // Unicorn OS — pipelines as a board and as a table of the same cards.
-import { S, api, esc, I, screens, store, on, rel, money, initials, isStaff, onBus, fmtDay, stageOwner, dropCache, emit, fail } from "./core.js";
+import { S, api, esc, I, screens, store, on, rel, money, initials, isStaff, onBus, fmtDay, stageOwner, dropCache, emit, fail, dropColumn, boardListen } from "./core.js";
 import { moveStage, pipelineOf, isListingPipe, daysInStage } from "./lead.js";
 
 const PARKED = /long term|co-broke|live|weekly check|availability received|check in|contract signed|backlog/i;
 const rotLimit = (stage) => (/new lead|initial contact|need assessed|taken to work|viewing suggested/i.test(stage) ? 3 : 7);
 
-async function loadBoard(key, force) {
+async function loadBoard(key, force, stale) {
   const opts = store.get("board-opts:" + key, {});
   const ck = `board:${key}:${opts.broker || ""}:${opts.closed ? 1 : 0}:${opts.all ? "all" : 90}`;
   const c = S.cache[ck];
-  if (!force && c && Date.now() - c.at < 60_000) return c.value;
+  if (!force && c && (stale || Date.now() - c.at < 60_000)) return c.value;
   const qs = new URLSearchParams({ pipeline: key });
   if (opts.broker) qs.set("broker", opts.broker);
   if (opts.closed) qs.set("closed", "1");
@@ -73,11 +73,27 @@ screens.pipeline = {
       <button class="btn sm ghost" id="pf-refresh">Refresh</button>`;
     el.innerHTML = `<div class="loading">Loading ${esc(p.name)}…</div>`;
     let cards = [];
+    // Any earlier copy of this board shows at once; if it is older than a
+    // minute, the fresh one is fetched behind it and drawn when it lands.
+    const ckey = () => {
+      const o = store.get("board-opts:" + key, {});
+      return `board:${key}:${o.broker || ""}:${o.closed ? 1 : 0}:${o.all ? "all" : 90}`;
+    };
+    const had = S.cache[ckey()];
     try {
-      cards = await loadBoard(key);
+      cards = await loadBoard(key, false, true);
     } catch (e) {
       el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
       return;
+    }
+    if (had && Date.now() - had.at >= 60_000) {
+      loadBoard(key, true)
+        .then((fresh) => {
+          if (S.route.screen !== "pipeline" || (S.route.parts[0] || "rental") !== key) return;
+          cards = fresh;
+          draw();
+        })
+        .catch(() => undefined);
     }
     const setOpt = (k, v) => {
       opts[k] = v;
@@ -156,7 +172,7 @@ function drawBoard(el, p, list, opts) {
     const card = list.find((x) => x.leadId === c.dataset.card);
     board.querySelectorAll(".card.sel").forEach((x) => x.classList.remove("sel"));
     c.classList.add("sel");
-    emit("open-peek", { type: "lead", id: c.dataset.card, tab: card?.draft ? "copilot" : undefined });
+    emit("open-peek", { type: "lead", id: c.dataset.card, tab: card?.draft ? "copilot" : "card" });
   });
   on(board, "click", "[data-collapse]", (e, h) => {
     e.stopPropagation();
@@ -178,15 +194,15 @@ function drawBoard(el, p, list, opts) {
     c.classList.add("dragging");
   });
   board.addEventListener("dragend", (e) => e.target.closest?.("[data-card]")?.classList.remove("dragging"));
-  board.addEventListener("dragover", (e) => {
-    const col = e.target.closest("[data-drop]");
+  boardListen(board, "dragover", (e) => {
+    const col = dropColumn(board, e);
     if (!col) return;
     e.preventDefault();
     board.querySelectorAll(".col.over").forEach((x) => x !== col && x.classList.remove("over"));
     col.classList.add("over");
   });
-  board.addEventListener("drop", async (e) => {
-    const col = e.target.closest("[data-drop]");
+  boardListen(board, "drop", async (e) => {
+    const col = dropColumn(board, e);
     board.querySelectorAll(".col.over").forEach((x) => x.classList.remove("over"));
     if (!col) return;
     e.preventDefault();
@@ -304,7 +320,7 @@ function drawTable(el, p, list) {
     el.querySelectorAll("tr.sel").forEach((x) => x.classList.remove("sel"));
     tr.classList.add("sel");
     const c = list.find((x) => x.leadId === tr.dataset.row);
-    emit("open-peek", { type: "lead", id: tr.dataset.row, tab: c?.draft ? "copilot" : undefined });
+    emit("open-peek", { type: "lead", id: tr.dataset.row, tab: c?.draft ? "copilot" : "card" });
   });
   el.querySelectorAll("select[data-stage]").forEach((s) =>
     s.addEventListener("change", async () => {

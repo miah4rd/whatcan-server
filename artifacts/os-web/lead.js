@@ -1,6 +1,6 @@
 // Unicorn OS — one card: the side panel (Copilot, chat, overview, viewings, tasks) and its summary.
 import { S, api, esc, I, peeks, fmtDT, fmtDay, rel, money, dialog, confirmBox, toast, fail, on, mountCopilot, brokerForLead, emit, dropCache, imgUrl, daysSince, resizer } from "./core.js";
-import { loadVillas } from "./villas.js";
+import { loadVillas } from "./listings.js";
 
 export async function loadLead(id, force) {
   const key = "lead:" + id;
@@ -155,7 +155,7 @@ function stageSelect(d) {
   return `<select class="in" data-stage-select style="padding:4px 6px">${stages.map((s) => `<option ${s === d.stage ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>`;
 }
 
-/** The compact record used in the Inbox's right column and on the Overview tab. */
+/** The card's facts: the top of the Card panel. */
 export async function summaryHtml(d) {
   const villas = await loadVillas().catch(() => []);
   const byId = new Map(villas.map((v) => [String(v.id).toUpperCase(), v]));
@@ -164,7 +164,6 @@ export async function summaryHtml(d) {
   const facts = d.facts || {};
   const promises = (d.commitments || []).filter((c) => c.status === "open");
   const sent = (d.sentPropertyIds || []).map((id) => byId.get(id)).filter(Boolean);
-  const slots = d.viewings?.slots || [];
   const temp = d.temperature || "";
   return `
   ${listing ? `<div><div class="sect-h">Villa facts <span class="faint">from the owner's words</span></div><dl class="props">
@@ -193,8 +192,7 @@ export async function summaryHtml(d) {
   </dl></div>
   ${d.summary ? `<div><div class="sect-h">Copilot's read</div><div class="note">${esc(d.summary)}${d.intent ? `<br><span class="faint">${esc(d.intent)}</span>` : ""}</div></div>` : ""}
   ${promises.length ? `<div><div class="sect-h">Open promises</div><div class="stack">${promises.map((p) => `<div class="note"><b>${esc(p.promise_text)}</b><br><span class="faint">due ${fmtDT(p.due_at)}</span></div>`).join("")}</div></div>` : ""}
-  ${!listing ? `<div><div class="sect-h">Villas sent <span class="faint">${(d.sentPropertyIds || []).length} · never re-sent</span></div><div class="stack">${sent.length ? sent.map((v) => villaCardHtml(v)).join("") : `<span class="faint">none yet</span>`}</div></div>` : ""}
-  ${slots.length ? `<div><div class="sect-h">Viewings</div><div class="stack">${slots.slice(0, 4).map((s) => `<div class="note">${fmtDT(s.viewing_at)} · <span class="mono">${esc(s.property_code || "")}</span> · ${esc(s.status)}</div>`).join("")}</div></div>` : ""}`;
+  ${!listing ? `<div><div class="sect-h">Villas sent <span class="faint">${(d.sentPropertyIds || []).length} · never re-sent</span></div><div class="stack">${sent.length ? sent.map((v) => villaCardHtml(v)).join("") : `<span class="faint">none yet</span>`}</div></div>` : ""}`;
 }
 
 export function bindSummary(root, d, refresh) {
@@ -213,9 +211,25 @@ export function bindSummary(root, d, refresh) {
   on(root, "click", "[data-open-villa]", (e, el) => emit("open-peek", { type: "villa", id: el.dataset.openVilla }));
 }
 
+/**
+ * A message the gateway sent also comes back through amoCRM's channel, so the
+ * store holds it twice. Same side, same text, within 20 minutes: shown once.
+ */
+function dedupeMessages(list) {
+  const out = [];
+  const norm = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
+  for (const m of list) {
+    const side = m.from === "client" ? "in" : "out";
+    const key = norm(m.text);
+    const t = new Date(m.at).getTime();
+    const twin = out.find((o) => (o.from === "client" ? "in" : "out") === side && norm(o.text) === key && Math.abs(new Date(o.at).getTime() - t) < 20 * 60e3);
+    if (!twin) out.push(m);
+  }
+  return out;
+}
 function threadHtml(d) {
   if (!d.messages?.length) return `<div class="empty">No messages stored for this card yet.</div>`;
-  return `<div class="thread">${d.messages
+  return `<div class="thread">${dedupeMessages(d.messages.slice(-300))
     .slice(-250)
     .map((m) => {
       const cls = m.from === "client" ? "in" : m.from === "bot" ? "bot" : m.from === "system" ? "sys" : "out";
@@ -226,19 +240,19 @@ function threadHtml(d) {
     .join("")}</div>`;
 }
 
-function viewingsHtml(d) {
+function viewingsSection(d) {
   const slots = d.viewings?.slots || [];
   const reps = d.viewings?.reports || [];
-  if (!slots.length && !reps.length) return `<div class="empty">No viewing agreed yet. After a shortlist every Copilot draft asks for one; the slot is read from the chat.</div>`;
-  return `<div class="stack" style="padding:14px">${slots
+  if (!slots.length && !reps.length) return "";
+  return `<div><div class="sect-h">Viewings <span class="faint">${slots.length}</span></div><div class="stack">${slots
     .map((s) => {
       const rp = reps.find((r) => r.viewing_at === s.viewing_at);
       return `<div class="panel"><h3>${fmtDT(s.viewing_at)} <span class="pill ${s.status === "scheduled" ? "ok" : ""}">${esc(s.status)}</span></h3><dl class="props">
         <dt>Villa</dt><dd>${s.property_code ? `<a href="#" data-open-villa="${esc(s.property_code)}" class="mono">${esc(s.property_code)}</a>` : "—"}</dd>
         <dt>Agreed</dt><dd>${fmtDT(s.agreed_at)} <span class="faint">${esc(s.source || "")}</span></dd>
-        <dt>Report</dt><dd>${rp ? (rp.status === "due" ? `<span class="pill warn">due — file it in the Copilot tab</span>` : `<b>${esc(rp.outcome || "")}</b> ${esc(rp.feedback || "")}<br><span class="faint">next: ${esc((rp.next_steps || []).join(", ") || "—")} · by ${esc(rp.next_by || "—")}</span>`) : "<span class='faint'>opens 30 minutes after the slot</span>"}</dd></dl></div>`;
+        <dt>Report</dt><dd>${rp ? (rp.status === "due" ? `<span class="pill warn">due, file it in the Copilot</span>` : `<b>${esc(rp.outcome || "")}</b> ${esc(rp.feedback || "")}<br><span class="faint">next: ${esc((rp.next_steps || []).join(", ") || "—")} · by ${esc(rp.next_by || "—")}</span>`) : "<span class='faint'>opens 30 minutes after the slot</span>"}</dd></dl></div>`;
     })
-    .join("")}</div>`;
+    .join("")}</div></div>`;
 }
 
 function historyHtml(d) {
@@ -246,13 +260,13 @@ function historyHtml(d) {
     ...(d.stageEvents || []).map((e) => ({ at: e.changed_at, cls: /engine|bot/.test(e.responsible_user || "") ? "code" : "person", text: `${esc(e.from_stage || "—")} → <b>${esc(e.to_stage)}</b>`, sub: esc(e.responsible_user || "") })),
     ...(d.sends || []).map((s) => ({ at: s.created_at, cls: "bot", text: `Sent (${esc(s.kind || "message")}) ${s.webhook_status >= 200 && s.webhook_status < 300 ? "" : "<span class='pill bad'>not delivered</span>"}`, sub: esc(String(s.message_text || "").slice(0, 120)) })),
   ].sort((a, b) => String(b.at).localeCompare(String(a.at)));
-  if (!evs.length) return `<div class="empty">No recorded moves yet.</div>`;
-  return `<div class="timeline" style="padding:14px">${evs.map((e) => `<div class="ev"><i class="${e.cls}"></i><div>${e.text}<small>${fmtDT(e.at)} ${e.sub ? "· " + e.sub : ""}</small></div></div>`).join("")}</div>`;
+  if (!evs.length) return `<div class="faint" style="margin-top:6px">No recorded moves yet.</div>`;
+  return `<div class="timeline" style="margin-top:8px">${evs.map((e) => `<div class="ev"><i class="${e.cls}"></i><div>${e.text}<small>${fmtDT(e.at)} ${e.sub ? "· " + e.sub : ""}</small></div></div>`).join("")}</div>`;
 }
 
 // ── the peek ──
 peeks.lead = {
-  defaultTab: "copilot",
+  defaultTab: "card",
   async render(el, st, ctl) {
     let d;
     try {
@@ -262,23 +276,20 @@ peeks.lead = {
       el.querySelector("[data-close]").onclick = ctl.close;
       return;
     }
-    const tabs = [
-      ["copilot", "Copilot"],
-      ["chat", `Chat · ${d.messages?.length || 0}`],
-      ["overview", "Overview"],
-      ["viewings", "Viewings"],
-      ["tasks", `Tasks · ${d.tasks?.length || 0}`],
-      ["history", "History"],
-    ];
-    const tab = tabs.some((t) => t[0] === st.tab) ? st.tab : "copilot";
-    S.peek.tabByType = { ...(S.peek.tabByType || {}), lead: tab };
+    // One place for each thing (owner, 26.09). In the Inbox the Copilot is the
+    // middle column, so this panel is only the card. On boards and elsewhere
+    // the panel holds both: the Copilot (conversation and reply) and the card.
+    const inInbox = (S.route?.screen || "") === "inbox";
     const draft = d.drafts?.[0];
+    const tabs = inInbox ? [] : [["copilot", "Copilot"], ["card", "Card"]];
+    const tab = inInbox ? "card" : tabs.some((t) => t[0] === st.tab) ? st.tab : draft ? "copilot" : "card";
+    if (!inInbox) S.peek.tabByType = { ...(S.peek.tabByType || {}), lead: tab };
     el.innerHTML = `<div class="resize-x" id="peek-resize2" title="Drag to resize"></div>
       <div class="ph"><div class="avatar ${isListingPipe(d.pipeline) ? "villa" : ""}">${esc((d.name || "?").slice(0, 2).toUpperCase())}</div>
         <div style="min-width:0;flex:1"><h2>${esc(d.name)}</h2><div class="faint" style="font-size:12px">${esc(d.pipeline || "")} · ${esc(d.stage || "")} · ${esc(d.responsible || "")}</div></div>
         ${draft ? `<span class="q ${draft.kind === "live" ? "live" : "push"}">${esc(draft.kind)}</span>` : ""}
         <button class="iconbtn" data-close title="Close (Esc)">${I.x}</button></div>
-      <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? "active" : ""}" data-tab="${k}">${esc(l)}</button>`).join("")}</div>
+      ${tabs.length ? `<div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? "active" : ""}" data-tab="${k}">${esc(l)}</button>`).join("")}</div>` : ""}
       <div class="pb" id="peek-body"></div>`;
     el.querySelector("[data-close]").onclick = ctl.close;
     on(el, "click", "[data-tab]", (e, b) => ctl.setTab(b.dataset.tab));
@@ -286,39 +297,34 @@ peeks.lead = {
     const body = el.querySelector("#peek-body");
     const refresh = () => ctl.setTab(tab);
     if (tab === "copilot") {
-      body.innerHTML = `<div class="frame-wrap" id="peek-copilot"></div>`;
-      body.style.overflow = "hidden";
-      if (!draft) {
-        body.insertAdjacentHTML(
-          "afterbegin",
-          `<div class="help" style="margin:10px 12px 0">No draft on this card right now. The Copilot writes one when the client writes or a follow-up falls due; set a task to bring the card back, or read the chat.</div>`,
-        );
+      if (draft) {
+        body.innerHTML = `<div class="frame-wrap" id="peek-copilot"></div>`;
+        body.style.overflow = "hidden";
+        mountCopilot(body.querySelector("#peek-copilot"), brokerForLead(d.responsible), d.leadId);
+      } else {
+        // No draft to approve: the conversation, read-only, and why there is no reply box.
+        body.innerHTML = `<div class="help" style="margin:10px 12px 0">No draft on this card now. The Copilot writes one when the client writes or a follow-up falls due; a task on the Card tab brings the card back sooner.</div>${threadHtml(d)}`;
+        setTimeout(() => (body.scrollTop = body.scrollHeight), 0);
       }
-      mountCopilot(body.querySelector("#peek-copilot"), brokerForLead(d.responsible), d.leadId);
-    } else if (tab === "chat") {
-      body.innerHTML = `${threadHtml(d)}<div class="help" style="margin:0 12px 12px">Replies go out from the Copilot tab (draft → Approve), so every message passes the same checks and is recorded.</div>`;
-      setTimeout(() => (body.scrollTop = body.scrollHeight), 0);
-    } else if (tab === "overview") {
-      body.classList.add("pad");
-      body.innerHTML = await summaryHtml(d);
-      bindSummary(body, d, refresh);
-    } else if (tab === "viewings") {
-      body.innerHTML = viewingsHtml(d);
-      on(body, "click", "[data-open-villa]", (e, a) => {
-        e.preventDefault();
-        emit("open-peek", { type: "villa", id: a.dataset.openVilla });
-      });
-    } else if (tab === "tasks") {
-      body.classList.add("pad");
-      body.innerHTML = `<div class="row"><button class="btn primary sm" id="new-task">${I.plus} New task</button><span class="faint" style="font-size:12px">amoCRM tasks: the follow-up scheduler reads them.</span></div>
-        <div class="stack">${(d.tasks || []).map((t) => taskRow(t)).join("") || `<div class="empty">No open tasks.</div>`}</div>`;
-      body.querySelector("#new-task").onclick = async () => {
-        if (await newTask(d.leadId)) refresh();
-      };
-      bindTasks(body, () => d.tasks || [], d.leadId, refresh);
-    } else {
-      body.innerHTML = historyHtml(d);
+      return;
     }
+    // The card: one scroll, like the record column of a CRM card.
+    body.classList.add("pad");
+    const vs = viewingsSection(d);
+    body.innerHTML = `${await summaryHtml(d)}
+      <div id="card-tasks"><div class="sect-h">Tasks <span class="row" style="gap:6px"><span class="faint">${(d.tasks || []).length} open · amoCRM</span><button class="btn sm" id="new-task">${I.plus} Task</button></span></div>
+        <div class="stack">${(d.tasks || []).map((t) => taskRow(t)).join("") || `<span class="faint">No open tasks.</span>`}</div></div>
+      ${vs}
+      <details class="hist"><summary class="sect-h" style="cursor:pointer">History <span class="faint">stages and sends</span></summary>${historyHtml(d)}</details>`;
+    bindSummary(body, d, refresh);
+    body.querySelector("#new-task").onclick = async () => {
+      if (await newTask(d.leadId)) refresh();
+    };
+    bindTasks(body.querySelector("#card-tasks"), () => d.tasks || [], d.leadId, refresh);
+    on(body, "click", "a[data-open-villa]", (e, a) => {
+      e.preventDefault();
+      emit("open-peek", { type: "villa", id: a.dataset.openVilla });
+    });
   },
 };
 

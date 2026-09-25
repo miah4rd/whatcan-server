@@ -1,7 +1,7 @@
 // Unicorn OS — Projects: goals and tasks in the format of the owner's Notion boards.
 // Views: tasks as Board / Table / Calendar, projects as Board / Timeline.
 // Everything opens in the side peek; every field saves as you change it.
-import { S, api, esc, I, screens, peeks, store, on, rel, initials, isStaff, emit, onBus, toast, fail, dialog, confirmBox, fmtDate, baliToday, recordVoice, resizer } from "./core.js";
+import { S, api, esc, I, screens, peeks, store, on, rel, initials, isStaff, emit, onBus, toast, fail, dialog, confirmBox, fmtDate, baliToday, recordVoice, resizer, dropColumn, boardListen } from "./core.js";
 
 const F = () => S.meta.projectFormat || { taskStatuses: [], projectStatuses: [], priorities: [], estimates: [] };
 const people = () => S.meta.people || [];
@@ -326,8 +326,8 @@ function drawBoard(el, list, o) {
     const r = c.getBoundingClientRect();
     return y < r.top + r.height / 2;
   });
-  board.addEventListener("dragover", (e) => {
-    const col = e.target.closest("[data-drop]");
+  boardListen(board, "dragover", (e) => {
+    const col = dropColumn(board, e);
     if (!col) return;
     e.preventDefault();
     board.querySelectorAll(".col.over").forEach((x) => x !== col && x.classList.remove("over"));
@@ -336,8 +336,8 @@ function drawBoard(el, list, o) {
     const b = beforeCard(col, e.clientY);
     if (b) b.classList.add("drop-before");
   });
-  board.addEventListener("drop", async (e) => {
-    const col = e.target.closest("[data-drop]");
+  boardListen(board, "drop", async (e) => {
+    const col = dropColumn(board, e);
     if (!col || dragId == null) return;
     e.preventDefault();
     const t = P.tasks.find((x) => x.id === dragId);
@@ -594,15 +594,15 @@ function drawProjects(el, o, q) {
     c.classList.add("dragging");
   });
   board.addEventListener("dragend", () => board.querySelectorAll(".dragging,.col.over").forEach((x) => x.classList.remove("dragging", "over")));
-  board.addEventListener("dragover", (e) => {
-    const col = e.target.closest("[data-drop]");
+  boardListen(board, "dragover", (e) => {
+    const col = dropColumn(board, e);
     if (!col) return;
     e.preventDefault();
     board.querySelectorAll(".col.over").forEach((x) => x !== col && x.classList.remove("over"));
     col.classList.add("over");
   });
-  board.addEventListener("drop", async (e) => {
-    const col = e.target.closest("[data-drop]");
+  boardListen(board, "drop", async (e) => {
+    const col = dropColumn(board, e);
     board.querySelectorAll(".col.over").forEach((x) => x.classList.remove("over"));
     if (!col || dragId == null) return;
     e.preventDefault();

@@ -1,14 +1,15 @@
-// Unicorn OS — Inbox: the Copilot's queues, the Copilot itself in the middle, the record on the right.
+// Unicorn OS — Inbox: the Copilot's queues, the Copilot itself in the middle, the card docked on the right.
 import { S, api, esc, I, screens, store, on, resizer, rel, initials, isStaff, mountCopilot, brokerForLead, queueOf, onBus, fail } from "./core.js";
-import { loadLead, summaryHtml, bindSummary, isListingPipe } from "./lead.js";
+import { isListingPipe } from "./lead.js";
 
-let st = { tab: store.get("inbox-tab", "live"), sel: null, broker: store.get("inbox-broker", ""), pipe: store.get("inbox-pipe", ""), items: [], timer: null, showCtx: store.get("inbox-ctx", true) };
+// A tab saved as "reach" (before 26.09) opens Live: that queue is gone.
+let st = { tab: ["live", "push", "all"].includes(store.get("inbox-tab", "live")) ? store.get("inbox-tab", "live") : "live", sel: null, broker: store.get("inbox-broker", ""), pipe: store.get("inbox-pipe", ""), items: [], timer: null, showCtx: store.get("inbox-ctx", true) };
 
 async function fetchItems() {
   const brokers = isStaff() ? (st.broker ? [st.broker] : S.meta.brokers) : [S.user.brokerKey];
   const lists = await Promise.all(
     brokers.map((b) =>
-      api(`/p/suggestions?responsibleUser=${encodeURIComponent(b)}`)
+      api(`/p/suggestions?lite=1&responsibleUser=${encodeURIComponent(b)}`)
         .then((r) => r.items || [])
         .catch(() => []),
     ),
@@ -29,11 +30,10 @@ async function fetchItems() {
 }
 
 function listHtml() {
-  const counts = { live: 0, reach: 0, push: 0 };
+  const counts = { live: 0, push: 0 };
   for (const i of st.items) counts[i._q]++;
   const tabs = [
     ["live", "Live"],
-    ["reach", "Reach"],
     ["push", "Push"],
     ["all", "All"],
   ]
@@ -53,30 +53,18 @@ function listHtml() {
         .join("")
     : `<div class="empty">Nothing waiting in ${st.tab === "all" ? "the inbox" : st.tab.toUpperCase()}.</div>`;
   return `<div class="qtabs">${tabs}</div><div class="help" style="margin:8px">
-    <b>Live</b>: the client just wrote · <b>Reach</b>: a promise or task is due · <b>Push</b>: quiet, the Copilot proposes the next touch.</div>${rows}`;
+    <b>Live</b>: the client just wrote · <b>Push</b>: we start the touch, a follow-up, a promise or a task that fell due.</div>${rows}`;
 }
 
-async function renderCtx() {
-  const pane = document.getElementById("ctx-pane-body");
-  if (!pane) return;
-  if (!st.sel) {
-    pane.innerHTML = `<div class="empty">Pick a conversation.</div>`;
-    return;
-  }
-  const id = st.sel;
-  pane.innerHTML = `<div class="loading">Loading the card…</div>`;
-  try {
-    const d = await loadLead(id);
-    if (st.sel !== id) return;
-    pane.innerHTML = `<div class="ctx">${await summaryHtml(d)}<button class="btn" data-full>Open the full card</button></div>`;
-    bindSummary(pane, d, () => {
-      S.cache["lead:" + id] = null;
-      renderCtx();
-    });
-    pane.querySelector("[data-full]").onclick = () => window.UOS.openPeek("lead", id, "overview");
-  } catch (e) {
-    pane.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
-  }
+/**
+ * The card on the right is the side panel, docked beside the Copilot: one
+ * place for the card's facts, viewings, tasks and history. It has no Copilot
+ * or chat tab here, because the Copilot in the middle already shows both.
+ */
+const desktop = () => window.innerWidth > 860;
+function showCard() {
+  if (!st.sel || !st.showCtx || !desktop()) return;
+  window.UOS.openPeek("lead", st.sel);
 }
 
 function select(leadId) {
@@ -88,7 +76,7 @@ function select(leadId) {
   document.querySelector(".inbox")?.classList.add("show-copilot");
   const back = document.getElementById("m-back");
   if (back) back.hidden = window.innerWidth > 860;
-  renderCtx();
+  showCard();
 }
 
 async function refreshList(keepSel = true) {
@@ -119,20 +107,20 @@ screens.inbox = {
       ? `<select class="chip" id="ib-broker"><option value="">Everyone</option>${S.meta.brokers.map((b) => `<option ${b === st.broker ? "selected" : ""}>${esc(b)}</option>`).join("")}</select>`
       : `<span class="chip on">${esc(S.user.brokerKey || S.user.name)}</span>`;
     const pipeOpts = `<select class="chip" id="ib-pipe"><option value="">All funnels</option>${S.meta.pipelines.map((p) => `<option value="${esc(p.name.toLowerCase())}" ${st.pipe === p.name.toLowerCase() ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>`;
-    tools.innerHTML = `${brokerOpts}${pipeOpts}<button class="btn sm ghost hide-m" id="ib-ctx" title="Show or hide the record column">${I.panel} Record</button><button class="btn sm ghost" id="ib-refresh">Refresh</button>`;
-    el.innerHTML = `<div class="inbox ${st.showCtx ? "" : "noctx"}">
+    tools.innerHTML = `${brokerOpts}${pipeOpts}<button class="btn sm ghost hide-m ${st.showCtx ? "on" : ""}" id="ib-ctx" title="Show or hide the card on the right">${I.panel} Card</button><button class="btn sm ghost" id="ib-refresh">Refresh</button>`;
+    el.innerHTML = `<div class="inbox">
       <div class="pane list-pane" id="inbox-list"><div class="loading">Loading drafts…</div></div>
       <div class="pane copilot-pane"><div class="resize-x" id="rz-list" style="left:-3px" title="Drag to resize"></div><div class="frame-wrap" id="copilot-host"><div class="frame-note">Pick a conversation on the left.</div></div></div>
-      ${st.showCtx ? `<div class="pane ctx-pane"><div class="resize-x" id="rz-ctx" style="left:-3px" title="Drag to resize"></div><div id="ctx-pane-body" style="min-height:100%"></div></div>` : ""}
     </div>`;
     resizer(document.getElementById("rz-list"), { varName: "--list-w", min: 240, max: 560 });
-    const rc = document.getElementById("rz-ctx");
-    if (rc) resizer(rc, { varName: "--ctx-w", min: 260, max: 560, invert: true });
     document.getElementById("ib-refresh").onclick = () => refreshList();
-    document.getElementById("ib-ctx").onclick = () => {
+    const ctxBtn = document.getElementById("ib-ctx");
+    ctxBtn.onclick = () => {
       st.showCtx = !st.showCtx;
       store.set("inbox-ctx", st.showCtx);
-      screens.inbox.render({ el, tools, route, back });
+      ctxBtn.classList.toggle("on", st.showCtx);
+      if (st.showCtx) showCard();
+      else window.UOS.closePeek();
     };
     const bsel = document.getElementById("ib-broker");
     if (bsel)
@@ -158,9 +146,17 @@ screens.inbox = {
       document.querySelector(".inbox")?.classList.remove("show-copilot");
       back.hidden = true;
     };
-    await refreshList(!!st.sel);
-    if (route.q.lead) select(route.q.lead);
-    else if (st.sel) select(st.sel);
+    // The list from the last visit shows at once; the fresh one replaces it.
+    if (st.items.length) {
+      list.innerHTML = listHtml();
+      if (route.q.lead) select(route.q.lead);
+      else if (st.sel) select(st.sel);
+      refreshList(true);
+    } else {
+      await refreshList(!!st.sel);
+      if (route.q.lead) select(route.q.lead);
+      else if (st.sel) select(st.sel);
+    }
     clearInterval(st.timer);
     st.timer = setInterval(() => {
       if (!document.hidden) refreshList();
@@ -170,4 +166,12 @@ screens.inbox = {
 
 onBus("lead-changed", () => {
   if (S.route.screen === "inbox") refreshList();
+});
+// Closing the card with its × keeps it closed until the Card button opens it
+// again. Leaving the Inbox also closes the panel; that is not the person's choice.
+onBus("peek-close", (p) => {
+  if (p?.type !== "lead" || !location.hash.startsWith("#/inbox") || !st.showCtx) return;
+  st.showCtx = false;
+  store.set("inbox-ctx", false);
+  document.getElementById("ib-ctx")?.classList.remove("on");
 });

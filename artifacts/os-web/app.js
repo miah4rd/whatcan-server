@@ -1,9 +1,9 @@
 // Unicorn OS — entry: sign-in, shell, navigation, notifications, search.
-import { S, api, esc, I, store, toast, fail, dialog, on, resizer, applySizes, screens, peeks, parseRoute, go, emit, onBus, rel, initials, isStaff, dropCache } from "./core.js";
+import { S, api, esc, I, store, toast, fail, dialog, on, resizer, applySizes, screens, peeks, parseRoute, go, emit, onBus, rel, initials, isStaff, dropCache, syncCopilotTheme } from "./core.js";
 import "./inbox.js";
 import "./day.js";
 import "./pipelines.js";
-import "./villas.js";
+import "./listings.js";
 import "./calendar.js";
 import "./analytics.js";
 import "./automations.js";
@@ -75,7 +75,7 @@ function navItems() {
     { id: "pipeline/unicorn", label: "UNICORN sales", dot: "var(--accent)", staffOnly: true },
     { sec: "Workspace" },
     { id: "projects", label: "Projects", icon: I.goal, staffOnly: true },
-    { id: "villas", label: "Villas", icon: I.villa },
+    { id: "listings", label: "Listings", icon: I.villa },
     { id: "calendar", label: "Calendar", icon: I.cal },
     { id: "analytics", label: "Analytics", icon: I.chart },
     { sec: "System" },
@@ -187,7 +187,7 @@ function renderNav() {
       ["inbox", "Inbox", I.inbox, counts.inbox],
       ["day", "My day", I.today, counts.day],
       ["pipeline/rental", "Leads", I.board],
-      ["villas", "Villas", I.villa],
+      ["listings", "Listings", I.villa],
       ["more", "More", I.gear],
     ];
     mn.innerHTML = tabs
@@ -206,6 +206,7 @@ function toggleTheme() {
   } catch (e) {
     /* ignore */
   }
+  syncCopilotTheme();
 }
 
 // ── routing ──
@@ -252,6 +253,7 @@ export function openPeek(type, id, tab) {
   if (!el) return;
   S.peek = { type, id: String(id), tab: tab || S.peek?.tabByType?.[type] || p.defaultTab };
   el.hidden = false;
+  el.parentElement?.classList.add("peek-open");
   el.innerHTML = `<div class="resize-x" id="peek-resize" title="Drag to resize · double-click to reset"></div><div class="loading">Loading…</div>`;
   resizer(document.getElementById("peek-resize"), { varName: "--peek-w", min: 360, max: Math.max(420, window.innerWidth - 240), invert: true });
   p.render(el, S.peek, { close: closePeek, setTab: (t) => openPeek(type, id, t) });
@@ -262,6 +264,7 @@ export function closePeek() {
   if (el) {
     el.hidden = true;
     el.innerHTML = "";
+    el.parentElement?.classList.remove("peek-open");
   }
   if (S.peek) emit("peek-close", S.peek);
   S.peek = null;
@@ -411,7 +414,7 @@ function openPalette() {
     const villas = S.cache["villas:rent"]?.value || [];
     for (const v of villas) {
       const hay = `${v.id} ${v.title} ${v.area}`.toLowerCase();
-      if (q && hay.includes(q)) out.push({ grp: "Villas", label: `${v.id} · ${v.title}`, sub: `${v.bedrooms}BR · ${v.area}`, act: () => openPeek("villa", v.id) });
+      if (q && hay.includes(q)) out.push({ grp: "Listings", label: `${v.id} · ${v.title}`, sub: `${v.bedrooms}BR · ${v.area}`, act: () => openPeek("villa", v.id) });
     }
     out.push(...searchProjects(q));
     if (/^\d{6,}$/.test(q)) out.unshift({ grp: "Open", label: `Card #${q}`, sub: "by amoCRM id", act: () => openPeek("lead", q) });
@@ -420,7 +423,7 @@ function openPalette() {
     let last = "";
     res.innerHTML = list.length
       ? list.map((it, i) => (it.grp !== last ? ((last = it.grp), `<div class="grp">${esc(it.grp)}</div>`) : "") + `<div class="r ${i === hi ? "hi" : ""}" data-i="${i}"><span>${esc(it.label)}</span><span class="faint" style="font-size:11.5px;margin-left:auto">${esc(it.sub)}</span></div>`).join("")
-      : `<div class="empty">Nothing found. Boards you have opened are searchable; villas too.</div>`;
+      : `<div class="empty">Nothing found. Boards you have opened are searchable; listings too.</div>`;
   };
   input.addEventListener("input", () => {
     hi = 0;

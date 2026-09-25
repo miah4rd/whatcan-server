@@ -6,6 +6,7 @@ import router from "./routes";
 import mobileRouter from "./routes/mobile";
 import kpiRouter from "./routes/kpi";
 import osRouter from "./routes/os";
+import { gzipJson } from "./lib/gzip-json";
 import { startOsAnalytics } from "./lib/os/analytics";
 import qcRouter from "./routes/qc";
 import { startQcScheduler } from "./lib/quality-control";
@@ -70,6 +71,8 @@ app.use(
 ); // large enough for a pasted screenshot (base64) as ground-truth context
 app.use(express.urlencoded({ extended: true }));
 
+// Compressed JSON for the OS and the Copilot's public API (lib/gzip-json.ts).
+app.use(["/os", "/api/public"], gzipJson);
 app.use("/api", router);
 app.use(mobileRouter);
 // The inspection report screen, /m/inspection/<id> (lib/inspection-report.ts).

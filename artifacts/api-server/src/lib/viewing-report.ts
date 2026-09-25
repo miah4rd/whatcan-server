@@ -427,6 +427,15 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
   const leadId = rep.leadId;
   const nextSteps = input.nextSteps.filter((s) => (NEXT_STEPS as readonly string[]).includes(s));
   const nextBy = input.nextBy && /^\d{4}-\d{2}-\d{2}$/.test(input.nextBy) ? input.nextBy : null;
+  // A typo in the year (2926-09-23, filed 23.09.2026) became an amoCRM task due
+  // in year -1: amoCRM keeps the due time in 32 bits and wrapped around. A next
+  // step is due within a year of the viewing, or the broker is asked again.
+  if (nextBy) {
+    const t = Date.parse(`${nextBy}T12:00:00+08:00`);
+    if (Number.isNaN(t) || t < Date.now() - 7 * 86_400_000 || t > Date.now() + 366 * 86_400_000) {
+      return { ok: false, error: `The next-step date ${nextBy} looks wrong. Pick a date within the next year.` };
+    }
+  }
   const rescheduledTo = input.rescheduledTo && !Number.isNaN(new Date(input.rescheduledTo).getTime()) ? new Date(input.rescheduledTo) : null;
   const typedCode = (input.propertyCode ?? "").trim().toUpperCase();
   if (!rep.propertyCode && /^(R-[A-Z]+-\d+|YUDR-\d+)$/.test(typedCode)) rep.propertyCode = typedCode;

@@ -300,11 +300,29 @@ export function go(screen, ...parts) {
 }
 
 // ── the Copilot (/m) embed ──
+/** The theme the OS shows now: the one picked with the moon button, else the system's. */
+export function currentTheme() {
+  const t = document.documentElement.getAttribute("data-theme");
+  if (t === "light" || t === "dark") return t;
+  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+/** The Copilot inside the OS wears the OS look; it follows the theme when it changes. */
+export function syncCopilotTheme() {
+  document.querySelectorAll("iframe.copilot-frame").forEach((f) => {
+    try {
+      f.contentWindow.postMessage({ source: "copilot-bridge", type: "theme", theme: currentTheme() }, S.meta.copilotOrigin);
+    } catch (e) {
+      /* the frame is still loading; it read the theme from its URL */
+    }
+  });
+}
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => S.meta && syncCopilotTheme());
 export function copilotUrl(broker, leadId) {
   const qs = new URLSearchParams();
   qs.set("broker", broker || "");
   if (leadId) qs.set("lead", String(leadId));
   qs.set("host", "os");
+  qs.set("theme", currentTheme());
   return `${S.meta.copilotOrigin}/m?${qs.toString()}`;
 }
 export function brokerForLead(responsible) {
@@ -401,11 +419,9 @@ export function stageOwner(pipelineKey, stage) {
   if (pipelineKey === "rental-listings" && /taken to work|qualified|inspection|long term|co-broke/.test(s)) return "code";
   return null;
 }
+/** Two queues: Live (the client just wrote) and Push (everything we start). Reach was dropped on 26.09: the team does not use it; those drafts sit in Push. */
 export function queueOf(item) {
-  if (item.kind === "live") return "live";
-  const st = String(item.lead_stage || "").toLowerCase();
-  if ((S.meta.reachStages || []).some((q) => st.includes(q))) return "reach";
-  return "push";
+  return item.kind === "live" ? "live" : "push";
 }
 /** The site's image edge serves every catalog photo resized: /img/<bucket>/<path>?w=<width>. */
 export function imgUrl(u, w = 600) {
@@ -423,4 +439,167 @@ export function imgFallback(el) {
     },
     true,
   );
+}
+
+// ── one look for every dropdown ──
+// The browser's own select popup (the blue macOS list) does not match the OS.
+// Every <select> stays a real select, so values and change handlers work as
+// before; only the list that opens is ours. Multi-selects keep the native one.
+let openMenu = null;
+function closeSelectMenu() {
+  if (!openMenu) return;
+  openMenu.el.remove();
+  openMenu.select.classList.remove("uselect-open");
+  document.removeEventListener("keydown", openMenu.onKey, true);
+  openMenu = null;
+}
+function pickOption(select, index) {
+  if (select.selectedIndex !== index) {
+    select.selectedIndex = index;
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+}
+function openSelectMenu(select) {
+  closeSelectMenu();
+  const opts = [...select.options];
+  const many = opts.length > 10;
+  const el = document.createElement("div");
+  el.className = "uselect-menu";
+  el.setAttribute("role", "listbox");
+  const rowsHtml = (filter) => {
+    let html = "";
+    let lastGroup = null;
+    opts.forEach((o, i) => {
+      if (filter && !o.text.toLowerCase().includes(filter)) return;
+      const g = o.parentElement?.tagName === "OPTGROUP" ? o.parentElement.label : null;
+      if (g !== lastGroup && g) html += `<div class="grp">${esc(g)}</div>`;
+      lastGroup = g;
+      html += `<div class="opt ${i === select.selectedIndex ? "sel" : ""} ${o.disabled ? "dis" : ""}" role="option" data-i="${i}"><span class="ck">${i === select.selectedIndex ? I.check : ""}</span><span class="tx">${esc(o.text)}</span></div>`;
+    });
+    return html || `<div class="none">Nothing matches</div>`;
+  };
+  el.innerHTML = `${many ? `<input class="uselect-q" placeholder="Search…" autocomplete="off">` : ""}<div class="list">${rowsHtml("")}</div>`;
+  document.body.appendChild(el);
+  const r = select.getBoundingClientRect();
+  const w = Math.max(r.width, Math.min(320, Math.max(180, r.width)));
+  el.style.minWidth = w + "px";
+  const below = window.innerHeight - r.bottom;
+  const h = Math.min(el.offsetHeight, 340);
+  el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - el.offsetWidth - 8)) + "px";
+  el.style.top = (below < h + 12 && r.top > below ? Math.max(8, r.top - h - 4) : r.bottom + 4) + "px";
+  select.classList.add("uselect-open");
+  const list = el.querySelector(".list");
+  let hi = select.selectedIndex;
+  const mark = () => {
+    list.querySelectorAll(".opt.hi").forEach((x) => x.classList.remove("hi"));
+    const cur = list.querySelector(`.opt[data-i="${hi}"]`);
+    if (cur) {
+      cur.classList.add("hi");
+      cur.scrollIntoView({ block: "nearest" });
+    }
+  };
+  mark();
+  const visible = () => [...list.querySelectorAll(".opt:not(.dis)")].map((x) => Number(x.dataset.i));
+  const onKey = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeSelectMenu();
+      select.focus();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const v = visible();
+      const at = v.indexOf(hi);
+      hi = v[Math.max(0, Math.min(v.length - 1, at + (e.key === "ArrowDown" ? 1 : -1)))] ?? v[0];
+      mark();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (hi >= 0 && !opts[hi]?.disabled) pickOption(select, hi);
+      closeSelectMenu();
+      select.focus();
+    } else if (e.key === "Tab") closeSelectMenu();
+  };
+  document.addEventListener("keydown", onKey, true);
+  openMenu = { el, select, onKey };
+  const q = el.querySelector(".uselect-q");
+  if (q) {
+    q.focus();
+    q.addEventListener("input", () => {
+      list.innerHTML = rowsHtml(q.value.trim().toLowerCase());
+      hi = visible()[0] ?? -1;
+      mark();
+    });
+  }
+  list.addEventListener("mousedown", (e) => e.preventDefault());
+  list.addEventListener("click", (e) => {
+    const o = e.target.closest(".opt");
+    if (!o || o.classList.contains("dis")) return;
+    pickOption(select, Number(o.dataset.i));
+    closeSelectMenu();
+  });
+}
+const enhanceable = (t) => t && t.tagName === "SELECT" && !t.multiple && !t.disabled && !t.closest(".native-select");
+document.addEventListener(
+  "pointerdown",
+  (e) => {
+    if (openMenu && !openMenu.el.contains(e.target) && e.target !== openMenu.select) closeSelectMenu();
+    const t = e.target.closest?.("select");
+    if (!enhanceable(t) || e.button !== 0) return;
+    e.preventDefault();
+    if (openMenu && openMenu.select === t) return closeSelectMenu();
+    t.focus({ preventScroll: true });
+    openSelectMenu(t);
+  },
+  true,
+);
+// Chrome and Safari open the native list on mousedown; that list must not appear.
+document.addEventListener(
+  "mousedown",
+  (e) => {
+    const t = e.target.closest?.("select");
+    if (enhanceable(t)) e.preventDefault();
+  },
+  true,
+);
+document.addEventListener(
+  "keydown",
+  (e) => {
+    const t = document.activeElement;
+    if (!enhanceable(t) || openMenu) return;
+    if (e.key === " " || e.key === "Enter" || (e.altKey && e.key === "ArrowDown")) {
+      e.preventDefault();
+      openSelectMenu(t);
+    }
+  },
+  true,
+);
+window.addEventListener("resize", closeSelectMenu);
+document.addEventListener("scroll", (e) => openMenu && !openMenu.el.contains(e.target) && closeSelectMenu(), true);
+
+/**
+ * The column a drag is over: the one under the pointer, or else the one whose
+ * left–right span holds it. Dropping anywhere above or below a stage, not only
+ * on its cards, puts the card in that stage (owner, 26.09).
+ */
+export function dropColumn(board, e) {
+  const direct = e.target.closest?.("[data-drop]");
+  if (direct && board.contains(direct)) return direct;
+  return [...board.querySelectorAll("[data-drop]")].find((c) => {
+    const r = c.getBoundingClientRect();
+    return e.clientX >= r.left && e.clientX <= r.right;
+  }) || null;
+}
+/**
+ * Drag handlers for a board live on the whole screen around it, so a card let
+ * go below the columns or in the margin still lands. One handler per event:
+ * a redrawn board replaces the old ones instead of stacking.
+ */
+export function boardListen(board, type, fn) {
+  const host = board.closest(".content") || board.parentElement || board;
+  host._boardH = host._boardH || {};
+  if (host._boardH[type]) host.removeEventListener(type, host._boardH[type]);
+  host._boardH[type] = fn;
+  host.addEventListener(type, fn);
 }

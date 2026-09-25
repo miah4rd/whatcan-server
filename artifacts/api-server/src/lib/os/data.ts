@@ -553,16 +553,8 @@ export async function calendar(user: OsUser, from: Date, to: Date) {
   for (const r of ins.rows) {
     events.push({ id: `i:${r.id}`, kind: "inspection", at: iso(r.visit_at)!, title: `Inspection · ${names.get(String(r.lead_id)) ?? "#" + r.lead_id}`, sub: r.time_known ? null : "time not fixed", leadId: String(r.lead_id), timeKnown: Boolean(r.time_known), who: (r.responsible_user as string) ?? null });
   }
-  try {
-    const ts = await tasksFor(user, { all: isStaff(user) });
-    for (const t of ts) {
-      const at = new Date(t.due);
-      if (at < from || at > to) continue;
-      events.push({ id: `t:${t.id}`, kind: "task", at: t.due, title: t.text, sub: t.leadName, leadId: t.leadId, timeKnown: true, who: t.responsible });
-    }
-  } catch {
-    /* tasks are optional on the calendar */
-  }
+  // amoCRM tasks are not calendar events: they reach the broker as Push drafts
+  // in the Inbox. On the calendar they buried the visits (owner, 26.09).
   return events.sort((a, b) => a.at.localeCompare(b.at));
 }
 
