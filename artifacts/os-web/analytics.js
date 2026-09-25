@@ -432,24 +432,33 @@ const VIEWS = {
       x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7));
       return x.toISOString().slice(0, 10);
     })());
-    const F = ["written", "autopilot", "as_written", "edited", "skipped", "people_msgs", "bot_msgs", "bot_moves", "people_moves"];
+    const F = ["written", "autopilot", "as_written", "edited", "skipped", "people_msgs", "bot_msgs", "bot_moves", "people_moves", "wa_phone", "wa_copilot"];
+    const num = (row) => Object.fromEntries(F.map((f) => [f, Number(row[f] || 0)]));
+    // Per day first: after the move to our own WhatsApp channel the gateway says who sent what
+    // (typed on the phone, or through the Copilot); before it, amoCRM's sender types are the guide.
+    const perDay = (g) => {
+      const viaGateway = g.wa_phone + g.wa_copilot > 0;
+      const hand = viaGateway ? g.wa_phone : Math.max(0, g.people_msgs - g.as_written - g.edited);
+      const otherBot = viaGateway ? Math.max(0, g.wa_copilot + g.bot_msgs - g.autopilot - g.as_written - g.edited) : Math.max(0, g.bot_msgs - g.autopilot);
+      return { ...g, hand, otherBot };
+    };
+    const D = [...F, "hand", "otherBot"];
     const groups = new Map();
     for (const row of r.rows) {
       const k = keyOf(row.day);
-      const g = groups.get(k) || Object.fromEntries(F.map((f) => [f, 0]));
-      for (const f of F) g[f] += Number(row[f] || 0);
+      const d = perDay(num(row));
+      const g = groups.get(k) || Object.fromEntries(D.map((f) => [f, 0]));
+      for (const f of D) g[f] += d[f];
       groups.set(k, g);
     }
     const derive = (g) => {
-      const hand = Math.max(0, g.people_msgs - g.as_written - g.edited);
-      const otherBot = Math.max(0, g.bot_msgs - g.autopilot);
-      const out = g.autopilot + otherBot + g.as_written + g.edited + hand;
-      const human = hand * mins.hand + g.as_written * mins.approve + g.edited * mins.edit;
+      const out = g.autopilot + g.otherBot + g.as_written + g.edited + g.hand;
+      const human = g.hand * mins.hand + g.as_written * mins.approve + g.edited * mins.edit;
       const allByHand = out * mins.hand;
-      return { ...g, hand, otherBot, out, noHuman: g.autopilot + otherBot, byBot: g.autopilot + otherBot + g.as_written + g.edited, humanMin: human, savedMin: Math.max(0, allByHand - human), moves: g.bot_moves + g.people_moves };
+      return { ...g, out, noHuman: g.autopilot + g.otherBot, byBot: g.autopilot + g.otherBot + g.as_written + g.edited, humanMin: human, savedMin: Math.max(0, allByHand - human), moves: g.bot_moves + g.people_moves };
     };
     const rows = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([k, g]) => ({ k, ...derive(g) }));
-    const total = derive(Object.fromEntries(F.map((f) => [f, rows.reduce((a, x) => a + x[f], 0)])));
+    const total = derive(Object.fromEntries(D.map((f) => [f, rows.reduce((a, x) => a + x[f], 0)])));
     const pc = (a, b) => (b ? Math.round((a / b) * 100) + "%" : "—");
     const hrs = (m) => (m >= 60 ? `${(m / 60).toFixed(1)} h` : `${Math.round(m)} min`);
     const label = (k) => (by === "month" ? new Date(k + "-01T00:00:00Z").toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" }) : fmtDay(k + "T04:00:00Z"));
@@ -475,7 +484,7 @@ const VIEWS = {
         <div class="tbl-wrap" style="max-height:none"><table class="grid"><thead><tr><th>${by === "day" ? "Day" : by === "week" ? "Week of" : "Month"}</th><th>Drafts written</th><th>Autopilot sent</th><th>Sent as written</th><th>Edited</th><th>Skipped</th><th>By hand</th><th>Templates</th><th>Written by the bot</th><th>Stage moves bot / people</th><th>People's time</th><th>Saved</th></tr></thead><tbody>${rows
           .map((x) => `<tr><td>${esc(label(x.k))}</td><td class="num">${x.written}</td><td class="num">${x.autopilot}</td><td class="num">${x.as_written}</td><td class="num">${x.edited}</td><td class="num">${x.skipped}</td><td class="num">${x.hand}</td><td class="num">${x.otherBot}</td><td class="num"><b>${pc(x.byBot, x.out)}</b></td><td class="num">${x.bot_moves} / ${x.people_moves}</td><td class="num">${hrs(x.humanMin)}</td><td class="num">${hrs(x.savedMin)}</td></tr>`)
           .join("")}</tbody></table></div>
-        <p class="faint" style="font-size:11.5px;margin:8px 0 0">"By hand" is the people's messages that did not come from a draft (sent from the phone or typed in amoCRM). Templates are the bot's own messages, such as the welcome. Time uses the minutes above, kept on this device.</p></div></div>`;
+        <p class="faint" style="font-size:11.5px;margin:8px 0 0">"By hand" is what people typed themselves: since our own WhatsApp channel (from about 22.09) the gateway marks every message typed on the phone; before it, it is the people's messages that did not come from a draft. Templates are the bot's own messages, such as the welcome. Time uses the minutes above, kept on this device.</p></div></div>`;
     el.querySelector("#ws-days").onchange = (e) => (store.set("ws-days", Number(e.target.value)), rerender());
     el.querySelector("#ws-funnel").onchange = (e) => (store.set("ws-funnel", e.target.value), rerender());
     on(el, "click", "[data-by]", (e, b) => (store.set("ws-by", b.dataset.by), rerender()));

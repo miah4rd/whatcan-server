@@ -59,7 +59,6 @@ const RULES: Record<FunnelKey, Array<[RegExp, string]>> = {
     [/viewing\s*done/i, "The filed viewing report moves the card here (the report opens 30 minutes after the slot)."],
   ],
   "rental-listings": [
-    [/initial contact/i, "A new owner card we have not written to yet."],
     [/qualified/i, "Qualification rule: bedrooms, a price with its commission position and the real owner confirmed. The listing goes on the site as Pre-listed."],
     [/inspection\s*sc?h?ed/i, "A visit agreed in the thread, with its date; it also goes to the Brokers Google Calendar."],
     [/^live$/i, "The site's Listed switch (Pre-listed to Listed) moves the card here."],
@@ -196,7 +195,7 @@ export async function workShare(opts: { days: number; funnel?: FunnelKey | null 
   const days = Math.min(365, Math.max(7, opts.days));
   const pipe = opts.funnel && PIPE[opts.funnel] ? PIPE[opts.funnel] : null;
   const day = `to_char((%s AT TIME ZONE 'Asia/Makassar')::date, 'YYYY-MM-DD')`;
-  const [drafts, msgs, moves] = await Promise.all([
+  const [drafts, msgs, moves, wa] = await Promise.all([
     pool.query(
       `SELECT ${day.replace("%s", "p.created_at")} AS day,
               count(*)::int AS written,
@@ -226,6 +225,21 @@ export async function workShare(opts: { days: number; funnel?: FunnelKey | null 
         GROUP BY 1 ORDER BY 1`,
       [String(days), pipe],
     ),
+    // Since the own WhatsApp channel (18–22.09) the gateway knows who sent what:
+    // out_copilot went through the Copilot (drafts, autopilot, templates),
+    // out_phone was typed on the phone. History imports are not new messages.
+    pool
+      .query(
+        `SELECT ${day.replace("%s", "w.created_at")} AS day,
+                count(*) FILTER (WHERE w.direction = 'out_phone')::int AS wa_phone,
+                count(*) FILTER (WHERE w.direction = 'out_copilot' AND coalesce(w.status,'') <> 'error')::int AS wa_copilot
+           FROM wa_messages w LEFT JOIN leads_sync l ON l.lead_id = w.card_lead_id::text
+          WHERE w.created_at > now() - ($1 || ' days')::interval AND coalesce(w.status,'') NOT IN ('history','history_dup')
+            AND ($2::text IS NULL OR lower(coalesce(l.pipeline,'')) = $2)
+          GROUP BY 1 ORDER BY 1`,
+        [String(days), pipe],
+      )
+      .catch(() => ({ rows: [] as Record<string, unknown>[] })),
   ]);
   const byDay = new Map<string, Record<string, number | string>>();
   const put = (rows: Array<Record<string, unknown>>) => {
@@ -239,6 +253,7 @@ export async function workShare(opts: { days: number; funnel?: FunnelKey | null 
   put(drafts.rows);
   put(msgs.rows);
   put(moves.rows);
+  put(wa.rows);
   const rows = [...byDay.values()].sort((a, b) => String(a.day).localeCompare(String(b.day)));
   return { days, funnel: opts.funnel ?? null, rows };
 }
