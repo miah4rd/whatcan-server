@@ -323,10 +323,11 @@ export function syncCopilotTheme() {
   });
 }
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => S.meta && syncCopilotTheme());
-export function copilotUrl(broker, leadId) {
+export function copilotUrl(broker, leadId, single) {
   const qs = new URLSearchParams();
   qs.set("broker", broker || "");
   if (leadId) qs.set("lead", String(leadId));
+  if (single) qs.set("single", "1");
   qs.set("host", "os");
   qs.set("theme", currentTheme());
   return `${S.meta.copilotOrigin}/m?${qs.toString()}`;
@@ -335,10 +336,13 @@ export function brokerForLead(responsible) {
   if (!isStaff() && S.user.brokerKey) return S.user.brokerKey;
   return responsible || S.user.brokerKey || "hos";
 }
-/** Mounts (or reuses) the Copilot iframe for a lead inside `host`. */
-export function mountCopilot(host, broker, leadId) {
+/**
+ * Mounts (or reuses) the Copilot inside `host`: the amoCRM Copilot page itself, dressed as the OS
+ * by the server (host=os). single: one card's Copilot in a side panel, without its list.
+ */
+export function mountCopilot(host, broker, leadId, single) {
   let f = host.querySelector("iframe.copilot-frame");
-  const want = copilotUrl(broker, leadId);
+  const want = copilotUrl(broker, leadId, single);
   if (f && f.dataset.broker === broker) {
     if (f.dataset.lead !== String(leadId || "")) {
       f.dataset.lead = String(leadId || "");

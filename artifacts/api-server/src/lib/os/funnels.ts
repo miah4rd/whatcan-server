@@ -82,7 +82,7 @@ export function ensureFunnelTables(): Promise<void> {
 type Row = Record<string, unknown>;
 const bad = (msg: string, status = 400) => Object.assign(new Error(msg), { status });
 const clean = (v: unknown, max: number) => String(v ?? "").trim().slice(0, max);
-const kindOf = (name: string) => (/won|успешно|contract signed/i.test(name) ? "won" : /lost|закрыто и не/i.test(name) ? "lost" : "open");
+const kindOf = (name: string) => (/won|успешно/i.test(name) ? "won" : /lost|закрыто и не/i.test(name) ? "lost" : "open");
 const KINDS = ["open", "won", "lost"];
 
 function needStaff(user: OsUser) {

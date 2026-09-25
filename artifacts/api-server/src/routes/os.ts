@@ -17,7 +17,6 @@ import crypto from "node:crypto";
 import express, { Router, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
 import publicRouter from "./public";
-import { copilotDefaultGuide } from "./mobile";
 import {
   ensureOsTables,
   login,
@@ -329,9 +328,6 @@ api.post(
   }),
 );
 
-// The guide the Copilot sends with a rewrite, the same text as the /m page's.
-api.get("/copilot/guide", signedIn, h(async () => ({ guide: copilotDefaultGuide() })));
-
 // One viewing report, whole: feedback, what did not work, next step.
 api.get("/viewing-reports/:id", signedIn, h(async (req) => viewingReportDetail(req.osUser!, String(req.params["id"]))));
 
@@ -523,33 +519,6 @@ api.patch(
 );
 
 router.use("/os/api", api);
-// The OS lists drafts, it does not read them: with lite=1 the drafts list
-// comes without each card's conversation and notes (290 of 530 KB for one
-// broker). Same handler, same drafts; only the answer is trimmed.
-const LITE_DROP = ["recent_messages", "attachments", "profile_summary", "lead_notes", "form_answers", "suggestionText"];
-router.use("/os/api/p/suggestions", (req, res, next) => {
-  const lite = req.query["lite"] === "1";
-  // The OS's own Copilot asks for one card: the same list, only that lead's draft.
-  const onlyLead = typeof req.query["leadId"] === "string" ? String(req.query["leadId"]) : null;
-  if (!lite && !onlyLead) return next();
-  const send = res.json.bind(res);
-  res.json = ((body: { items?: Array<Record<string, unknown>> } | null) => {
-    if (body && Array.isArray(body.items) && onlyLead) body = { ...body, items: body.items.filter((it) => String(it["lead_id"]) === onlyLead) };
-    if (body && Array.isArray(body.items) && lite) {
-      body = {
-        ...body,
-        items: body.items.map((it) => {
-          const o: Record<string, unknown> = { ...it };
-          for (const k of LITE_DROP) delete o[k];
-          for (const k of ["suggestion_text", "last_lead_text"]) if (typeof o[k] === "string") o[k] = (o[k] as string).slice(0, 280);
-          return o;
-        }),
-      };
-    }
-    return send(body);
-  }) as typeof res.json;
-  next();
-});
 // The Copilot's own endpoints (drafts list, dictation, push subscription,
 // reports, autopilot readiness), unchanged, behind the OS session.
 router.use("/os/api/p", signedIn, publicRouter);

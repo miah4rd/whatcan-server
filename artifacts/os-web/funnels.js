@@ -81,7 +81,9 @@ screens.funnels = {
       api("/automations"),
       AMO[tabGuess] ? api(`/automations/map?funnel=${tabGuess}`).catch(() => null) : Promise.resolve(null),
     ]);
-    const funnels = fl.items;
+    // amoCRM funnels in the menu's order (Rental first), then the OS's own.
+    const rank = (f) => (AMO[f.key] ? Object.keys(AMO).indexOf(f.key) : 10);
+    const funnels = [...fl.items].sort((a, b) => rank(a) - rank(b));
     const keys = funnels.map((f) => f.key);
     const tab = [...keys, "general"].includes(tabGuess) ? tabGuess : "rental";
     store.set("fn-tab", tab);

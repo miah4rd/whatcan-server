@@ -390,11 +390,13 @@ const PAGE_HTML = `<!doctype html>
     for (var osi = 0; osi < osSheets.length; osi++) osSheets[osi].textContent = osSkinText(osSheets[osi].textContent);
     var osTok = document.createElement("style");
     osTok.textContent = 'html.os-skin{--bg:#F6F4EF;--surface:#FFFFFF;--surface-2:#F1EEE7;--surface-3:#E9E5DC;--text:#1E1A16;--text-2:#5C554D;--text-3:#8C8479;--border:#E4DFD5;--border-2:#D3CCBF;--accent:#96782F;--accent-2:#B69A54;--accent-bg:#F3EBD6;--accent-text:#6E561C;--on-accent:#1E1A16;--live:#1E8E5A;--live-bg:#E4F4EB;--reach:#2F6FED;--reach-bg:#E6EEFD;--push:#C27A0A;--push-bg:#FBEFD9;--hot:#D64545;--hot-bg:#FBE5E5;--bad:#D64545}html.os-skin[data-os-theme=dark]{--bg:#1B1612;--surface:#241E19;--surface-2:#2D2620;--surface-3:#372F27;--text:#F1ECE4;--text-2:#B8AFA3;--text-3:#857C70;--border:#352D25;--border-2:#4A4035;--accent:#C9A85C;--accent-2:#B69A54;--accent-bg:#3A3020;--accent-text:#E3C77E;--on-accent:#1E1A16;--live:#3FB37B;--live-bg:#1B3327;--reach:#6A93F5;--reach-bg:#1D2A45;--push:#E0A23B;--push-bg:#3A2E16;--hot:#EF6B6B;--hot-bg:#3E2222;--bad:#EF6B6B}html.os-skin body{font-family:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:13px;background:var(--surface);color:var(--text);-webkit-font-smoothing:antialiased}html.os-skin main{max-width:none;padding:14px 16px}html.os-skin .back-btn{display:none}html.os-skin .detail-header{justify-content:flex-end}html.os-skin .lead-hdr-name{font-size:15px;font-weight:600}html.os-skin .msg-text,html.os-skin textarea{font-size:13.5px}html.os-skin .tbubble{font-size:13px;border-radius:10px}html.os-skin button.act{padding:9px 10px;font-size:13px;font-weight:600;border-radius:8px}html.os-skin .openlead-btn,html.os-skin .ctx-btn,html.os-skin .mini,html.os-skin .temp-btn,html.os-skin .lc-copy{font-weight:500}html.os-skin textarea:focus,html.os-skin .att-add-input:focus{border-color:var(--accent)}html.os-skin .thread-lbl,html.os-skin label.section{color:var(--text-3);letter-spacing:.07em}html.os-skin body{line-height:1.45}html.os-skin .thread-lbl,html.os-skin label.section,html.os-skin .vr .section{font-size:11px;font-weight:600;letter-spacing:.07em}html.os-skin .tsender{font-size:10.5px;font-weight:600}html.os-skin .tat{font-size:11px}html.os-skin .lead-contact{font-size:12.5px}html.os-skin .temp-ctl-lbl,html.os-skin .temp-btn,html.os-skin .openlead-btn,html.os-skin .ctx-btn,html.os-skin .mini,html.os-skin .att-pick-btn,html.os-skin .att-add-btn,html.os-skin .lc-copy{font-size:12px;font-weight:500}html.os-skin .badge{font-size:10.5px;font-weight:600}html.os-skin .vr-head{font-size:12.5px;font-weight:600}html.os-skin .vr-send,html.os-skin .li-btn,html.os-skin .ai-send-btn{font-weight:600}html.os-skin select:not([multiple]){appearance:none;-webkit-appearance:none;background-image:url(data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2016%2016%22%20fill=%22none%22%20stroke=%22%238C8479%22%20stroke-width=%221.7%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22%3E%3Cpath%20d=%22M4%206l4%204%204-4%22/%3E%3C/svg%3E);background-repeat:no-repeat;background-position:right 7px center;background-size:12px;padding-right:24px;cursor:pointer}html.os-skin .os-menu{position:fixed;z-index:1000;background:var(--surface);border:1px solid var(--border-2);border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.2),0 8px 24px rgba(0,0,0,.25);padding:4px;max-height:300px;overflow:auto;font-size:12.5px}html.os-skin .os-opt{padding:6px 10px;border-radius:6px;cursor:pointer;white-space:nowrap}html.os-skin .os-opt:hover{background:var(--surface-2)}html.os-skin .os-opt.sel{font-weight:600;color:var(--accent-text)}html.os-skin .os-opt.dis{opacity:.45;cursor:default}';
-    document.head.appendChild(osTok);
+    // The server dresses the page for the OS before the first paint (#os-skin); this copy of the
+    // look is only for a page that arrived without it.
+    if (!document.getElementById("os-skin")) document.head.appendChild(osTok);
     var osFont = document.createElement("link");
     osFont.rel = "stylesheet";
     osFont.href = "https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap";
-    document.head.appendChild(osFont);
+    if (!document.getElementById("os-skin")) document.head.appendChild(osFont);
     // Rows built later carry inline colours too; they get the same palette.
     var osFix = function (node) {
       if (!node || node.nodeType !== 1) return;
@@ -3568,6 +3570,22 @@ const PAGE_HTML = `<!doctype html>
     } catch (e) { /* non-fatal — bridge may retry, or this instance is standalone despite the frame check */ }
   }
 
+  // Inside Unicorn OS: tell the OS which card is open (or that the list is back), so it can dock
+  // that card's facts beside the Copilot on a wide screen. Nothing else changes; amoCRM never
+  // passes host=os.
+  if (OS_SKIN) {
+    var osRender = render;
+    var osOpenLead = "";
+    render = function () {
+      osRender.apply(this, arguments);
+      var osId = openItem ? String(openItem.lead_id) : "";
+      if (osId !== osOpenLead) {
+        osOpenLead = osId;
+        notifyHost(osId ? "open" : "list", osId || null);
+      }
+    };
+  }
+
   // The 8am report push deep-links straight to the tab it is about.
   if (_qs.get("view") === "report") reportView = true;
   if (_qs.get("view") === "clients") clientsView = true;
@@ -3597,27 +3615,178 @@ const PAGE_HTML = `<!doctype html>
 </html>`;
 
 /**
- * The draft guide the Copilot page sends with every rewrite (/suggest needs
- * one), read out of the page itself: Unicorn OS's own Copilot sends the very
- * same text, and there is still one copy of it (DEFAULT_GUIDE above).
+ * The Copilot page inside Unicorn OS (host=os): the very same page and script, dressed as the
+ * OS from the first byte (owner, 26.09: "copy it whole, change only how it looks"). The look used
+ * to be applied by the page's own script after the first paint, so the Copilot flashed in its
+ * navy colours before turning into the OS. Now the recoloured stylesheet, the OS font and the
+ * look below are in <head>, and <html> carries the theme. amoCRM and the phone app never pass
+ * host=os and get PAGE_HTML untouched.
  */
-let guideCache: string | null = null;
-export function copilotDefaultGuide(): string {
-  if (guideCache !== null) return guideCache;
-  const m = PAGE_HTML.match(/var DEFAULT_GUIDE = (\[[\s\S]*?\])\.join\('\\n'\);/);
-  if (!m) throw new Error("The Copilot page has no DEFAULT_GUIDE.");
-  const lines = new Function(`return ${m[1]};`)() as string[];
-  guideCache = lines.join("\n");
-  return guideCache;
+const OS_SKIN_CSS = `
+html.os-skin{--bg:#F6F4EF;--surface:#FFFFFF;--surface-2:#F1EEE7;--surface-3:#E9E5DC;--text:#1E1A16;--text-2:#5C554D;--text-3:#8C8479;--border:#E4DFD5;--border-2:#D3CCBF;--accent:#96782F;--accent-2:#B69A54;--accent-bg:#F3EBD6;--accent-text:#6E561C;--on-accent:#1E1A16;--live:#1E8E5A;--live-bg:#E4F4EB;--reach:#2F6FED;--reach-bg:#E6EEFD;--push:#C27A0A;--push-bg:#FBEFD9;--hot:#D64545;--hot-bg:#FBE5E5;--bad:#D64545;--shadow:0 1px 2px rgba(30,26,22,.06),0 8px 24px rgba(30,26,22,.10)}
+html.os-skin[data-os-theme=dark]{--bg:#1B1612;--surface:#241E19;--surface-2:#2D2620;--surface-3:#372F27;--text:#F1ECE4;--text-2:#B8AFA3;--text-3:#857C70;--border:#352D25;--border-2:#4A4035;--accent:#C9A85C;--accent-2:#B69A54;--accent-bg:#3A3020;--accent-text:#E3C77E;--on-accent:#1E1A16;--live:#3FB37B;--live-bg:#1B3327;--reach:#6A93F5;--reach-bg:#1D2A45;--push:#E0A23B;--push-bg:#3A2E16;--hot:#EF6B6B;--hot-bg:#3E2222;--bad:#EF6B6B;--shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px rgba(0,0,0,.45)}
+html.os-skin body{font-family:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:13px;line-height:1.45;background:var(--surface);color:var(--text);-webkit-font-smoothing:antialiased}
+html.os-skin button,html.os-skin input,html.os-skin select,html.os-skin textarea{font-family:inherit}
+html.os-skin header{background:var(--surface);border-bottom:1px solid var(--border);padding:10px 14px}
+html.os-skin .brand{display:none}
+html.os-skin .broker-chip,html.os-skin .top-actions select{border-radius:6px;background-color:var(--surface);border:1px solid var(--border-2);color:var(--text);font-size:12px;padding:4px 24px 4px 8px}
+html.os-skin .refresh-btn{color:var(--text-2);font-size:15px;border-radius:6px}
+html.os-skin .refresh-btn:hover{background:var(--surface-2)}
+html.os-skin .tabs{gap:3px;margin-top:10px;background:var(--surface-2);padding:3px;border-radius:9px}
+html.os-skin .tab{padding:6px 4px;border-radius:7px;font-size:12.5px;font-weight:600;background:transparent;border:1px solid transparent;color:var(--text-2)}
+html.os-skin .tab.active{background:var(--surface);color:var(--text);border-color:var(--border);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+html.os-skin .tab .count{background:var(--surface-3);color:var(--text-2);font-size:10.5px;font-weight:600;border-radius:99px;padding:0 6px}
+html.os-skin .tab.active .count{background:var(--accent-bg);color:var(--accent-text)}
+html.os-skin main{max-width:none;padding:12px 14px}
+html.os-skin .empty{color:var(--text-3);font-size:13px}
+html.os-skin .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;box-shadow:0 1px 1px rgba(0,0,0,.03)}
+html.os-skin .card:hover{border-color:var(--border-2)}
+html.os-skin .card:active{background:var(--surface-2)}
+html.os-skin .card-lead-link{color:var(--text);font-weight:600;font-size:14px}
+html.os-skin .card-time,html.os-skin .card-notes{color:var(--text-3)}
+html.os-skin .card-preview{color:var(--text-2);font-size:12.5px}
+html.os-skin .card-foot{color:var(--text-3);font-size:10.5px;font-weight:600;letter-spacing:.04em}
+html.os-skin .card-arrow{color:var(--text-3)}
+html.os-skin .badge{border-radius:99px;font-size:10.5px;font-weight:600;padding:1px 7px}
+html.os-skin .badge.stage{background:var(--surface-3);color:var(--text-2)}
+html.os-skin .badge.stagepill{background:var(--accent-bg);color:var(--accent-text)}
+html.os-skin .badge.notask{background:var(--surface-3);color:var(--text-3)}
+html.os-skin .detail-header{margin-bottom:10px}
+html.os-skin.os-single .back-btn{display:none}
+html.os-skin.os-single .detail-header{justify-content:flex-end}
+html.os-skin .back-btn{background:var(--surface);border:1px solid var(--border-2);border-radius:6px;padding:5px 10px;font-size:12.5px;font-weight:500;color:var(--text)}
+html.os-skin .back-btn:hover{background:var(--surface-2)}
+html.os-skin .openlead-btn{background:transparent;border:1px solid var(--border-2);color:var(--text-2);border-radius:6px;font-size:12px;font-weight:500;padding:4px 9px}
+html.os-skin .lead-hdr-name{font-size:16px;font-weight:600;letter-spacing:-.01em}
+html.os-skin .lead-contact{font-size:12.5px;color:var(--text-2)}
+html.os-skin .lead-contact .lc-name{color:var(--text)}
+html.os-skin .lead-contact a.lc-phone{color:var(--text);font-weight:500}
+html.os-skin .lead-contact .lc-copy{background:var(--surface);border:1px solid var(--border-2);color:var(--text-2);border-radius:6px;font-size:11.5px;font-weight:500}
+html.os-skin .temp-ctl-lbl{color:var(--text-3);font-weight:500;font-size:12px}
+html.os-skin .temp-btn{border-radius:99px;font-size:11.5px;font-weight:500;border:1px solid var(--border-2);color:var(--text-2)}
+html.os-skin .thread-lbl,html.os-skin label.section,html.os-skin .vr .section,html.os-skin .rep-head,html.os-skin .li-f label{font-size:11px;font-weight:600;letter-spacing:.07em;color:var(--text-3)}
+html.os-skin .conv{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px}
+html.os-skin .conv-resize::before{background:var(--border-2)}
+html.os-skin .tmsg.us{margin-left:12%}
+html.os-skin .tmsg.lead{margin-right:12%}
+html.os-skin .tsender{font-size:10.5px;font-weight:600;letter-spacing:.02em;text-transform:none}
+html.os-skin .tmsg.us .tsender,html.os-skin .tmsg.lead .tsender{color:var(--text-3)}
+html.os-skin .tat{color:var(--text-3);font-size:10.5px}
+html.os-skin .tbubble{border-radius:12px;font-size:13px;line-height:1.5;padding:8px 11px}
+html.os-skin .tmsg.us .tbubble{background:var(--accent-bg);border:1px solid transparent;color:var(--text)}
+html.os-skin .tmsg.lead .tbubble{background:var(--surface);border:1px solid var(--border);color:var(--text)}
+html.os-skin .tquote{border-left-color:var(--border-2);background:var(--surface-2);color:var(--text-2)}
+html.os-skin .no-conv{color:var(--text-3)}
+html.os-skin .form-ans .fa{background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px}
+html.os-skin .form-ans .fa b{color:var(--text-3);font-weight:600}
+html.os-skin .msg-text{font-size:14px;line-height:1.55}
+html.os-skin textarea{background:var(--surface);color:var(--text);border:1px solid var(--border-2);border-radius:8px;font-size:14px;line-height:1.55}
+html.os-skin textarea:focus,html.os-skin input:focus{outline:2px solid var(--accent);outline-offset:0;border-color:transparent}
+html.os-skin .ai-input-wrap{background:var(--surface);border:1px solid var(--border-2);border-radius:8px}
+html.os-skin .aiinput{color:var(--text)}
+html.os-skin .aiinput:focus{outline:none}
+html.os-skin .ai-mic-btn{border:1px solid var(--border-2);background:var(--surface);color:var(--text);border-radius:6px;font-weight:500}
+html.os-skin .ai-mic-btn.recording{background:var(--bad);border-color:var(--bad);color:var(--surface)}
+html.os-skin .ai-send-btn,html.os-skin .vr-send,html.os-skin .li-btn,html.os-skin .push-banner .act,html.os-skin .setup button,html.os-skin .edit-ok{background:var(--accent);color:var(--on-accent);border:1px solid var(--accent);border-radius:6px;font-weight:600}
+html.os-skin .li-btn.ghost{background:var(--surface);color:var(--text);border:1px solid var(--border-2)}
+html.os-skin .action-row,html.os-skin .skip-panel{background:var(--surface-2);border:1px solid var(--border);border-radius:8px}
+html.os-skin .action-row-lbl,html.os-skin .skip-lbl,html.os-skin .stage-confirm-lbl{color:var(--text-2);font-weight:500}
+html.os-skin .ext-cb{accent-color:var(--accent)}
+html.os-skin .ext-select,html.os-skin .resched-date,html.os-skin .att-add-input,html.os-skin .vr input[type=date],html.os-skin .vr input[type=datetime-local],html.os-skin .vr input[type=text],html.os-skin .li-f input,html.os-skin .li-f select,html.os-skin .li-f textarea,html.os-skin .cl-tools input,html.os-skin .cl-tools select,html.os-skin .setup input{background-color:var(--surface);color:var(--text);border:1px solid var(--border-2);border-radius:6px}
+html.os-skin button.act{border-radius:8px;padding:10px;font-size:13.5px;font-weight:600}
+html.os-skin button.approve{background:var(--accent);color:var(--on-accent)}
+html.os-skin button.skip,html.os-skin button.replied,html.os-skin button.edit,html.os-skin .edit-x{background:var(--surface);color:var(--text);border:1px solid var(--border-2)}
+html.os-skin button.skip:hover,html.os-skin button.replied:hover,html.os-skin button.edit:hover,html.os-skin .mini:hover,html.os-skin .ctx-btn:hover,html.os-skin .att-add-btn:hover{background:var(--surface-2)}
+html.os-skin .edit-ok,html.os-skin .edit-x{border-radius:8px;width:44px;height:44px}
+html.os-skin .mini{border-radius:6px;border:1px solid var(--border-2);background:var(--surface);color:var(--text);font-weight:500;height:30px}
+html.os-skin .mini-danger{color:var(--bad)}
+html.os-skin .stage-toggle,html.os-skin .resched-toggle{color:var(--text-3)}
+html.os-skin .stage-hint{background:var(--accent-bg);color:var(--accent-text);border:1px solid transparent;border-radius:8px}
+html.os-skin .stage-hint .dim{color:var(--text-3)}
+html.os-skin .atts{gap:4px}
+html.os-skin .att{background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12.5px}
+html.os-skin .att-reminder{background:var(--push-bg);border-color:transparent;color:var(--text)}
+html.os-skin .att-flag{background:var(--hot-bg);border-color:transparent;color:var(--text)}
+html.os-skin .attrm,html.os-skin .ctx-x{background:transparent;color:var(--text-3);border-radius:6px}
+html.os-skin .attrm:hover,html.os-skin .ctx-x:hover{background:var(--hot-bg);color:var(--bad)}
+html.os-skin .att-add-btn,html.os-skin .ctx-btn,html.os-skin .cl-tools button{background:var(--surface);color:var(--text);border:1px solid var(--border-2);border-radius:6px;font-weight:500}
+html.os-skin .att-pick-btn{background:var(--accent-bg);color:var(--accent-text);border:1px solid transparent;border-radius:8px;font-weight:600}
+html.os-skin .ctx-attached{color:var(--live)}
+html.os-skin .vr{background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:inset 3px 0 0 var(--push)}
+html.os-skin .vr-head{color:var(--text);font-size:12.5px;font-weight:600}
+html.os-skin .vr-head b{color:var(--text)}
+html.os-skin .vr-opt{border-radius:6px;border:1px solid var(--border-2);background:var(--surface);color:var(--text-2);font-size:12.5px;padding:5px 10px}
+html.os-skin .vr-opt.on{background:var(--accent-bg);border-color:transparent;color:var(--accent-text)}
+html.os-skin .vr-opt.on.warn{background:var(--push-bg);color:var(--push)}
+html.os-skin .vr-opt.on.bad{background:var(--hot-bg);color:var(--hot)}
+html.os-skin .vr-link{color:var(--accent-text)}
+html.os-skin .vr-status{color:var(--text-3)}
+html.os-skin .vr-done{background:var(--live-bg);border:1px solid transparent;color:var(--text);border-radius:10px}
+html.os-skin .push-banner{background:var(--push-bg);border:1px solid transparent;color:var(--text);border-radius:10px}
+html.os-skin .push-banner b{color:var(--text)}
+html.os-skin .err-text{color:var(--bad)}
+html.os-skin .skel div{background:var(--surface-3)}
+html.os-skin .toast{background:var(--text);color:var(--bg);border:0;border-radius:8px;font-size:12.5px;font-weight:500;box-shadow:var(--shadow)}
+html.os-skin .picker-overlay{background:rgba(20,16,12,.38)}
+html.os-skin .picker-modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow)}
+html.os-skin .picker-hdr{background:var(--surface);border-bottom:1px solid var(--border);color:var(--text);font-weight:600}
+html.os-skin .picker-close{color:var(--text-2)}
+html.os-skin .rep-hero,html.os-skin .li-card,html.os-skin .li-compose{background:var(--surface);border:1px solid var(--border);border-radius:10px}
+html.os-skin .rep-stat{background:var(--surface-2);border:1px solid var(--border);border-radius:8px}
+html.os-skin .rep-stat .n{font-weight:700}
+html.os-skin .rep-headline,html.os-skin .rep-name{font-weight:600}
+html.os-skin .rep-line{border-bottom-color:var(--border)}
+html.os-skin .rep-periods{background:var(--surface-2);padding:3px;border-radius:9px;gap:3px}
+html.os-skin .rep-periods .p{background:transparent;border:1px solid transparent;border-radius:7px;color:var(--text-2);font-weight:600}
+html.os-skin .rep-periods .p.on{background:var(--surface);color:var(--text);border-color:var(--border)}
+html.os-skin .li-chat{background:var(--bg);border:1px solid var(--border);border-radius:10px}
+html.os-skin .li-msg.me .li-bub{background:var(--accent-bg);border:1px solid transparent;color:var(--text)}
+html.os-skin .li-msg.ai .li-bub{background:var(--surface);border:1px solid var(--border);color:var(--text)}
+html.os-skin .li-msg .who{color:var(--text-3);font-weight:600}
+html.os-skin .li-ok{background:var(--live-bg);border:1px solid transparent;color:var(--text)}
+html.os-skin .li-err{background:var(--hot-bg);border:1px solid transparent;color:var(--text)}
+html.os-skin .cl-wrap{background:var(--surface);border:1px solid var(--border);border-radius:8px}
+html.os-skin table.cl th{background:var(--surface-2);color:var(--text-2)}
+html.os-skin table.cl th.on{color:var(--text)}
+html.os-skin table.cl th,html.os-skin table.cl td{border-bottom-color:var(--border)}
+html.os-skin table.cl tbody tr:hover{background:var(--surface-2)}
+html.os-skin table.cl a{color:var(--text)}
+html.os-skin .cl-dash,html.os-skin .cl-sub,html.os-skin .cl-note{color:var(--text-3)}
+html.os-skin select:not([multiple]){appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%20fill='none'%20stroke='%238C8479'%20stroke-width='1.7'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M4%206l4%204%204-4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 7px center;background-size:12px;padding-right:24px;cursor:pointer}
+html.os-skin .os-menu{position:fixed;z-index:1000;background:var(--surface);border:1px solid var(--border-2);border-radius:10px;box-shadow:var(--shadow);padding:4px;max-height:300px;overflow:auto;font-size:12.5px}
+html.os-skin .os-opt{padding:6px 10px;border-radius:6px;cursor:pointer;white-space:nowrap}
+html.os-skin .os-opt:hover{background:var(--surface-2)}
+html.os-skin .os-opt.sel{font-weight:600;color:var(--accent-text)}
+html.os-skin .os-opt.dis{opacity:.45;cursor:default}
+`;
+let osPageCache: string | null = null;
+function osPage(): string {
+  if (osPageCache !== null) return osPageCache;
+  const m = PAGE_HTML.match(/var OS_COLORS = (\[\[[\s\S]*?\]\]);/);
+  if (!m) throw new Error("The Copilot page has no OS_COLORS.");
+  const colors = JSON.parse(m[1]) as Array<[string, string]>;
+  const recolor = (css: string) => colors.reduce((out, [from, to]) => out.split(from).join(to), css);
+  osPageCache = PAGE_HTML.replace(/<style>([\s\S]*?)<\/style>/, (_all, css: string) => `<style>${recolor(css)}</style>`).replace(
+    "</head>",
+    `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap"><style id="os-skin">${OS_SKIN_CSS}</style></head>`,
+  );
+  return osPageCache;
 }
 
-router.get("/m", (_req, res) => {
+router.get("/m", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   // Scoped to this route only — the extension's bridge embeds this exact
   // page in an iframe inside amoCRM, which is otherwise unrestricted (no
   // X-Frame-Options/CSP existed anywhere in this server before).
   res.setHeader("Content-Security-Policy", "frame-ancestors 'self' https://unicornproperty.amocrm.ru https://unicorn-properties.com https://www.unicorn-properties.com");
+  if (req.query["host"] === "os") {
+    const theme = req.query["theme"] === "light" ? "light" : "dark";
+    // single=1: the card's own Copilot (a side panel), with no list to go back to.
+    const cls = `os-skin${req.query["single"] === "1" ? " os-single" : ""}`;
+    res.send(osPage().replace('<html lang="en">', `<html lang="en" class="${cls}" data-os-theme="${theme}" style="color-scheme:${theme}">`));
+    return;
+  }
   res.send(PAGE_HTML);
 });
 
