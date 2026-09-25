@@ -27,8 +27,8 @@ function toOsUrl(u) {
   try {
     const url = new URL(u, self.location.origin);
     const lead = url.searchParams.get("lead");
-    if (lead) return `/os/#/inbox?lead=${encodeURIComponent(lead)}`;
-    if (url.searchParams.get("view") === "report") return "/os/#/day";
+    if (lead) return `/os/#/tasks?lead=${encodeURIComponent(lead)}`;
+    if (url.searchParams.get("view") === "report") return "/os/#/tasks";
   } catch (e) {
     /* fall through */
   }

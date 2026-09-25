@@ -3596,6 +3596,21 @@ const PAGE_HTML = `<!doctype html>
 </body>
 </html>`;
 
+/**
+ * The draft guide the Copilot page sends with every rewrite (/suggest needs
+ * one), read out of the page itself: Unicorn OS's own Copilot sends the very
+ * same text, and there is still one copy of it (DEFAULT_GUIDE above).
+ */
+let guideCache: string | null = null;
+export function copilotDefaultGuide(): string {
+  if (guideCache !== null) return guideCache;
+  const m = PAGE_HTML.match(/var DEFAULT_GUIDE = (\[[\s\S]*?\])\.join\('\\n'\);/);
+  if (!m) throw new Error("The Copilot page has no DEFAULT_GUIDE.");
+  const lines = new Function(`return ${m[1]};`)() as string[];
+  guideCache = lines.join("\n");
+  return guideCache;
+}
+
 router.get("/m", (_req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");

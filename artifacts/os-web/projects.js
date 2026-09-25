@@ -175,11 +175,10 @@ function matches(t, o, q) {
 screens.projects = {
   title: "Projects",
   async render({ el, tools }) {
-    if (!isStaff()) {
-      el.innerHTML = `<div class="empty">Projects are for managers. Tasks given to you show in My day.</div>`;
-      return;
-    }
+    const staff = isStaff();
     let view = store.get("proj-view", "board");
+    // A broker sees only the tasks given to them: no project views, no new tasks.
+    if (!staff && (view === "projects" || view === "timeline")) view = "board";
     let q = "";
     const o = opts();
     const pv = () => view === "projects" || view === "timeline";
@@ -192,13 +191,13 @@ screens.projects = {
       ]
         .map(([k, ic, l]) => `<button data-view="${k}" class="${view === k ? "active" : ""}">${ic}${l}</button>`)
         .join("")}</div>
-      <div class="views">${[
+      ${staff ? `<div class="views">${[
         ["projects", I.goal, "Projects"],
         ["timeline", I.timeline, "Timeline"],
       ]
         .map(([k, ic, l]) => `<button data-view="${k}" class="${view === k ? "active" : ""}">${ic}${l}</button>`)
         .join("")}</div>
-      <button class="btn sm primary" id="pj-new">${I.plus}${pv() ? "New project" : "New task"}</button>`;
+      <button class="btn sm primary" id="pj-new">${I.plus}${pv() ? "New project" : "New task"}</button>` : ""}`;
       // Filters sit above the view, the way Notion puts them over a database.
       filters.innerHTML = `${
         pv()
@@ -242,7 +241,8 @@ screens.projects = {
         clearTimeout(tm);
         tm = setTimeout(() => ((q = e.target.value.trim().toLowerCase()), draw()), 150);
       };
-      document.getElementById("pj-new").onclick = () => (pv() ? newProjectDialog() : newTaskDialog());
+      const nb = document.getElementById("pj-new");
+      if (nb) nb.onclick = () => (pv() ? newProjectDialog() : newTaskDialog());
     };
     const draw = () => {
       const oo = opts();
@@ -299,7 +299,7 @@ function drawBoard(el, list, o) {
       const cs = list.filter((t) => t.status === st).sort(bySort);
       return `<div class="col" data-drop="${esc(st)}"><h3><span class="pill ${STATUS[st] || ""}">${esc(st)}</span><span class="n">${cs.length}</span></h3>
         <div class="cards">${cs.map(taskCard).join("")}</div>
-        ${st !== "Archived" ? `<button class="add-row" data-add="${esc(st)}">${I.plus} New</button>` : ""}</div>`;
+        ${st !== "Archived" && isStaff() ? `<button class="add-row" data-add="${esc(st)}">${I.plus} New</button>` : ""}</div>`;
     })
     .join("")}</div>`;
   const board = el.querySelector(".board");
@@ -352,10 +352,12 @@ function drawBoard(el, list, o) {
     const sort = prev && next ? (prev.sort + next.sort) / 2 : next ? next.sort - 1 : prev ? prev.sort + 1 : 0;
     const before = { status: t.status, sort: t.sort };
     if (before.status === status && Math.abs(before.sort - sort) < 1e-9) return;
+    // A broker may move their task to another status; the order is the managers'.
+    if (!isStaff() && before.status === status) return;
     upsert({ id: t.id, status, sort });
     P.redraw && P.redraw();
     try {
-      await patchTask(t.id, status === before.status ? { sort } : { status, sort });
+      await patchTask(t.id, !isStaff() ? { status } : status === before.status ? { sort } : { status, sort });
     } catch (err) {
       upsert({ id: t.id, ...before });
       P.redraw && P.redraw();

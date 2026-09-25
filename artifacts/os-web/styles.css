@@ -218,7 +218,7 @@ table.grid tr.group-h td{background:var(--surface-2);font-weight:600;color:var(-
 
 /* ---------- board ---------- */
 .board{display:flex;gap:10px;align-items:flex-start;height:100%;overflow:auto;padding-bottom:8px}
-.col{flex:0 0 260px;background:var(--surface-2);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:8px;max-height:100%;border:1px solid transparent;align-self:stretch}
+.col{flex:0 0 280px;min-width:0;background:var(--surface-2);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:8px;max-height:100%;border:1px solid transparent;align-self:stretch}
 .col.over{border-color:var(--accent)}
 .col.collapsed{flex:0 0 44px;cursor:pointer}
 .col.collapsed h3{writing-mode:vertical-rl;transform:rotate(180deg)}
@@ -226,7 +226,8 @@ table.grid tr.group-h td{background:var(--surface-2);font-weight:600;color:var(-
 .col h3{margin:0;font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;color:var(--text-2);padding:2px 4px}
 .col h3 .n{margin-left:auto;font-weight:500;color:var(--text-3)}
 .col .sum{font-size:11px;color:var(--text-3);padding:0 4px}
-.col .cards{display:flex;flex-direction:column;gap:6px;overflow:auto;min-height:24px}
+.col .cards{display:flex;flex-direction:column;gap:6px;overflow:auto;min-height:24px;min-width:0}
+.col .card{min-width:0}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px;cursor:pointer;box-shadow:0 1px 1px rgba(0,0,0,.03)}
 .card:hover{border-color:var(--border-2)}
 .card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
@@ -595,3 +596,64 @@ details.objcat[open] summary{margin-bottom:4px}
 .stackbar i{display:block;height:100%}
 .stackbar i.a{background:var(--live)} .stackbar i.t{background:var(--reach)} .stackbar i.w{background:var(--accent)} .stackbar i.e{background:var(--push)} .stackbar i.h{background:var(--border-2)}
 .panel h3 .tin{width:52px;padding:1px 4px;border:1px solid var(--border-2);border-radius:5px;background:var(--surface);text-align:right}
+
+/* ── the Copilot, native (26.09): the /m logic, drawn with the OS parts ── */
+.cp-host{flex:1;min-height:0;position:relative;display:flex;flex-direction:column;background:var(--surface)}
+.cp{flex:1;min-height:0;display:flex;flex-direction:column}
+.cp-scroll{flex:1;min-height:0;overflow:auto;padding:14px 16px 8px;display:flex;flex-direction:column;gap:12px}
+.cp-scroll > *{flex-shrink:0}
+.cp-head{display:flex;flex-direction:column;gap:6px}
+.cp-title{display:flex;align-items:center;gap:8px;min-width:0}
+.cp-title h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.cp-contact{font-size:12.5px;color:var(--text-2);gap:6px}
+.cp-contact a{color:var(--text)}
+.cp-temp{font-size:12px;gap:6px}
+.cp-temp .pill{border:0;cursor:pointer;text-transform:capitalize}
+.cp-form{display:flex;flex-wrap:wrap;gap:6px}
+.cp-form .chip{white-space:normal}
+.cp-thread{border:1px solid var(--border);border-radius:10px;background:var(--bg);overflow:auto;min-height:90px}
+.cp-thread .msg{font-size:13px;line-height:1.45}
+.cp-empty-thread{padding:14px;text-align:center}
+.resize-y{height:8px;margin:-10px 0 -6px;cursor:row-resize;position:relative}
+.resize-y::after{content:"";position:absolute;left:50%;top:3px;width:36px;height:3px;margin-left:-18px;border-radius:3px;background:var(--border-2)}
+.cp-vr h3{justify-content:flex-start}
+.cp-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.cp-chips .chip{cursor:pointer;padding:5px 10px;font-size:12.5px}
+.cp-chips .chip.on{border-style:solid}
+.cp-chips .chip.on[data-c="ok"]{background:var(--live-bg);color:var(--live)}
+.cp-chips .chip.on[data-c="warn"]{background:var(--push-bg);color:var(--push)}
+.cp-chips .chip.on[data-c="bad"]{background:var(--hot-bg);color:var(--hot)}
+.cp-draft{display:flex;flex-direction:column;gap:8px}
+.cp-text{font-size:14px;line-height:1.55;min-height:96px;resize:none}
+.cp-atts{display:flex;flex-direction:column;gap:4px}
+.cp-att{display:flex;align-items:center;gap:8px;padding:6px 8px 6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);font-size:13px;min-width:0}
+.cp-att a{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-weight:500}
+.cp-att img{width:40px;height:40px;object-fit:cover;border-radius:6px}
+.cp-att span{flex:1;min-width:0}
+.cp-att .iconbtn{width:26px;height:26px;flex:0 0 26px}
+.cp-att.note{background:var(--accent-bg);border-color:transparent;color:var(--accent-text)}
+.cp-att svg{flex:0 0 auto;color:var(--text-3)}
+.cp-lad-h{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);font-weight:600;margin-top:4px}
+.cp-lad-cap{font-size:12.5px;color:var(--text-2);white-space:pre-wrap}
+.cp-add{flex-wrap:nowrap}
+.cp-add .in{flex:1;padding:5px 9px}
+.cp-ai{display:flex;gap:6px;align-items:flex-end;border:1px solid var(--border-2);border-radius:8px;padding:4px 4px 4px 8px;background:var(--surface)}
+.cp-ai textarea.in{border:0;padding:5px 0;min-height:30px;resize:none;background:transparent;box-shadow:none;outline:none}
+.cp-ai .btn{flex:0 0 auto}
+.cp-shot{font-size:12px}
+.cp-hint{margin:0}
+.cp-actions{flex-shrink:0;border-top:1px solid var(--border);padding:10px 16px;background:var(--surface);display:flex;flex-direction:column;gap:8px}
+.cp-actions select.chip{max-width:190px}
+.cp-send{min-width:110px}
+.cp-err{font-size:12.5px;color:var(--bad);background:var(--hot-bg);border-radius:8px;padding:8px 10px;line-height:1.45}
+.cp-none{padding:40px 20px;display:flex;flex-direction:column;gap:10px}
+.cp-classic-bar{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px}
+.cp-picker{place-items:stretch;padding:4vh 4vw}
+.cp-picker-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden;min-height:0;height:92vh}
+.cp-picker-box .ph{display:flex;align-items:center;gap:10px;padding:8px 10px 8px 16px;border-bottom:1px solid var(--border)}
+.cp-picker-box iframe{flex:1;border:0;width:100%}
+@media (max-width:860px){
+  .cp-scroll{padding:12px}
+  .cp-actions{padding:10px 12px calc(10px + env(safe-area-inset-bottom))}
+  .cp-add{flex-wrap:wrap}
+}

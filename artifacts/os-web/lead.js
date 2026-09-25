@@ -1,5 +1,6 @@
 // Unicorn OS — one card: the side panel (Copilot, chat, overview, viewings, tasks) and its summary.
-import { S, api, esc, I, peeks, fmtDT, fmtDay, rel, money, dialog, confirmBox, toast, fail, on, mountCopilot, brokerForLead, emit, dropCache, imgUrl, daysSince, resizer } from "./core.js";
+import { S, api, esc, I, peeks, fmtDT, fmtDay, rel, money, dialog, confirmBox, toast, fail, on, brokerForLead, emit, dropCache, imgUrl, daysSince, resizer } from "./core.js";
+import { mountNativeCopilot } from "./copilot.js";
 import { loadVillas } from "./listings.js";
 
 export async function loadLead(id, force) {
@@ -302,10 +303,10 @@ peeks.lead = {
       el.querySelector("[data-close]").onclick = ctl.close;
       return;
     }
-    // One place for each thing (owner, 26.09). In the Inbox the Copilot is the
+    // One place for each thing (owner, 26.09). In Tasks the Copilot is the
     // middle column, so this panel is only the card. On boards and elsewhere
     // the panel holds both: the Copilot (conversation and reply) and the card.
-    const inInbox = (S.route?.screen || "") === "inbox";
+    const inInbox = (S.route?.screen || "") === "tasks";
     const draft = d.drafts?.[0];
     const nView = Math.max((d.viewings?.slots || []).length, (d.viewings?.reports || []).length);
     const tabs = inInbox
@@ -369,9 +370,10 @@ peeks.lead = {
     }
     if (tab === "copilot") {
       if (draft) {
-        body.innerHTML = `<div class="frame-wrap" id="peek-copilot"></div>`;
+        body.innerHTML = `<div class="cp-host" id="peek-copilot"></div>`;
         body.style.overflow = "hidden";
-        mountCopilot(body.querySelector("#peek-copilot"), brokerForLead(d.responsible), d.leadId);
+        // The peek's header already names the card and its stage: the Copilot skips its own.
+        mountNativeCopilot(body.querySelector("#peek-copilot"), { leadId: d.leadId, broker: brokerForLead(d.responsible), compact: true, onDone: () => ctl.setTab("chat") });
       } else {
         // No draft to approve: the conversation, read-only, and why there is no reply box.
         body.innerHTML = `<div class="help" style="margin:10px 12px 0">No draft on this card now. The Copilot writes one when the client writes or a follow-up falls due; a task brings the card back sooner. The conversation is on the Chat tab.</div>`;

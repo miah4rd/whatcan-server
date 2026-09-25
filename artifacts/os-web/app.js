@@ -1,7 +1,6 @@
 // Unicorn OS — entry: sign-in, shell, navigation, notifications, search.
 import { S, api, esc, I, store, toast, fail, dialog, on, resizer, applySizes, screens, peeks, parseRoute, go, emit, onBus, rel, initials, isStaff, dropCache, syncCopilotTheme } from "./core.js";
 import "./inbox.js";
-import "./day.js";
 import "./pipelines.js";
 import "./listings.js";
 import "./calendar.js";
@@ -67,14 +66,13 @@ onBus("signed-out", () => renderLogin("You were signed out. Sign in again."));
 function navItems() {
   const staff = isStaff();
   const items = [
-    { id: "inbox", label: "Inbox", icon: I.inbox },
-    { id: "day", label: "My day", icon: I.today },
+    { id: "tasks", label: "Tasks", icon: I.inbox },
     { sec: "Pipelines" },
     { id: "pipeline/rental", label: "Rental leads", dot: "var(--live)" },
     { id: "pipeline/rental-listings", label: "Rental Listings", dot: "var(--reach)" },
     { id: "pipeline/unicorn", label: "UNICORN sales", dot: "var(--accent)", staffOnly: true },
     { sec: "Workspace" },
-    { id: "projects", label: "Projects", icon: I.goal, staffOnly: true },
+    { id: "projects", label: "Projects", icon: I.goal },
     { id: "listings", label: "Listings", icon: I.villa },
     { id: "calendar", label: "Calendar", icon: I.cal },
     { id: "analytics", label: "Analytics", icon: I.chart },
@@ -175,7 +173,7 @@ function renderNav() {
   const html = navItems()
     .map((n) => {
       if (n.sec) return `<div class="nav-section">${n.sec}</div>`;
-      const badge = n.id === "inbox" && counts.inbox ? `<span class="badge live">${counts.inbox}</span>` : n.id === "day" && counts.day ? `<span class="badge">${counts.day}</span>` : "";
+      const badge = n.id === "tasks" && counts.inbox ? `<span class="badge live">${counts.inbox}</span>` : "";
       return `<a href="#/${n.id}" class="nav ${cur === n.id ? "active" : ""}" data-go="${n.id}" title="${esc(n.label)}">${n.dot ? `<span class="dot" style="background:${n.dot}"></span>` : n.icon}<span class="lbl">${esc(n.label)}</span>${badge}</a>`;
     })
     .join("");
@@ -184,14 +182,14 @@ function renderNav() {
   const mn = document.getElementById("mnav");
   if (mn) {
     const tabs = [
-      ["inbox", "Inbox", I.inbox, counts.inbox],
-      ["day", "My day", I.today, counts.day],
+      ["tasks", "Tasks", I.inbox, counts.inbox],
+      ["calendar", "Calendar", I.cal],
       ["pipeline/rental", "Leads", I.board],
       ["listings", "Listings", I.villa],
       ["more", "More", I.gear],
     ];
     mn.innerHTML = tabs
-      .map(([id, l, ic, c]) => `<button data-go="${id}" class="${cur === id || (id === "more" && ["projects", "calendar", "analytics", "automations", "settings", "more"].includes(cur)) ? "active" : ""}">${ic}<span>${l}</span>${c ? `<span class="cnt">${c}</span>` : ""}</button>`)
+      .map(([id, l, ic, c]) => `<button data-go="${id}" class="${cur === id || (id === "more" && ["projects", "analytics", "automations", "settings", "more"].includes(cur)) ? "active" : ""}">${ic}<span>${l}</span>${c ? `<span class="cnt">${c}</span>` : ""}</button>`)
       .join("");
   }
 }
@@ -215,13 +213,13 @@ async function route() {
   if (!S.user) return;
   const r = parseRoute();
   if (!r.screen) {
-    go(isStaff() ? "day" : "inbox");
+    go("tasks");
     return;
   }
   S.route = r;
   renderNav();
   const name = r.screen;
-  const sc = screens[name] || screens.inbox;
+  const sc = screens[name] || screens.tasks;
   const content = document.getElementById("content");
   const tools = document.getElementById("tools");
   const crumb = document.getElementById("crumb");
@@ -238,7 +236,7 @@ async function route() {
     if (e.status === 401) return;
     content.innerHTML = `<div class="empty">Could not load this screen: ${esc(e.message)}</div>`;
   }
-  if (r.q.lead && name !== "inbox") openPeek("lead", r.q.lead);
+  if (r.q.lead && name !== "tasks" && name !== "inbox") openPeek("lead", r.q.lead);
   if (r.q.villa) openPeek("villa", r.q.villa);
   if (r.q.ptask) openPeek("ptask", r.q.ptask);
 }
@@ -471,13 +469,15 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// My day was removed on 26.09 (owner: it repeated the Inbox, now Tasks); old links open Tasks.
+screens.day = { title: "Tasks", render: () => go("tasks") };
+
 // "More" on phones: a sheet of the remaining screens.
 screens.more = {
   title: "More",
   render({ el }) {
     el.innerHTML = `<div class="stack" style="max-width:480px">${[
-      ...(isStaff() ? [["projects", "Projects", I.goal]] : []),
-      ["calendar", "Calendar", I.cal],
+      ["projects", "Projects", I.goal],
       ["analytics", "Analytics", I.chart],
       ["pipeline/rental-listings", "Rental Listings", I.board],
       ...(isStaff() ? [["pipeline/unicorn", "UNICORN sales", I.board]] : []),

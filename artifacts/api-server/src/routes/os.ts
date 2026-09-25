@@ -17,6 +17,7 @@ import crypto from "node:crypto";
 import express, { Router, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
 import publicRouter from "./public";
+import { copilotDefaultGuide } from "./mobile";
 import {
   ensureOsTables,
   login,
@@ -310,6 +311,9 @@ api.post(
   }),
 );
 
+// The guide the Copilot sends with a rewrite, the same text as the /m page's.
+api.get("/copilot/guide", signedIn, h(async () => ({ guide: copilotDefaultGuide() })));
+
 // One viewing report, whole: feedback, what did not work, next step.
 api.get("/viewing-reports/:id", signedIn, h(async (req) => viewingReportDetail(req.osUser!, String(req.params["id"]))));
 
@@ -489,10 +493,14 @@ router.use("/os/api", api);
 // broker). Same handler, same drafts; only the answer is trimmed.
 const LITE_DROP = ["recent_messages", "attachments", "profile_summary", "lead_notes", "form_answers", "suggestionText"];
 router.use("/os/api/p/suggestions", (req, res, next) => {
-  if (req.query["lite"] !== "1") return next();
+  const lite = req.query["lite"] === "1";
+  // The OS's own Copilot asks for one card: the same list, only that lead's draft.
+  const onlyLead = typeof req.query["leadId"] === "string" ? String(req.query["leadId"]) : null;
+  if (!lite && !onlyLead) return next();
   const send = res.json.bind(res);
   res.json = ((body: { items?: Array<Record<string, unknown>> } | null) => {
-    if (body && Array.isArray(body.items)) {
+    if (body && Array.isArray(body.items) && onlyLead) body = { ...body, items: body.items.filter((it) => String(it["lead_id"]) === onlyLead) };
+    if (body && Array.isArray(body.items) && lite) {
       body = {
         ...body,
         items: body.items.map((it) => {

@@ -1,5 +1,8 @@
-// Unicorn OS — Inbox: the Copilot's queues, the Copilot itself in the middle, the card docked on the right.
-import { S, api, esc, I, screens, store, on, resizer, rel, initials, isStaff, mountCopilot, brokerForLead, queueOf, onBus, fail } from "./core.js";
+// Unicorn OS — Tasks (called Inbox until 26.09): the day's work, one client at a time. The Copilot's
+// queues on the left, the Copilot itself in the middle, the card docked on the right.
+// Owner, 26.09: "Inbox" read as incoming messages; this is the board a broker clears every day.
+import { S, api, esc, I, screens, store, on, resizer, rel, initials, isStaff, brokerForLead, queueOf, onBus, fail } from "./core.js";
+import { mountNativeCopilot } from "./copilot.js";
 import { isListingPipe } from "./lead.js";
 
 // A tab saved as "reach" (before 26.09) opens Live: that queue is gone.
@@ -51,7 +54,7 @@ function listHtml() {
           <div class="meta"><b>${esc(rel(i.triggered_by_message_at || i.created_at).replace(" ago", ""))}</b>${esc(i.responsible_user || "")}</div></div>`;
         })
         .join("")
-    : `<div class="empty">Nothing waiting in ${st.tab === "all" ? "the inbox" : st.tab.toUpperCase()}.</div>`;
+    : `<div class="empty">${st.tab === "all" ? "Nothing to do: every client is handled." : `Nothing in ${st.tab.toUpperCase()}.`}</div>`;
   return `<div class="qtabs">${tabs}</div><div class="help" style="margin:8px">
     <b>Live</b>: the client just wrote · <b>Push</b>: we start the touch, a follow-up, a promise or a task that fell due.</div>${rows}`;
 }
@@ -72,11 +75,27 @@ function select(leadId) {
   const it = st.items.find((x) => String(x.lead_id) === st.sel);
   const host = document.getElementById("copilot-host");
   document.querySelectorAll("#inbox-list .conv").forEach((c) => c.classList.toggle("sel", c.dataset.lead === st.sel));
-  if (host) mountCopilot(host, brokerForLead(it?.responsible_user), st.sel);
+  if (host) mountNativeCopilot(host, { leadId: st.sel, broker: brokerForLead(it?.responsible_user), onDone: () => nextAfter(st.sel) });
   document.querySelector(".inbox")?.classList.add("show-copilot");
   const back = document.getElementById("m-back");
   if (back) back.hidden = window.innerWidth > 860;
   showCard();
+}
+
+/** A card is handled: it leaves the list at once and the next client opens, as in the /m Copilot. */
+function nextAfter(leadId) {
+  const visible = st.items.filter((i) => st.tab === "all" || i._q === st.tab);
+  const at = visible.findIndex((i) => String(i.lead_id) === String(leadId));
+  st.items = st.items.filter((i) => String(i.lead_id) !== String(leadId));
+  const rest = visible.filter((i) => String(i.lead_id) !== String(leadId));
+  const list = document.getElementById("inbox-list");
+  if (list) list.innerHTML = listHtml();
+  const nxt = rest[Math.min(Math.max(at, 0), rest.length - 1)];
+  if (nxt && desktop()) return select(nxt.lead_id);
+  st.sel = null;
+  const host = document.getElementById("copilot-host");
+  if (host) host.innerHTML = `<div class="frame-note">${rest.length ? "Pick the next client on the left." : "All done here."}</div>`;
+  document.querySelector(".inbox")?.classList.remove("show-copilot");
 }
 
 async function refreshList(keepSel = true) {
@@ -96,8 +115,8 @@ async function refreshList(keepSel = true) {
   }
 }
 
-screens.inbox = {
-  title: "Inbox",
+screens.tasks = {
+  title: "Tasks",
   flush: true,
   leave() {
     clearInterval(st.timer);
@@ -110,7 +129,7 @@ screens.inbox = {
     tools.innerHTML = `${brokerOpts}${pipeOpts}<button class="btn sm ghost hide-m ${st.showCtx ? "on" : ""}" id="ib-ctx" title="Show or hide the card on the right">${I.panel} Card</button><button class="btn sm ghost" id="ib-refresh">Refresh</button>`;
     el.innerHTML = `<div class="inbox">
       <div class="pane list-pane" id="inbox-list"><div class="loading">Loading drafts…</div></div>
-      <div class="pane copilot-pane"><div class="resize-x" id="rz-list" style="left:-3px" title="Drag to resize"></div><div class="frame-wrap" id="copilot-host"><div class="frame-note">Pick a conversation on the left.</div></div></div>
+      <div class="pane copilot-pane"><div class="resize-x" id="rz-list" style="left:-3px" title="Drag to resize"></div><div class="cp-host" id="copilot-host"><div class="frame-note">Pick a client on the left.</div></div></div>
     </div>`;
     resizer(document.getElementById("rz-list"), { varName: "--list-w", min: 240, max: 560 });
     document.getElementById("ib-refresh").onclick = () => refreshList();
@@ -165,13 +184,19 @@ screens.inbox = {
 };
 
 onBus("lead-changed", () => {
-  if (S.route.screen === "inbox") refreshList();
+  if (S.route.screen === "tasks") refreshList();
 });
 // Closing the card with its × keeps it closed until the Card button opens it
-// again. Leaving the Inbox also closes the panel; that is not the person's choice.
+// again. Leaving Tasks also closes the panel; that is not the person's choice.
 onBus("peek-close", (p) => {
-  if (p?.type !== "lead" || !location.hash.startsWith("#/inbox") || !st.showCtx) return;
+  if (p?.type !== "lead" || !location.hash.startsWith("#/tasks") || !st.showCtx) return;
   st.showCtx = false;
   store.set("inbox-ctx", false);
   document.getElementById("ib-ctx")?.classList.remove("on");
 });
+
+// Links saved before the rename (#/inbox, the push notifications) open Tasks.
+screens.inbox = {
+  title: "Tasks",
+  render: ({ route }) => location.replace("#/tasks" + (route.q.lead ? `?lead=${encodeURIComponent(route.q.lead)}` : "")),
+};

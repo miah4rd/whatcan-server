@@ -3,7 +3,7 @@
 export const S = {
   user: null,
   meta: null,
-  route: { screen: "inbox", parts: [] },
+  route: { screen: "tasks", parts: [] },
   cache: {},
   peek: null,
   notif: { items: [], seenAt: null, open: false },
