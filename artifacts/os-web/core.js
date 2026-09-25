@@ -1,0 +1,422 @@
+// Unicorn OS — core: state, API, formatting, dialogs, resizing, routing registry.
+
+export const S = {
+  user: null,
+  meta: null,
+  route: { screen: "inbox", parts: [] },
+  cache: {},
+  peek: null,
+  notif: { items: [], seenAt: null, open: false },
+};
+
+export const TZ = "Asia/Makassar";
+
+// ── storage (per-viewer conveniences only) ──
+export const store = {
+  get(k, d) {
+    try {
+      const v = localStorage.getItem("uos:" + k);
+      return v == null ? d : JSON.parse(v);
+    } catch (e) {
+      return d;
+    }
+  },
+  set(k, v) {
+    try {
+      localStorage.setItem("uos:" + k, JSON.stringify(v));
+    } catch (e) {
+      /* private mode */
+    }
+  },
+};
+
+// ── API ──
+export class ApiError extends Error {
+  constructor(msg, status) {
+    super(msg);
+    this.status = status;
+  }
+}
+export async function api(path, opts = {}) {
+  const init = { method: opts.method || (opts.body ? "POST" : "GET"), credentials: "same-origin", headers: {} };
+  if (opts.body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(opts.body);
+  }
+  const res = await fetch("/os/api" + path, init);
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch (e) {
+    json = null;
+  }
+  if (res.status === 401 && !opts.allow401) {
+    bus.dispatchEvent(new CustomEvent("signed-out"));
+    throw new ApiError("Signed out", 401);
+  }
+  if (!res.ok) throw new ApiError((json && (json.error || json.message)) || `Request failed (${res.status})`, res.status);
+  return json;
+}
+export async function cached(key, ttlMs, fn, force) {
+  const c = S.cache[key];
+  if (!force && c && Date.now() - c.at < ttlMs) return c.value;
+  const value = await fn();
+  S.cache[key] = { at: Date.now(), value };
+  return value;
+}
+export function dropCache(prefix) {
+  for (const k of Object.keys(S.cache)) if (k.startsWith(prefix)) delete S.cache[k];
+}
+
+export const bus = new EventTarget();
+export const emit = (name, detail) => bus.dispatchEvent(new CustomEvent(name, { detail }));
+export const onBus = (name, fn) => bus.addEventListener(name, (e) => fn(e.detail));
+
+// ── formatting ──
+export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+export const d = (iso) => (iso ? new Date(iso) : null);
+export function fmtTime(iso) {
+  return iso ? new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: TZ }) : "";
+}
+export function fmtDay(iso) {
+  return iso ? new Date(iso).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: TZ }) : "";
+}
+export function fmtDate(iso) {
+  return iso ? new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: TZ }) : "—";
+}
+export const fmtDT = (iso) => (iso ? `${fmtDay(iso)} ${fmtTime(iso)}` : "—");
+export function rel(iso) {
+  if (!iso) return "—";
+  const ms = Date.now() - new Date(iso).getTime();
+  const a = Math.abs(ms);
+  const pre = ms < 0 ? "in " : "";
+  const post = ms < 0 ? "" : " ago";
+  if (a < 60e3) return ms < 0 ? "now" : "just now";
+  if (a < 3600e3) return `${pre}${Math.round(a / 60e3)} min${post}`;
+  if (a < 86400e3) return `${pre}${Math.round(a / 3600e3)} h${post}`;
+  return `${pre}${Math.round(a / 86400e3)} d${post}`;
+}
+export const daysSince = (iso) => (iso ? (Date.now() - new Date(iso).getTime()) / 86400e3 : null);
+export function money(n) {
+  if (n == null || n === "" || Number.isNaN(Number(n))) return "—";
+  const v = Number(n);
+  if (v >= 1e9) return `Rp ${(v / 1e9).toFixed(v % 1e9 === 0 ? 0 : 2)}B`;
+  if (v >= 1e6) return `Rp ${(v / 1e6).toFixed(v % 1e6 === 0 ? 0 : 1)}M`;
+  return `Rp ${v.toLocaleString("en-US")}`;
+}
+export const initials = (n) =>
+  String(n || "?")
+    .replace(/[^\p{L}\p{N} ]/gu, " ")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0] || "")
+    .join("")
+    .toUpperCase() || "?";
+export const baliToday = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+export const isStaff = () => !!S.meta?.staff;
+
+// ── icons ──
+const svg = (p, sw = 1.5) => `<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+export const I = {
+  inbox: svg('<path d="M2 9h3l1.5 2h3L11 9h3M2 9l1.5-5h9L14 9v4H2V9z"/>'),
+  today: svg('<rect x="2.5" y="3" width="11" height="10.5" rx="1.5"/><path d="M2.5 6.5h11M5.5 1.8v2.4M10.5 1.8v2.4M5 9.5l1.5 1.5L10 8"/>'),
+  board: svg('<rect x="2" y="3" width="3.5" height="10" rx="1"/><rect x="6.25" y="3" width="3.5" height="7" rx="1"/><rect x="10.5" y="3" width="3.5" height="5" rx="1"/>'),
+  table: svg('<rect x="2" y="3" width="12" height="10" rx="1"/><path d="M2 7h12M2 10h12M6 3v10"/>'),
+  gallery: svg('<rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/>'),
+  villa: svg('<path d="M2 8l6-5 6 5M4 7v6h8V7M7 13V9.5h2V13"/>'),
+  cal: svg('<rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 7h11M5.5 2v3M10.5 2v3"/>'),
+  chart: svg('<path d="M2 13.5h12M3.5 11l3-4 2.5 2.5L13 4"/>'),
+  auto: svg('<circle cx="8" cy="8" r="2.4"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M12.4 3.6L11 5M5 11l-1.4 1.4"/>'),
+  gear: svg('<circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/>'),
+  search: svg('<circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2l3.6 3.6"/>'),
+  bell: svg('<path d="M4 11V7.5a4 4 0 0 1 8 0V11l1.2 1.5H2.8L4 11zM6.5 14h3"/>'),
+  x: svg('<path d="M4 4l8 8M12 4l-8 8"/>', 1.7),
+  back: svg('<path d="M10 3L5 8l5 5"/>', 1.7),
+  fwd: svg('<path d="M6 3l5 5-5 5"/>', 1.7),
+  up: svg('<path d="M3 10l5-5 5 5"/>', 1.7),
+  down: svg('<path d="M3 6l5 5 5-5"/>', 1.7),
+  left: svg('<path d="M9.5 3.5L5 8l4.5 4.5M13 3.5v9"/>'),
+  right: svg('<path d="M6.5 3.5L11 8l-4.5 4.5M3 3.5v9"/>'),
+  panel: svg('<rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M6 2.5v11"/>'),
+  mic: svg('<rect x="6" y="2" width="4" height="8" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2"/>'),
+  sparkle: svg('<path d="M8 2l1.3 3.7L13 7l-3.7 1.3L8 12l-1.3-3.7L3 7l3.7-1.3z"/>'),
+  ext: svg('<path d="M9 3h4v4M13 3L7 9M11 9.5V13H3V5h3.5"/>'),
+  drive: svg('<path d="M5.5 2.5h5l3.5 6-2.5 4.5h-7L2 8.5z M5.5 2.5L9 8.5h5M2 8.5h7l-2.5 4.5"/>'),
+  video: svg('<rect x="2" y="4" width="8" height="8" rx="1"/><path d="M10 7l4-2v6l-4-2"/>'),
+  moon: svg('<path d="M13 9.5A5.5 5.5 0 1 1 6.5 3a4.5 4.5 0 0 0 6.5 6.5z"/>'),
+  out: svg('<path d="M6 13H3V3h3M10 11l3-3-3-3M13 8H6"/>'),
+  plus: svg('<path d="M8 3v10M3 8h10"/>', 1.7),
+  wa: '<svg class="ic" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5A6.5 6.5 0 0 0 2.4 11.3L1.5 14.5l3.3-.9A6.5 6.5 0 1 0 8 1.5zm0 1.3a5.2 5.2 0 1 1-2.7 9.6l-.3-.2-1.9.5.5-1.8-.2-.3A5.2 5.2 0 0 1 8 2.8z"/></svg>',
+};
+
+// ── toasts & dialogs ──
+let toastsEl = null;
+export function toast(msg, opts = {}) {
+  if (!toastsEl) {
+    toastsEl = document.createElement("div");
+    toastsEl.className = "toasts";
+    document.body.appendChild(toastsEl);
+  }
+  const t = document.createElement("div");
+  t.className = "toast" + (opts.bad ? " bad" : "");
+  t.innerHTML = `<span>${esc(msg)}</span>${opts.undo ? "<button>Undo</button>" : ""}`;
+  if (opts.undo) t.querySelector("button").onclick = () => {
+    opts.undo();
+    t.remove();
+  };
+  toastsEl.appendChild(t);
+  setTimeout(() => t.remove(), opts.ms || (opts.bad ? 7000 : 4200));
+}
+export const fail = (e) => toast(e && e.message ? e.message : String(e), { bad: true });
+
+/**
+ * A dialog with a form. `body` is HTML; inputs with a name= are returned.
+ * Resolves with { action, values } or null on cancel.
+ */
+export function dialog({ title, body = "", actions = [{ label: "Cancel", value: null }, { label: "OK", value: "ok", primary: true }], wide = false, onMount }) {
+  return new Promise((resolve) => {
+    const ov = document.createElement("div");
+    ov.className = "overlay";
+    ov.innerHTML = `<form class="dialog" style="${wide ? "width:min(760px,100%)" : ""}"><h3>${esc(title)}</h3><div class="dlg-body">${body}</div><div class="acts">${actions
+      .map((a, i) => `<button type="${a.primary ? "submit" : "button"}" class="btn ${a.primary ? "primary" : ""} ${a.danger ? "danger" : ""}" data-i="${i}">${esc(a.label)}</button>`)
+      .join("")}</div></form>`;
+    const form = ov.querySelector("form");
+    const close = (v) => {
+      ov.remove();
+      document.removeEventListener("keydown", onKey);
+      resolve(v);
+    };
+    const values = () => {
+      const out = {};
+      form.querySelectorAll("[name]").forEach((el) => {
+        out[el.name] = el.type === "checkbox" ? el.checked : el.value;
+      });
+      return out;
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") close(null);
+    };
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const a = actions.find((x) => x.primary);
+      close(a && a.value !== null ? { action: a.value, values: values() } : null);
+    });
+    form.querySelectorAll("button[data-i]").forEach((b) => {
+      if (b.type === "submit") return;
+      b.onclick = () => {
+        const a = actions[Number(b.dataset.i)];
+        close(a.value === null ? null : { action: a.value, values: values() });
+      };
+    });
+    ov.addEventListener("mousedown", (e) => {
+      if (e.target === ov) close(null);
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(ov);
+    if (onMount) onMount(form);
+    const first = form.querySelector("input,textarea,select");
+    if (first) setTimeout(() => first.focus(), 30);
+  });
+}
+export async function confirmBox(title, text, okLabel = "Confirm", danger = false) {
+  const r = await dialog({ title, body: `<p class="muted" style="margin:0">${esc(text)}</p>`, actions: [{ label: "Cancel", value: null }, { label: okLabel, value: "ok", primary: true, danger }] });
+  return !!r;
+}
+
+// ── delegated events ──
+export function on(root, type, selector, fn) {
+  // One handler per (element, event, selector): a screen that redraws binds again
+  // and replaces its previous handler instead of stacking a second one.
+  root._uosH = root._uosH || {};
+  const key = type + "|" + selector;
+  if (root._uosH[key]) root.removeEventListener(type, root._uosH[key]);
+  const h = (e) => {
+    const t = e.target.closest(selector);
+    if (t && root.contains(t)) fn(e, t);
+  };
+  root._uosH[key] = h;
+  root.addEventListener(type, h);
+}
+
+// ── resizable panels: drag a handle, the size lives in a CSS variable ──
+export function applySizes() {
+  const sizes = store.get("sizes", {});
+  for (const [k, v] of Object.entries(sizes)) document.documentElement.style.setProperty(k, v + "px");
+}
+export function resizer(handle, { varName, min, max, invert = false }) {
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add("drag");
+    const start = e.clientX;
+    const cur = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(varName)) || 300;
+    const frames = document.querySelectorAll("iframe");
+    frames.forEach((f) => (f.style.pointerEvents = "none"));
+    const move = (ev) => {
+      const dx = (ev.clientX - start) * (invert ? -1 : 1);
+      const w = Math.max(min, Math.min(max, cur + dx));
+      document.documentElement.style.setProperty(varName, w + "px");
+    };
+    const up = () => {
+      handle.classList.remove("drag");
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      frames.forEach((f) => (f.style.pointerEvents = ""));
+      const sizes = store.get("sizes", {});
+      sizes[varName] = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(varName));
+      store.set("sizes", sizes);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+  });
+  handle.addEventListener("dblclick", () => {
+    const sizes = store.get("sizes", {});
+    delete sizes[varName];
+    store.set("sizes", sizes);
+    document.documentElement.style.removeProperty(varName);
+  });
+}
+
+// ── screens & peeks registry, routing ──
+export const screens = {};
+export const peeks = {};
+export function parseRoute() {
+  const h = (location.hash || "").replace(/^#\/?/, "");
+  const [path, qs] = h.split("?");
+  const parts = path.split("/").filter(Boolean).map(decodeURIComponent);
+  const q = Object.fromEntries(new URLSearchParams(qs || ""));
+  return { screen: parts[0] || "", parts: parts.slice(1), q };
+}
+export function go(screen, ...parts) {
+  const h = "#/" + [screen, ...parts.filter((p) => p != null && p !== "")].map(encodeURIComponent).join("/");
+  if (location.hash === h) emit("route");
+  else location.hash = h;
+}
+
+// ── the Copilot (/m) embed ──
+export function copilotUrl(broker, leadId) {
+  const qs = new URLSearchParams();
+  qs.set("broker", broker || "");
+  if (leadId) qs.set("lead", String(leadId));
+  qs.set("host", "os");
+  return `${S.meta.copilotOrigin}/m?${qs.toString()}`;
+}
+export function brokerForLead(responsible) {
+  if (!isStaff() && S.user.brokerKey) return S.user.brokerKey;
+  return responsible || S.user.brokerKey || "hos";
+}
+/** Mounts (or reuses) the Copilot iframe for a lead inside `host`. */
+export function mountCopilot(host, broker, leadId) {
+  let f = host.querySelector("iframe.copilot-frame");
+  const want = copilotUrl(broker, leadId);
+  if (f && f.dataset.broker === broker) {
+    if (f.dataset.lead !== String(leadId || "")) {
+      f.dataset.lead = String(leadId || "");
+      try {
+        f.contentWindow.postMessage({ source: "copilot-bridge", type: "lead", leadId: String(leadId) }, S.meta.copilotOrigin);
+      } catch (e) {
+        f.src = want;
+      }
+    }
+    return f;
+  }
+  host.innerHTML = `<iframe class="copilot-frame" allow="microphone; clipboard-write; notifications" title="Copilot"></iframe><div class="frame-note">Opening the Copilot…</div>`;
+  f = host.querySelector("iframe");
+  f.dataset.broker = broker;
+  f.dataset.lead = String(leadId || "");
+  f.addEventListener("load", () => {
+    const n = host.querySelector(".frame-note");
+    if (n) n.remove();
+  });
+  f.src = want;
+  return f;
+}
+// /m tells us when it sent something: lists refresh at once.
+window.addEventListener("message", (e) => {
+  if (!S.meta || e.origin !== S.meta.copilotOrigin) return;
+  const dd = e.data;
+  if (!dd || dd.source !== "copilot-embed") return;
+  if (dd.type === "sent") {
+    dropCache("inbox");
+    dropCache("board");
+    emit("lead-changed", { leadId: dd.leadId });
+  }
+});
+
+// ── dictation (the Copilot's own transcription endpoint) ──
+export async function recordVoice(button, onText) {
+  if (button._rec) {
+    button._rec.stop();
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    toast("Microphone is blocked in this browser.", { bad: true });
+    return;
+  }
+  const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4";
+  const rec = new MediaRecorder(stream, { mimeType: mime });
+  const chunks = [];
+  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  rec.onstop = async () => {
+    stream.getTracks().forEach((t) => t.stop());
+    button._rec = null;
+    button.classList.remove("rec");
+    button.innerHTML = button._label;
+    const blob = new Blob(chunks, { type: mime });
+    if (blob.size < 1200) return;
+    button.disabled = true;
+    try {
+      const res = await fetch("/os/api/p/transcribe", { method: "POST", credentials: "same-origin", headers: { "Content-Type": mime }, body: blob });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || "Transcription failed");
+      onText(String(j.text || "").trim());
+    } catch (e) {
+      fail(e);
+    } finally {
+      button.disabled = false;
+    }
+  };
+  button._label = button.innerHTML;
+  button._rec = rec;
+  button.classList.add("rec");
+  button.innerHTML = `${I.mic} Stop`;
+  rec.start();
+}
+
+// ── cards and villas shared bits ──
+export const TEMP_CLASS = { hot: "hot", warm: "warm", cold: "cold" };
+export function stageOwner(pipelineKey, stage) {
+  const s = String(stage || "").toLowerCase();
+  if (/closed|won|lost|contract signed|check in|live$/.test(s)) return s === "live" && pipelineKey === "rental-listings" ? "site" : "person";
+  if (pipelineKey === "rental" && /need assessed|options sent|viewing scheduled|viewing done|objection/.test(s)) return "code";
+  if (pipelineKey === "rental-listings" && /taken to work|qualified|inspection|long term|co-broke/.test(s)) return "code";
+  return null;
+}
+export function queueOf(item) {
+  if (item.kind === "live") return "live";
+  const st = String(item.lead_stage || "").toLowerCase();
+  if ((S.meta.reachStages || []).some((q) => st.includes(q))) return "reach";
+  return "push";
+}
+/** The site's image edge serves every catalog photo resized: /img/<bucket>/<path>?w=<width>. */
+export function imgUrl(u, w = 600) {
+  if (!u) return "";
+  const m = String(u).match(/\/storage\/v1\/object\/public\/(.+)$/);
+  return m ? `https://unicorn-properties.com/img/${m[1]}?w=${w}` : u;
+}
+export const coverUrl = (images, w = 600) => imgUrl(Array.isArray(images) ? images[0] : null, w);
+export function imgFallback(el) {
+  el.addEventListener(
+    "error",
+    (e) => {
+      const img = e.target;
+      if (img.tagName === "IMG" && img.dataset.raw && img.src !== img.dataset.raw) img.src = img.dataset.raw;
+    },
+    true,
+  );
+}

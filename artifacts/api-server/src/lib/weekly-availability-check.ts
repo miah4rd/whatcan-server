@@ -762,7 +762,7 @@ const human = (isoDay: string) =>
  * pass refused them and pushed Yudi). Several rows are not guessed over (none on 15.09). Read back
  * before claiming success.
  */
-async function writeAvailability(
+export async function writeAvailability(
   propertyId: string,
   freeFrom: string | null,
   note: string,
@@ -812,7 +812,7 @@ async function writeAvailability(
  * villa is marked occupied with no end date until the owner names one; the clarifier above asks for it,
  * and a dated answer replaces this row through writeAvailability.
  */
-async function writeOccupied(
+export async function writeOccupied(
   propertyId: string,
   note: string,
   today: string,

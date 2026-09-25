@@ -1,0 +1,10 @@
+{
+  "name": "Unicorn OS",
+  "short_name": "Unicorn OS",
+  "start_url": "/os/",
+  "scope": "/os/",
+  "display": "standalone",
+  "background_color": "#1B1612",
+  "theme_color": "#1B1612",
+  "icons": [{ "src": "/os/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

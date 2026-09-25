@@ -5,6 +5,8 @@ import pinoHttp from "pino-http";
 import router from "./routes";
 import mobileRouter from "./routes/mobile";
 import kpiRouter from "./routes/kpi";
+import osRouter from "./routes/os";
+import { startOsAnalytics } from "./lib/os/analytics";
 import qcRouter from "./routes/qc";
 import { startQcScheduler } from "./lib/quality-control";
 import { startMetaSpendPull } from "./lib/kpi-dashboard";
@@ -74,6 +76,8 @@ app.use(mobileRouter);
 app.use(inspectionPageRouter);
 // The owner's daily numbers page, /kpi (lib/kpi-dashboard.ts).
 app.use(kpiRouter);
+// Unicorn OS, the agency's own CRM over the same data, at /os (routes/os.ts).
+app.use(osRouter);
 app.use(qcRouter);
 app.use(swRouter);
 // Before the static/SPA fallback: /property/<ID> is the link clients receive,
@@ -127,6 +131,8 @@ startInspectionReportPass();
 startVisitWatch();
 // Meta Ads spend for the /kpi page, pulled through Make every 4 hours; see lib/kpi-dashboard.ts.
 startMetaSpendPull();
+// Unicorn OS: the objection log every two hours and the Monday bottleneck brief (lib/os/analytics.ts).
+startOsAnalytics();
 // Morning quality-control report on Amelia and Yudi to the team chat, only while qc_enabled = on; see lib/quality-control.ts.
 startQcScheduler();
 ensureKnowledgeBaseVersion().catch((err) => logger.error({ err }, "kb version check failed"));

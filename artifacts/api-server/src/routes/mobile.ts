@@ -1521,6 +1521,13 @@ const PAGE_HTML = `<!doctype html>
     return "Could not send (code " + httpStatus + ") - the message was NOT sent. Try again.";
   }
 
+  // Tells the page that embeds this one (amoCRM bridge or Unicorn OS) that a
+  // card changed, so its lists refresh without waiting for their own poll.
+  function notifyHost(type, leadId) {
+    if (!EMBEDDED) return;
+    try { window.parent.postMessage({ source: "copilot-embed", type: type, leadId: leadId ? String(leadId) : null }, BRIDGE_ORIGIN); } catch (e) { /* host gone */ }
+  }
+
   async function approveServer(item, finalText) {
     item.busy = true; render();
     try {
@@ -1560,6 +1567,7 @@ const PAGE_HTML = `<!doctype html>
       // A resumed send explains itself (part of it had already reached the
       // client) — say that instead of a plain "Sent".
       showToast(json.message ? json.message : "Sent");
+      notifyHost("sent", item.lead_id);
       await fetchInbox();
     } catch (e) {
       // The fetch itself failed (server gone, connection dropped) — same
@@ -3386,9 +3394,18 @@ const PAGE_HTML = `<!doctype html>
   // origin-and-source-checked pattern, just host and guest swapped: there
   // WE are the iframe talking to a nested one; here we're the iframe being
   // talked to by our parent.
-  var BRIDGE_ORIGIN = "https://unicornproperty.amocrm.ru";
+  // Hosts allowed to embed this page and talk to it: the amoCRM bridge and
+  // Unicorn OS (the agency's own CRM at unicorn-properties.com/os, or /os here).
+  var BRIDGE_ORIGINS = ["https://unicornproperty.amocrm.ru", "https://unicorn-properties.com", "https://www.unicorn-properties.com", location.origin];
+  var BRIDGE_ORIGIN = (function () {
+    try {
+      var o = document.referrer ? new URL(document.referrer).origin : "";
+      if (BRIDGE_ORIGINS.indexOf(o) !== -1) return o;
+    } catch (e) { /* no referrer: the amoCRM bridge */ }
+    return BRIDGE_ORIGINS[0];
+  })();
   window.addEventListener("message", function (e) {
-    if (e.origin !== BRIDGE_ORIGIN) return;
+    if (BRIDGE_ORIGINS.indexOf(e.origin) === -1) return;
     if (e.source !== window.parent) return;
     var d = e.data;
     if (!d || d.source !== "copilot-bridge") return;
@@ -3457,7 +3474,7 @@ router.get("/m", (_req, res) => {
   // Scoped to this route only — the extension's bridge embeds this exact
   // page in an iframe inside amoCRM, which is otherwise unrestricted (no
   // X-Frame-Options/CSP existed anywhere in this server before).
-  res.setHeader("Content-Security-Policy", "frame-ancestors 'self' https://unicornproperty.amocrm.ru");
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'self' https://unicornproperty.amocrm.ru https://unicorn-properties.com https://www.unicorn-properties.com");
   res.send(PAGE_HTML);
 });
 

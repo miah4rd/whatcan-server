@@ -853,7 +853,9 @@ export async function runVisitWatch(): Promise<{ cards: number; decided: number 
   if (watching) return { cards: 0, decided: 0 };
   watching = true;
   try {
-    const statuses = [LISTING_STAGE.QUALIFIED, LISTING_STAGE.INSPECTION_SCHEDULED, ...AFTER_LIVE];
+    // AFTER_LIVE was removed in 5603682 while this line still spread it: every run threw a
+    // ReferenceError and late-synced visits never reached the calendar. The stages are listed here.
+    const statuses = [LISTING_STAGE.QUALIFIED, LISTING_STAGE.INSPECTION_SCHEDULED, LISTING_STAGE.LIVE, LISTING_STAGE.WEEKLY_CHECK_SENT, LISTING_STAGE.AVAILABILITY_RECEIVED];
     const ids: string[] = [];
     for (let page = 1; page <= 10; page++) {
       const q = statuses.map((st, i) => `filter[statuses][${i}][pipeline_id]=${LISTINGS_PIPELINE_ID}&filter[statuses][${i}][status_id]=${st}`).join("&");
