@@ -87,6 +87,9 @@ Once every 7 days, one short message to the owner: is the villa still available.
 date the bot writes to the site itself. Yudi gets no pushes and no drafts; an unclear answer is a
 note on the card (14.09, 15.09).
 
+Any other message from the owner of a live villa (a question, news, not an answer to the check):
+the draft reply goes to Yudi in Copilot for approve (26.09).
+
 ## 9. How rules change
 
 - Structure (this file): only the owner, in chat, recorded here with the date.
