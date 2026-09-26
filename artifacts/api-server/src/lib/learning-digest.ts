@@ -13,6 +13,10 @@ import { SITUATION_CASE } from "./situation-sql";
 import { gateway, OWNER_SESSION } from "./wa-bridge";
 import { getAutopilotSetting } from "./autopilot";
 import { logger } from "./logger";
+import { execFile } from "child_process";
+import { brokerLines } from "./amo-messenger-field";
+import { lineBudgets } from "./new-contact-budget";
+import { weeklyAvailabilityMode } from "./weekly-availability-check";
 
 type Row = { broker: string; situation: string; judged: number; clean: number; edited: number; skipped: number };
 type Lesson = { broker: string; situation: string | null; instruction: string };
@@ -108,4 +112,53 @@ async function tick(): Promise<void> {
 
 export function startLearningDigest(): void {
   setInterval(() => void tick().catch((err) => logger.error({ err }, "learning digest failed")), 60_000);
+}
+
+
+// ── Morning regulation audit ──────────────────────────────────────────────────
+/**
+ * Every morning 09:05 Bali (owner, 26.09.2026): what changed in the regulations or the code that
+ * enforces them in the last 24 h (scripts/regulation-audit.sh), and the settings the owner controls
+ * — autopilot per funnel, weekly check mode, Yudi's lines and caps. Sent only when something
+ * changed since the last audit, so a quiet day sends nothing.
+ */
+
+function sh(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => execFile(cmd, args, { timeout: 60_000 }, (_e, out) => resolve(String(out ?? ""))));
+}
+
+export async function buildRegulationAudit(): Promise<{ text: string; fingerprint: string }> {
+  const changes = (await sh("bash", ["/opt/whatcan/scripts/regulation-audit.sh", "24 hours ago"])).trim();
+  const [rl, rn] = await Promise.all([getAutopilotSetting("rental listings"), getAutopilotSetting("rental")]);
+  const weekly = await weeklyAvailabilityMode().catch(() => "?");
+  const yudi = await lineBudgets("Yudi").catch(() => []);
+  const settings = [
+    `Autopilot: Rental Listings ${rl.mode} up to "${rl.upToStageName ?? "-"}"; Rental ${rn.mode}${rn.upToStageName ? ` up to "${rn.upToStageName}"` : ""}`,
+    `Weekly availability check: ${weekly}`,
+    `Yudi lines: ${brokerLines("Yudi").join(", ") || "-"} — caps today ${yudi.map((b) => `${b.line}:${b.cap}`).join(", ")}`,
+  ];
+  const text = `${changes}\n\nSettings now:\n• ${settings.join("\n• ")}`;
+  const fingerprint = `${changes.includes("no law files changed") ? "" : changes}|${settings.join("|")}`;
+  return { text, fingerprint };
+}
+
+async function auditTick(): Promise<void> {
+  const now = baliNow();
+  if (now.getUTCHours() !== 9 || now.getUTCMinutes() !== 5) return;
+  const key = "regulation_audit:last";
+  const { text, fingerprint } = await buildRegulationAudit();
+  const [prev] = await db.select({ v: brokerSettingsTable.value }).from(brokerSettingsTable).where(eq(brokerSettingsTable.key, key)).limit(1);
+  if (prev?.v === fingerprint) return;
+  const ok = await sendLearningDigest(`🛡 ${text}`);
+  if (ok) {
+    await db
+      .insert(brokerSettingsTable)
+      .values({ key, value: fingerprint })
+      .onConflictDoUpdate({ target: brokerSettingsTable.key, set: { value: fingerprint, updatedAt: new Date() } });
+    logger.info("regulation audit sent to the owner");
+  }
+}
+
+export function startRegulationAudit(): void {
+  setInterval(() => void auditTick().catch((err) => logger.error({ err }, "regulation audit failed")), 60_000);
 }

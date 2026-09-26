@@ -5,7 +5,7 @@
 # Usage: law-gate.sh <from-ref> <to-ref>   (exit 1 = refused)
 from="$1"; to="$2"
 cd /opt/whatcan || exit 1
-LAW='^skills/|artifacts/api-server/src/lib/(listing-card-fields|listing-stage-engine|listing-acquisition-prompt|listing-owner-followup|new-contact-budget|stage-classifier|thread-stage-sync|stage-on-reply|stage-routing|rental-prompt|weekly-availability-check|autopilot|inspection-booking|listing-progress)\.ts$'
+LAW='^skills/|^scripts/law-gate\.sh$|^scripts/regulation-audit\.sh$|^wa-gateway/index\.mjs$|artifacts/api-server/src/lib/(listing-card-fields|listing-stage-engine|listing-acquisition-prompt|listing-owner-followup|listing-progress|listing-status-pass|listing-referral|long-term-check|inspection-booking|weekly-availability-check|weekly-check-reply|new-contact-budget|autopilot|stage-classifier|stage-routing|stage-on-reply|thread-stage-sync|rental-prompt|sales-prompt|generate-suggestion|followup-scheduler|rental-followup|ad-lead-autoreply|excluded-area-filter|budget-filter|area-coverage|property-catalog|pending-visibility|outbound-send|broker-corrections|accepted-examples|viewing-report|inspection-report|amo-sync)\.ts$|artifacts/api-server/src/routes/(amocrm-webhook|public/approve|public/suggest|public/autopilot)\.ts$'
 changed=$(git diff --name-only "$from" "$to" | grep -E "$LAW")
 [ -z "$changed" ] && exit 0
 bad=0

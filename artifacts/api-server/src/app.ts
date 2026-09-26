@@ -23,7 +23,7 @@ import { startTimelineSyncScheduler } from "./lib/amo-timeline-sync";
 import { startCommitmentScheduler } from "./lib/commitment-scheduler";
 import { startAiWatchdog } from "./lib/ai-watchdog";
 import { startReportScheduler } from "./lib/report-scheduler";
-import { startLearningDigest } from "./lib/learning-digest";
+import { startLearningDigest, startRegulationAudit } from "./lib/learning-digest";
 import { startVideoCompressScheduler } from "./lib/video-compress";
 import { startListingStatusPass } from "./lib/listing-status-pass";
 import { startInspectionCalendarSync } from "./lib/inspection-calendar";
@@ -113,6 +113,7 @@ startTimelineSyncScheduler();
 startCommitmentScheduler();
 startReportScheduler();
 startLearningDigest();
+startRegulationAudit();
 startAiWatchdog();
 // Re-encodes phone walkthroughs uploaded to the site's property-videos bucket
 // (a third of the size, H.264 everywhere); see lib/video-compress.ts.

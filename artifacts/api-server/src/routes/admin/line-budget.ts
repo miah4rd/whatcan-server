@@ -9,7 +9,7 @@
  */
 import { Router } from "express";
 import { lineBudgets } from "../../lib/new-contact-budget";
-import { buildLearningDigest, sendLearningDigest } from "../../lib/learning-digest";
+import { buildLearningDigest, sendLearningDigest, buildRegulationAudit } from "../../lib/learning-digest";
 
 const router = Router();
 
@@ -27,6 +27,13 @@ router.get("/admin/learning-digest", async (req, res) => {
     res.json({ sent: ok, text });
     return;
   }
+  res.type("text/plain").send(text);
+});
+
+// The morning regulation audit, on demand (send now with ?send=1).
+router.get("/admin/regulation-audit", async (req, res) => {
+  const { text } = await buildRegulationAudit();
+  if (req.query.send === "1") { const ok = await sendLearningDigest(`🛡 ${text}`); res.json({ sent: ok, text }); return; }
   res.type("text/plain").send(text);
 });
 
