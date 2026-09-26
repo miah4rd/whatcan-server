@@ -212,7 +212,7 @@ function workHtml(d) {
   const stageRows = w.stages
     .map((s) => {
       const [wl, wc] = WORKED_BY[s.workedBy] || [s.workedBy, ""];
-      return `<tr><td>${esc(s.name)}</td><td><span class="an-tag ${wc}">${esc(wl)}</span></td><td class="r">${s.reached || "—"}</td><td class="r">${s.conv == null ? "—" : s.conv + "%"}</td><td class="r">${s.sent || "—"}${s.sentByAutopilot ? ` <span class="faint">(${s.sentByAutopilot} bot)</span>` : ""}</td><td class="r">${s.now || "—"}</td><td class="r ${s.stuck ? "bad" : ""}">${s.stuck || "—"}</td></tr>`;
+      return `<tr><td>${esc(s.name)}</td><td><span class="an-tag ${wc}">${esc(wl)}</span></td><td class="r">${s.reached || "—"}${delta(s.reached, s.reachedPrev)}</td><td class="r">${s.conv == null ? "—" : s.conv + "%"}${s.conv != null && s.convPrev != null && s.conv !== s.convPrev ? `<span class="an-d ${s.conv > s.convPrev ? "up" : "down"}" title="${s.convPrev}% the period before">${s.conv > s.convPrev ? "▲" : "▼"} ${Math.abs(s.conv - s.convPrev)} pp</span>` : ""}</td><td class="r">${s.sent || "—"}${s.sentByAutopilot ? ` <span class="faint">(${s.sentByAutopilot} bot)</span>` : ""}</td><td class="r">${s.now || "—"}</td><td class="r ${s.stuck ? "bad" : ""}">${s.stuck || "—"}</td></tr>`;
     })
     .join("");
   const rep = d.work.stages && d.funnel === "rental-listings" ? "Inspection reports" : d.funnel === "rental" ? "Viewing reports" : null;

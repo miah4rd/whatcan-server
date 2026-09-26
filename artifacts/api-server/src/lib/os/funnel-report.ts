@@ -60,7 +60,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   const P = [key, at(range.from), at(range.to), who];
   const byWho = `($4::text IS NULL OR lower(l.responsible_user) = $4)`;
 
-  const [score, map, people, reached, nowIn, sends, typed, queueAll, drafts, approve, cards, prevCards, reports, objections, spendRows] = await Promise.all([
+  const [score, map, people, reached, reachedPrev, nowIn, sends, typed, queueAll, drafts, approve, cards, prevCards, reports, objections, spendRows] = await Promise.all([
     teamScorecard(f, { period, date: day }),
     stageMap(f),
     funnelPeople(f),
@@ -70,6 +70,13 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
          FROM stage_events e JOIN leads_sync l ON l.lead_id = e.lead_id
         WHERE lower(coalesce(e.pipeline,'')) = $1 AND e.changed_at >= $2 AND e.changed_at < $3 AND ${byWho} GROUP BY 1, 2`,
       P,
+    ),
+    // The same for the period before, for the change in conversion.
+    q(
+      `SELECT e.to_stage AS stage, count(DISTINCT e.lead_id)::int AS n
+         FROM stage_events e JOIN leads_sync l ON l.lead_id = e.lead_id
+        WHERE lower(coalesce(e.pipeline,'')) = $1 AND e.changed_at >= $2 AND e.changed_at < $3 AND ${byWho} GROUP BY 1`,
+      [key, at(prev.from), at(prev.to), who],
     ),
     // Cards in each stage now, per person, and those with no stage move for 7 days.
     q(
@@ -145,11 +152,17 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   // or on fewer than 3 cards says nothing and is not shown.
   const SIDE = /closed|lost|won|успешно|закрыто|co-?broke|long term|backlog|weekly check|update availability/i;
   let prevReached: number | null = null;
+  let prevReachedBefore: number | null = null;
   const stages = map.stages.map((s) => {
     const r = sum(reached, "n", s.name);
     const ratio = !SIDE.test(s.name) && prevReached != null && prevReached >= 3 ? Math.round((r / prevReached) * 100) : null;
     const conv = ratio != null && ratio <= 100 ? ratio : null;
     if (!SIDE.test(s.name) && r > 0) prevReached = r;
+    // The same step's conversion in the period before.
+    const rb = sum(reachedPrev, "n", s.name);
+    const ratioB = !SIDE.test(s.name) && prevReachedBefore != null && prevReachedBefore >= 3 ? Math.round((rb / prevReachedBefore) * 100) : null;
+    const convPrev = ratioB != null && ratioB <= 100 ? ratioB : null;
+    if (!SIDE.test(s.name) && rb > 0) prevReachedBefore = rb;
     // Who works the stage now: a person only, a rule in code, the autopilot, or people through the Copilot.
     const workedBy = s.owner === "person" ? "person" : s.owner === "rule" ? "rule" : s.owner === "copilot" ? (s.autopilot === "autopilot" ? "autopilot" : "copilot") : "workflow";
     return {
@@ -160,6 +173,8 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
       // The same stage, card holder by card holder (the funnel by person).
       byPerson: Object.fromEntries(names.map((p) => [p, reached.filter((r) => lc(r.stage) === lc(s.name) && lc(r.who) === lc(p)).reduce((t, r) => t + n(r.n), 0)])),
       conv,
+      convPrev,
+      reachedPrev: rb,
       sent: sum(sends, "n", s.name),
       sentByAutopilot: sum(sends, "auto", s.name),
       now: sum(nowIn, "n", s.name),
