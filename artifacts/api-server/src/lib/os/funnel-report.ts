@@ -64,7 +64,7 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
       `SELECT l.lead_stage AS stage, l.responsible_user AS who, count(*)::int AS n,
               count(*) FILTER (WHERE coalesce(last.changed_at, l.amo_created_at) < now() - interval '7 days')::int AS stuck
          FROM leads_sync l LEFT JOIN LATERAL (SELECT changed_at FROM stage_events e WHERE e.lead_id = l.lead_id ORDER BY changed_at DESC LIMIT 1) last ON true
-        WHERE lower(coalesce(l.pipeline,'')) = $1 AND ${byWho.replace("$4", "$2")} GROUP BY 1, 2`,
+        WHERE lower(coalesce(l.pipeline,'')) = $1 AND ${byWho.replaceAll("$4", "$2")} GROUP BY 1, 2`,
       [key, who],
     ),
     // Messages sent through the Copilot, by the stage the card was in: by the autopilot or approved by a person.
@@ -85,7 +85,7 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
     ),
     q(
       `SELECT p.kind, count(*)::int AS n FROM pending_suggestions p JOIN leads_sync l ON l.lead_id = p.lead_id
-        WHERE p.status = 'pending' AND lower(coalesce(l.pipeline,'')) = $1 AND ${byWho.replace("$4", "$2")} GROUP BY 1`,
+        WHERE p.status = 'pending' AND lower(coalesce(l.pipeline,'')) = $1 AND ${byWho.replaceAll("$4", "$2")} GROUP BY 1`,
       [key, who],
     ),
     // Drafts decided in the period, per person: as written, edited, skipped; the autopilot apart.
@@ -113,7 +113,7 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
     q(
       `SELECT l.responsible_user AS who, p.lead_id, p.triggered_by_message_at AS since FROM pending_suggestions p JOIN leads_sync l ON l.lead_id = p.lead_id
         WHERE p.status = 'pending' AND p.kind = 'live' AND coalesce(p.triggered_by_message_at, p.created_at) < now() - interval '4 hours'
-          AND lower(coalesce(l.pipeline,'')) = $1 AND ${byWho.replace("$4", "$2")} ORDER BY since`,
+          AND lower(coalesce(l.pipeline,'')) = $1 AND ${byWho.replaceAll("$4", "$2")} ORDER BY since`,
       [key, who],
     ),
     q(
@@ -132,11 +132,16 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
 
   // ── 2. stages: every stage of the funnel, in order
   const sum = (rows: Record<string, unknown>[], k: string, stage: string) => rows.filter((r) => lc(r.stage) === lc(stage)).reduce((s, r) => s + n(r[k]), 0);
+  // Side stages (closed, co-broke, long term, the reserve, the weekly check) are not steps of the main
+  // path: no conversion is read into them. Entries in a period are not a cohort, so a ratio over 100%
+  // or on fewer than 3 cards says nothing and is not shown.
+  const SIDE = /closed|lost|won|успешно|закрыто|co-?broke|long term|backlog|weekly check|update availability/i;
   let prevReached: number | null = null;
   const stages = map.stages.map((s) => {
     const r = sum(reached, "n", s.name);
-    const conv = prevReached && prevReached > 0 && !/closed|lost|won|успешно|закрыто/i.test(s.name) ? Math.round((r / prevReached) * 100) : null;
-    if (!/closed|lost|won|успешно|закрыто/i.test(s.name)) prevReached = r || prevReached;
+    const ratio = !SIDE.test(s.name) && prevReached != null && prevReached >= 3 ? Math.round((r / prevReached) * 100) : null;
+    const conv = ratio != null && ratio <= 100 ? ratio : null;
+    if (!SIDE.test(s.name) && r > 0) prevReached = r;
     // Who works the stage now: a person only, a rule in code, the autopilot, or people through the Copilot.
     const workedBy = s.owner === "person" ? "person" : s.owner === "rule" ? "rule" : s.owner === "copilot" ? (s.autopilot === "autopilot" ? "autopilot" : "copilot") : "workflow";
     return {
@@ -194,7 +199,7 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
 
   // ── per person: the Copilot work and the reports
   const row = (rows: Record<string, unknown>[], p: string) => rows.filter((r) => lc(r.who) === lc(p));
-  const brokers = names.map((p) => {
+  const brokersAll = names.map((p) => {
     const d = row(drafts, p)[0] ?? {};
     const decided = n(d.as_written) + n(d.edited) + n(d.skipped);
     const sc = score.people.find((x) => lc(x.name) === lc(p));
@@ -213,6 +218,8 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
       sentByPerson: sends.filter((r) => lc(r.who) === lc(p)).reduce((s, r) => s + n(r.n) - n(r.auto), 0) + n(row(typed, p)[0]?.n),
     };
   });
+  // Card holders with no work and no target in the period (an admin account, a manager's login) are not rows.
+  const brokers = brokersAll.filter((b) => b.draftsDecided || b.sentByPerson || b.reports.planned || b.unanswered || b.stuck || score.people.some((x) => lc(x.name) === lc(b.name) && Object.keys(x.targets).length));
   const teamRow = {
     name: "Team",
     replyMin: score.team.values["reply_min"]?.v ?? null,

@@ -1,557 +1,234 @@
-// Unicorn OS — analytics, one funnel at a time (owner, 26.09): Rental clients, Rental Listings, Sales.
-// Inside a funnel: the team (people against their targets and against each other, and where each
-// loses), the bottlenecks, the objections and the waits — for the team or for one person.
-// Company-wide pages (the weekly brief, the daily numbers, AI cost) sit apart.
-import { S, api, esc, I, screens, store, on, money, fmtDT, fmtDay, rel, isStaff, emit, toast, fail, currentTheme } from "./core.js";
+// Unicorn OS — Analytics (owner, 26.09): one page per funnel, read top to bottom in a minute.
+//   Today — red flags as of now.
+//   1. Targets — what we want: per person and the team, any period.
+//   2. Work done — inflow and its cost, every stage (who works it, reached, conversion, messages,
+//      cards now, stuck), the bot and the people, each broker's Copilot work and reports.
+//   3. Bottlenecks — why the target is missed: the client's (owner's) side, our side, the inflow.
+// The numbers come from /analytics/funnel-report (lib/os/funnel-report.ts); nothing is changed here
+// except targets, by the owner and managers.
+import { S, api, esc, I, screens, on, toast, fail, dialog, isStaff, money, store, fmtDT, emit } from "./core.js";
 
 const FUNNELS = [
-  ["rental", "Rental clients", "Rental"],
-  ["rental-listings", "Rental listings", "Rental Listings"],
-  ["unicorn", "Sales", "Unicorn"],
+  ["rental", "Rental clients"],
+  ["rental-listings", "Rental listings"],
+  ["unicorn", "Sales"],
 ];
-const SECTIONS = {
-  rental: [
-    ["team", "Team"],
-    ["bottlenecks", "Bottlenecks"],
-    ["objections", "Objections"],
-    ["waits", "Funnel & waits"],
-    ["supply", "Supply gaps"],
-  ],
-  "rental-listings": [
-    ["team", "Team"],
-    ["bottlenecks", "Bottlenecks"],
-    ["waits", "Funnel & waits"],
-  ],
-  unicorn: [
-    ["team", "Team"],
-    ["waits", "Funnel & waits"],
-  ],
-  company: [
-    ["work", "Bot and people"],
-    ["brief", "Weekly brief"],
-    ["daily", "Daily numbers"],
-    ["cost", "AI cost"],
-  ],
-};
-const STAFF_ONLY = new Set(["team", "work", "brief", "daily", "cost"]);
-
-const pct = (a, b) => (b ? Math.round((a / b) * 100) + "%" : "—");
-const nameOf = (x) => (x.name || x.client_name || x.clientName || "").replace(/\s*\(клиент.*$/i, "") || `#${x.leadId || x.lead_id}`;
-const mins = (m) => (m == null || m === 0 ? "—" : m < 60 ? `${m} min` : m < 1440 ? `${(m / 60).toFixed(1)} h` : `${(m / 1440).toFixed(1)} d`);
-function thisMonday() {
-  const b = new Date(Date.now() + 8 * 3600e3);
-  return new Date(Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate() - ((b.getUTCDay() + 6) % 7))).toISOString().slice(0, 10);
-}
-const shiftWeek = (ws, n) => new Date(new Date(ws + "T00:00:00Z").getTime() + n * 7 * 86400e3).toISOString().slice(0, 10);
-function weekOptions(sel) {
-  const m = thisMonday();
-  return [...Array(10)]
-    .map((_, i) => {
-      const d = shiftWeek(m, -i);
-      return `<option value="${d}" ${d === sel ? "selected" : ""}>${i === 0 ? "This week · " : i === 1 ? "Last week · " : ""}${esc(fmtDay(d + "T04:00:00Z"))}</option>`;
-    })
-    .join("");
-}
-
-// Tiny markdown for the weekly brief (headings, bold, bullets, paragraphs).
-function md(text) {
-  const lines = esc(text || "").split("\n");
-  let html = "";
-  let inList = false;
-  for (const raw of lines) {
-    const l = raw.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
-    if (/^\s*[-*•]\s+/.test(l)) {
-      if (!inList) html += "<ul>";
-      inList = true;
-      html += `<li>${l.replace(/^\s*[-*•]\s+/, "")}</li>`;
-      continue;
-    }
-    if (inList) html += "</ul>";
-    inList = false;
-    if (/^#{1,3}\s/.test(l)) html += `<h3>${l.replace(/^#{1,3}\s/, "")}</h3>`;
-    else if (l.trim()) html += `<p>${l}</p>`;
-  }
-  if (inList) html += "</ul>";
-  return html;
-}
-
-function gateHtml(steps, prevSteps) {
-  const max = Math.max(1, ...steps.map((s) => s.n || 0));
-  return `<div class="gate">${steps
-    .map((s, i) => {
-      const before = i > 0 ? steps[i - 1].n : null;
-      const drop = before != null && before > 0 && (s.n || 0) / before < 0.5;
-      const p = prevSteps?.[i]?.n;
-      return `<div class="st ${drop ? "drop" : ""}" title="${esc(s.note || "")}"><span>${esc(s.label)}</span><div class="bar"><i style="width:${Math.round(((s.n || 0) / max) * 100)}%"></i></div><span class="v">${s.n ?? "—"}${i > 0 && before ? ` <span class="faint">${pct(s.n || 0, before)}</span>` : ""}${p != null ? `<br><span class="faint" style="font-size:10.5px">prev ${p}</span>` : ""}</span></div>`;
-    })
-    .join("")}</div>`;
-}
-
-/** The team table of a funnel for a period, cached for the person filters. */
-async function loadTeam(funnel, date, force, period = "week") {
-  const key = `team:${funnel}:${period}:${date}`;
-  const c = S.cache[key];
-  if (!force && c && Date.now() - c.at < 60_000) return c.value;
-  const v = await api(`/analytics/team?funnel=${funnel}&period=${period}&date=${date}`);
-  S.cache[key] = { at: Date.now(), value: v };
-  return v;
-}
 const PERIODS = [
+  ["day", "Day"],
   ["week", "Week"],
   ["month", "Month"],
   ["quarter", "Quarter"],
+  ["half", "Half-year"],
   ["year", "Year"],
 ];
-/** The last few periods of a kind, newest first, as [start day, label]. */
-function periodChoices(period) {
-  const today = new Date(Date.now() + 8 * 3600e3);
-  const y = today.getUTCFullYear();
-  const m = today.getUTCMonth();
-  const iso = (Y, M) => new Date(Date.UTC(Y, M, 1)).toISOString().slice(0, 10);
-  if (period === "month") return [...Array(12)].map((_, i) => [iso(y, m - i), new Date(Date.UTC(y, m - i, 1)).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" })]);
-  if (period === "quarter") {
-    const q0 = Math.floor(m / 3);
-    return [...Array(6)].map((_, i) => {
-      const d = new Date(Date.UTC(y, (q0 - i) * 3, 1));
-      return [d.toISOString().slice(0, 10), `Q${Math.floor(d.getUTCMonth() / 3) + 1} ${d.getUTCFullYear()}`];
-    });
-  }
-  if (period === "year") return [...Array(3)].map((_, i) => [`${y - i}-01-01`, String(y - i)]);
-  const mon = thisMonday();
-  return [...Array(10)].map((_, i) => {
-    const d = shiftWeek(mon, -i);
-    return [d, `${i === 0 ? "This week · " : i === 1 ? "Last week · " : ""}${fmtDay(d + "T04:00:00Z")}`];
-  });
+const TARGET_PERIODS = ["week", "month", "quarter", "half", "year"];
+const WORKED_BY = { autopilot: ["Autopilot", "bot"], copilot: ["Copilot + person", "cp"], person: ["Person", "ppl"], rule: ["Rule", "bot"], workflow: ["Working stage", ""] };
+
+const baliToday = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+const addDays = (d, n) => new Date(Date.parse(d + "T00:00:00Z") + n * 86400e3).toISOString().slice(0, 10);
+function shift(period, day, dir) {
+  const [y, m] = day.split("-").map(Number);
+  const iso = (Y, M) => new Date(Date.UTC(Y, M - 1, 1)).toISOString().slice(0, 10);
+  if (period === "day") return addDays(day, dir);
+  if (period === "week") return addDays(day, 7 * dir);
+  if (period === "month") return iso(y, m + dir);
+  if (period === "quarter") return iso(y, m + 3 * dir);
+  if (period === "half") return iso(y, m + 6 * dir);
+  return iso(y + dir, m);
 }
-async function peopleOf(funnel) {
-  if (!isStaff()) return [];
-  try {
-    return (await loadTeam(funnel, thisMonday(), false, "week")).people.map((p) => p.name);
-  } catch (e) {
-    return [];
-  }
-}
+const mins = (m) => (m == null ? "—" : m < 60 ? `${m} min` : m < 1440 ? `${(m / 60).toFixed(1)} h` : `${(m / 1440).toFixed(1)} d`);
+const dash = (v) => (v == null || v === "" ? "—" : v);
+const delta = (v, p) => (p == null || v === p ? "" : `<span class="an-d ${v > p ? "up" : "down"}">${v > p ? "▲" : "▼"} ${Math.abs(v - p)}</span>`);
 
 screens.analytics = {
   title: "Analytics",
   async render({ el, tools, route }) {
-    const staff = isStaff();
-    let funnel = route.parts[0] && (SECTIONS[route.parts[0]] ? route.parts[0] : null);
-    funnel = funnel || store.get("an-funnel", "rental");
-    if (funnel === "company" && !staff) funnel = "rental";
-    const secs = SECTIONS[funnel].filter(([k]) => staff || !STAFF_ONLY.has(k));
-    const section = secs.some(([k]) => k === route.parts[1]) ? route.parts[1] : store.get(`an-sec:${funnel}`, secs[0][0]);
-    const sec = secs.some(([k]) => k === section) ? section : secs[0][0];
+    const funnel = FUNNELS.some((f) => f[0] === route.parts[0]) ? route.parts[0] : store.get("an-funnel", "rental");
     store.set("an-funnel", funnel);
-    store.set(`an-sec:${funnel}`, sec);
-    tools.innerHTML = `<div class="views">${FUNNELS.map(([k, l]) => `<button data-fun="${k}" class="${k === funnel ? "active" : ""}">${esc(l)}</button>`).join("")}${
-      staff ? `<button data-fun="company" class="${funnel === "company" ? "active" : ""}">Company</button>` : ""
-    }</div><div class="views">${secs.map(([k, l]) => `<button data-sec="${k}" class="${k === sec ? "active" : ""}">${esc(l)}</button>`).join("")}</div>`;
-    on(tools, "click", "[data-fun]", (e, b) => (location.hash = `#/analytics/${b.dataset.fun}`));
-    on(tools, "click", "[data-sec]", (e, b) => (location.hash = `#/analytics/${funnel}/${b.dataset.sec}`));
-    el.innerHTML = `<div class="loading">Counting…</div>`;
+    const period = PERIODS.some((p) => p[0] === route.q.period) ? route.q.period : store.get("an-period", "week");
+    store.set("an-period", period);
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(route.q.date || "") ? route.q.date : baliToday();
+    const who = isStaff() ? route.q.who || "team" : "me";
+    const go = (patch) => {
+      const qs = new URLSearchParams({ period, date, who: isStaff() ? who : "", ...patch });
+      for (const [k, v] of [...qs]) if (!v) qs.delete(k);
+      location.hash = `#/analytics/${patch.funnel || funnel}?${qs}`;
+    };
+    tools.innerHTML = `<div class="views">${FUNNELS.map(([k, l]) => `<button data-an-f="${k}" class="${k === funnel ? "active" : ""}">${l}</button>`).join("")}</div>
+      <select class="chip" id="an-period">${PERIODS.map(([k, l]) => `<option value="${k}" ${k === period ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <button class="iconbtn" id="an-prev" title="Earlier">${I.left}</button><button class="iconbtn" id="an-next" title="Later">${I.right}</button>
+      ${isStaff() ? `<select class="chip" id="an-who"><option value="team">Team and everyone</option></select>` : ""}`;
+    on(tools, "click", "[data-an-f]", (e, b) => go({ funnel: b.dataset.anF }));
+    tools.querySelector("#an-period").onchange = (e) => go({ period: e.target.value });
+    tools.querySelector("#an-prev").onclick = () => go({ date: shift(period, date, -1) });
+    tools.querySelector("#an-next").onclick = () => go({ date: shift(period, date, 1) });
+    el.innerHTML = `<div class="loading">Counting ${esc(FUNNELS.find((f) => f[0] === funnel)[1])}…</div>`;
+    let d;
     try {
-      await VIEWS[sec](el, funnel);
+      d = await api(`/analytics/funnel-report?funnel=${funnel}&period=${period}&date=${date}${who !== "team" && who !== "me" ? `&who=${encodeURIComponent(who)}` : ""}`);
     } catch (e) {
       el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+      return;
     }
-    on(el, "click", "[data-lead]", (e, x) => {
-      e.preventDefault();
-      emit("open-peek", { type: "lead", id: x.dataset.lead, tab: "overview" });
-    });
-    on(el, "click", "[data-vreport]", (e, x) => {
-      e.preventDefault();
-      emit("open-peek", { type: "vreport", id: x.dataset.vreport });
-    });
-    on(el, "click", "[data-villa]", (e, x) => {
-      e.preventDefault();
-      emit("open-peek", { type: "villa", id: x.dataset.villa });
-    });
+    const whoSel = tools.querySelector("#an-who");
+    if (whoSel) {
+      whoSel.innerHTML += d.people.map((p) => `<option ${p.toLowerCase() === String(who).toLowerCase() ? "selected" : ""}>${esc(p)}</option>`).join("");
+      whoSel.onchange = (e) => go({ who: e.target.value });
+    }
+    el.innerHTML = `<div class="page an">
+      <div class="an-range faint">${esc(label(d))}${d.who !== "team" ? ` · ${esc(d.who)}` : ""}</div>
+      ${flagsHtml(d)}
+      ${targetsHtml(d)}
+      ${workHtml(d)}
+      ${bottlenecksHtml(d)}
+    </div>`;
+    on(el, "click", "[data-lead]", (e, a) => (e.preventDefault(), emit("open-peek", { type: "lead", id: a.dataset.lead })));
+    const setBtn = el.querySelector("#an-set-targets");
+    if (setBtn) setBtn.onclick = () => setTargets(d, funnel, period, date);
   },
 };
-const rerender = () => screens.analytics.render({ el: document.getElementById("content"), tools: document.getElementById("tools"), route: S.route });
 
-/** Week and person pickers shared by the funnel sections. */
-async function filtersHtml(funnel, { week = true, person = true } = {}) {
-  const w = store.get("an-week", thisMonday());
-  const who = store.get(`an-who:${funnel}`, "");
-  const names = person ? await peopleOf(funnel) : [];
-  return {
-    week: w,
-    who: names.includes(who) ? who : "",
-    html: `<div class="row an-filters">${week ? `<select class="chip" id="an-week">${weekOptions(w)}</select>` : ""}${
-      person && names.length ? `<select class="chip" id="an-who"><option value="">Whole team</option>${names.map((n) => `<option ${n === who ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>` : ""
-    }${week ? `<span class="faint">Weeks run Monday to Sunday, Bali time.</span>` : ""}</div>`,
-    bind(el) {
-      const ws = el.querySelector("#an-week");
-      if (ws) ws.onchange = () => (store.set("an-week", ws.value), rerender());
-      const ps = el.querySelector("#an-who");
-      if (ps) ps.onchange = () => (store.set(`an-who:${funnel}`, ps.value), rerender());
-    },
-  };
+function label(d) {
+  const f = new Date(d.from + "T00:00:00Z");
+  const t = new Date(Date.parse(d.to + "T00:00:00Z") - 86400e3);
+  const o = { day: "numeric", month: "short", timeZone: "UTC" };
+  return d.period === "day" ? f.toLocaleDateString("en-GB", { ...o, weekday: "short" }) : `${f.toLocaleDateString("en-GB", o)} – ${t.toLocaleDateString("en-GB", { ...o, year: "numeric" })}`;
 }
 
-const VIEWS = {
-  // ── The team of a funnel: targets, fact, ranking, and where each person loses ──
-  async team(el, funnel) {
-    const period = store.get("an-period", "week");
-    const choices = periodChoices(period);
-    const anchor = choices.some(([d]) => d === store.get(`an-anchor:${period}`)) ? store.get(`an-anchor:${period}`) : choices[0][0];
-    const edit = !!store.get("an-edit-targets", false);
-    const prevAnchor = choices[choices.findIndex(([d]) => d === anchor) + 1]?.[0];
-    const [t, tp] = await Promise.all([loadTeam(funnel, anchor, true, period), prevAnchor ? loadTeam(funnel, prevAnchor, false, period).catch(() => null) : Promise.resolve(null)]);
-    const periodWord = { week: "week", month: "month", quarter: "quarter", year: "year" }[period];
-    const f = {
-      week: t.from,
-      html: `<div class="row an-filters"><div class="views">${PERIODS.map(([k, l]) => `<button data-period="${k}" class="${k === period ? "active" : ""}">${l}</button>`).join("")}</div>
-        <select class="chip" id="an-anchor">${choices.map(([d, l]) => `<option value="${d}" ${d === anchor ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
-        <span class="faint">Counted over the ${periodWord} in Bali time.</span></div>`,
-      bind(root) {
-        on(root, "click", "[data-period]", (e, b) => (store.set("an-period", b.dataset.period), rerender()));
-        root.querySelector("#an-anchor").onchange = (e) => (store.set(`an-anchor:${period}`, e.target.value), rerender());
-      },
-    };
-    const metrics = t.metrics;
-    const prevOf = (name, k) => tp?.people.find((p) => p.name === name)?.values?.[k]?.v;
-    const cell = (who, m, v, target, prev) => {
-      const tv = target?.value;
-      const cls = tv ? (v >= tv ? "ok" : target.floor != null && v >= target.floor ? "warn" : "bad") : "";
-      const own = tv != null && !target?.summed && !target?.implied;
-      const input = edit && m.target ? `<input class="tin" type="number" min="0" step="1" data-t="${esc(m.key)}" data-who="${esc(who)}" value="${own ? esc(tv) : ""}" placeholder="${tv != null ? esc(tv) : "—"}" title="Target per ${periodWord}">` : "";
-      const mark = target?.summed ? "*" : target?.implied ? "≈" : "";
-      return `<td class="num tcell ${cls}"><b>${v ?? 0}</b>${tv != null && !edit ? `<span class="tgt" title="${target.implied ? "from the weekly target" : target.summed ? "sum of the people's targets" : ""}">/ ${mark === "≈" ? "≈" : ""}${esc(tv)}${mark === "*" ? "*" : ""}</span>` : ""}${input}${prev != null && !edit ? `<div class="prev">prev ${prev}</div>` : ""}</td>`;
-    };
-    const habitCells = (vals) =>
-      `<td class="num">${esc(mins(vals.reply_min?.v))}</td><td class="num ${vals.overdue_tasks?.v ? "bad-t" : ""}">${vals.overdue_tasks?.v ?? 0}</td><td class="num ${vals.reports_due?.v ? "bad-t" : ""}">${vals.reports_due?.v ?? 0}</td><td class="num">${vals.drafts_edited_pct?.v ? vals.drafts_edited_pct.v + "%" : "—"}</td>`;
-    const scoreHtml = (p) => {
-      if (p.score == null) return `<span class="faint">no activity</span>`;
-      const s = Math.round(p.score * 100);
-      const cls = p.score >= 1 ? "ok" : p.score >= 0.8 ? "warn" : "bad";
-      return `<span class="pill ${cls}" title="${esc(p.basis)}">${s}%</span>`;
-    };
-    const rows = t.people
-      .map(
-        (p) => `<tr><td class="num">${p.rank}</td><td><b>${esc(p.name)}</b></td>${metrics.map((m) => cell(p.name, m, p.values[m.key]?.v, p.targets[m.key], prevOf(p.name, m.key))).join("")}${habitCells(p.values)}<td>${scoreHtml(p)}</td>
-        <td class="why">${p.weakest ? `${esc(p.weakest.step)} <span class="faint">${Math.round(p.weakest.rate * 100)}% vs team ${Math.round(p.weakest.teamRate * 100)}% (of ${p.weakest.base})</span>` : `<span class="faint">no step clearly below the team</span>`}</td></tr>`,
-      )
-      .join("");
-    const teamRow = `<tr class="team-row"><td></td><td><b>Team</b></td>${metrics.map((m) => cell("team", m, t.team.values[m.key]?.v, t.team.targets[m.key], tp?.team.values?.[m.key]?.v)).join("")}<td class="num">—</td><td class="num">${t.team.values.overdue_tasks?.v ?? 0}</td><td class="num">${t.team.values.reports_due?.v ?? 0}</td><td></td><td></td><td></td></tr>`;
-    // Conversion at each step, person by person: the reason one is behind shows here.
-    const gateRows = t.gates
-      .map((g) => {
-        const per = t.people.map((p) => {
-          const a = p.values[g.from]?.v || 0;
-          const b = p.values[g.to]?.v || 0;
-          const r = a ? b / a : null;
-          const worse = r != null && g.teamRate != null && a >= 3 && g.teamRate - r > 0.1;
-          return `<td class="num ${worse ? "bad-t" : ""}">${r == null ? "—" : Math.round(r * 100) + "%"}<span class="faint"> ${b}/${a}</span></td>`;
-        });
-        return `<tr><td>${esc(metrics.find((m) => m.key === g.from)?.label || g.from)} → ${esc(metrics.find((m) => m.key === g.to)?.label || g.to)}</td><td class="num"><b>${g.teamRate == null ? "—" : Math.round(g.teamRate * 100) + "%"}</b></td>${per.join("")}</tr>`;
-      })
-      .join("");
-    el.innerHTML = `<div class="page stack" style="gap:12px">${f.html}
-      <div class="panel"><h3>${esc(FUNNELS.find((x) => x[0] === funnel)[1])} · the team this ${periodWord} <span class="row" style="gap:8px"><span class="faint">${t.people.length} people with cards in this funnel</span><button class="btn sm ${edit ? "primary" : ""}" id="an-edit">${edit ? "Done" : "Set targets"}</button></span></h3>
-        ${edit ? `<div class="help">These are ${periodWord}ly targets, from the ${periodWord} shown onward; earlier ${periodWord}s keep theirs. Leave a box empty for no target. A team target left empty is the sum of the people's (marked *). Without a ${periodWord}ly target, the weekly one scaled to the ${periodWord} is shown (marked ≈).</div>` : ""}
-        <div class="tbl-wrap" style="max-height:none"><table class="grid team"><thead><tr><th>#</th><th>Person</th>${metrics.map((m) => `<th title="${esc(m.label)}">${esc(m.label)}</th>`).join("")}<th>Reply wait</th><th>Overdue tasks</th><th>Reports owed</th><th>Drafts rewritten</th><th>Score</th><th>Where they lose most</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="${metrics.length + 8}" class="empty">Nobody holds cards in this funnel yet.</td></tr>`}${teamRow}</tbody></table></div>
-        <p class="faint" style="font-size:11.5px;margin:8px 0 0">Score: the share of their own targets reached (capped at 150%), or, without targets, of the team's average. Reply wait is the median time a client waited for the first answer. Overdue tasks and reports owed are counted now, not for the week.</p></div>
-      ${t.gates.length ? `<div class="panel"><h3>Conversion at each step <span class="faint">red: more than 10 points below the rest of the team</span></h3><div class="tbl-wrap" style="max-height:none"><table class="grid"><thead><tr><th>Step</th><th>Team</th>${t.people.map((p) => `<th>${esc(p.name)}</th>`).join("")}</tr></thead><tbody>${gateRows}</tbody></table></div></div>` : ""}
-    </div>`;
-    f.bind(el);
-    el.querySelector("#an-edit").onclick = () => (store.set("an-edit-targets", !edit), rerender());
-    on(el, "change", "input.tin", async (e, inp) => {
-      try {
-        await api("/analytics/team-targets", { body: { funnel, metric: inp.dataset.t, who: inp.dataset.who, value: inp.value === "" ? null : Number(inp.value), from: t.from, period } });
-        toast(`${periodWord[0].toUpperCase() + periodWord.slice(1)}ly target saved for ${inp.dataset.who === "team" ? "the team" : inp.dataset.who}`);
-        delete S.cache[`team:${funnel}:${period}:${anchor}`];
-      } catch (err) {
-        fail(err);
-      }
-    });
-  },
+// ── Today ──
+function flagsHtml(d) {
+  if (!d.flags.length) return `<div class="an-today ok">${I.check}<span><b>Today</b> · all in order: no missing reports, nobody waiting over 4 hours, targets on pace.</span></div>`;
+  const red = d.flags.filter((x) => x.level === "red");
+  return `<div class="an-today ${red.length ? "bad" : "warn"}"><b>Today · ${d.flags.length} to look at</b><ul>${d.flags
+    .map((x) => `<li class="${x.level}">${x.leadId ? `<a href="#" data-lead="${esc(x.leadId)}">${esc(x.text)}</a>` : esc(x.text)}</li>`)
+    .join("")}</ul></div>`;
+}
 
-  // ── Bottlenecks, for the team or one person ──
-  async bottlenecks(el, funnel) {
-    const f = await filtersHtml(funnel);
-    const q = `week=${f.week}${f.who ? `&broker=${encodeURIComponent(f.who)}` : ""}`;
-    if (funnel === "rental-listings") {
-      const [t, tp] = await Promise.all([loadTeam(funnel, f.week, false, "week"), loadTeam(funnel, shiftWeek(f.week, -1), false, "week").catch(() => null)]);
-      const pick = (x) => (f.who ? x?.people.find((p) => p.name === f.who)?.values : x?.team.values) || {};
-      const cur = pick(t);
-      const prev = pick(tp);
-      const steps = t.metrics.map((m) => ({ label: m.label, n: cur[m.key]?.v ?? 0 }));
-      const prevSteps = t.metrics.map((m) => ({ n: prev[m.key]?.v ?? 0 }));
-      el.innerHTML = `<div class="page stack" style="gap:12px">${f.html}
-        <div class="panel"><h3>Owner cards to Listed · ${esc(f.who || "whole team")} <span class="faint">reports owed now: ${cur.reports_due?.v ?? 0} · overdue tasks: ${cur.overdue_tasks?.v ?? 0}</span></h3>${gateHtml(steps, prevSteps)}
-          <p class="faint" style="font-size:11.5px;margin:8px 0 0">Published and Listed come from the site; a listing belongs to the person its code names (R-YUD is Yudi).</p></div></div>`;
-      f.bind(el);
-      return;
+// ── 1. Targets ──
+function targetsHtml(d) {
+  const sc = d.targets;
+  const rows = sc.people.filter((p) => d.who === "team" || p.name.toLowerCase() === d.who);
+  const cell = (v, t, prev) => {
+    if (!t || !(t.value > 0)) return `<td class="r">${v}${delta(v, prev)}</td>`;
+    const pct = Math.round((v / t.value) * 100);
+    return `<td class="r"><b class="${pct >= 100 ? "ok" : pct >= 60 ? "" : "bad"}">${v}</b> / ${t.value}${t.implied ? `<span class="faint" title="scaled from the weekly target"> ~</span>` : ""}${delta(v, prev)}</td>`;
+  };
+  const head = `<tr><th>Metric</th>${rows.map((p) => `<th class="r">${esc(p.name)}</th>`).join("")}${d.who === "team" ? `<th class="r">Team</th>` : ""}</tr>`;
+  const body = sc.metrics
+    .map((m) => `<tr class="${m.target ? "tg" : ""}"><td>${esc(m.label)}${m.target ? "" : ` <span class="faint">·</span>`}</td>${rows.map((p) => cell(p.values[m.key]?.v ?? 0, p.targets[m.key], p.values[m.key]?.prev)).join("")}${
+      d.who === "team" ? cell(sc.team.values[m.key]?.v ?? 0, sc.team.targets[m.key], sc.team.values[m.key]?.prev) : ""
+    }</tr>`)
+    .join("");
+  return `<section class="panel an-ch"><h2><span class="an-n">1</span>Targets <span class="faint">what we want</span>${isStaff() ? `<button class="btn sm" id="an-set-targets" style="margin-left:auto">Set targets</button>` : ""}</h2>
+    <p class="faint an-note">Counted from the conversations and reports, not from stage moves. Bold is done against the target; ▲▼ against the period before. A target is set per person and for the team, for a week, month, quarter, half-year or year${d.period === "day" ? "; a day reads its week's target" : ""}.</p>
+    <div class="an-scroll"><table class="grid an-t">${head}${body}</table></div></section>`;
+}
+
+async function setTargets(d, funnel, period, date) {
+  const sc = d.targets;
+  const per = TARGET_PERIODS.includes(period) ? period : "week";
+  const metrics = sc.metrics.filter((m) => m.target);
+  const who = [...sc.people.map((p) => [p.name.toLowerCase(), p.name, p.targets]), ["team", "Team (manager)", sc.team.targets]];
+  const r = await dialog({
+    title: "Targets",
+    wide: true,
+    body: `<label class="fld" style="max-width:220px"><span>For each</span><select class="in" name="period">${TARGET_PERIODS.map((p) => `<option ${p === per ? "selected" : ""} value="${p}">${PERIODS.find((x) => x[0] === p)[1]}</option>`).join("")}</select></label>
+      <p class="faint" style="font-size:12px;margin:8px 0">Starting with the period that holds ${esc(date)}. Empty = no target. The team's target, if empty, is the sum of its people's.</p>
+      <div class="an-scroll"><table class="grid an-t"><tr><th>Who</th>${metrics.map((m) => `<th>${esc(m.label)}</th>`).join("")}</tr>${who
+        .map(([k, name, t]) => `<tr><td>${esc(name)}</td>${metrics.map((m) => `<td><input class="in an-in" type="number" min="0" step="1" name="t:${esc(k)}:${m.key}" value="${t[m.key] && !t[m.key].implied && !t[m.key].summed ? t[m.key].value : ""}"></td>`).join("")}</tr>`)
+        .join("")}</table></div>`,
+    actions: [{ label: "Cancel", value: null }, { label: "Save", value: "ok", primary: true }],
+  });
+  if (!r) return;
+  try {
+    for (const [k, v] of Object.entries(r.values)) {
+      if (!k.startsWith("t:")) continue;
+      const [, whoKey, metric] = k.split(":");
+      const before = (whoKey === "team" ? sc.team.targets : sc.people.find((p) => p.name.toLowerCase() === whoKey)?.targets || {})[metric];
+      const had = before && !before.implied && !before.summed ? String(before.value) : "";
+      if (String(v) === had) continue;
+      await api("/analytics/team-targets", { body: { funnel, metric, who: whoKey, value: v === "" ? null : Number(v), from: date, period: r.values.period } });
     }
-    const [g, gp] = await Promise.all([api(`/analytics/gates?${q}`), api(`/analytics/gates?week=${shiftWeek(f.week, -1)}${f.who ? `&broker=${encodeURIComponent(f.who)}` : ""}`).catch(() => null)]);
-    const v2 = g.gateViewingToDeal || {};
-    const stuck = g.gateOptionsToViewing?.stuck || [];
-    const byStep = {};
-    for (const s of stuck) (byStep[s.step] = byStep[s.step] || []).push(s);
-    const drafts = (g.drafts || []).filter((d) => !f.who || d.broker.toLowerCase() === f.who.toLowerCase());
-    el.innerHTML = `<div class="page stack" style="gap:12px">${f.html}
-      <div class="kgrid">
-        <div class="panel"><h3>Options → viewing · ${esc(f.who || "whole team")} <span class="faint">clients whose first shortlist went out this week</span></h3>${g.gateOptionsToViewing?.steps ? gateHtml(g.gateOptionsToViewing.steps, gp?.gateOptionsToViewing?.steps) : `<span class="faint">no data</span>`}
-          <p class="faint" style="font-size:11.5px;margin:8px 0 0">"Viewing offered" is read from our messages (viewing / visit words): the chats do not store it as a fact yet.</p></div>
-        <div class="panel"><h3>Where those clients stopped <span class="faint">${stuck.length}</span></h3><div class="stack" style="max-height:360px;overflow:auto">${
-          Object.entries(byStep)
-            .map(([step, arr]) => `<div class="sect-h">${esc(step)} · ${arr.length}</div>${arr.slice(0, 12).map((s) => `<div class="quote" data-lead="${esc(s.leadId)}" style="cursor:pointer"><b>${esc(nameOf(s))}</b> <span class="pill stage">${esc(s.stage || "")}</span>${s.lastClientText ? `<br>“${esc(String(s.lastClientText).slice(0, 180))}”` : ""}<div class="by">${s.lastClientAt ? "last wrote " + esc(rel(s.lastClientAt)) : "never wrote back"}${s.offeredBy ? " · viewing offered by " + esc(s.offeredBy) : ""}</div></div>`).join("")}`)
-            .join("") || `<div class="empty">Nobody stuck, or no shortlists this week.</div>`
-        }</div></div>
-      </div>
-      <div class="panel"><h3>Viewing → deal <span class="faint">${(v2.viewings || []).length} viewings held · contracts signed ${v2.contractsSigned ?? 0}</span></h3>
-        <div class="tbl-wrap" style="max-height:none"><table class="grid"><thead><tr><th>When</th><th>Client</th><th>Villa</th><th>Outcome</th><th>What the client said</th><th>Next step</th><th>Stage now</th></tr></thead><tbody>${
-          (v2.viewings || [])
-            .map((r) => `<tr ${r.report_id && r.outcome ? `data-vreport="${esc(r.report_id)}"` : `data-lead="${esc(r.lead_id)}"`}><td>${esc(fmtDT(r.viewing_at))}</td><td><b>${esc(nameOf(r))}</b></td><td>${r.property_code ? `<a href="#" data-villa="${esc(r.property_code)}" class="mono">${esc(r.property_code)}</a>` : "—"}</td><td>${r.outcome ? `<span class="pill ${r.outcome === "go" ? "ok" : r.outcome === "no" ? "bad" : "warn"}">${esc(r.outcome)}</span>` : r.report_status === "due" ? `<span class="pill bad">report missing</span>` : "—"}</td><td class="ellip" title="${esc(r.feedback || "")}">${esc(r.feedback || "")}</td><td>${esc((r.next_steps || []).join(", "))}</td><td>${esc(r.lead_stage || "")}</td></tr>`)
-            .join("") || `<tr><td colspan="7" class="empty">No viewings held this week.</td></tr>`
-        }</tbody></table></div><p class="faint" style="font-size:11.5px;margin:8px 0 0">A row with a filed report opens the report.</p></div>
-      ${isStaff() && drafts.length ? `<div class="panel"><h3>What happened to the Copilot's drafts <span class="faint">bot and people apart</span></h3><div class="tbl-wrap" style="max-height:none"><table class="grid"><thead><tr><th>Person</th><th>Kind</th><th>Bot sent</th><th>Sent as written</th><th>Edited</th><th>Skipped</th><th>Untouched</th></tr></thead><tbody>${drafts
-        .map((d) => `<tr><td>${esc(d.broker)}</td><td>${esc(d.kind)}</td><td class="num">${d.bot_sent}</td><td class="num">${d.sent_as_is}</td><td class="num">${d.edited}</td><td class="num">${d.skipped}</td><td class="num">${d.untouched}</td></tr>`)
-        .join("")}</tbody></table></div></div>` : ""}
-    </div>`;
-    f.bind(el);
-  },
+    toast("Targets saved");
+    screens.analytics.render({ el: document.getElementById("content"), tools: document.getElementById("tools"), route: S.route });
+  } catch (e) {
+    fail(e);
+  }
+}
 
-  // ── Objections: the pains first, then every word ──
-  async objections(el, funnel) {
-    const f = await filtersHtml(funnel, { week: false });
-    const days = Number(store.get("obj-days", 30));
-    const r = await api(`/analytics/objections?days=${days}${f.who ? `&broker=${encodeURIComponent(f.who)}` : ""}`);
-    const cats = r.categories || {};
-    const pains = r.pains || [];
-    const top = pains.slice(0, 5);
-    const byCat = {};
-    for (const q of r.recent) (byCat[q.category] = byCat[q.category] || []).push(q);
-    const trend = (p) => {
-      if (!p.prevClients) return `<span class="faint">new this period</span>`;
-      const d = p.clients - p.prevClients;
-      return d === 0 ? `<span class="faint">same as before</span>` : `<span class="${d > 0 ? "bad-t" : "ok-t"}">${d > 0 ? "▲" : "▼"} ${Math.abs(d)} vs the ${days} days before</span>`;
-    };
-    el.innerHTML = `<div class="page stack" style="gap:12px">
-      <div class="row an-filters"><select class="chip" id="obj-days">${[7, 14, 30, 90].map((d) => `<option value="${d}" ${d === days ? "selected" : ""}>Last ${d} days</option>`).join("")}</select>${f.html.replace(/^<div class="row an-filters">|<\/div>$/g, "")}
-        ${isStaff() ? `<button class="btn sm" id="obj-scan">Read new messages now</button>` : ""}</div>
-      <div class="panel"><h3>The main pains <span class="faint">${r.clientsTotal || 0} clients objected · read every two hours from the chats and viewing reports · last pass ${r.lastScanAt ? esc(rel(r.lastScanAt)) : "not yet"}</span></h3>
-        <div class="pains">${
-          top
-            .map(
-              (p, i) => `<div class="pain"><div class="pn">${i + 1}</div><div class="pb2"><div class="pt"><b>${esc(p.label)}</b><span class="pill">${p.clients} clients · ${p.share}%</span>${trend(p)}</div>
-                ${p.segments.length ? `<div class="faint">Said most by: ${p.segments.map((s) => `${esc(s.segment)} (${s.clients})`).join(" · ")}</div>` : ""}
-                <div class="pq">${p.quotes.map((q) => `<a href="#" data-lead="${esc(q.leadId)}">“${esc(q.quote.length > 140 ? q.quote.slice(0, 140) + "…" : q.quote)}”</a>`).join("")}</div></div></div>`,
-            )
-            .join("") || `<div class="empty">No objections recorded in this period.</div>`
-        }</div>
-        ${pains.length > 5 ? `<p class="faint" style="font-size:12px;margin:8px 0 0">Also: ${pains.slice(5).map((p) => `${esc(p.label)} ${p.clients}`).join(" · ")}</p>` : ""}</div>
-      <div class="panel"><h3>Every objection, in the clients' words <span class="faint">open a kind to read it all</span></h3><div class="stack">${
-        pains
-          .map((p) => {
-            const arr = byCat[p.category] || [];
-            return `<details class="objcat"><summary><b>${esc(p.label)}</b> <span class="faint">${p.mentions} mentions · ${p.clients} clients</span></summary><div class="stack" style="margin-top:8px">${arr
-              .map((q) => `<div class="quote" data-lead="${esc(q.lead_id)}" style="cursor:pointer">“${esc(q.quote || "")}”<div class="by">${esc(nameOf(q))} · ${esc(q.source === "viewing-report" ? "viewing report" : "chat")} · ${esc(rel(q.said_at))}${q.lead_stage ? " · " + esc(q.lead_stage) : ""}${q.req_bedrooms ? ` · ${q.req_bedrooms}BR ${esc(q.req_areas || "")} ${q.req_budget_idr_monthly ? money(q.req_budget_idr_monthly) : ""}` : ""}</div></div>`)
-              .join("") || `<span class="faint">Only older mentions; widen the period.</span>`}</div></details>`;
-          })
-          .join("") || `<span class="faint">—</span>`
-      }</div></div>
-      <div class="kgrid">
-        <div class="panel"><h3>Viewing reports <span class="faint">${r.viewingReports.length} · open one to read it whole</span></h3><div class="stack" style="max-height:460px;overflow:auto">${
-          r.viewingReports
-            .map((v) => `<div class="quote" data-vreport="${esc(v.report_id)}" style="cursor:pointer"><b>${esc(fmtDay(v.viewing_at))}${v.property_code ? ` · <span class="mono">${esc(v.property_code)}</span>` : ""}</b> <span class="pill ${v.outcome === "go" ? "ok" : v.outcome === "no" ? "bad" : "warn"}">${esc(v.outcome || "")}</span> <span class="faint">${esc(nameOf(v))}</span><br>${esc(v.feedback ? (v.feedback.length > 220 ? v.feedback.slice(0, 220) + "…" : v.feedback) : "no feedback written")}<div class="by">next: ${esc((v.next_steps || []).join(", ") || "—")} · ${esc(v.responsible_user || "")}</div></div>`)
-            .join("") || `<div class="empty">No viewing reports in this period.</div>`
-        }</div></div>
-        <div class="panel"><h3>Cards closed as lost <span class="faint">${r.lost.length}</span></h3>
-          ${r.lostReasons.length ? `<div class="bars" style="margin-bottom:10px">${r.lostReasons.map((x) => `<div class="row"><span>${esc(r.closeReasons[x.reason] || x.reason)}</span><div class="b"><i style="width:${Math.round((x.n / Math.max(...r.lostReasons.map((y) => y.n))) * 100)}%"></i></div><span class="num">${x.n}</span></div>`).join("")}</div>` : `<p class="faint" style="margin:0 0 8px;font-size:12px">Reasons are recorded from now on: closing a card as lost in Unicorn OS asks why. amoCRM never stored them.</p>`}
-          <div class="stack" style="max-height:340px;overflow:auto">${r.lost.map((l) => `<div class="note" data-lead="${esc(l.lead_id)}" style="cursor:pointer">#${esc(l.lead_id)} from ${esc(l.from_stage || "—")} · ${esc(rel(l.changed_at))}${l.discard_reason ? `<br><span class="faint">${esc(l.discard_reason)}</span>` : ""}</div>`).join("") || `<span class="faint">none</span>`}</div></div>
-      </div></div>`;
-    f.bind(el);
-    el.querySelector("#obj-days").onchange = (e) => (store.set("obj-days", Number(e.target.value)), rerender());
-    const sc = el.querySelector("#obj-scan");
-    if (sc)
-      sc.onclick = async () => {
-        sc.disabled = true;
-        sc.textContent = "Reading…";
-        try {
-          const x = await api("/analytics/objections/scan", { body: {} });
-          toast(`Read ${x.messages} messages and ${x.reports} reports · ${x.found} new objections`);
-          rerender();
-        } catch (e) {
-          fail(e);
-          sc.disabled = false;
-        }
-      };
-  },
+// ── 2. Work done ──
+function workHtml(d) {
+  const w = d.work;
+  const inf = w.inflow;
+  const newDelta = inf.prevNewCards ? Math.round(((inf.newCards - inf.prevNewCards) / inf.prevNewCards) * 100) : null;
+  const sources = inf.sources.map((s) => `${esc(s.label)} <b>${s.n}</b>`).join(" · ") || "—";
+  const spend = inf.spend
+    ? `Meta spend <b>${money(inf.spend.amount)}</b>${inf.spend.perPaidLead ? ` · per paid lead <b>${money(inf.spend.perPaidLead)}</b>` : ""}${inf.spend.perCard ? ` · per new card <b>${money(inf.spend.perCard)}</b>` : ""} <span class="faint">(${esc(inf.spend.campaigns.join(", "))})</span>`
+    : `<span class="faint">No ad spend on this funnel in the period.</span>`;
+  const kpis = [
+    ["New cards", inf.newCards, newDelta == null ? "" : `${newDelta > 0 ? "+" : ""}${newDelta}% vs before`],
+    ["Sent by the autopilot", w.autopilot, ""],
+    ["Approved in the Copilot", w.approvedInCopilot, ""],
+    ["Typed on the phone", w.typedOnPhone, ""],
+    ["Bot's share of messages", w.botShare == null ? "—" : `${w.botShare}%`, `~${w.hoursSaved} h saved`],
+    ["In the queue now", w.queue.live + w.queue.push, `${w.queue.live} live · ${w.queue.push} push`],
+  ];
+  const stageRows = w.stages
+    .map((s) => {
+      const [wl, wc] = WORKED_BY[s.workedBy] || [s.workedBy, ""];
+      return `<tr><td>${esc(s.name)}</td><td><span class="an-tag ${wc}">${esc(wl)}</span></td><td class="r">${s.reached || "—"}</td><td class="r">${s.conv == null ? "—" : s.conv + "%"}</td><td class="r">${s.sent || "—"}${s.sentByAutopilot ? ` <span class="faint">(${s.sentByAutopilot} bot)</span>` : ""}</td><td class="r">${s.now || "—"}</td><td class="r ${s.stuck ? "bad" : ""}">${s.stuck || "—"}</td></tr>`;
+    })
+    .join("");
+  const rep = d.work.stages && d.funnel === "rental-listings" ? "Inspection reports" : d.funnel === "rental" ? "Viewing reports" : null;
+  const bRows = d.brokers
+    .map(
+      (b) => `<tr class="${b.name === "Team" ? "tm" : ""}"><td>${esc(b.name)}</td><td class="r">${b.sentByPerson || "—"}</td><td class="r">${b.autopilotSent || "—"}</td><td class="r">${mins(b.replyMin)}</td><td class="r">${mins(b.approveMin)}</td><td class="r">${b.draftsDecided ? `${dash(b.asWrittenPct)}% <span class="faint">of ${b.draftsDecided}</span>` : "—"}</td><td class="r ${b.overdueTasks ? "bad" : ""}">${b.overdueTasks || "—"}</td>${
+        rep ? `<td class="r">${b.reports.planned ? `${b.reports.filed}/${b.reports.planned}${b.reports.late ? ` <span class="faint">${b.reports.late} late</span>` : ""}` : "—"}</td><td class="r ${b.reports.missing ? "bad" : ""}">${b.reports.missing || "—"}</td>` : ""
+      }</tr>`,
+    )
+    .join("");
+  return `<section class="panel an-ch"><h2><span class="an-n">2</span>Work done <span class="faint">what happened</span></h2>
+    <div class="an-kpis">${kpis.map(([l, v, s]) => `<div><span class="faint">${esc(l)}</span><b>${v}</b><small class="faint">${s}</small></div>`).join("")}</div>
+    <p class="an-line"><b>Inflow</b> · ${sources}${inf.belowBudget ? ` · closed below budget <b>${inf.belowBudget}</b>` : ""}<br>${spend}</p>
+    <h3>Every stage</h3>
+    <div class="an-scroll"><table class="grid an-t"><tr><th>Stage</th><th>Worked by</th><th class="r" title="Cards that entered the stage in the period">Reached</th><th class="r" title="Reached here ÷ reached at the previous step">Conv.</th><th class="r" title="Messages sent while the card was at this stage">Sent</th><th class="r">Now</th><th class="r" title="No stage move for 7 days or more">Stuck 7d+</th></tr>${stageRows}</table></div>
+    <h3>Each broker through the Copilot</h3>
+    <div class="an-scroll"><table class="grid an-t"><tr><th>Who</th><th class="r" title="Approved in the Copilot or typed on the phone">Sent by the person</th><th class="r">By the autopilot</th><th class="r" title="Median wait of a client for our reply">Reply</th><th class="r" title="Median time from a ready draft to its send">Draft → sent</th><th class="r" title="Drafts sent without an edit">As written</th><th class="r">Overdue tasks</th>${
+      rep ? `<th class="r" title="Filed / held; late = after ${d.reportDueHours} h">${rep}</th><th class="r" title="Not filed ${d.reportDueHours} h after the start">Missing</th>` : ""
+    }</tr>${bRows}</table></div>
+    <p class="faint an-note">Stage moves in a period are entries, not a cohort: conversion over 100% or on fewer than 3 cards is not shown. A report is due ${d.reportDueHours} hours after the ${d.funnel === "rental-listings" ? "inspection" : "viewing"} starts.</p></section>`;
+}
 
-  // ── Funnel and waits, for the team or one person ──
-  async waits(el, funnel) {
-    const f = await filtersHtml(funnel, { week: false });
-    const pipe = FUNNELS.find((x) => x[0] === funnel)[2];
-    const b = f.who ? `&broker=${encodeURIComponent(f.who)}` : "";
-    const [fw, w] = await Promise.all([api(`/analytics/funnel?pipeline=${encodeURIComponent(pipe)}&weeks=6${b}`), api(`/analytics/waits?pipeline=${encodeURIComponent(pipe)}${b}`)]);
-    const p = (S.meta.pipelines || []).find((x) => x.name.toLowerCase() === pipe.toLowerCase());
-    const order = (p?.stages || []).map((s) => s.name);
-    const weeks = [...new Set(fw.arrivals.map((x) => x.week))].sort();
-    const stages = [...new Set([...order, ...fw.arrivals.map((x) => x.to_stage)])].filter((s) => fw.arrivals.some((x) => x.to_stage === s));
-    const cellv = (s, wk) => fw.arrivals.find((x) => x.to_stage === s && x.week === wk)?.n || "";
-    const created = (wk) => fw.created.find((x) => x.week === wk)?.n || "";
-    const waits = [...w.stages].sort((a, c) => order.indexOf(a.stage) - order.indexOf(c.stage));
-    el.innerHTML = `<div class="page stack" style="gap:12px">${f.html}
-      <div class="panel"><h3>Cards arriving in each stage per week · ${esc(f.who || "whole team")} <span class="faint">from recorded stage moves; moves made by hand in amoCRM may be missing</span></h3><div class="tbl-wrap" style="max-height:none"><table class="grid"><thead><tr><th>Stage</th>${weeks.map((wk) => `<th>${esc(fmtDay(wk + "T12:00:00Z"))}</th>`).join("")}</tr></thead><tbody>
-        <tr><td><b>New cards</b></td>${weeks.map((wk) => `<td class="num">${created(wk)}</td>`).join("")}</tr>
-        ${stages.map((s) => `<tr><td>${esc(s)}</td>${weeks.map((wk) => `<td class="num">${cellv(s, wk)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>
-      <div class="panel"><h3>Where cards wait now <span class="faint">open cards per stage, days since they arrived there</span></h3><div class="tbl-wrap" style="max-height:none"><table class="grid"><thead><tr><th>Stage</th><th>Cards</th><th>Median days</th><th>&gt; 3 d</th><th>&gt; 7 d</th><th>&gt; 14 d</th><th>Longest waiting</th></tr></thead><tbody>${waits
-        .map((s) => `<tr><td>${esc(s.stage)}</td><td class="num">${s.count}</td><td class="num">${s.medianDays.toFixed(1)}</td><td class="num">${s.over3}</td><td class="num" style="${s.over7 ? "color:var(--hot);font-weight:600" : ""}">${s.over7}</td><td class="num">${s.over14}</td><td>${s.cards.slice(0, 4).map((c) => `<a href="#" data-lead="${esc(c.leadId)}">#${esc(c.leadId)}</a> <span class="faint">${Math.floor(c.days)}d</span>`).join(" · ")}</td></tr>`)
-        .join("")}</tbody></table></div></div></div>`;
-    f.bind(el);
-  },
-
-  async supply(el) {
-    const days = Number(store.get("sup-days", 14));
-    const r = await api(`/analytics/supply?days=${days}`);
-    el.innerHTML = `<div class="page stack" style="gap:12px">
-      <div class="row an-filters"><select class="chip" id="sup-days">${[7, 14, 30, 60].map((d) => `<option value="${d}" ${d === days ? "selected" : ""}>Requests of the last ${d} days</option>`).join("")}</select>
-      <span class="faint">What clients asked for (area × bedrooms × budget) against published rent listings free within 92 days in the same corridor (70–125% of the budget).</span></div>
-      <div class="panel"><h3>Most requested segments</h3><div class="tbl-wrap" style="max-height:none"><table class="grid"><thead><tr><th>Area</th><th>BR</th><th>Budget</th><th>Requests</th><th>Matching listings</th><th>Examples</th></tr></thead><tbody>${r.segments
-        .map((s) => `<tr><td>${esc(s.area)}</td><td>${esc(s.bedrooms ?? "any")}</td><td>${esc(s.band)}</td><td class="num"><b>${s.requests}</b></td><td class="num" style="${s.matchingVillas === 0 ? "color:var(--hot);font-weight:600" : ""}">${s.matchingVillas}</td><td>${(s.examples || []).map((id) => `<a href="#" data-villa="${esc(id)}" class="mono">${esc(id)}</a>`).join(" ")}</td></tr>`)
-        .join("") || `<tr><td colspan="6" class="empty">No requests with readable criteria in this period.</td></tr>`}</tbody></table></div>
-      <p class="faint" style="font-size:12px;margin:8px 0 0">A red 0 is a segment to source first: clients are asking and nothing fits.</p></div></div>`;
-    el.querySelector("#sup-days").onchange = (e) => (store.set("sup-days", Number(e.target.value)), rerender());
-  },
-
-  // ── Company-wide ──
-  // What the bot did and what people did, and the time it saved (owner, 26.09).
-  async work(el) {
-    const days = Number(store.get("ws-days", 30));
-    const funnel = store.get("ws-funnel", "");
-    const by = store.get("ws-by", "week");
-    const mins = store.get("ws-mins", { hand: 4, approve: 0.5, edit: 2 });
-    const r = await api(`/analytics/workshare?days=${days}${funnel ? `&funnel=${funnel}` : ""}`);
-    const keyOf = (d) => (by === "day" ? d : by === "month" ? d.slice(0, 7) : (() => {
-      const x = new Date(d + "T00:00:00Z");
-      x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7));
-      return x.toISOString().slice(0, 10);
-    })());
-    const F = ["written", "autopilot", "as_written", "edited", "skipped", "people_msgs", "bot_msgs", "bot_moves", "people_moves", "wa_phone", "wa_copilot"];
-    const num = (row) => Object.fromEntries(F.map((f) => [f, Number(row[f] || 0)]));
-    // Per day first: after the move to our own WhatsApp channel the gateway says who sent what
-    // (typed on the phone, or through the Copilot); before it, amoCRM's sender types are the guide.
-    const perDay = (g) => {
-      const viaGateway = g.wa_phone + g.wa_copilot > 0;
-      const hand = viaGateway ? g.wa_phone : Math.max(0, g.people_msgs - g.as_written - g.edited);
-      const otherBot = viaGateway ? Math.max(0, g.wa_copilot + g.bot_msgs - g.autopilot - g.as_written - g.edited) : Math.max(0, g.bot_msgs - g.autopilot);
-      return { ...g, hand, otherBot };
-    };
-    const D = [...F, "hand", "otherBot"];
-    const groups = new Map();
-    for (const row of r.rows) {
-      const k = keyOf(row.day);
-      const d = perDay(num(row));
-      const g = groups.get(k) || Object.fromEntries(D.map((f) => [f, 0]));
-      for (const f of D) g[f] += d[f];
-      groups.set(k, g);
-    }
-    const derive = (g) => {
-      const out = g.autopilot + g.otherBot + g.as_written + g.edited + g.hand;
-      const human = g.hand * mins.hand + g.as_written * mins.approve + g.edited * mins.edit;
-      const allByHand = out * mins.hand;
-      return { ...g, out, noHuman: g.autopilot + g.otherBot, byBot: g.autopilot + g.otherBot + g.as_written + g.edited, humanMin: human, savedMin: Math.max(0, allByHand - human), moves: g.bot_moves + g.people_moves };
-    };
-    const rows = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([k, g]) => ({ k, ...derive(g) }));
-    const total = derive(Object.fromEntries(D.map((f) => [f, rows.reduce((a, x) => a + x[f], 0)])));
-    const pc = (a, b) => (b ? Math.round((a / b) * 100) + "%" : "—");
-    const hrs = (m) => (m >= 60 ? `${(m / 60).toFixed(1)} h` : `${Math.round(m)} min`);
-    const label = (k) => (by === "month" ? new Date(k + "-01T00:00:00Z").toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" }) : fmtDay(k + "T04:00:00Z"));
-    const maxOut = Math.max(1, ...rows.map((x) => x.out));
-    const seg = (n, cls) => (n ? `<i class="${cls}" style="width:${(n / maxOut) * 100}%" title="${n}"></i>` : "");
-    el.innerHTML = `<div class="page stack" style="gap:12px">
-      <div class="row an-filters"><select class="chip" id="ws-days">${[30, 90, 180, 365].map((d) => `<option value="${d}" ${d === days ? "selected" : ""}>Last ${d} days</option>`).join("")}</select>
-        <select class="chip" id="ws-funnel"><option value="">All funnels</option>${FUNNELS.map(([k, l]) => `<option value="${k}" ${k === funnel ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
-        <div class="views">${[["day", "Days"], ["week", "Weeks"], ["month", "Months"]].map(([k, l]) => `<button data-by="${k}" class="${k === by ? "active" : ""}">${l}</button>`).join("")}</div></div>
-      <div class="kpis">
-        <div class="kpi"><div class="l">Messages out</div><div class="v num">${total.out}</div><div class="d">to clients and owners</div></div>
-        <div class="kpi"><div class="l">Written by the bot</div><div class="v num">${pc(total.byBot, total.out)}</div><div class="d">${total.byBot} drafts, templates and autopilot sends</div></div>
-        <div class="kpi"><div class="l">Sent with no person</div><div class="v num">${pc(total.noHuman, total.out)}</div><div class="d">${total.autopilot} autopilot · ${total.otherBot} templates</div></div>
-        <div class="kpi"><div class="l">Stage moves by the bot</div><div class="v num">${pc(total.bot_moves, total.moves)}</div><div class="d">${total.bot_moves} of ${total.moves}</div></div>
-        <div class="kpi"><div class="l">People's time</div><div class="v num">${hrs(total.humanMin)}</div><div class="d">spent on messages</div></div>
-        <div class="kpi"><div class="l">Time saved</div><div class="v num">${hrs(total.savedMin)}</div><div class="d">against writing all by hand</div></div>
-      </div>
-      <div class="panel"><h3>Messages out per ${by} <span class="legend" style="margin:0"><span><i style="background:var(--live)"></i>autopilot</span><span><i style="background:var(--reach)"></i>templates</span><span><i style="background:var(--accent)"></i>draft as written</span><span><i style="background:var(--push)"></i>draft edited</span><span><i style="background:var(--border-2)"></i>by hand</span></span></h3>
-        <div class="wsbars">${rows
-          .map((x) => `<div class="row"><span>${esc(label(x.k))}</span><div class="stackbar">${seg(x.autopilot, "a")}${seg(x.otherBot, "t")}${seg(x.as_written, "w")}${seg(x.edited, "e")}${seg(x.hand, "h")}</div><span class="num">${x.out}</span><span class="num faint">${pc(x.byBot, x.out)}</span></div>`)
-          .join("") || `<div class="empty">No messages in this period.</div>`}</div></div>
-      <div class="panel"><h3>Per ${by} <span class="faint">minutes per message: <label>by hand <input class="tin" type="number" step="0.5" min="0" id="m-hand" value="${mins.hand}"></label> · <label>approve <input class="tin" type="number" step="0.5" min="0" id="m-approve" value="${mins.approve}"></label> · <label>edit <input class="tin" type="number" step="0.5" min="0" id="m-edit" value="${mins.edit}"></label></span></h3>
-        <div class="tbl-wrap" style="max-height:none"><table class="grid"><thead><tr><th>${by === "day" ? "Day" : by === "week" ? "Week of" : "Month"}</th><th>Drafts written</th><th>Autopilot sent</th><th>Sent as written</th><th>Edited</th><th>Skipped</th><th>By hand</th><th>Templates</th><th>Written by the bot</th><th>Stage moves bot / people</th><th>People's time</th><th>Saved</th></tr></thead><tbody>${rows
-          .map((x) => `<tr><td>${esc(label(x.k))}</td><td class="num">${x.written}</td><td class="num">${x.autopilot}</td><td class="num">${x.as_written}</td><td class="num">${x.edited}</td><td class="num">${x.skipped}</td><td class="num">${x.hand}</td><td class="num">${x.otherBot}</td><td class="num"><b>${pc(x.byBot, x.out)}</b></td><td class="num">${x.bot_moves} / ${x.people_moves}</td><td class="num">${hrs(x.humanMin)}</td><td class="num">${hrs(x.savedMin)}</td></tr>`)
-          .join("")}</tbody></table></div>
-        <p class="faint" style="font-size:11.5px;margin:8px 0 0">"By hand" is what people typed themselves: since our own WhatsApp channel (from about 22.09) the gateway marks every message typed on the phone; before it, it is the people's messages that did not come from a draft. Templates are the bot's own messages, such as the welcome. Time uses the minutes above, kept on this device.</p></div></div>`;
-    el.querySelector("#ws-days").onchange = (e) => (store.set("ws-days", Number(e.target.value)), rerender());
-    el.querySelector("#ws-funnel").onchange = (e) => (store.set("ws-funnel", e.target.value), rerender());
-    on(el, "click", "[data-by]", (e, b) => (store.set("ws-by", b.dataset.by), rerender()));
-    for (const [id, k] of [["m-hand", "hand"], ["m-approve", "approve"], ["m-edit", "edit"]])
-      el.querySelector("#" + id).onchange = (e) => (store.set("ws-mins", { ...mins, [k]: Math.max(0, Number(e.target.value) || 0) }), rerender());
-  },
-
-  async brief(el) {
-    const week = store.get("an-brief-week", shiftWeek(thisMonday(), -1));
-    const briefs = await api("/analytics/briefs").catch(() => ({ items: [] }));
-    const brief = (briefs.items || []).find((x) => x.weekStart === week);
-    el.innerHTML = `<div class="page stack" style="gap:12px">
-      <div class="row an-filters"><select class="chip" id="br-week">${weekOptions(week)}</select><span class="faint">Written automatically on Monday 08:30 from the numbers, the objections and the viewing reports.</span></div>
-      <div class="panel"><h3>Weekly bottleneck brief <span class="faint">${brief ? `written ${rel(brief.generatedAt)} · ${esc(brief.generatedBy || "")}` : "not written yet"}</span><button class="btn sm" id="brief-go">${I.sparkle} ${brief ? "Rewrite" : "Write it now"}</button></h3>
-        ${brief ? `<div class="brief">${md(brief.content)}</div><div class="row" style="margin-top:8px"><button class="btn sm" id="brief-copy">Copy for the team chat</button></div>` : `<p class="faint" style="margin:0">No brief for this week yet. It says where we are stuck, why, and what to do.</p>`}</div></div>`;
-    el.querySelector("#br-week").onchange = (e) => (store.set("an-brief-week", e.target.value), rerender());
-    const bg = el.querySelector("#brief-go");
-    bg.onclick = async () => {
-      bg.disabled = true;
-      bg.textContent = "Writing… (about a minute)";
-      try {
-        await api("/analytics/briefs", { body: { week } });
-        toast("Brief written");
-        rerender();
-      } catch (e) {
-        fail(e);
-        bg.disabled = false;
-      }
-    };
-    const bc = el.querySelector("#brief-copy");
-    if (bc)
-      bc.onclick = async () => {
-        try {
-          await navigator.clipboard.writeText(brief.content);
-          toast("Copied");
-        } catch (e) {
-          toast("Select the text and copy it", { bad: true });
-        }
-      };
-  },
-
-  async daily(el) {
-    const r = await api("/analytics/kpi-url");
-    if (!r.url) {
-      el.innerHTML = `<div class="empty">The daily numbers page has no key configured on the server.</div>`;
-      return;
-    }
-    el.innerHTML = `<p class="faint" style="margin:0 0 8px">The daily numbers page (traffic, Meta spend, cost per lead, autopilot, the team), the same one used for the team chat. <a href="${esc(r.url)}" target="_blank" rel="noopener">Open it on its own ${I.ext}</a></p><iframe class="kpi" src="${esc(r.url)}&host=os&theme=${currentTheme()}" title="Daily numbers"></iframe>`;
-  },
-
-  async cost(el) {
-    const days = Number(store.get("cost-days", 7));
-    const r = await api(`/analytics/ai-cost?days=${days}`);
-    const dayList = [...new Set(r.rows.map((x) => x.day))].sort();
-    const labels = [...new Set(r.rows.map((x) => x.label))];
-    const tot = (lab) => r.rows.filter((x) => x.label === lab).reduce((a, x) => a + x.usd, 0);
-    labels.sort((a, b) => tot(b) - tot(a));
-    const dayTot = (d) => r.rows.filter((x) => x.day === d).reduce((a, x) => a + x.usd, 0);
-    const med = [...dayList.map(dayTot)].sort((a, b) => a - b)[Math.floor(dayList.length / 2)] || 0;
-    el.innerHTML = `<div class="page stack" style="gap:12px"><div class="row an-filters"><select class="chip" id="cost-days">${[7, 14, 31].map((d) => `<option value="${d}" ${d === days ? "selected" : ""}>Last ${d} days</option>`).join("")}</select><span class="faint">Every AI call is logged with its cost and purpose. A day above twice the median is marked.</span></div>
-      <div class="panel"><h3>USD per day</h3><div class="bars">${dayList.map((d) => `<div class="row"><span>${esc(fmtDay(d + "T12:00:00Z"))}</span><div class="b"><i style="width:${Math.round((dayTot(d) / Math.max(...dayList.map(dayTot), 0.01)) * 100)}%;${dayTot(d) > 2 * med ? "background:var(--hot)" : ""}"></i></div><span class="num">$${dayTot(d).toFixed(2)}</span></div>`).join("")}</div></div>
-      <div class="panel"><h3>By purpose</h3><div class="tbl-wrap" style="max-height:none"><table class="grid"><thead><tr><th>Purpose</th><th>Total</th>${dayList.map((d) => `<th>${esc(d.slice(5))}</th>`).join("")}</tr></thead><tbody>${labels
-        .map((l) => `<tr><td>${esc(l)}</td><td class="num"><b>$${tot(l).toFixed(2)}</b></td>${dayList.map((d) => {
-          const x = r.rows.find((y) => y.day === d && y.label === l);
-          return `<td class="num">${x ? "$" + x.usd.toFixed(2) : ""}</td>`;
-        }).join("")}</tr>`)
-        .join("")}</tbody></table></div></div></div>`;
-    el.querySelector("#cost-days").onchange = (e) => (store.set("cost-days", Number(e.target.value)), rerender());
-  },
-};
+// ── 3. Bottlenecks ──
+function objectionList(title, rows) {
+  if (!rows) return "";
+  return `<div class="an-box"><h4>${esc(title)}</h4>${
+    rows.length
+      ? `<ul class="an-obj">${rows.map((o) => `<li><b>${esc(o.label)}</b> <span class="faint">${o.clients} client${o.clients === 1 ? "" : "s"} · ${o.share}%</span>${o.quotes.length ? `<div class="faint">${o.quotes.map((q) => `“${esc(q)}”`).join(" · ")}</div>` : ""}</li>`).join("")}</ul>`
+      : `<p class="faint">Nothing recorded in the period.</p>`
+  }</div>`;
+}
+function bottlenecksHtml(d) {
+  const b = d.bottlenecks;
+  const cs = b.clientSide;
+  const client =
+    d.funnel === "rental-listings"
+      ? objectionList("Owners, before the inspection", cs.beforeInspection)
+      : `${objectionList("Before the viewing (after options)", cs.beforeViewing)}${objectionList("After the viewing (reports)", cs.afterViewing)}`;
+  const ours = `<div class="an-scroll"><table class="grid an-t"><tr><th>Who</th><th class="r">Waiting 4h+ now</th><th class="r">Cards stuck 7d+</th><th class="r">Overdue tasks</th><th class="r">Reports missing</th></tr>${b.ourSide
+    .map((r) => `<tr class="${r.name === "Team" ? "tm" : ""}"><td>${esc(r.name)}</td><td class="r ${r.unanswered ? "bad" : ""}">${r.unanswered || "—"}</td><td class="r">${r.stuck || "—"}</td><td class="r">${r.overdueTasks || "—"}</td><td class="r ${r.reportsMissing ? "bad" : ""}">${r.reportsMissing || "—"}</td></tr>`)
+    .join("")}</table></div>${b.stuckByStage.length ? `<p class="an-line">Stuck most: ${b.stuckByStage.map((s) => `${esc(s.stage)} <b>${s.stuck}</b> <span class="faint">(${esc((WORKED_BY[s.workedBy] || [s.workedBy])[0])})</span>`).join(" · ")}</p>` : ""}`;
+  const inf = b.inflow;
+  const ch = inf.prevNewCards ? Math.round(((inf.newCards - inf.prevNewCards) / inf.prevNewCards) * 100) : null;
+  const supply = (inf.supply || []).length
+    ? `<table class="grid an-t"><tr><th>Asked for</th><th class="r">Requests</th><th class="r">Villas that fit</th></tr>${inf.supply
+        .map((s) => `<tr><td>${esc([s.bedrooms ? s.bedrooms + "BR" : "", s.area, s.band].filter(Boolean).join(" · "))}</td><td class="r">${s.requests ?? "—"}</td><td class="r ${Number(s.matchingVillas) < Number(s.requests) ? "bad" : ""}">${s.matchingVillas ?? "—"}</td></tr>`)
+        .join("")}</table>`
+    : "";
+  return `<section class="panel an-ch"><h2><span class="an-n">3</span>Bottlenecks <span class="faint">why the target is missed</span></h2>
+    <h3>${d.funnel === "rental-listings" ? "The owner's side" : "The client's side"}</h3><div class="an-cols">${client}</div>
+    <h3>Our side <span class="faint">the bot or the broker</span></h3>${ours}
+    <h3>The inflow</h3>
+    <p class="an-line">New cards <b>${inf.newCards}</b> vs <b>${inf.prevNewCards}</b> the period before${ch == null ? "" : ` (<span class="${ch < 0 ? "bad" : "ok"}">${ch > 0 ? "+" : ""}${ch}%</span>)`}${inf.belowBudget ? ` · closed below budget <b>${inf.belowBudget}</b>` : ""}</p>
+    ${supply ? `<h4 class="faint" style="margin:8px 0 4px">Villas for what clients ask (last 14 days)</h4>${supply}` : ""}</section>`;
+}
