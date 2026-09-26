@@ -134,6 +134,8 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
         photos: r.photos || [],
         cover: r.cover || null,
         video: r.video_url || null,
+        photosSkip: r.photos_skipped != null, photosWhy: r.photos_skipped || "",
+        videoSkip: r.video_skipped != null, videoWhy: r.video_skipped || "",
         edits: r.private_edits || {},
         status: r.status,
         checks: r.checks || [],
@@ -154,6 +156,8 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     if (!filled(S.red)) m.push("a red flag");
     if (!filled(S.green)) m.push("a green flag");
     if (!S.notes.trim()) m.push("your notes");
+    if (!S.photos.length && !(S.photosSkip && S.photosWhy.trim())) m.push(S.photosSkip ? "why there are no new photos" : "photos (or tick no new photos)");
+    if (!S.video && !(S.videoSkip && S.videoWhy.trim())) m.push(S.videoSkip ? "why there is no video tour" : "a video tour (or tick no video)");
     if (uploads) m.push("wait for the uploads");
     return m;
   }
@@ -167,7 +171,7 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     clearTimeout(saveTimer);
     return fetch(API + "/save", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ propertyCode: S.code, red: S.red, green: S.green, construction: S.construction, notes: S.notes, photos: S.photos, cover: S.cover, video: S.video, privateEdits: S.edits }),
+      body: JSON.stringify({ propertyCode: S.code, red: S.red, green: S.green, construction: S.construction, notes: S.notes, photos: S.photos, cover: S.cover, video: S.video, photosSkipped: S.photos.length || !S.photosSkip ? null : S.photosWhy, videoSkipped: S.video || !S.videoSkip ? null : S.videoWhy, privateEdits: S.edits }),
     }).then(function (r) { return r.json(); }).then(function (d) {
       if (d.ok) { $("#saved").textContent = "saved"; if (d.report && d.report.property_code && !S.code) S.code = d.report.property_code; }
       else $("#saved").textContent = "not saved";
@@ -204,6 +208,13 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
       h += '<div class="flag ' + kind + '"><input id="' + kind + i + '" data-k="' + kind + '" data-i="' + i + '" value="' + esc(v) + '" placeholder="' + (kind === "red" ? "Anything else, e.g. mosque nearby" : "Anything else, e.g. sunset view from the pool") + '"><button class="x" data-del="' + kind + '" data-i="' + i + '" aria-label="Remove">&times;</button></div>';
     });
     return h + '<button class="add" data-add="' + kind + '">+ Add ' + kind + " flag</button></div>";
+  }
+
+  // Skipping photos or the video is a signed choice with a reason (owner, 26.09.2026).
+  function skipHtml(kind, label, ph) {
+    var on = kind === "photos" ? S.photosSkip : S.videoSkip, why = kind === "photos" ? S.photosWhy : S.videoWhy;
+    return '<label class="check"><input type="checkbox" data-skip="' + kind + '"' + (on ? " checked" : "") + "> " + label + "</label>" +
+      (on ? '<input class="txt" id="why_' + kind + '" data-why="' + kind + '" style="margin-top:6px" placeholder="' + ph + '" value="' + esc(why) + '">' : "");
   }
 
   function checksHtml() {
@@ -252,7 +263,8 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
       '<textarea id="notes" placeholder="Condition, owner&rsquo;s terms, anything the team should know &mdash; or dictate it">' + esc(S.notes) + "</textarea>" +
       '<div class="row"><button class="btn" id="mic">&#x1F3A4; Dictate</button><button class="btn" id="lang">' + (lang === "en-US" ? "EN" : "ID") + '</button><button class="btn ai" id="tidy"' + (S.notes.trim() ? "" : " disabled") + '>&#x2728; Tidy up with AI</button><span class="status" id="tidyst"></span></div>';
 
-    h += '<div class="section">Photos &amp; video <span style="text-transform:none;letter-spacing:0;color:#6b7488;font-weight:400">optional</span></div>' +
+    var mediaOk = (S.photos.length || (S.photosSkip && S.photosWhy.trim())) && (S.video || (S.videoSkip && S.videoWhy.trim()));
+    h += '<div class="section">Photos &amp; video <span class="req' + (mediaOk ? " ok" : "") + '">' + (mediaOk ? "&#10003;" : "required") + "</span></div>" +
       '<label class="drop"><input type="file" id="pics" accept="image/*" multiple><b>Add photos</b> from your phone<br><span style="font-size:11.5px">Yours go first &middot; ' + "6 or more replace the photos found online (hidden, not deleted)" + "</span></label>";
     if (S.photos.length || uploads) {
       h += '<div class="thumbs">';
@@ -266,11 +278,13 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     } else if (lst) {
       h += '<div class="status" style="margin-top:6px">Now on the site: ' + ((lst.images || []).length) + " photos</div>";
     }
+    if (!S.photos.length) h += skipHtml("photos", "No new photos &mdash; skipped on purpose", "Why? e.g. the photos on the site are recent and good");
     if (S.video) {
       h += '<div class="vid"><div style="flex:1;min-width:0">&#x1F3AC; Video tour added<div class="status">' + esc(S.video.split("/").pop()) + '</div></div><button class="x" id="rmvid" aria-label="Remove video">&times;</button></div>';
     } else {
       h += '<div class="vid" id="vidrow"><div style="flex:1;min-width:0"><label class="link"><input type="file" id="vidin" accept="video/*" hidden>+ Add video tour</label><div class="bar" id="vbarw" hidden><i id="vbar"></i></div><div class="status" id="vst">up to 200 MB &middot; ' + (lst && lst.video_url ? "replaces the current video" : "no video on the site yet") + "</div></div></div>";
     }
+    if (!S.video) h += skipHtml("video", "No video tour &mdash; skipped on purpose", "Why? e.g. the owner did not allow filming");
 
     var p = L.private || {};
     var ed = S.edits;
@@ -332,6 +346,8 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     document.querySelectorAll("[data-ph]").forEach(function (t) { t.onclick = function (e) { if (e.target.getAttribute("data-rm") != null) return; S.cover = S.photos[+t.getAttribute("data-ph")]; scheduleSave(); render(); }; });
     document.querySelectorAll("[data-rm]").forEach(function (b) { b.onclick = function () { var u = S.photos.splice(+b.getAttribute("data-rm"), 1)[0]; if (S.cover === u) S.cover = S.photos[0] || null; scheduleSave(); render(); }; });
     var vi = $("#vidin"); if (vi) vi.onchange = function () { if (vi.files && vi.files[0]) addVideo(vi.files[0]); };
+    document.querySelectorAll("[data-skip]").forEach(function (c) { c.onchange = function () { if (c.getAttribute("data-skip") === "photos") S.photosSkip = c.checked; else S.videoSkip = c.checked; scheduleSave(); render(); var w = document.getElementById("why_" + c.getAttribute("data-skip")); if (w) w.focus(); }; });
+    document.querySelectorAll("[data-why]").forEach(function (w) { w.oninput = function () { var before = missing().join(); if (w.getAttribute("data-why") === "photos") S.photosWhy = w.value; else S.videoWhy = w.value; scheduleSave(); if (missing().join() !== before) rerenderKeep(w.id); }; });
     var rv = $("#rmvid"); if (rv) rv.onclick = function () { S.video = null; scheduleSave(); render(); };
     ["owner_name", "owner_phone", "google_maps_url", "drive_folder_url"].forEach(function (k) {
       var el = $("#kv_" + k); if (el) el.oninput = function () { S.edits[k] = el.value; scheduleSave(); };

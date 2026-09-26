@@ -41,6 +41,8 @@ function view(rep: ReportRow) {
     construction_nearby: rep.construction_nearby,
     notes: rep.notes,
     photos: rep.photos ?? [],
+    photos_skipped: rep.photos_skipped ?? null,
+    video_skipped: rep.video_skipped ?? null,
     cover: rep.cover,
     video_url: rep.video_url,
     private_edits: rep.private_edits ?? {},
@@ -94,6 +96,8 @@ router.post("/public/inspection-report/:id/save", async (req, res) => {
     photos: arr(b.photos),
     cover: b.cover === null || typeof b.cover === "string" ? b.cover : undefined,
     video: b.video === null || typeof b.video === "string" ? b.video : undefined,
+    photosSkipped: b.photosSkipped === null || typeof b.photosSkipped === "string" ? b.photosSkipped : undefined,
+    videoSkipped: b.videoSkipped === null || typeof b.videoSkipped === "string" ? b.videoSkipped : undefined,
     privateEdits: b.privateEdits && typeof b.privateEdits === "object" ? b.privateEdits : undefined,
   });
   if (!rep) { res.status(404).json({ error: "report not found" }); return; }

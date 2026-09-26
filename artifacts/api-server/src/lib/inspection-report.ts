@@ -9,7 +9,8 @@
  * the villa's card in Rental Listings gets a due report: an amoCRM task, a push to Yudi, and — so the
  * card is in his inbox at all — a placeholder draft to the owner ("thanks for having us") that only a
  * person sends. The form is the site's Internal data (the same `property_private` row, no copy of it):
- * Listed, red flags, green flags and Yudi's notes are required; photos and a video are optional.
+ * Listed, red flags, green flags and Yudi's notes are required; so are new photos and a video tour,
+ * unless Yudi ticks that he skipped them on purpose and says why (owner, 26.09.2026).
  *
  * "Report done" applies everything and then READS EVERY CHANGE BACK from the system it went to — site
  * row, photos, video, publish blockers, the card's stage in amoCRM, the message in Unicorn Rental. A
@@ -71,6 +72,10 @@ export type ReportRow = {
   photos: string[];
   cover: string | null;
   video_url: string | null;
+  /** Why no new photos were taken — Yudi's own words; null = not skipped (owner, 26.09.2026). */
+  photos_skipped: string | null;
+  /** Why no video tour was shot; null = not skipped. */
+  video_skipped: string | null;
   private_edits: Record<string, string> | null;
   previous_images: string[] | null;
   checks: Check[] | null;
@@ -115,6 +120,7 @@ export function ensureTable(): Promise<void> {
     )`)
     .then(() => pool.query(`CREATE INDEX IF NOT EXISTS inspection_reports_lead ON inspection_reports (lead_id, status)`))
     .then(() => pool.query(`ALTER TABLE inspection_reports ADD COLUMN IF NOT EXISTS drive_copies JSONB NOT NULL DEFAULT '{}'`))
+    .then(() => pool.query(`ALTER TABLE inspection_reports ADD COLUMN IF NOT EXISTS photos_skipped TEXT, ADD COLUMN IF NOT EXISTS video_skipped TEXT`))
     .then(() => undefined)
     .catch((err) => {
       ensured = null;
@@ -432,6 +438,9 @@ export type DraftInput = {
   photos?: string[];
   cover?: string | null;
   video?: string | null;
+  /** A reason = skipped on purpose; null = not skipped; undefined = unchanged. */
+  photosSkipped?: string | null;
+  videoSkipped?: string | null;
   privateEdits?: Record<string, string>;
 };
 
@@ -456,7 +465,8 @@ export async function saveDraft(id: string, input: DraftInput): Promise<ReportRo
     `UPDATE inspection_reports SET
         property_code = COALESCE($2, property_code),
         red_flags = $3, green_flags = $4, construction_nearby = $5, notes = $6, notes_raw = COALESCE($7, notes_raw),
-        photos = $8::jsonb, cover = $9, video_url = $10, private_edits = $11::jsonb, updated_at = now()
+        photos = $8::jsonb, cover = $9, video_url = $10, private_edits = $11::jsonb,
+        photos_skipped = $12, video_skipped = $13, updated_at = now()
       WHERE id = $1 RETURNING *`,
     [
       id,
@@ -470,6 +480,8 @@ export async function saveDraft(id: string, input: DraftInput): Promise<ReportRo
       input.cover !== undefined ? (input.cover && photos.includes(input.cover) ? input.cover : photos[0] ?? null) : rep.cover,
       input.video !== undefined ? (input.video && storageUrl(input.video) ? input.video : null) : rep.video_url,
       JSON.stringify(Object.keys(edits).length ? { ...(rep.private_edits ?? {}), ...edits } : rep.private_edits ?? {}),
+      input.photosSkipped !== undefined ? (input.photosSkipped ?? "").trim().slice(0, 300) || null : rep.photos_skipped,
+      input.videoSkipped !== undefined ? (input.videoSkipped ?? "").trim().slice(0, 300) || null : rep.video_skipped,
     ],
   );
   return (r.rows[0] as ReportRow) ?? null;
@@ -502,6 +514,9 @@ export function missingFields(rep: ReportRow, listed: boolean): string[] {
   if (!(rep.red_flags ?? "").trim()) m.push("a red flag");
   if (!(rep.green_flags ?? "").trim()) m.push("a green flag");
   if (!(rep.notes ?? "").trim()) m.push("your notes");
+  // Photos and the video tour, or a signed "skipped on purpose" with a reason (owner, 26.09.2026).
+  if (!(rep.photos ?? []).length && !(rep.photos_skipped ?? "").trim()) m.push("photos (or tick “no new photos” and say why)");
+  if (!rep.video_url && !(rep.video_skipped ?? "").trim()) m.push("a video tour (or tick “no video” and say why)");
   return m;
 }
 
@@ -732,6 +747,8 @@ function reportNote(rep: ReportRow): string {
     `Notes: ${(rep.notes ?? "").replace(/\n/g, " ")}`,
     rep.photos?.length ? `New photos: ${rep.photos.length}` : null,
     rep.video_url ? "New video tour" : null,
+    rep.photos_skipped ? `No new photos, on purpose: ${rep.photos_skipped}` : null,
+    rep.video_skipped ? `No video tour, on purpose: ${rep.video_skipped}` : null,
     `Filed by ${rep.filed_by ?? "Yudi"} via Copilot · ${SITE}/property/${rep.property_code}`,
   ]
     .filter(Boolean)
@@ -812,6 +829,8 @@ export function groupMessage(rep: ReportRow, property: Property | null): string 
     `🟢 ${green}`,
     note ? `📝 ${note}` : null,
     media.length ? `📸 ${media.join(" + ")} on the site` : null,
+    rep.photos_skipped ? `⚠️ No new photos: ${rep.photos_skipped}` : null,
+    rep.video_skipped ? `⚠️ No video tour: ${rep.video_skipped}` : null,
     `${SITE}/property/${rep.property_code}`,
   ]
     .filter(Boolean)
