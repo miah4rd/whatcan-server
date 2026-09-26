@@ -139,7 +139,11 @@ function targetsHtml(d) {
     const bars = tmetrics.filter((m) => targets[m.key] && targets[m.key].value > 0).map((m) => targetBar(m.label, values[m.key]?.v ?? 0, targets[m.key], values[m.key]?.prev, pace));
     return `<div class="tc ${team ? "team" : ""}"><div class="tc-h">${esc(name)}</div>${bars.join("") || `<p class="faint" style="margin:0;font-size:12px">No target set.</p>`}</div>`;
   };
-  const cards = [...people.map((p) => card(p.name, p.values, p.targets, false)), d.who === "team" ? card("Team (manager)", sc.team.values, sc.team.targets, true) : ""].join("");
+  // A card for everyone with a target, and the team; the rest are named in one line to set theirs.
+  const hasTarget = (t) => tmetrics.some((m) => t[m.key] && t[m.key].value > 0);
+  const without = people.filter((p) => !hasTarget(p.targets));
+  const cards = [...people.filter((p) => hasTarget(p.targets)).map((p) => card(p.name, p.values, p.targets, false)), d.who === "team" ? card("Team (manager)", sc.team.values, sc.team.targets, true) : ""].join("") +
+    (without.length ? `<div class="tc none"><span class="faint">No target: ${without.map((p) => esc(p.name)).join(", ")}</span></div>` : "");
   const head = `<tr><th>Metric</th>${people.map((p) => `<th class="r">${esc(p.name)}</th>`).join("")}${d.who === "team" ? `<th class="r">Team</th>` : ""}</tr>`;
   const body = sc.metrics
     .map((m) => `<tr><td>${esc(m.label)}</td>${people.map((p) => `<td class="r">${p.values[m.key]?.v ?? 0}${delta(p.values[m.key]?.v ?? 0, p.values[m.key]?.prev)}</td>`).join("")}${d.who === "team" ? `<td class="r">${sc.team.values[m.key]?.v ?? 0}${delta(sc.team.values[m.key]?.v ?? 0, sc.team.values[m.key]?.prev)}</td>` : ""}</tr>`)
