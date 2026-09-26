@@ -761,3 +761,7 @@ details.an-obj li a{color:var(--text);font-weight:600;text-decoration:underline;
 .an-kpis>div.ok b{color:var(--live)}.an-kpis>div.warn b{color:var(--push)}.an-kpis>div.bad b{color:var(--bad)}
 table.an-t tr.mis td{background:var(--hot-bg)}
 table.an-t td a{color:var(--text);text-decoration:underline;text-decoration-color:var(--border-2);text-underline-offset:2px}
+
+.an-ask-box{border:1px solid var(--border-2);border-radius:10px;padding:10px;background:var(--surface);display:flex;flex-direction:column;gap:8px}
+.an-ask-box textarea{border:0;padding:4px;resize:vertical;min-height:64px}
+.an-ask .chip{cursor:pointer;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}

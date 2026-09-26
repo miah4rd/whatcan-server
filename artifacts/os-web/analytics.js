@@ -6,7 +6,7 @@
 //   3. Bottlenecks — why the target is missed: the client's (owner's) side, our side, the inflow.
 // The numbers come from /analytics/funnel-report (lib/os/funnel-report.ts); nothing is changed here
 // except targets, by the owner and managers.
-import { S, api, esc, I, screens, on, toast, fail, dialog, isStaff, money, store, fmtDT, emit } from "./core.js";
+import { S, api, esc, I, screens, on, toast, fail, dialog, isStaff, money, store, fmtDT, emit, recordVoice } from "./core.js";
 
 const FUNNELS = [
   ["rental", "Rental clients"],
@@ -168,8 +168,10 @@ screens.analytics = {
       ${reportsHtml(d)}
       ${objectionsHtml(d)}
       ${bottlenecksHtml(d)}
+      ${analystHtml(d)}
     </div>`;
     on(el, "click", "[data-lead]", (e, a) => (e.preventDefault(), emit("open-peek", { type: "lead", id: a.dataset.lead })));
+    bindAnalyst(el);
     const setBtn = el.querySelector("#an-set-targets");
     if (setBtn) setBtn.onclick = () => setTargets(d, funnel, period, date);
   },
@@ -412,4 +414,27 @@ function bottlenecksHtml(d) {
     <div class="bns">${groups}</div>
     <details class="an-more"><summary>Our side, person by person</summary>${ours}</details>
     ${supply ? `<details class="an-more" ${d.funnel === "rental-listings" ? "open" : ""}><summary>Demand and supply: what villas to look for</summary>${supply}</details>` : ""}</section>`;
+}
+
+// ── 6. Ask the analyst — a prototype (owner, 26.09): the place future managers will ask for a deep
+// analysis in their own words, as the owner does with Claude today. Not connected yet: nothing is
+// sent and nothing is spent. The estimate below is what one request would cost through the API.
+const ANALYST_EXAMPLES = [
+  "Last week, Rental: read every conversation and tell me what kept us from the viewings target.",
+  "Why did qualified villas drop this week against last week? Rental Listings, Yudi.",
+  "Top objections after viewings this month, with quotes, and what to change in the shortlist.",
+];
+function analystHtml(d) {
+  return `<section class="panel an-ch an-ask"><h2><span class="an-n">6</span>Ask the analyst <span class="pill">prototype · not connected</span></h2>
+    <p class="faint an-note">Write or dictate what to analyse: the period, the funnel, the people, what to read. The analyst asks back when something is missing, reads the numbers, conversations, reports and objections, and answers with the bottlenecks and what to do. For now the deep analysis is done in the chat with Claude; this window is where managers will do it later.</p>
+    <div class="an-ask-box"><textarea class="in" id="an-ask-text" rows="3" placeholder="Last week, ${esc(d.funnel === "rental-listings" ? "Rental Listings" : d.funnel === "unicorn" ? "Sales" : "Rental")}: read every conversation and find what keeps us from the target…"></textarea>
+      <div class="row"><button class="btn sm ghost" id="an-ask-mic">${I.mic} Dictate</button>${ANALYST_EXAMPLES.map((x) => `<button class="chip" data-ask="${esc(x)}">${esc(x.length > 60 ? x.slice(0, 58) + "…" : x)}</button>`).join("")}<span class="spacer"></span><button class="btn primary" id="an-ask-send" title="Not connected yet">Analyse</button></div></div>
+    <p class="faint an-note">Estimated cost through the API when connected: a question on the numbers ~$0.15–0.30; a deep read of one funnel's week ~$1.5–3 (Opus 5) or ~$0.6–1.2 (Sonnet 5); both funnels for the Monday meeting ~$3–6. Each request will show its estimate first and stop at a cap.</p></section>`;
+}
+function bindAnalyst(el) {
+  const ta = el.querySelector("#an-ask-text");
+  if (!ta) return;
+  on(el, "click", "[data-ask]", (e, b) => ((ta.value = b.dataset.ask), ta.focus()));
+  el.querySelector("#an-ask-mic").onclick = (e) => recordVoice(e.currentTarget, (t) => t && ((ta.value = (ta.value ? ta.value + " " : "") + t), ta.focus()));
+  el.querySelector("#an-ask-send").onclick = () => toast("Prototype: the analyst is not connected yet. Ask in the chat with Claude for now.");
 }
