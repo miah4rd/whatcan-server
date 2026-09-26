@@ -33,6 +33,7 @@ import { startInspectionBookingPass } from "./lib/inspection-booking";
 import { startInspectionReportPass } from "./lib/inspection-report";
 import { startVisitWatch } from "./lib/listing-progress";
 import inspectionPageRouter from "./routes/inspection-page";
+import flagsBackfillRouter from "./routes/flags-backfill";
 import { startStageSyncCheckScheduler } from "./lib/stage-sync-check";
 import { ensureKnowledgeBaseVersion } from "./lib/knowledge-base";
 import { pool } from "@workspace/db";
@@ -78,6 +79,7 @@ app.use("/api", router);
 app.use(mobileRouter);
 // The inspection report screen, /m/inspection/<id> (lib/inspection-report.ts).
 app.use(inspectionPageRouter);
+app.use(flagsBackfillRouter);
 // The owner's daily numbers page, /kpi (lib/kpi-dashboard.ts).
 app.use(kpiRouter);
 // Unicorn OS, the agency's own CRM over the same data, at /os (routes/os.ts).
