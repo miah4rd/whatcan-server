@@ -78,12 +78,19 @@ async function amoStageMoves(f: FunnelKey, from: string, to: string) {
   const finished = toSec * 1000 < Date.now();
   if (hit && Date.now() - hit.at < (finished ? 6 * 3600_000 : 5 * 60_000)) return hit.value;
   const names = new Map<number, string>();
-  for (const pl of await pipelines()) for (const st of pl.stages) names.set(Number(st.id), st.name);
+  const statusIds: number[] = [];
+  for (const pl of await pipelines())
+    for (const st of pl.stages) {
+      names.set(Number(st.id), st.name);
+      if (pl.key === f) statusIds.push(Number(st.id));
+    }
+  // amoCRM filters "into this funnel" only as a list of (pipeline, status) pairs.
+  const into = statusIds.map((id, i) => `&filter[value_after][leads_statuses][${i}][pipeline_id]=${PIPELINE_ID[f]}&filter[value_after][leads_statuses][${i}][status_id]=${id}`).join("");
   const out: Array<{ lead_id: string; stage: string; by: number }> = [];
   for (let page = 1; page <= 60; page++) {
     const d = await amoFetch<{ _embedded?: { events?: Array<{ entity_id: number; created_by: number; value_after?: Array<{ lead_status?: { id: number; pipeline_id: number } }> }> } }>(
       `/api/v4/events?filter[type]=lead_status_changed&filter[created_at][from]=${fromSec}&filter[created_at][to]=${toSec - 1}` +
-        `&filter[value_after][leads_statuses][0][pipeline_id]=${PIPELINE_ID[f]}&limit=100&page=${page}`,
+        `${into}&limit=100&page=${page}`,
     );
     if (!d) throw new Error("amoCRM events unavailable");
     const events = d._embedded?.events ?? [];
