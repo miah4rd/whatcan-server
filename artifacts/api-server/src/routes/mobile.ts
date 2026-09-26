@@ -18,6 +18,10 @@ const PAGE_HTML = `<!doctype html>
   theme_color: "#0f1320",
 }))}" />
 <style>
+  /* Owner, 26.09: add-a-listing, clients, report and autopilot buttons go from the header;
+     nobody used them, and the autopilot is set by the owner directly for now. The screens
+     stay reachable by link (the 8am report opens with ?view=report). */
+  #listing-btn, #clients-btn, #report-btn, #autopilot-btn { display: none !important; }
   :root { color-scheme: dark; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   body {

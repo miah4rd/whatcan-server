@@ -599,7 +599,7 @@ details.objcat[open] summary{margin-bottom:4px}
 .panel h3 .tin{width:52px;padding:1px 4px;border:1px solid var(--border-2);border-radius:5px;background:var(--surface);text-align:right}
 
 /* ── Tasks: the Copilot page itself fills the screen (26.09) ── */
-#tasks-host{height:100%}
+#tasks-host,#tasks-phone{height:100%}
 #tasks-host .copilot-frame,#peek-copilot .copilot-frame{background:var(--surface)}
 
 /* ── grid.js: the one table (columns picked, ordered and sized by the person) ── */
