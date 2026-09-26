@@ -130,13 +130,13 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
       P,
     ),
     q(`SELECT l.lead_id, l.responsible_user AS who, l.discard_reason FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, P),
-    q(`SELECT l.lead_id, l.responsible_user AS who FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, [key, at(prev.from), at(prev.to), who]),
+    q(`SELECT l.lead_id, l.responsible_user AS who, l.discard_reason FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, [key, at(prev.from), at(prev.to), who]),
     reportRows(f, range, who),
     q(
-      `SELECT o.source, o.category, count(DISTINCT o.lead_id)::int AS clients, (array_agg(o.quote ORDER BY o.said_at DESC))[1:2] AS quotes
+      `SELECT o.lead_id, o.source, o.category, o.quote, o.said_at, coalesce(l.responsible_user, o.broker) AS who
          FROM os_objections o LEFT JOIN leads_sync l ON l.lead_id = o.lead_id
         WHERE lower(coalesce(o.pipeline,'')) = $1 AND o.said_at >= $2 AND o.said_at < $3 AND ($4::text IS NULL OR lower(coalesce(l.responsible_user, o.broker)) = $4)
-        GROUP BY 1, 2 ORDER BY 3 DESC`,
+        ORDER BY o.said_at DESC`,
       P,
     ),
     q(`SELECT campaign_name, currency, sum(spend)::float8 AS spend, sum(meta_leads)::int AS meta_leads FROM kpi_ad_spend WHERE day >= $1 AND day < $2 GROUP BY 1, 2`, [range.from, range.to]),
@@ -144,6 +144,25 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
 
   // The same work in the period before, for every number's change (owner, 26.09).
   const [sendsPrev, typedPrev, draftsPrev, approvePrev, reportsPrev] = await Promise.all([q(SQL_SENDS, PP), q(SQL_TYPED, PP), q(SQL_DRAFTS, PP), q(SQL_APPROVE, PP), reportRows(f, prev, who)]);
+
+  // Objections in the period before (for each reason's change), and the system's own health.
+  const [objectionsPrev, tech] = await Promise.all([
+    q(
+      `SELECT o.source, o.category, count(DISTINCT o.lead_id)::int AS clients FROM os_objections o LEFT JOIN leads_sync l ON l.lead_id = o.lead_id
+        WHERE lower(coalesce(o.pipeline,'')) = $1 AND o.said_at >= $2 AND o.said_at < $3 AND ($4::text IS NULL OR lower(coalesce(l.responsible_user, o.broker)) = $4) GROUP BY 1, 2`,
+      PP,
+    ),
+    q(
+      `SELECT
+         (SELECT count(*) FROM sent_messages m JOIN leads_sync l ON l.lead_id = m.lead_id WHERE lower(coalesce(l.pipeline,'')) = $1 AND m.created_at >= $2 AND m.created_at < $3 AND NOT (m.webhook_status BETWEEN 200 AND 299))::int AS failed,
+         (SELECT count(*) FROM sent_messages m JOIN leads_sync l ON l.lead_id = m.lead_id WHERE lower(coalesce(l.pipeline,'')) = $1 AND m.created_at >= $4 AND m.created_at < $5 AND NOT (m.webhook_status BETWEEN 200 AND 299))::int AS failed_prev,
+         (SELECT count(*) FROM wa_messages w WHERE w.status = 'error' AND w.created_at >= $2 AND w.created_at < $3)::int AS wa_errors,
+         (SELECT extract(epoch FROM now() - max(updated_at)) / 60 FROM leads_sync)::int AS sync_lag_min,
+         (SELECT coalesce(sum(cost_usd), 0) FROM ai_usage WHERE created_at > now() - interval '24 hours')::float8 AS ai_24h,
+         (SELECT value FROM broker_settings WHERE key = 'ai_daily_cap_usd' LIMIT 1) AS ai_cap`,
+      [key, at(range.from), at(range.to), at(prev.from), at(prev.to)],
+    ),
+  ]);
 
   // The queue and who waits on us come from the Copilot's own list: what the brokers see.
   const queue = who ? queueAll.filter((x) => lc(x.who) === who) : queueAll;
@@ -339,10 +358,28 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   };
 
   // ── 3. bottlenecks
+  // Objections: reasons ranked by clients, each with every objection behind it (owner, 26.09: click in).
+  const objNames = await amoLeadNames([...new Set(objections.map((o) => String(o.lead_id)))].slice(0, 400)).catch(() => new Map<string, string>());
   const objectionGroup = (source: string) => {
     const rows = objections.filter((o) => (source === "report" ? o.source === "viewing-report" : o.source !== "viewing-report"));
-    const clients = rows.reduce((s, r) => s + n(r.clients), 0);
-    return rows.slice(0, 6).map((r) => ({ category: String(r.category), label: OBJECTION_CATEGORIES[String(r.category)] ?? String(r.category), clients: n(r.clients), share: clients ? Math.round((n(r.clients) / clients) * 100) : 0, quotes: ((r.quotes as string[]) ?? []).filter(Boolean) }));
+    const prevRows = objectionsPrev.filter((o) => (source === "report" ? o.source === "viewing-report" : o.source !== "viewing-report"));
+    const allClients = new Set(rows.map((r) => String(r.lead_id))).size;
+    const cats = new Map<string, Record<string, unknown>[]>();
+    for (const r of rows) cats.set(String(r.category), [...(cats.get(String(r.category)) ?? []), r]);
+    return [...cats.entries()]
+      .map(([category, list]) => {
+        const clients = new Set(list.map((r) => String(r.lead_id))).size;
+        return {
+          category,
+          label: OBJECTION_CATEGORIES[category] ?? category,
+          clients,
+          prevClients: n(prevRows.find((x) => String(x.category) === category)?.clients),
+          share: allClients ? Math.round((clients / allClients) * 100) : 0,
+          quotes: list.map((r) => String(r.quote ?? "")).filter(Boolean).slice(0, 2),
+          items: list.map((r) => ({ leadId: String(r.lead_id), name: objNames.get(String(r.lead_id)) ?? null, quote: String(r.quote ?? ""), at: r.said_at, who: r.who ?? null })),
+        };
+      })
+      .sort((x, y) => y.clients - x.clients);
   };
   let supply: Array<Record<string, unknown>> = [];
   if (f === "rental") {
@@ -352,7 +389,47 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
       supply = [];
     }
   }
+  // Bottlenecks: signals on every side, each against the period before, green / amber / red. They say
+  // where to look; the why stays the owner's weekly review with the AI (owner, 26.09).
+  type Sig = { side: string; label: string; value: string; was: string | null; status: "ok" | "warn" | "bad"; note?: string };
+  const sig: Sig[] = [];
+  const pctChange = (a: number, b: number) => (b ? Math.round(((a - b) / b) * 100) : null);
+  const volCh = pctChange(inflow.newCards, prevCards.length);
+  sig.push({ side: "Inflow", label: "New cards", value: String(inflow.newCards), was: String(prevCards.length), status: volCh != null && volCh <= -40 ? "bad" : volCh != null && volCh <= -20 ? "warn" : "ok", note: volCh != null ? `${volCh > 0 ? "+" : ""}${volCh}%` : undefined });
+  if (f === "rental") {
+    const bb = cards.length ? Math.round((cards.filter((c) => /budget/i.test(String(c.discard_reason ?? ""))).length / cards.length) * 100) : 0;
+    const bbPrev = prevCards.length ? Math.round((prevCards.filter((c) => /budget/i.test(String(c.discard_reason ?? ""))).length / prevCards.length) * 100) : 0;
+    sig.push({ side: "Lead quality", label: "New cards below the 30M budget", value: `${bb}%`, was: `${bbPrev}%`, status: bb >= 45 ? "bad" : bb >= 30 ? "warn" : "ok" });
+  }
+  const lostNow = stagesOut.find((x) => /closed.*lost/i.test(x.name));
+  if (lostNow) {
+    const sh = inflow.newCards ? Math.round((lostNow.reached / Math.max(1, stagesOut[0]?.reached || inflow.newCards)) * 100) : 0;
+    sig.push({ side: "Lead quality", label: "Closed lost in the period", value: String(lostNow.reached), was: String(lostNow.reachedPrev), status: lostNow.reachedPrev && lostNow.reached > lostNow.reachedPrev * 1.3 ? "warn" : "ok", note: `${sh}% of the funnel's entries` });
+  }
+  const drops = stagesOut.filter((x) => x.conv != null && x.convPrev != null).map((x) => ({ x, d: (x.conv as number) - (x.convPrev as number) })).sort((a, b) => a.d - b.d);
+  if (drops[0]) sig.push({ side: "Funnel", label: `Weakest step: into ${drops[0].x.name}`, value: `${drops[0].x.conv}%`, was: `${drops[0].x.convPrev}%`, status: drops[0].d <= -20 ? "bad" : drops[0].d <= -10 ? "warn" : "ok" });
+  sig.push({ side: "Agent", label: "Clients waiting over 4 h now", value: String(teamRow.unanswered), was: null, status: teamRow.unanswered >= 10 ? "bad" : teamRow.unanswered > 0 ? "warn" : "ok" });
+  sig.push({ side: "Agent", label: `${f === "rental-listings" ? "Inspection" : "Viewing"} reports not filed`, value: String(teamRow.reports.missing), was: null, status: teamRow.reports.missing > 0 ? "bad" : "ok" });
+  sig.push({ side: "Agent", label: "Overdue tasks on live cards", value: String(teamRow.overdueTasks), was: null, status: teamRow.overdueTasks >= 50 ? "bad" : teamRow.overdueTasks >= 10 ? "warn" : "ok" });
+  sig.push({ side: "Agent", label: "Cards stuck 7 days on the main path", value: String(teamRow.stuck), was: null, status: teamRow.stuck >= 60 ? "bad" : teamRow.stuck >= 20 ? "warn" : "ok" });
+  if (teamRow.asWrittenPct != null) sig.push({ side: "Agent", label: "Drafts sent without an edit", value: `${teamRow.asWrittenPct}%`, was: teamRow.prev.asWrittenPct == null ? null : `${teamRow.prev.asWrittenPct}%`, status: teamRow.prev.asWrittenPct != null && teamRow.asWrittenPct < teamRow.prev.asWrittenPct - 10 ? "warn" : "ok", note: "the bot learning the team's way" });
+  if (f === "rental") {
+    const short = (supply as Array<Record<string, unknown>>).filter((x) => Number(x["matchingVillas"]) < Number(x["requests"]));
+    sig.push({ side: "Supply", label: "Asked-for kinds of villa short of stock (14 days)", value: String(short.length), was: null, status: short.length >= 3 ? "bad" : short.length ? "warn" : "ok", note: short.slice(0, 3).map((x) => `${x["bedrooms"] ?? ""}BR ${x["area"]} ${x["band"]}`).join(", ") || undefined });
+  }
+  if (f === "rental-listings") {
+    const qn = stagesOut.find((x) => /qualified/i.test(x.name));
+    if (qn) sig.push({ side: "Supply", label: "Qualified villas (Pre-listed)", value: String(qn.reached), was: String(qn.reachedPrev), status: qn.reachedPrev && qn.reached < qn.reachedPrev * 0.6 ? "bad" : qn.reachedPrev && qn.reached < qn.reachedPrev * 0.8 ? "warn" : "ok" });
+  }
+  const t = tech[0] ?? {};
+  sig.push({ side: "System", label: "Sends that failed", value: String(n(t.failed)), was: String(n(t.failed_prev)), status: n(t.failed) >= 5 ? "bad" : n(t.failed) > 0 ? "warn" : "ok" });
+  sig.push({ side: "System", label: "WhatsApp gateway errors", value: String(n(t.wa_errors)), was: null, status: n(t.wa_errors) >= 5 ? "bad" : n(t.wa_errors) > 0 ? "warn" : "ok" });
+  sig.push({ side: "System", label: "amoCRM sync, minutes since the last update", value: String(n(t.sync_lag_min)), was: null, status: n(t.sync_lag_min) > 60 ? "bad" : n(t.sync_lag_min) > 15 ? "warn" : "ok" });
+  const cap = Number(t.ai_cap) > 0 ? Number(t.ai_cap) : 25;
+  sig.push({ side: "System", label: "AI spend in the last 24 h", value: `$${n(t.ai_24h).toFixed(2)}`, was: null, status: n(t.ai_24h) >= cap * 0.8 ? "bad" : n(t.ai_24h) >= cap * 0.5 ? "warn" : "ok", note: `cap $${cap}` });
+
   const bottlenecks = {
+    signals: sig,
     clientSide: f === "rental-listings" ? { beforeInspection: objectionGroup("message") } : { beforeViewing: objectionGroup("message"), afterViewing: objectionGroup("report") },
     ourSide: [...brokers.map((b) => ({ name: b.name, unanswered: b.unanswered, stuck: b.stuck, overdueTasks: b.overdueTasks, reportsMissing: b.reports.missing })), { name: "Team", unanswered: teamRow.unanswered, stuck: teamRow.stuck, overdueTasks: teamRow.overdueTasks, reportsMissing: teamRow.reports.missing }],
     stuckByStage: stagesOut.filter((s) => s.stuck > 0).sort((a, b) => b.stuck - a.stuck).slice(0, 4).map((s) => ({ stage: s.name, stuck: s.stuck, workedBy: s.workedBy })),

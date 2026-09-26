@@ -731,3 +731,23 @@ table.an-t tbody tr{cursor:default}
 .tb-bar em{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text);opacity:.55;border-radius:1px}
 .an-more summary{cursor:pointer;font-size:12.5px;color:var(--text-2);margin:4px 0}
 .tc.none{justify-content:center;background:transparent;border-style:dashed}
+
+/* objections open to their items; bottleneck signals (26.09) */
+details.an-obj{margin:6px 0;font-size:12.5px}
+details.an-obj summary{cursor:pointer;list-style:none}
+details.an-obj summary::-webkit-details-marker{display:none}
+details.an-obj summary b{border-bottom:1px dashed var(--border-2)}
+.an-q{margin-top:2px}
+details.an-obj ul{margin:6px 0 4px;padding-left:16px}
+details.an-obj li{margin:6px 0}
+details.an-obj li a{color:var(--text);font-weight:600;text-decoration:underline;text-decoration-color:var(--border-2);text-underline-offset:2px}
+.bns{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;margin:8px 0}
+.bn{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface)}
+.bn-h{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;margin-bottom:6px}
+.bn-h i{width:9px;height:9px;border-radius:50%;background:var(--live)}
+.bn.warn .bn-h i{background:var(--push)}.bn.bad .bn-h i{background:var(--bad)}
+.bn.bad{border-color:var(--hot-bg)}
+.bn-r{display:grid;grid-template-columns:minmax(0,1fr) auto 70px;gap:8px;align-items:baseline;font-size:12.5px;padding:3px 0;border-top:1px solid var(--border)}
+.bn-r:first-of-type{border-top:0}
+.bn-r b{font-weight:600}.bn-r.bad b{color:var(--bad)}.bn-r.warn b{color:var(--push)}
+.bn-r .faint{font-size:11px;text-align:right}

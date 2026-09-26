@@ -164,6 +164,7 @@ screens.analytics = {
       ${flagsHtml(d)}
       ${targetsHtml(d)}
       ${workHtml(d)}
+      ${objectionsHtml(d)}
       ${bottlenecksHtml(d)}
     </div>`;
     on(el, "click", "[data-lead]", (e, a) => (e.preventDefault(), emit("open-peek", { type: "lead", id: a.dataset.lead })));
@@ -314,36 +315,56 @@ function workHtml(d) {
     <p class="faint an-note">Stage moves in a period are entries, not a cohort: conversion over 100% or on fewer than 3 cards is not shown. A report is due ${d.reportDueHours} hours after the ${d.funnel === "rental-listings" ? "inspection" : "viewing"} starts.</p></section>`;
 }
 
-// ── 3. Bottlenecks ──
+// ── 3. Objections: what the client (or owner) said against it; every reason opens to its objections ──
 function objectionList(title, rows) {
   if (!rows) return "";
   return `<div class="an-box"><h4>${esc(title)}</h4>${
     rows.length
-      ? `<ul class="an-obj">${rows.map((o) => `<li><b>${esc(o.label)}</b> <span class="faint">${o.clients} client${o.clients === 1 ? "" : "s"} · ${o.share}%</span>${o.quotes.length ? `<div class="faint">${o.quotes.map((q) => `“${esc(q)}”`).join(" · ")}</div>` : ""}</li>`).join("")}</ul>`
+      ? rows
+          .map(
+            (o) => `<details class="an-obj"><summary><b>${esc(o.label)}</b> <span class="faint">${o.clients} client${o.clients === 1 ? "" : "s"} · ${o.share}%</span>${delta(o.clients, o.prevClients, true)}${o.quotes.length ? `<div class="faint an-q">${o.quotes.map((q) => `“${esc(q)}”`).join(" · ")}</div>` : ""}</summary>
+            <ul>${o.items.map((x) => `<li><a href="#" data-lead="${esc(x.leadId)}">${esc(x.name || "#" + x.leadId)}</a> <span class="faint">${esc(fmtDT(x.at))}${x.who ? " · " + esc(x.who) : ""}</span><div>“${esc(x.quote)}”</div></li>`).join("")}</ul></details>`,
+          )
+          .join("")
       : `<p class="faint">Nothing recorded in the period.</p>`
   }</div>`;
 }
-function bottlenecksHtml(d) {
-  const b = d.bottlenecks;
-  const cs = b.clientSide;
-  const client =
+function objectionsHtml(d) {
+  const cs = d.bottlenecks.clientSide;
+  const body =
     d.funnel === "rental-listings"
       ? objectionList("Owners, before the inspection", cs.beforeInspection)
-      : `${objectionList("Before the viewing (after options)", cs.beforeViewing)}${objectionList("After the viewing (reports)", cs.afterViewing)}`;
+      : `${objectionList("Before the viewing (after the options)", cs.beforeViewing)}${objectionList("After the viewing (the reports)", cs.afterViewing)}`;
+  return `<section class="panel an-ch"><h2><span class="an-n">3</span>Objections <span class="faint">what ${d.funnel === "rental-listings" ? "owners" : "clients"} said against it</span></h2>
+    <p class="faint an-note">Ranked by clients; ▲▼ against the period before (fewer is better). Click a reason for every objection behind it, and a name for the card with the whole conversation.</p>
+    <div class="an-cols">${body}</div></section>`;
+}
+
+// ── 4. Bottlenecks: signals on every side, where to look first ──
+const SIDES = ["Inflow", "Lead quality", "Funnel", "Agent", "Supply", "System"];
+function bottlenecksHtml(d) {
+  const b = d.bottlenecks;
+  const sig = b.signals || [];
+  const worst = { bad: 0, warn: 1, ok: 2 };
+  const groups = SIDES.map((side) => {
+    const xs = sig.filter((x) => x.side === side);
+    if (!xs.length) return "";
+    const st = xs.reduce((m, x) => (worst[x.status] < worst[m] ? x.status : m), "ok");
+    return `<div class="bn ${st}"><div class="bn-h"><i></i>${esc(side)}</div>${xs
+      .map((x) => `<div class="bn-r ${x.status}"><span>${esc(x.label)}${x.note ? ` <span class="faint">· ${esc(x.note)}</span>` : ""}</span><b>${esc(x.value)}</b>${x.was != null ? `<span class="faint">was ${esc(x.was)}</span>` : "<span></span>"}</div>`)
+      .join("")}</div>`;
+  }).join("");
   const ours = `<div class="an-scroll"><table class="grid an-t"><tr><th>Who</th><th class="r">Waiting 4h+ now</th><th class="r">Cards stuck 7d+</th><th class="r">Overdue tasks</th><th class="r">Reports missing</th></tr>${b.ourSide
     .map((r) => `<tr class="${r.name === "Team" ? "tm" : ""}"><td>${esc(r.name)}</td><td class="r ${r.unanswered ? "bad" : ""}">${r.unanswered || "—"}</td><td class="r">${r.stuck || "—"}</td><td class="r">${r.overdueTasks || "—"}</td><td class="r ${r.reportsMissing ? "bad" : ""}">${r.reportsMissing || "—"}</td></tr>`)
     .join("")}</table></div>${b.stuckByStage.length ? `<p class="an-line">Stuck most: ${b.stuckByStage.map((s) => `${esc(s.stage)} <b>${s.stuck}</b> <span class="faint">(${esc((WORKED_BY[s.workedBy] || [s.workedBy])[0])})</span>`).join(" · ")}</p>` : ""}`;
-  const inf = b.inflow;
-  const ch = inf.prevNewCards ? Math.round(((inf.newCards - inf.prevNewCards) / inf.prevNewCards) * 100) : null;
-  const supply = (inf.supply || []).length
-    ? `<table class="grid an-t"><tr><th>Asked for</th><th class="r">Requests</th><th class="r">Villas that fit</th></tr>${inf.supply
+  const supply = (b.inflow.supply || []).length
+    ? `<table class="grid an-t"><tr><th>Asked for (last 14 days)</th><th class="r">Requests</th><th class="r">Villas that fit</th></tr>${b.inflow.supply
         .map((s) => `<tr><td>${esc([s.bedrooms ? s.bedrooms + "BR" : "", s.area, s.band].filter(Boolean).join(" · "))}</td><td class="r">${s.requests ?? "—"}</td><td class="r ${Number(s.matchingVillas) < Number(s.requests) ? "bad" : ""}">${s.matchingVillas ?? "—"}</td></tr>`)
         .join("")}</table>`
     : "";
-  return `<section class="panel an-ch"><h2><span class="an-n">3</span>Bottlenecks <span class="faint">why the target is missed</span></h2>
-    <h3>${d.funnel === "rental-listings" ? "The owner's side" : "The client's side"}</h3><div class="an-cols">${client}</div>
-    <h3>Our side <span class="faint">the bot or the broker</span></h3>${ours}
-    <h3>The inflow</h3>
-    <p class="an-line">New cards <b>${inf.newCards}</b> vs <b>${inf.prevNewCards}</b> the period before${ch == null ? "" : ` (<span class="${ch < 0 ? "bad" : "ok"}">${ch > 0 ? "+" : ""}${ch}%</span>)`}${inf.belowBudget ? ` · closed below budget <b>${inf.belowBudget}</b>` : ""}</p>
-    ${supply ? `<h4 class="faint" style="margin:8px 0 4px">Villas for what clients ask (last 14 days)</h4>${supply}` : ""}</section>`;
+  return `<section class="panel an-ch"><h2><span class="an-n">4</span>Bottlenecks <span class="faint">where to look first</span></h2>
+    <p class="faint an-note">Signals on every side, against the period before. They show where the funnel is held; the why is the weekly review.</p>
+    <div class="bns">${groups}</div>
+    <details class="an-more"><summary>Our side, person by person</summary>${ours}</details>
+    ${supply ? `<details class="an-more"><summary>Supply: villas for what clients ask</summary>${supply}</details>` : ""}</section>`;
 }
