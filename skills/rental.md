@@ -6,7 +6,7 @@ only. A Claude session may NOT edit it: if the code disagrees with this file, th
 new rule is proposed to the owner in chat and waits for his "yes". Every line carries the date the
 owner said it.
 
-Approved by the owner: 26.09.2026 ("да утверждаю"). The three open questions at the end stay open until he answers; the rules above stand as written.
+Approved by the owner: 26.09.2026 ("да утверждаю"); the three questions answered the same day.
 
 ## 1. Who does what
 
@@ -76,9 +76,10 @@ is information for the next draft, it moves no stage (09.09).
 
 ## 7. Follow-ups when the client goes quiet
 
-One follow-up a day, counted from the client's own last message, in Amelia's voice, never a
-template (owner's Rental cadence). A follow-up carries options when the request allows it. Leads
-created from 14.09 have no age limit; older ones stop after 7 days (14.09).
+A series of three, one a day, each counted from the client's own last message, in Amelia's voice,
+never a template (owner's Rental cadence). A follow-up carries options when the request allows it.
+After the third follow-up with no reply the bot stops chasing; the lead is left alone (26.09).
+Leads created from 14.09 have no age limit; older ones stop after 7 days (14.09).
 
 ## 8. How rules change
 
@@ -87,7 +88,8 @@ created from 14.09 have no age limit; older ones stop after 7 days (14.09).
   without edit is an accepted example. Never from a session's own judgement.
 - A problem seen in another funnel is never fixed by adding a rule to this one.
 
-## Open questions for the owner (not yet answered — the current behaviour stands until he does)
-1. §3: is the 30M floor still the rule, and is "b1" on the Meta form the code for it?
-2. §7: one follow-up a day — for how many days before the lead is left alone?
-3. §1: which stage of this funnel is the first candidate for autopilot?
+## Answered by the owner (26.09.2026)
+1. The 30,000,000 IDR floor stands, and "b1" on the Meta form is the code for it — yes.
+2. Follow-ups: the series of three, then stop.
+3. Autopilot on this funnel: nothing changes for now — the first message is the automatic
+   welcome with the client's request read back, the second (the shortlist) goes through approve.
