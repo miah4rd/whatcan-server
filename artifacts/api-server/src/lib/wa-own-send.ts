@@ -87,6 +87,10 @@ export async function deliverViaOwnLine(leadId: string, source: string, text: st
   );
   if (mirror.ok) {
     await pool.query(`UPDATE wa_messages SET mirrored = true, amo_msg_id = $3 WHERE session = $1 AND wa_id = $2`, [session, waId, mirror.amoMsgId]).catch(() => null);
+    // Into the Copilot's copy of the thread in seconds, as an incoming message is: on the next poll a
+    // sent message took a median 32 s and up to 18 min (26.09). Loaded at call time: the sync module
+    // sits above this one in the import graph.
+    void import("./amo-timeline-sync").then((m) => m.refreshLeadSoon(String(leadId))).catch(() => undefined);
   } else {
     logger.error({ leadId, session, error: mirror.error }, "own line: sent to WhatsApp but not written into the amoCRM chat");
   }
