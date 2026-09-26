@@ -12,7 +12,7 @@ every morning what changed.
 | Rental — clients: stages, gates (budget 30M, excluded areas), first two messages, shortlist, viewing, follow-ups | `skills/rental.md` | approved 26.09.2026 |
 | long term stage — five conditions, the owner's own date, exit two weeks before | `skills/rental-listings.md` §5 (full text in CLAUDE.md "long term: the whole card…", owner 15.09) | approved 15.09.2026 |
 | Listing publication on the site — Internal data gate, photos only from Airbnb/Booking, Pre-listed → Listed, price floor | Cowork skills `listing-upload-regulation`, `listing-internal-data-gate`, `listing-prelisted-enrichment`, `listing-qualification-standard` | owner's, kept in Cowork; must not contradict `rental-listings.md` §2 |
-| Inspection report (Copilot form after Yudi's visit) | CLAUDE.md "Inspection report"; skill `inspection-report-in-copilot` | approved 19.09.2026 |
+| Inspection report (Copilot form after Yudi's visit) | CLAUDE.md "Inspection report" | approved 19.09.2026 |
 | Viewing report (Copilot form after a client viewing) | `skills/rental.md` §6; CLAUDE.md "The viewing report" | approved 08–09.09.2026 |
 | KPI page `/kpi` and the daily numbers | CLAUDE.md "Daily numbers page" | approved 19.09.2026 |
 | Quality-control morning report | off since 24.09 on the owner's request | paused |
