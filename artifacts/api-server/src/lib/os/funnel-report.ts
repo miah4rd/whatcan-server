@@ -165,6 +165,11 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
     };
   });
 
+  // "Stuck" per person counts the funnel's main path only: side stages (co-broke, long term, closed)
+  // and stage names amoCRM no longer has are not work waiting to move.
+  const mainPath = new Set(map.stages.filter((s) => !SIDE.test(s.name)).map((s) => lc(s.name)));
+  const stagesOut = stages.map((s) => (SIDE.test(s.name) ? { ...s, stuck: 0 } : s));
+
   // ── totals: who did the work
   const autoSent = sends.reduce((s, r) => s + n(r.auto), 0);
   const copilotSent = sends.reduce((s, r) => s + n(r.n) - n(r.auto), 0);
@@ -222,7 +227,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
       overdueTasks: sc?.values["overdue_tasks"]?.v ?? 0,
       reports: { planned: rep.length, filed: rep.filter((r) => r.filedAt).length, late: rep.filter((r) => r.late).length, missing: rep.filter((r) => !r.filedAt && r.overdue).length },
       unanswered: row(unanswered, p).length,
-      stuck: nowIn.filter((r) => lc(r.who) === lc(p)).reduce((s, r) => s + n(r.stuck), 0),
+      stuck: nowIn.filter((r) => lc(r.who) === lc(p) && mainPath.has(lc(r.stage))).reduce((s, r) => s + n(r.stuck), 0),
       sentByPerson: sends.filter((r) => lc(r.who) === lc(p)).reduce((s, r) => s + n(r.n) - n(r.auto), 0) + n(row(typed, p)[0]?.n),
     };
   });
@@ -241,7 +246,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
     overdueTasks: brokers.reduce((s, b) => s + b.overdueTasks, 0),
     reports: { planned: reports.length, filed: reports.filter((r) => r.filedAt).length, late: reports.filter((r) => r.late).length, missing: reports.filter((r) => !r.filedAt && r.overdue).length },
     unanswered: unanswered.length,
-    stuck: nowIn.reduce((s, r) => s + n(r.stuck), 0),
+    stuck: nowIn.filter((r) => mainPath.has(lc(r.stage))).reduce((s, r) => s + n(r.stuck), 0),
     sentByPerson: copilotSent + phoneTyped,
   };
 
@@ -262,7 +267,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   const bottlenecks = {
     clientSide: f === "rental-listings" ? { beforeInspection: objectionGroup("message") } : { beforeViewing: objectionGroup("message"), afterViewing: objectionGroup("report") },
     ourSide: [...brokers.map((b) => ({ name: b.name, unanswered: b.unanswered, stuck: b.stuck, overdueTasks: b.overdueTasks, reportsMissing: b.reports.missing })), { name: "Team", unanswered: teamRow.unanswered, stuck: teamRow.stuck, overdueTasks: teamRow.overdueTasks, reportsMissing: teamRow.reports.missing }],
-    stuckByStage: stages.filter((s) => s.stuck > 0).sort((a, b) => b.stuck - a.stuck).slice(0, 4).map((s) => ({ stage: s.name, stuck: s.stuck, workedBy: s.workedBy })),
+    stuckByStage: stagesOut.filter((s) => s.stuck > 0).sort((a, b) => b.stuck - a.stuck).slice(0, 4).map((s) => ({ stage: s.name, stuck: s.stuck, workedBy: s.workedBy })),
     inflow: { newCards: inflow.newCards, prevNewCards: inflow.prevNewCards, belowBudget, supply },
   };
 
@@ -295,7 +300,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
     reportDueHours: REPORT_DUE_HOURS,
     flags,
     targets: score,
-    work: { ...work, inflow, stages },
+    work: { ...work, inflow, stages: stagesOut },
     brokers: [...brokers, teamRow],
     bottlenecks,
   };
@@ -308,7 +313,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
 async function copilotQueue(key: string): Promise<Array<{ who: string; kind: string; since: number | null; leadId: string }>> {
   const port = process.env["PORT"] || "5000";
   const holders = await q(
-    `SELECT DISTINCT responsible_user AS who FROM pending_suggestions p JOIN leads_sync l ON l.lead_id = p.lead_id
+    `SELECT DISTINCT l.responsible_user AS who FROM pending_suggestions p JOIN leads_sync l ON l.lead_id = p.lead_id
       WHERE p.status = 'pending' AND lower(coalesce(l.pipeline,'')) = $1 AND l.responsible_user IS NOT NULL`,
     [key],
   );
