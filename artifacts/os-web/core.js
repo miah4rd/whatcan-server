@@ -134,6 +134,7 @@ export const I = {
   villa: svg('<path d="M2 8l6-5 6 5M4 7v6h8V7M7 13V9.5h2V13"/>'),
   cal: svg('<rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 7h11M5.5 2v3M10.5 2v3"/>'),
   chart: svg('<path d="M2 13.5h12M3.5 11l3-4 2.5 2.5L13 4"/>'),
+  money: svg('<rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><circle cx="8" cy="8.25" r="1.9"/><path d="M4 6.5v3.5M12 6.5v3.5"/>'),
   auto: svg('<circle cx="8" cy="8" r="2.4"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M12.4 3.6L11 5M5 11l-1.4 1.4"/>'),
   gear: svg('<circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/>'),
   search: svg('<circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2l3.6 3.6"/>'),

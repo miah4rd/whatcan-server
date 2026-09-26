@@ -123,6 +123,7 @@ import {
   osFunnelsBrief,
 } from "../lib/os/funnels";
 import { funnelReport } from "../lib/os/funnel-report";
+import { moneyDashboard, moneyPnl, listEntries, saveEntry, deleteEntry, saveSettings } from "../lib/os/money";
 import { listPlaybooks, readPlaybook, playbookVersion, propose, listProposals, decide, lessons, savePlaybook } from "../lib/os/playbooks";
 import { logger } from "../lib/logger";
 import { REACH_STAGE_KEYWORDS } from "../lib/pipelines";
@@ -161,6 +162,8 @@ api.post("/logout", (req, res) => void logout(req, res));
 const signedIn = requireOsUser();
 const staffOnly = requireOsUser(["admin", "manager"]);
 const adminOnly = requireOsUser(["admin"]);
+const moneyView = requireOsUser(["admin", "manager", "partner"]);
+const pnlView = requireOsUser(["admin", "partner"]);
 
 api.get("/me", signedIn, h(async (req) => ({ user: req.osUser })));
 api.post("/password", signedIn, (req, res) => void changePassword(req, res));
@@ -494,6 +497,18 @@ api.get(
 );
 
 // ── Playbooks: the funnels' regulations (skills/*.md, the one source), proposals, lessons ──
+// ── money (26.09): dashboard for admin/manager/partner; P&L, staff and expenses for admin/partner ──
+api.get("/money", moneyView, h(async (req) => moneyDashboard(req.query)));
+api.get("/money/pnl", pnlView, h(async (req) => moneyPnl(req.query)));
+api.get("/money/entries", moneyView, h(async (req) => {
+  const all = await listEntries();
+  return req.osUser!.role === "manager" ? { ...all, staff: [], expenses: [] } : all;
+}));
+api.put("/money/settings", pnlView, h(async (req) => saveSettings(req.osUser!, req.body ?? {})));
+api.post("/money/:kind", moneyView, h(async (req) => saveEntry(req.osUser!, req.params["kind"] as "staff", null, req.body ?? {})));
+api.put("/money/:kind/:id", moneyView, h(async (req) => saveEntry(req.osUser!, req.params["kind"] as "staff", idp(req), req.body ?? {})));
+api.delete("/money/:kind/:id", moneyView, h(async (req) => deleteEntry(req.osUser!, req.params["kind"] as "staff", idp(req))));
+
 api.get("/playbooks", signedIn, h(async () => listPlaybooks()));
 api.get("/playbooks/lessons", signedIn, h(async () => lessons()));
 api.get("/playbooks/proposals", signedIn, h(async (req) => listProposals({ status: req.query["status"] ? String(req.query["status"]) : undefined, file: req.query["file"] ? String(req.query["file"]) : undefined })));

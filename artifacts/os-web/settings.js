@@ -5,6 +5,7 @@ const ROLE_TEXT = {
   admin: "Everything, including the team and the switches.",
   manager: "Everything except managing the team.",
   broker: "Own cards, tasks and calendar; villas; no switches, no costs, no other brokers' cards.",
+  partner: "The money: dashboard, P&L, staff and expenses.",
 };
 
 screens.settings = {
@@ -79,7 +80,7 @@ async function team(el) {
     const res = await dialog({
       title: "Add a person",
       body: `<div class="stack"><div class="grid2"><label class="fld"><span>Name</span><input class="in" name="name" required></label><label class="fld"><span>Login</span><input class="in" name="login" required pattern="[a-z0-9._-]{2,32}" placeholder="lowercase"></label></div>
-        <div class="grid2"><label class="fld"><span>Role</span><select class="in" name="role"><option value="broker">broker</option><option value="manager">manager</option><option value="admin">admin</option></select></label>
+        <div class="grid2"><label class="fld"><span>Role</span><select class="in" name="role"><option value="broker">broker</option><option value="manager">manager</option><option value="admin">admin</option><option value="partner">partner</option></select></label>
         <label class="fld"><span>Copilot name (their cards)</span><input class="in" name="brokerKey" list="brokers-dl" placeholder="e.g. Amelia"><datalist id="brokers-dl">${S.meta.brokers.map((b) => `<option value="${esc(b)}">`).join("")}</datalist></label></div></div>`,
       actions: [{ label: "Cancel", value: null }, { label: "Create", value: "ok", primary: true }],
     });
@@ -108,7 +109,7 @@ async function team(el) {
     const u = r.items.find((x) => String(x.id) === b.dataset.edit);
     const res = await dialog({
       title: `Edit ${u.name}`,
-      body: `<div class="stack"><div class="grid2"><label class="fld"><span>Name</span><input class="in" name="name" value="${esc(u.name)}"></label><label class="fld"><span>Role</span><select class="in" name="role">${["broker", "manager", "admin"].map((x) => `<option ${x === u.role ? "selected" : ""}>${x}</option>`).join("")}</select></label></div>
+      body: `<div class="stack"><div class="grid2"><label class="fld"><span>Name</span><input class="in" name="name" value="${esc(u.name)}"></label><label class="fld"><span>Role</span><select class="in" name="role">${["broker", "manager", "admin", "partner"].map((x) => `<option ${x === u.role ? "selected" : ""}>${x}</option>`).join("")}</select></label></div>
         <label class="fld"><span>Copilot name</span><input class="in" name="brokerKey" value="${esc(u.brokerKey || "")}"></label>
         <label class="row" style="gap:6px"><input type="checkbox" name="disabled" ${u.disabled ? "checked" : ""}> Disabled (cannot sign in)</label></div>`,
       actions: [{ label: "Cancel", value: null }, { label: "Save", value: "ok", primary: true }],

@@ -285,12 +285,12 @@ async function amoLeadsCreated(from: string, to: string): Promise<AmoLead[]> {
 
 type WonDeal = { id: number; closed_at: number; responsible_user_id: number; price: number };
 
-async function amoWonDeals(from: string, to: string): Promise<{ id: number; closed_at: number; responsible_user_id: number; price: number }[]> {
+export async function amoWonDeals(from: string, to: string): Promise<{ id: number; closed_at: number; responsible_user_id: number; price: number; pipeline_id: number }[]> {
   return cached(`won:${from}:${to}`, 10 * 60_000, async () => {
-    const out: { id: number; closed_at: number; responsible_user_id: number; price: number }[] = [];
+    const out: { id: number; closed_at: number; responsible_user_id: number; price: number; pipeline_id: number }[] = [];
     for (const pipeline of [RENTAL_PIPELINE_ID, SALES_PIPELINE_ID]) {
       for (let page = 1; page <= 5; page++) {
-        const d = await amoFetch<{ _embedded?: { leads?: { id: number; closed_at: number; responsible_user_id: number; price: number }[] } }>(
+        const d = await amoFetch<{ _embedded?: { leads?: { id: number; closed_at: number; responsible_user_id: number; price: number; pipeline_id: number }[] } }>(
           `/api/v4/leads?filter[statuses][0][pipeline_id]=${pipeline}&filter[statuses][0][status_id]=${WON_STATUS}` +
             `&filter[closed_at][from]=${startSec(from)}&filter[closed_at][to]=${startSec(addDays(to, 1)) - 1}&limit=250&page=${page}`,
         );

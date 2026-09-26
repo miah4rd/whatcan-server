@@ -7,6 +7,7 @@ import "./calendar.js";
 import "./analytics.js";
 import "./funnels.js";
 import "./playbooks.js";
+import "./money.js";
 import "./settings.js";
 import { searchProjects, warmProjects } from "./projects.js";
 
@@ -80,12 +81,13 @@ function navItems() {
     { id: "listings", label: "Listings", icon: I.villa },
     { id: "calendar", label: "Calendar", icon: I.cal },
     { id: "analytics", label: "Analytics", icon: I.chart },
+    { id: "money", label: "Money", icon: I.money, roles: ["admin", "manager", "partner"] },
     { sec: "System" },
     { id: "funnels", label: "Funnels", icon: I.auto },
     { id: "playbooks", label: "Playbooks", icon: I.book },
     { id: "settings", label: "Settings", icon: I.gear },
   ];
-  return items.filter((x) => !x.staffOnly || staff);
+  return items.filter((x) => (!x.staffOnly || staff) && (!x.roles || x.roles.includes(S.user?.role)));
 }
 function currentNavId() {
   const r = parseRoute();

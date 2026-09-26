@@ -21,7 +21,7 @@ import type { Request, Response, NextFunction } from "express";
 import { pool } from "@workspace/db";
 import { logger } from "../logger";
 
-export type OsRole = "admin" | "manager" | "broker";
+export type OsRole = "admin" | "manager" | "broker" | "partner";
 export type OsUser = {
   id: number;
   login: string;
@@ -51,7 +51,7 @@ export function ensureOsTables(): Promise<void> {
           id                    serial PRIMARY KEY,
           login                 text NOT NULL UNIQUE,
           name                  text NOT NULL,
-          role                  text NOT NULL CHECK (role IN ('admin','manager','broker')),
+          role                  text NOT NULL CHECK (role IN ('admin','manager','broker','partner')),
           broker_key            text,
           password_hash         text NOT NULL,
           must_change_password  boolean NOT NULL DEFAULT true,
@@ -77,6 +77,14 @@ export function ensureOsTables(): Promise<void> {
           created_at  timestamptz NOT NULL DEFAULT now()
         );
       `);
+      // The partner role (26.09): sees the money, P&L included. Widen the old check once.
+      await pool.query(`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'os_users_role_check' AND pg_get_constraintdef(oid) LIKE '%partner%') THEN
+            ALTER TABLE os_users DROP CONSTRAINT IF EXISTS os_users_role_check;
+            ALTER TABLE os_users ADD CONSTRAINT os_users_role_check CHECK (role IN ('admin','manager','broker','partner'));
+          END IF;
+        END $$;`);
       for (const u of SEED_USERS) {
         await pool.query(
           `INSERT INTO os_users (login, name, role, broker_key, password_hash, must_change_password)
@@ -272,7 +280,7 @@ function tempPassword(): string {
 export async function createUser(by: OsUser, input: { login: string; name: string; role: OsRole; brokerKey?: string | null }): Promise<{ user: OsUser; password: string }> {
   const login = input.login.trim().toLowerCase();
   if (!/^[a-z0-9._-]{2,32}$/.test(login)) throw new Error("Login: 2–32 letters, digits, dot, dash or underscore.");
-  if (!["admin", "manager", "broker"].includes(input.role)) throw new Error("Unknown role.");
+  if (!["admin", "manager", "broker", "partner"].includes(input.role)) throw new Error("Unknown role.");
   const password = tempPassword();
   const { rows } = await pool.query(
     `INSERT INTO os_users (login, name, role, broker_key, password_hash, must_change_password) VALUES ($1,$2,$3,$4,$5,true) RETURNING *`,
