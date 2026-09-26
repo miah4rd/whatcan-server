@@ -107,7 +107,9 @@ function flagsHtml(d) {
 // ── 1. Targets ──
 function targetsHtml(d) {
   const sc = d.targets;
-  const rows = sc.people.filter((p) => d.who === "team" || p.name.toLowerCase() === d.who);
+  // The people who work this funnel (the brokers table's rows) and anyone with a target here.
+  const working = new Set(d.brokers.map((b) => b.name.toLowerCase()));
+  const rows = sc.people.filter((p) => (d.who === "team" ? working.has(p.name.toLowerCase()) || Object.keys(p.targets).length : p.name.toLowerCase() === d.who));
   const cell = (v, t, prev) => {
     if (!t || !(t.value > 0)) return `<td class="r">${v}${delta(v, prev)}</td>`;
     const pct = Math.round((v / t.value) * 100);
