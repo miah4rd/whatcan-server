@@ -168,6 +168,22 @@ export async function listPlaybooks() {
     const md = (await readAt(`skills/${f}`)) ?? "";
     items.push({ file: f, kind: "bot", title: titleOf(md, f), approved: approvedOf(md), openQuestions: (md.match(/\[no decision\]|\[нет решения\]/gi) ?? []).length, lastChange: await lastOf(`skills/${f}`), pendingProposals: waiting.get(f) ?? 0, notInPool: true });
   }
+  // Every skill of the owner's Cowork, from the mirror the owner's Mac keeps in cowork-skills/ (26.09).
+  try {
+    const idx = JSON.parse((await readAt("cowork-skills/index.json")) ?? "{}") as { skills?: Array<{ name: string; description?: string; updatedAt?: string }> };
+    for (const k of idx.skills ?? []) {
+      const id = `cowork:${k.name}`;
+      const known = items.find((x) => x["file"] === id);
+      const at = k.updatedAt ? k.updatedAt.slice(0, 10) : null;
+      if (known) Object.assign(known, { updatedAt: at, mirrored: true });
+      else {
+        seen.add(id);
+        items.push({ file: id, kind: "cowork", title: k.name, pool: null, status: null, approved: null, updatedAt: at, mirrored: true, pendingProposals: waiting.get(id) ?? 0 });
+      }
+    }
+  } catch {
+    /* no mirror yet */
+  }
   for (const [f, n] of waiting) if (!seen.has(f)) items.push({ file: f, kind: "bot", title: f.replace(/\.md$/, ""), missing: true, pendingProposals: n });
   return { items, source: `GitHub ${REF}`, checkedAt: fetchedAt ? new Date(fetchedAt).toISOString() : null };
 }
@@ -178,7 +194,21 @@ export async function readPlaybook(raw: unknown) {
   await fresh();
   if (f.startsWith("cowork:")) {
     const name = f.slice(7);
-    return { file: f, kind: "cowork", exists: false, title: name, approved: null, text: "", versions: [], note: `This is a Cowork skill (${name}), kept in the owner's Claude account. The server cannot read it, so it is not shown here yet. Edit it in Cowork.` };
+    const text = await readAt(`cowork-skills/${name}/SKILL.md`);
+    const meta = ((JSON.parse((await readAt("cowork-skills/index.json")) ?? "{}").skills ?? []) as Array<{ name: string; updatedAt?: string }>).find((x) => x.name === name);
+    return {
+      file: f,
+      kind: "cowork",
+      exists: text != null,
+      title: name,
+      approved: null,
+      // The mirror's front matter (name, description) is shown as the text's own first lines.
+      text: (text ?? "").replace(/^---\n[\s\S]*?\n---\n/, ""),
+      versions: [],
+      note: text != null
+        ? `A Cowork skill, kept in the owner's Claude account and edited there${meta?.updatedAt ? ` (last change ${meta.updatedAt.slice(0, 10)})` : ""}. Shown here read-only; the owner's Mac mirrors it every 10 minutes.`
+        : `A Cowork skill (${name}) that is not in the mirror: it may be named differently in Cowork, or not be a Cowork skill.`,
+    };
   }
   if (f.startsWith("CLAUDE.md#")) {
     const sec = await claudeSection(f.slice(10));

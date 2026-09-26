@@ -152,7 +152,7 @@ screens.playbooks = {
     ];
     const sub = (x) =>
       x.kind === "cowork"
-        ? "kept in Cowork"
+        ? `${x.mirrored ? `Cowork · changed ${esc(x.updatedAt || "")}` : "named in the pool, not found in Cowork"}${x.pendingProposals ? ` · ${x.pendingProposals} waiting` : ""}`
         : x.missing
           ? `${x.status ? esc(x.status) + " · " : ""}not written yet`
           : [x.approved ? `approved ${esc(x.approved)}` : x.status ? esc(x.status) : "", x.pendingProposals ? `${x.pendingProposals} waiting` : "", x.openQuestions ? `${x.openQuestions} open question${x.openQuestions === 1 ? "" : "s"}` : "", x.notInPool ? "not in the pool" : ""].filter(Boolean).join(" · ");
