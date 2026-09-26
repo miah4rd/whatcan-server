@@ -66,9 +66,9 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
     funnelPeople(f),
     // Cards that reached each stage in the period, and how many of those moves the bot made.
     q(
-      `SELECT e.to_stage AS stage, count(DISTINCT e.lead_id)::int AS n, count(DISTINCT e.lead_id) FILTER (WHERE e.responsible_user LIKE 'engine:%')::int AS bot
+      `SELECT e.to_stage AS stage, l.responsible_user AS who, count(DISTINCT e.lead_id)::int AS n, count(DISTINCT e.lead_id) FILTER (WHERE e.responsible_user LIKE 'engine:%')::int AS bot
          FROM stage_events e JOIN leads_sync l ON l.lead_id = e.lead_id
-        WHERE lower(coalesce(e.pipeline,'')) = $1 AND e.changed_at >= $2 AND e.changed_at < $3 AND ${byWho} GROUP BY 1`,
+        WHERE lower(coalesce(e.pipeline,'')) = $1 AND e.changed_at >= $2 AND e.changed_at < $3 AND ${byWho} GROUP BY 1, 2`,
       P,
     ),
     // Cards in each stage now, per person, and those with no stage move for 7 days.
@@ -157,6 +157,8 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
       workedBy,
       reached: r,
       movedByBot: sum(reached, "bot", s.name),
+      // The same stage, card holder by card holder (the funnel by person).
+      byPerson: Object.fromEntries(names.map((p) => [p, reached.filter((r) => lc(r.stage) === lc(s.name) && lc(r.who) === lc(p)).reduce((t, r) => t + n(r.n), 0)])),
       conv,
       sent: sum(sends, "n", s.name),
       sentByAutopilot: sum(sends, "auto", s.name),

@@ -22,6 +22,13 @@ const PERIODS = [
   ["year", "Year"],
 ];
 const TARGET_PERIODS = ["week", "month", "quarter", "half", "year"];
+/** A target is named by the funnel's own stage it counts (owner, 26.09: no invented names). */
+const STAGE_NAME = {
+  rental: { leads: "New LEAD", shortlisted: "Options sent", viewings_held: "Viewing done", deals: "Contract signed" },
+  "rental-listings": { leads: "Initial Contact", qualified: "QUALIFIED (Pre-listed)", inspections_held: "Inspection sceduled (held)", prelisted: "QUALIFIED (Pre-listed) on the site", listed: "live" },
+  unicorn: { leads: "NEW LEAD", options: "Options Sent", viewings: "Viewing Scheduled", won: "Closed - won" },
+};
+const metricName = (f, m) => STAGE_NAME[f]?.[m.key] || m.label;
 const WORKED_BY = { autopilot: ["Autopilot", "bot"], copilot: ["Copilot + person", "cp"], person: ["Person", "ppl"], rule: ["Rule", "bot"], workflow: ["Working stage", ""] };
 
 const baliToday = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
@@ -136,7 +143,7 @@ function targetsHtml(d) {
   const people = sc.people.filter((p) => (d.who === "team" ? working.has(p.name.toLowerCase()) || Object.keys(p.targets).length : p.name.toLowerCase() === d.who));
   const tmetrics = sc.metrics.filter((m) => m.target);
   const card = (name, values, targets, team) => {
-    const bars = tmetrics.filter((m) => targets[m.key] && targets[m.key].value > 0).map((m) => targetBar(m.label, values[m.key]?.v ?? 0, targets[m.key], values[m.key]?.prev, pace));
+    const bars = tmetrics.filter((m) => targets[m.key] && targets[m.key].value > 0).map((m) => targetBar(metricName(d.funnel, m), values[m.key]?.v ?? 0, targets[m.key], values[m.key]?.prev, pace));
     return `<div class="tc ${team ? "team" : ""}"><div class="tc-h">${esc(name)}</div>${bars.join("") || `<p class="faint" style="margin:0;font-size:12px">No target set.</p>`}</div>`;
   };
   // A card for everyone with a target, and the team; the rest are named in one line to set theirs.
@@ -144,13 +151,12 @@ function targetsHtml(d) {
   const without = people.filter((p) => !hasTarget(p.targets));
   const cards = [...people.filter((p) => hasTarget(p.targets)).map((p) => card(p.name, p.values, p.targets, false)), d.who === "team" ? card("Team (manager)", sc.team.values, sc.team.targets, true) : ""].join("") +
     (without.length ? `<div class="tc none"><span class="faint">No target: ${without.map((p) => esc(p.name)).join(", ")}</span></div>` : "");
-  const head = `<tr><th>Metric</th>${people.map((p) => `<th class="r">${esc(p.name)}</th>`).join("")}${d.who === "team" ? `<th class="r">Team</th>` : ""}</tr>`;
-  const body = sc.metrics
-    .map((m) => `<tr><td>${esc(m.label)}</td>${people.map((p) => `<td class="r">${p.values[m.key]?.v ?? 0}${delta(p.values[m.key]?.v ?? 0, p.values[m.key]?.prev)}</td>`).join("")}${d.who === "team" ? `<td class="r">${sc.team.values[m.key]?.v ?? 0}${delta(sc.team.values[m.key]?.v ?? 0, sc.team.values[m.key]?.prev)}</td>` : ""}</tr>`)
-    .join("");
+  const shown = d.brokers.filter((b) => b.name !== "Team").map((b) => b.name);
+  const head = `<tr><th>Stage</th>${shown.map((p) => `<th class="r">${esc(p)}</th>`).join("")}<th class="r">Team</th></tr>`;
+  const body = d.work.stages.map((st) => `<tr><td>${esc(st.name)}</td>${shown.map((p) => `<td class="r">${st.byPerson?.[p] || "—"}</td>`).join("")}<td class="r">${st.reached || "—"}</td></tr>`).join("");
   return `<section class="panel an-ch"><h2><span class="an-n">1</span>Targets <span class="faint">what we want · ${Math.round(pace * 100)}% of the period gone</span>${isStaff() ? `<button class="btn sm" id="an-set-targets" style="margin-left:auto">Edit targets</button>` : ""}</h2>
     <div class="tcs">${cards}</div>
-    <details class="an-more"><summary>Every number of the funnel, by person</summary><div class="an-scroll"><table class="grid an-t">${head}${body}</table></div></details>
+    <details class="an-more"><summary>The funnel by person: cards that reached each stage</summary><div class="an-scroll"><table class="grid an-t">${head}${body}</table></div></details>
     <p class="faint an-note">Counted from the conversations and reports, not from stage moves. The mark on a bar is where it should be by now. A weekly target repeats every week until it is changed.</p></section>`;
 }
 
@@ -164,7 +170,7 @@ async function setTargets(d, funnel, period, date) {
     wide: true,
     body: `<label class="fld" style="max-width:220px"><span>For each</span><select class="in" name="period">${TARGET_PERIODS.map((p) => `<option ${p === per ? "selected" : ""} value="${p}">${PERIODS.find((x) => x[0] === p)[1]}</option>`).join("")}</select></label>
       <p class="faint" style="font-size:12px;margin:8px 0">A target repeats every period (every week for a weekly one) until you change it here; a change applies from the period that holds ${esc(date)}. Empty = no target. The team's target, if empty, is the sum of its people's.</p>
-      <div class="an-scroll"><table class="grid an-t"><tr><th>Who</th>${metrics.map((m) => `<th>${esc(m.label)}</th>`).join("")}</tr>${who
+      <div class="an-scroll"><table class="grid an-t"><tr><th>Who</th>${metrics.map((m) => `<th>${esc(metricName(funnel, m))}</th>`).join("")}</tr>${who
         .map(([k, name, t]) => `<tr><td>${esc(name)}</td>${metrics.map((m) => `<td><input class="in an-in" type="number" min="0" step="1" name="t:${esc(k)}:${m.key}" value="${t[m.key] && !t[m.key].implied && !t[m.key].summed ? t[m.key].value : ""}"></td>`).join("")}</tr>`)
         .join("")}</table></div>`,
     actions: [{ label: "Cancel", value: null }, { label: "Save", value: "ok", primary: true }],
