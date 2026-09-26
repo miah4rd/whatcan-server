@@ -22,17 +22,7 @@ import { pool } from "@workspace/db";
 const router = Router();
 
 /** SQL mirror of deriveSituation (broker-corrections.ts). */
-const SITUATION_CASE = `
-  CASE
-    WHEN lower(coalesce(l.pipeline,'')) LIKE '%listing%' THEN 'owner_intake'
-    WHEN p.kind = 'push' THEN 'followup'
-    WHEN lower(coalesce(p.suggested_stage, l.lead_stage, '')) ~ '(negotiat|reservation|contract|won)' THEN 'closing'
-    WHEN lower(coalesce(p.suggested_stage, l.lead_stage, '')) ~ '(viewing|zoom)' THEN 'viewing'
-    WHEN lower(coalesce(p.suggested_stage, l.lead_stage, '')) ~ '(feedback|objection)' THEN 'objection'
-    WHEN lower(coalesce(p.suggested_stage, l.lead_stage, '')) ~ '(new lead|initial|неразобран)' THEN 'first_contact'
-    WHEN lower(coalesce(p.suggested_stage, l.lead_stage, '')) ~ '(need|assess|qualif|contact establi)' THEN 'qualifying'
-    ELSE 'options'
-  END`;
+import { SITUATION_CASE } from "../../lib/situation-sql";
 
 type Row = {
   situation: string;

@@ -10,6 +10,7 @@ import { eq, desc, and, isNull, inArray, or } from "drizzle-orm";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { brokerKey } from "./broker-identity";
 import { logger } from "./logger";
+import { acceptedExamplesBlock } from "./accepted-examples";
 
 /**
  * The moments a rental conversation actually passes through. A lesson is
@@ -374,12 +375,17 @@ export async function correctionsPromptBlock(
   limit = 60,
 ): Promise<string> {
   try {
-    const lessons = await activeLessons(brokerKey(brokerName), limit, situation);
-    if (lessons.length === 0) return "";
+    const [lessons, examples] = await Promise.all([
+      activeLessons(brokerKey(brokerName), limit, situation),
+      // An approve without an edit teaches too (owner, 26.09.2026): the accepted shape rides along
+      // with the lessons, so every generator that learns from edits learns from approves as well.
+      acceptedExamplesBlock(brokerName, situation).catch(() => ""),
+    ]);
+    if (lessons.length === 0) return examples;
     const scope = situation ? `in this situation (${situation})` : "on every message";
     return `\n\nTHE BROKER HAS TAUGHT YOU THESE PREFERENCES on earlier edits — they apply ${scope}:\n${lessons
       .map((l) => `- ${l.instruction}`)
-      .join("\n")}`;
+      .join("\n")}${examples}`;
   } catch {
     return "";
   }
