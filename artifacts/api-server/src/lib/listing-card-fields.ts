@@ -551,7 +551,6 @@ export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[
       `below our floor: ${Math.round(quoted / 1_000_000)}M quoted, minimum ${MIN_LISTING_MONTHLY_IDR / 1_000_000}M`,
     );
   }
-  if (!f.bedrooms) missing.push("bedrooms");
   if (!f.monthlyIdr && !f.yearlyIdr) missing.push("price");
   else if (f.commission === "unknown") missing.push("commission position");
   // A yearly rate alone is not a verdict either way (see clientFacingMonthlyIdr): when a twelfth of it
@@ -561,11 +560,10 @@ export function meetsQualified(f: ListingFacts): { ok: boolean; missing: string[
     const derived = Math.round((f.commission === "included" ? f.yearlyIdr : f.yearlyIdr * 1.1) / 12);
     if (derived < MIN_LISTING_MONTHLY_IDR) missing.push("monthly price");
   }
-  // Viewability is part of qualification (owner, 07.09.2026): a listing that
-  // cannot be shown when a client asks is not a listing. Both are asked in the
-  // same qualifying sentence; neither may be inferred.
-  if (f.minStayMonths === null) missing.push("minimum stay");
-  if (!f.viewableFrom) missing.push("earliest viewing");
+  // The owner's bar (26.09.2026): who we talk to + the price with our 10%. Bedrooms, photos and the
+  // description come from the internet; minimum stay and the visit are settled after qualification
+  // (Yudi books the inspection on QUALIFIED). The min-stay and viewing-day requirements added on
+  // 07.09 were never the owner's rule and held 96 of 107 answered cards in TAKEN TO WORK.
   // WHO we are talking to is the BASIS of qualification, not one field among
   // several. A management company or another agency means not qualified however
   // complete the listing details are: we would be sharing the fee with a

@@ -220,28 +220,28 @@ export function ownerAskLines(asks: NudgeAsk[], o: { lang: OwnerLang; villa: str
     const call = o.call || "kak";
     const villa = spokenVilla(o.villa);
     if (has("still_renting")) lines.push(`${villa ? `Untuk ${villa} masih` : "Villanya masih"} bisa disewa bulanan atau tahunan ya ${call}?`);
-    if (has("availability")) lines.push(`Kira-kira kosong lagi mulai kapan ya ${call}?`);
     if (has("price")) lines.push(`Harga sewa bulanan dan tahunannya berapa ya ${call}, sudah termasuk komisi 10%?`);
+    if (has("owner")) lines.push(`Ini dengan owner langsung atau ada management ya ${call}?`);
     if (has("price_plain")) lines.push(`Harga sewa bulanan dan tahunannya berapa ya ${call}?`);
     if (has("monthly_price")) lines.push(`Kalau sewa bulanan harganya berapa ya ${call}?`);
     if (has("commission") && !has("price")) lines.push(`Harganya sudah termasuk komisi 10% ya ${call}?`);
     if (has("bedrooms")) lines.push(`Kamarnya ada berapa ya ${call}?`);
     if (has("min_stay")) lines.push(`Minimal sewanya berapa lama ya ${call}?`);
     if (has("viewing")) lines.push(`Kira-kira kapan bisa kami ajak client lihat villanya?`);
-    if (has("owner")) lines.push(`Ini dengan owner langsung atau ada management ya ${call}?`);
+    if (has("availability")) lines.push(`Kira-kira kosong lagi mulai kapan ya ${call}?`);
     return lines;
   }
   const villa = spokenVilla(o.villa);
   if (has("still_renting")) lines.push(`Is ${villa || "the villa"} still available for monthly or yearly rent?`);
-  if (has("availability")) lines.push(`Roughly when will it be free again?`);
   if (has("price")) lines.push(`May I know the monthly and yearly price, including our 10% commission?`);
+  if (has("owner")) lines.push(`Are you the owner, or is there a management company?`);
   if (has("price_plain")) lines.push(`May I know the monthly and yearly price?`);
   if (has("monthly_price")) lines.push(`May I know the monthly price?`);
   if (has("commission") && !has("price")) lines.push(`May I double check if the price already includes our 10% commission?`);
   if (has("bedrooms")) lines.push(`How many bedrooms does it have?`);
   if (has("min_stay")) lines.push(`What's the minimum stay?`);
   if (has("viewing")) lines.push(`When could we bring a client to see it?`);
-  if (has("owner")) lines.push(`Are you the owner, or is there a management company?`);
+  if (has("availability")) lines.push(`Roughly when will it be free again?`);
   return lines;
 }
 
