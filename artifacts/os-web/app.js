@@ -92,8 +92,9 @@ function currentNavId() {
   return r.screen === "pipeline" ? `pipeline/${r.parts[0] || "rental"}` : r.screen;
 }
 
+/** Two modes (owner, 26.09): full, or a compact rail that opens over the page while the mouse is on it. */
 function sidebarMode() {
-  return store.get("sidebar", "full");
+  return store.get("sidebar", "full") === "full" ? "full" : "rail";
 }
 function setSidebarMode(m) {
   store.set("sidebar", m);
@@ -146,7 +147,7 @@ function renderShell() {
   const sh = app.querySelector(".shell");
   const cycle = () => {
     const m = sidebarMode();
-    setSidebarMode(m === "full" ? "rail" : m === "rail" ? "hidden" : "full");
+    setSidebarMode(m === "full" ? "rail" : "full");
     renderNav();
   };
   document.getElementById("sb-toggle").onclick = cycle;
@@ -467,7 +468,7 @@ document.addEventListener("keydown", (e) => {
     openPalette();
   } else if (!typing && e.key === "[") {
     const m = sidebarMode();
-    setSidebarMode(m === "full" ? "rail" : m === "rail" ? "hidden" : "full");
+    setSidebarMode(m === "full" ? "rail" : "full");
     renderNav();
   } else if (!typing && e.key === "Escape" && S.peek) {
     closePeek();

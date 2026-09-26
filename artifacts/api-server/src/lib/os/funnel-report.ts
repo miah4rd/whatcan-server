@@ -13,7 +13,9 @@ import { baliDate, leadsBySource, CHANNEL_LABEL } from "../kpi-dashboard";
 import { stageMap, type FunnelKey } from "./automation-map";
 import { teamScorecard, funnelPeople, periodRange, customRange, spanDays, PERIODS, type Period } from "./team";
 import { OBJECTION_CATEGORIES } from "./analytics";
-import { amoLeadNames } from "./data";
+import { amoLeadNames, pipelines } from "./data";
+import { amoFetch } from "../amo-client";
+import { cleanLeadName } from "../lead-display-name";
 import { demandMatrix } from "./demand-matrix";
 
 const PIPE: Record<FunnelKey, string> = { rental: "rental", "rental-listings": "rental listings", unicorn: "unicorn" };
@@ -37,6 +39,64 @@ async function q(sql: string, params: unknown[]): Promise<Record<string, unknown
   }
 }
 const n = (v: unknown) => Number(v ?? 0) || 0;
+
+/**
+ * Card names as the boards show them: a client by the name they wrote under (their first message),
+ * a villa card by its amoCRM name. amoCRM's own names of client cards can be anything
+ * ("R-UM-024 - qualification" on Melinda Langford's card).
+ */
+async function cardNames(f: FunnelKey, ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!ids.length) return out;
+  if (f !== "rental-listings") {
+    const r = await q(
+      `SELECT DISTINCT ON (lead_id) lead_id, sender_name FROM lead_messages WHERE lead_id = ANY($1) AND sender_type = 'lead' AND coalesce(sender_name,'') <> '' ORDER BY lead_id, sent_at ASC`,
+      [ids],
+    );
+    for (const x of r) {
+      const nm = cleanLeadName(String(x.sender_name));
+      if (nm) out.set(String(x.lead_id), nm);
+    }
+  }
+  const rest = ids.filter((id) => !out.has(id));
+  if (rest.length) for (const [id, nm] of await amoLeadNames(rest).catch(() => new Map<string, string>())) out.set(id, nm);
+  return out;
+}
+
+const PIPELINE_ID: Record<FunnelKey, number> = { rental: 11119150, "rental-listings": 11180334, unicorn: 8347534 };
+const moveCache = new Map<string, { at: number; value: Array<{ lead_id: string; stage: string; by: number }> }>();
+/**
+ * Every stage change into a funnel from amoCRM's own event log (owner, 26.09: "take it straight from
+ * the funnel"). Our stage_events table misses moves made by hand in amoCRM and by the site's Listed
+ * switch (15 cards sat in live with one recorded move), so the funnel reads amoCRM's log.
+ */
+async function amoStageMoves(f: FunnelKey, from: string, to: string) {
+  const fromSec = Math.floor(Date.parse(`${from}T00:00:00+08:00`) / 1000);
+  const toSec = Math.floor(Date.parse(`${to}T00:00:00+08:00`) / 1000);
+  const k = `${f}:${fromSec}:${toSec}`;
+  const hit = moveCache.get(k);
+  const finished = toSec * 1000 < Date.now();
+  if (hit && Date.now() - hit.at < (finished ? 6 * 3600_000 : 5 * 60_000)) return hit.value;
+  const names = new Map<number, string>();
+  for (const pl of await pipelines()) for (const st of pl.stages) names.set(Number(st.id), st.name);
+  const out: Array<{ lead_id: string; stage: string; by: number }> = [];
+  for (let page = 1; page <= 60; page++) {
+    const d = await amoFetch<{ _embedded?: { events?: Array<{ entity_id: number; created_by: number; value_after?: Array<{ lead_status?: { id: number; pipeline_id: number } }> }> } }>(
+      `/api/v4/events?filter[type]=lead_status_changed&filter[created_at][from]=${fromSec}&filter[created_at][to]=${toSec - 1}` +
+        `&filter[value_after][leads_statuses][0][pipeline_id]=${PIPELINE_ID[f]}&limit=100&page=${page}`,
+    );
+    if (!d) throw new Error("amoCRM events unavailable");
+    const events = d._embedded?.events ?? [];
+    for (const e of events) {
+      const st = e.value_after?.[0]?.lead_status;
+      if (!st || st.pipeline_id !== PIPELINE_ID[f]) continue;
+      out.push({ lead_id: String(e.entity_id), stage: names.get(st.id) ?? String(st.id), by: e.created_by });
+    }
+    if (events.length < 100) break;
+  }
+  moveCache.set(k, { at: Date.now(), value: out });
+  return out;
+}
 
 // The page takes seconds to count (amoCRM sources, every broker's Copilot list): two minutes of memory.
 const memo = new Map<string, { at: number; value: Promise<unknown> }>();
@@ -197,8 +257,24 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
     }
     return by;
   };
-  const cur = furthest(reached, cards);
-  const bef = furthest(reachedPrev, prevCards);
+  // The funnel's moves from amoCRM's log; our own stage_events only if amoCRM cannot answer.
+  const holder = new Map<string, unknown>();
+  for (const r of await q(`SELECT lead_id, responsible_user FROM leads_sync WHERE lower(coalesce(pipeline,'')) = $1`, [key])) holder.set(String(r.lead_id), r.responsible_user);
+  const botPairs = new Set(reached.filter((e) => e.bot).map((e) => `${e.lead_id}|${lc(e.stage)}`));
+  const fromAmo = async (a: string, b: string, fallback: Record<string, unknown>[]) => {
+    try {
+      const moves = await amoStageMoves(f, a, b);
+      return moves
+        .map((m) => ({ lead_id: m.lead_id, stage: m.stage, who: holder.get(m.lead_id) ?? null, bot: botPairs.has(`${m.lead_id}|${lc(m.stage)}`) }))
+        .filter((m) => !who || lc(m.who) === who);
+    } catch (err) {
+      logger.warn({ err }, "os funnel report: amoCRM stage log unavailable, using stage_events");
+      return fallback;
+    }
+  };
+  const [movesCur, movesPrev] = await Promise.all([fromAmo(range.from, range.to, reached), fromAmo(prev.from, prev.to, reachedPrev)]);
+  const cur = furthest(movesCur as Record<string, unknown>[], cards);
+  const bef = furthest(movesPrev as Record<string, unknown>[], prevCards);
   const reachOf = (by: Map<string, { idx: number; who: string; side: Set<string> }>, stage: string, person?: string) => {
     const k = main.indexOf(lc(stage));
     let t = 0;
@@ -208,7 +284,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
     }
     return t;
   };
-  const botMoves = (stage: string) => new Set(reached.filter((e) => lc(e.stage) === lc(stage) && e.bot).map((e) => String(e.lead_id))).size;
+  const botMoves = (stage: string) => new Set((movesCur as Record<string, unknown>[]).filter((e) => lc(e.stage) === lc(stage) && e.bot).map((e) => String(e.lead_id))).size;
   let prevReached: number | null = null;
   let prevReachedBefore: number | null = null;
   const stages = map.stages.map((s) => {
@@ -378,7 +454,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
 
   // ── 3. bottlenecks
   // Objections: reasons ranked by clients, each with every objection behind it (owner, 26.09: click in).
-  const objNames = await amoLeadNames([...new Set(objections.map((o) => String(o.lead_id)))].slice(0, 400)).catch(() => new Map<string, string>());
+  const objNames = await cardNames(f, [...new Set(objections.map((o) => String(o.lead_id)))].slice(0, 400)).catch(() => new Map<string, string>());
   const objectionGroup = (source: string) => {
     const rows = objections.filter((o) => (source === "report" ? o.source === "viewing-report" : o.source !== "viewing-report"));
     const prevRows = objectionsPrev.filter((o) => (source === "report" ? o.source === "viewing-report" : o.source !== "viewing-report"));
@@ -470,7 +546,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   };
 
   // ── today: the red flags, as of now, whatever the period
-  const nameOf = await amoLeadNames([...new Set(reports.filter((x) => !x.filedAt && x.overdue).map((x) => String(x.leadId)))]).catch(() => new Map<string, string>());
+  const nameOf = await cardNames(f, [...new Set(reports.filter((x) => !x.filedAt && x.overdue).map((x) => String(x.leadId)))]).catch(() => new Map<string, string>());
   const flags: Array<{ level: "red" | "amber"; text: string; leadId?: string; who?: string }> = [];
   for (const r of reports.filter((x) => !x.filedAt && x.overdue)) flags.push({ level: "red", who: String(r.who ?? ""), leadId: String(r.leadId), text: `${r.who || "Nobody"} has not filed the ${f === "rental-listings" ? "inspection" : "viewing"} report for ${nameOf.get(String(r.leadId)) || "#" + r.leadId} (${r.kind === "inspection" ? "inspection" : "viewing"} ${new Date(String(r.at)).toISOString().slice(0, 16).replace("T", " ")} UTC)` });
   const unBy = new Map<string, number>();
@@ -556,7 +632,7 @@ async function reportCalendar(f: FunnelKey, range: { from: string; to: string },
         )
       : await q(
           `WITH slot AS (SELECT lead_id::text AS lead_id, visit_at AS at, status FROM listing_inspection_slots WHERE superseded_at IS NULL AND visit_at >= $1 AND visit_at < $2),
-                cal AS (SELECT unnest(lead_ids)::text AS lead_id, visit_at AS at, summary FROM inspection_calendar_events WHERE visit_at >= $1 AND visit_at < $2)
+                cal AS (SELECT trim(unnest(string_to_array(lead_ids, ','))) AS lead_id, visit_at AS at, summary FROM inspection_calendar_events WHERE visit_at >= $1 AND visit_at < $2)
            SELECT s.lead_id, s.at, s.status AS slot_status, c.summary, (c.lead_id IS NOT NULL) AS on_calendar,
                   ir.id IS NOT NULL AS has_report, ir.status, NULL AS outcome, coalesce(ir.filed_at, ir.done_at) AS filed_at, ir.property_code, l.responsible_user AS who
              FROM slot s LEFT JOIN cal c ON c.lead_id = s.lead_id AND abs(extract(epoch FROM c.at - s.at)) < 3600
@@ -565,7 +641,7 @@ async function reportCalendar(f: FunnelKey, range: { from: string; to: string },
             WHERE coalesce(s.status,'') NOT IN ('cancelled') AND ($3::text IS NULL OR lower(l.responsible_user) = $3) ORDER BY 2`,
           [at(range.from), at(range.to), who],
         );
-  const names = await amoLeadNames([...new Set(rows.map((r) => String(r.lead_id)))]).catch(() => new Map<string, string>());
+  const names = await cardNames(f, [...new Set(rows.map((r) => String(r.lead_id)))]).catch(() => new Map<string, string>());
   const now = Date.now();
   return rows.map((r) => {
     const start = Date.parse(String(r.at));
