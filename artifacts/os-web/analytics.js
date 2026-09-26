@@ -43,36 +43,113 @@ function shift(period, day, dir) {
   if (period === "half") return iso(y, m + 6 * dir);
   return iso(y + dir, m);
 }
+/** Quick picks: a calendar period (with its targets) or a span of days (weekly targets scaled). */
+const PRESETS = [
+  ["today", "Today"],
+  ["yesterday", "Yesterday"],
+  ["this-week", "This week"],
+  ["last-week", "Last week"],
+  ["last-2-weeks", "Last 2 weeks"],
+  ["this-month", "This month"],
+  ["last-month", "Last month"],
+  ["last-30", "Last 30 days"],
+  ["this-quarter", "This quarter"],
+  ["this-half", "This half-year"],
+  ["this-year", "This year"],
+  ["custom", "Pick dates…"],
+];
+function presetRoute(k, from, to) {
+  const t = baliToday();
+  const mondayOf = (d) => addDays(d, -((new Date(d + "T00:00:00Z").getUTCDay() + 6) % 7));
+  const firstOfMonth = (d) => d.slice(0, 8) + "01";
+  switch (k) {
+    case "today": return { period: "day", date: t };
+    case "yesterday": return { period: "day", date: addDays(t, -1) };
+    case "this-week": return { period: "week", date: t };
+    case "last-week": return { period: "week", date: addDays(mondayOf(t), -1) };
+    case "last-2-weeks": return { period: "custom", from: addDays(mondayOf(t), -14), to: addDays(mondayOf(t), -1) };
+    case "this-month": return { period: "month", date: t };
+    case "last-month": return { period: "month", date: addDays(firstOfMonth(t), -1) };
+    case "last-30": return { period: "custom", from: addDays(t, -29), to: t };
+    case "this-quarter": return { period: "quarter", date: t };
+    case "this-half": return { period: "half", date: t };
+    case "this-year": return { period: "year", date: t };
+    default: return { period: "custom", from: from || addDays(t, -13), to: to || t };
+  }
+}
+function presetOf(period, date, from, to) {
+  for (const [k] of PRESETS) {
+    if (k === "custom") continue;
+    const r = presetRoute(k);
+    if (r.period === period && (period === "custom" ? r.from === from && r.to === to : sameSpan(period, r.date, date))) return k;
+  }
+  return period === "custom" ? "custom" : "";
+}
+function sameSpan(period, a, b) {
+  if (period === "day") return a === b;
+  if (period === "week") {
+    const m = (d) => addDays(d, -((new Date(d + "T00:00:00Z").getUTCDay() + 6) % 7));
+    return m(a) === m(b);
+  }
+  if (period === "month") return a.slice(0, 7) === b.slice(0, 7);
+  if (period === "year") return a.slice(0, 4) === b.slice(0, 4);
+  if (period === "quarter") return a.slice(0, 4) === b.slice(0, 4) && Math.floor((+a.slice(5, 7) - 1) / 3) === Math.floor((+b.slice(5, 7) - 1) / 3);
+  if (period === "half") return a.slice(0, 4) === b.slice(0, 4) && +a.slice(5, 7) <= 6 === +b.slice(5, 7) <= 6;
+  return false;
+}
 const mins = (m) => (m == null ? "—" : m < 60 ? `${m} min` : m < 1440 ? `${(m / 60).toFixed(1)} h` : `${(m / 1440).toFixed(1)} d`);
 const dash = (v) => (v == null || v === "" ? "—" : v);
-const delta = (v, p) => (p == null || v === p ? "" : `<span class="an-d ${v > p ? "up" : "down"}">${v > p ? "▲" : "▼"} ${Math.abs(v - p)}</span>`);
+/** The change against the period before: ▲▼ and by how much. `lower` = a smaller number is better (minutes); `unit` e.g. " pp". */
+const delta = (v, p, lower = false, unit = "") => {
+  if (p == null || v == null || v === p) return "";
+  const good = lower ? v < p : v > p;
+  return `<span class="an-d ${good ? "up" : "down"}" title="${esc(String(p))}${esc(unit.trim() === "pp" ? "%" : unit)} the period before">${v > p ? "▲" : "▼"} ${Math.abs(v - p)}${unit}</span>`;
+};
+const deltaMin = (v, p) => {
+  if (p == null || v == null || v === p) return "";
+  const good = v < p;
+  return `<span class="an-d ${good ? "up" : "down"}" title="${mins(p)} the period before">${v > p ? "▲" : "▼"} ${mins(Math.abs(v - p))}</span>`;
+};
 
 screens.analytics = {
   title: "Analytics",
   async render({ el, tools, route }) {
     const funnel = FUNNELS.some((f) => f[0] === route.parts[0]) ? route.parts[0] : store.get("an-funnel", "rental");
     store.set("an-funnel", funnel);
-    const period = PERIODS.some((p) => p[0] === route.q.period) ? route.q.period : store.get("an-period", "week");
-    store.set("an-period", period);
+    const period = PERIODS.some((p) => p[0] === route.q.period) || route.q.period === "custom" ? route.q.period : store.get("an-period", "week");
+    if (period !== "custom") store.set("an-period", period);
     const date = /^\d{4}-\d{2}-\d{2}$/.test(route.q.date || "") ? route.q.date : baliToday();
+    const from = route.q.from || "";
+    const to = route.q.to || "";
     const who = isStaff() ? route.q.who || "team" : "me";
     const go = (patch) => {
-      const qs = new URLSearchParams({ period, date, who: isStaff() ? who : "", ...patch });
+      const qs = new URLSearchParams({ period, date, from, to, who: isStaff() ? who : "", ...patch });
+      if ((patch.period || period) !== "custom") (qs.delete("from"), qs.delete("to"));
       for (const [k, v] of [...qs]) if (!v) qs.delete(k);
       location.hash = `#/analytics/${patch.funnel || funnel}?${qs}`;
     };
     tools.innerHTML = `<div class="views">${FUNNELS.map(([k, l]) => `<button data-an-f="${k}" class="${k === funnel ? "active" : ""}">${l}</button>`).join("")}</div>
-      <select class="chip" id="an-period">${PERIODS.map(([k, l]) => `<option value="${k}" ${k === period ? "selected" : ""}>${l}</option>`).join("")}</select>
-      <button class="iconbtn" id="an-prev" title="Earlier">${I.left}</button><button class="iconbtn" id="an-next" title="Later">${I.right}</button>
+      <select class="chip" id="an-preset">${PRESETS.map(([k, l]) => `<option value="${k}" ${k === presetOf(period, date, from, to) ? "selected" : ""}>${l}</option>`).join("")}</select>
+      ${period === "custom" ? `<input type="date" class="chip" id="an-from" value="${from}"><span class="faint">–</span><input type="date" class="chip" id="an-to" value="${to}">` : `<button class="iconbtn" id="an-prev" title="Earlier">${I.left}</button><button class="iconbtn" id="an-next" title="Later">${I.right}</button>`}
       ${isStaff() ? `<select class="chip" id="an-who"><option value="team">Team and everyone</option></select>` : ""}`;
     on(tools, "click", "[data-an-f]", (e, b) => go({ funnel: b.dataset.anF }));
-    tools.querySelector("#an-period").onchange = (e) => go({ period: e.target.value });
-    tools.querySelector("#an-prev").onclick = () => go({ date: shift(period, date, -1) });
-    tools.querySelector("#an-next").onclick = () => go({ date: shift(period, date, 1) });
+    tools.querySelector("#an-preset").onchange = (e) => go(presetRoute(e.target.value, from, to));
+    if (period === "custom") {
+      const pick = () => {
+        const f = tools.querySelector("#an-from").value;
+        const t = tools.querySelector("#an-to").value;
+        if (f && t && f <= t) go({ period: "custom", from: f, to: t });
+      };
+      tools.querySelector("#an-from").onchange = pick;
+      tools.querySelector("#an-to").onchange = pick;
+    } else {
+      tools.querySelector("#an-prev").onclick = () => go({ date: shift(period, date, -1) });
+      tools.querySelector("#an-next").onclick = () => go({ date: shift(period, date, 1) });
+    }
     el.innerHTML = `<div class="loading">Counting ${esc(FUNNELS.find((f) => f[0] === funnel)[1])}…</div>`;
     let d;
     try {
-      d = await api(`/analytics/funnel-report?funnel=${funnel}&period=${period}&date=${date}${who !== "team" && who !== "me" ? `&who=${encodeURIComponent(who)}` : ""}`);
+      d = await api(`/analytics/funnel-report?funnel=${funnel}&${period === "custom" ? `from=${from}&to=${to}` : `period=${period}&date=${date}`}${who !== "team" && who !== "me" ? `&who=${encodeURIComponent(who)}` : ""}`);
     } catch (e) {
       el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
       return;
@@ -99,6 +176,7 @@ function label(d) {
   const f = new Date(d.from + "T00:00:00Z");
   const t = new Date(Date.parse(d.to + "T00:00:00Z") - 86400e3);
   const o = { day: "numeric", month: "short", timeZone: "UTC" };
+  if (d.period === "custom") return `${f.toLocaleDateString("en-GB", o)} – ${t.toLocaleDateString("en-GB", { ...o, year: "numeric" })} · compared with the same ${Math.round((Date.parse(d.to) - Date.parse(d.from)) / 86400e3)} days before`;
   return d.period === "day" ? f.toLocaleDateString("en-GB", { ...o, weekday: "short" }) : `${f.toLocaleDateString("en-GB", o)} – ${t.toLocaleDateString("en-GB", { ...o, year: "numeric" })}`;
 }
 
@@ -201,30 +279,31 @@ function workHtml(d) {
   const spend = inf.spend
     ? `Meta spend <b>${money(inf.spend.amount)}</b>${inf.spend.perPaidLead ? ` · per paid lead <b>${money(inf.spend.perPaidLead)}</b>` : ""}${inf.spend.perCard ? ` · per new card <b>${money(inf.spend.perCard)}</b>` : ""} <span class="faint">(${esc(inf.spend.campaigns.join(", "))})</span>`
     : `<span class="faint">No ad spend on this funnel in the period.</span>`;
+  const P = w.prev || {};
   const kpis = [
-    ["New cards", inf.newCards, newDelta == null ? "" : `${newDelta > 0 ? "+" : ""}${newDelta}% vs before`],
-    ["Sent by the autopilot", w.autopilot, ""],
-    ["Approved in the Copilot", w.approvedInCopilot, ""],
-    ["Typed on the phone", w.typedOnPhone, ""],
-    ["Bot's share of messages", w.botShare == null ? "—" : `${w.botShare}%`, `~${w.hoursSaved} h saved`],
+    ["New cards", inf.newCards, `${delta(inf.newCards, inf.prevNewCards)} <span class="faint">was ${inf.prevNewCards}</span>`],
+    ["Sent by the autopilot", w.autopilot, `${delta(w.autopilot, P.autopilot)} <span class="faint">was ${dash(P.autopilot)}</span>`],
+    ["Approved in the Copilot", w.approvedInCopilot, `${delta(w.approvedInCopilot, P.approvedInCopilot)} <span class="faint">was ${dash(P.approvedInCopilot)}</span>`],
+    ["Typed on the phone", w.typedOnPhone, `${delta(w.typedOnPhone, P.typedOnPhone)} <span class="faint">was ${dash(P.typedOnPhone)}</span>`],
+    ["Bot's share of messages", w.botShare == null ? "—" : `${w.botShare}%`, `${delta(w.botShare, P.botShare, false, " pp")} <span class="faint">~${w.hoursSaved} h saved</span>`],
     ["In the queue now", w.queue.live + w.queue.push, `${w.queue.live} live · ${w.queue.push} push`],
   ];
   const stageRows = w.stages
     .map((s) => {
       const [wl, wc] = WORKED_BY[s.workedBy] || [s.workedBy, ""];
-      return `<tr><td>${esc(s.name)}</td><td><span class="an-tag ${wc}">${esc(wl)}</span></td><td class="r">${s.reached || "—"}${delta(s.reached, s.reachedPrev)}</td><td class="r">${s.conv == null ? "—" : s.conv + "%"}${s.conv != null && s.convPrev != null && s.conv !== s.convPrev ? `<span class="an-d ${s.conv > s.convPrev ? "up" : "down"}" title="${s.convPrev}% the period before">${s.conv > s.convPrev ? "▲" : "▼"} ${Math.abs(s.conv - s.convPrev)} pp</span>` : ""}</td><td class="r">${s.sent || "—"}${s.sentByAutopilot ? ` <span class="faint">(${s.sentByAutopilot} bot)</span>` : ""}</td><td class="r">${s.now || "—"}</td><td class="r ${s.stuck ? "bad" : ""}">${s.stuck || "—"}</td></tr>`;
+      return `<tr><td>${esc(s.name)}</td><td><span class="an-tag ${wc}">${esc(wl)}</span></td><td class="r">${s.reached || "—"}${delta(s.reached, s.reachedPrev)}</td><td class="r">${s.conv == null ? "—" : s.conv + "%"}${s.conv != null && s.convPrev != null && s.conv !== s.convPrev ? `<span class="an-d ${s.conv > s.convPrev ? "up" : "down"}" title="${s.convPrev}% the period before">${s.conv > s.convPrev ? "▲" : "▼"} ${Math.abs(s.conv - s.convPrev)} pp</span>` : ""}</td><td class="r">${s.sent || "—"}${s.sentByAutopilot ? ` <span class="faint">(${s.sentByAutopilot} bot)</span>` : ""}${delta(s.sent, s.sentPrev)}</td><td class="r">${s.now || "—"}</td><td class="r ${s.stuck ? "bad" : ""}">${s.stuck || "—"}</td></tr>`;
     })
     .join("");
   const rep = d.work.stages && d.funnel === "rental-listings" ? "Inspection reports" : d.funnel === "rental" ? "Viewing reports" : null;
   const bRows = d.brokers
     .map(
-      (b) => `<tr class="${b.name === "Team" ? "tm" : ""}"><td>${esc(b.name)}</td><td class="r">${b.sentByPerson || "—"}</td><td class="r">${b.autopilotSent || "—"}</td><td class="r">${mins(b.replyMin)}</td><td class="r">${mins(b.approveMin)}</td><td class="r">${b.draftsDecided ? `${dash(b.asWrittenPct)}% <span class="faint">of ${b.draftsDecided}</span>` : "—"}</td><td class="r ${b.overdueTasks ? "bad" : ""}">${b.overdueTasks || "—"}</td>${
-        rep ? `<td class="r">${b.reports.planned ? `${b.reports.filed}/${b.reports.planned}${b.reports.late ? ` <span class="faint">${b.reports.late} late</span>` : ""}` : "—"}</td><td class="r ${b.reports.missing ? "bad" : ""}">${b.reports.missing || "—"}</td>` : ""
+      (b) => `<tr class="${b.name === "Team" ? "tm" : ""}"><td>${esc(b.name)}</td><td class="r">${b.sentByPerson || "—"}${delta(b.sentByPerson, b.prev?.sentByPerson)}</td><td class="r">${b.autopilotSent || "—"}${delta(b.autopilotSent, b.prev?.autopilotSent)}</td><td class="r">${mins(b.replyMin)}${deltaMin(b.replyMin, b.prev?.replyMin)}</td><td class="r">${mins(b.approveMin)}${deltaMin(b.approveMin, b.prev?.approveMin)}</td><td class="r">${b.draftsDecided ? `${dash(b.asWrittenPct)}% <span class="faint">of ${b.draftsDecided}</span>${delta(b.asWrittenPct, b.prev?.asWrittenPct, false, " pp")}` : "—"}</td><td class="r ${b.overdueTasks ? "bad" : ""}">${b.overdueTasks || "—"}</td>${
+        rep ? `<td class="r">${b.reports.planned ? `${b.reports.filed}/${b.reports.planned}${b.reports.late ? ` <span class="faint">${b.reports.late} late</span>` : ""}` : "—"}${b.prev?.reportsPlanned ? ` <span class="faint" title="the period before">was ${b.prev.reportsFiled}/${b.prev.reportsPlanned}</span>` : ""}</td><td class="r ${b.reports.missing ? "bad" : ""}">${b.reports.missing || "—"}</td>` : ""
       }</tr>`,
     )
     .join("");
   return `<section class="panel an-ch"><h2><span class="an-n">2</span>Work done <span class="faint">what happened</span></h2>
-    <div class="an-kpis">${kpis.map(([l, v, s]) => `<div><span class="faint">${esc(l)}</span><b>${v}</b><small class="faint">${s}</small></div>`).join("")}</div>
+    <div class="an-kpis">${kpis.map(([l, v, s]) => `<div><span class="faint">${esc(l)}</span><b>${v}</b><small>${s}</small></div>`).join("")}</div>
     <p class="an-line"><b>Inflow</b> · ${sources}${inf.belowBudget ? ` · closed below budget <b>${inf.belowBudget}</b>` : ""}<br>${spend}</p>
     <h3>Every stage</h3>
     <div class="an-scroll"><table class="grid an-t"><tr><th>Stage</th><th>Worked by</th><th class="r" title="Cards that entered the stage in the period">Reached</th><th class="r" title="Reached here ÷ reached at the previous step">Conv.</th><th class="r" title="Messages sent while the card was at this stage">Sent</th><th class="r">Now</th><th class="r" title="No stage move for 7 days or more">Stuck 7d+</th></tr>${stageRows}</table></div>

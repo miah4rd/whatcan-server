@@ -483,7 +483,13 @@ api.get(
     const u = req.osUser!;
     // A broker sees their own numbers; the owner and managers see anyone and the team.
     const who = isStaff(u) ? (req.query["who"] ? String(req.query["who"]) : undefined) : u.brokerKey || u.name;
-    return funnelReport(String(req.query["funnel"] ?? "rental") as MapFunnel, { period: String(req.query["period"] ?? "week"), date: req.query["date"] ? String(req.query["date"]) : undefined, who });
+    return funnelReport(String(req.query["funnel"] ?? "rental") as MapFunnel, {
+      period: String(req.query["period"] ?? "week"),
+      date: req.query["date"] ? String(req.query["date"]) : undefined,
+      from: req.query["from"] ? String(req.query["from"]) : undefined,
+      to: req.query["to"] ? String(req.query["to"]) : undefined,
+      who,
+    });
   }),
 );
 

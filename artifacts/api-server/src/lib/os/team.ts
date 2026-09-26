@@ -106,6 +106,14 @@ export function periodRange(period: Period, day: string): { from: string; to: st
   const ws = mondayOf(day);
   return { from: ws, to: addDays(ws, 7) };
 }
+/** A picked span of Bali days, `to` inclusive, as [first day, first day after]; null when not a valid pick. */
+export function customRange(from?: string, to?: string): { from: string; to: string } | null {
+  if (!from || !to || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) return null;
+  const end = addDays(to, 1);
+  if ((Date.parse(end) - Date.parse(from)) / 86400_000 > 731) return null;
+  return { from, to: end };
+}
+export const spanDays = (r: { from: string; to: string }) => Math.round((Date.parse(r.to) - Date.parse(r.from)) / 86400_000);
 const addDays = (day: string, n: number) => {
   const d = new Date(`${day}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);
@@ -378,20 +386,23 @@ export async function setFunnelTarget(by: string, input: { funnel: string; metri
 
 // ── The scorecard ────────────────────────────────────────────────────────────
 
-export async function teamScorecard(f: FunnelKey, opts: { period?: string; date?: string } = {}) {
+export async function teamScorecard(f: FunnelKey, opts: { period?: string; date?: string; from?: string; to?: string } = {}) {
   if (!FUNNEL_METRICS[f]) throw new Error("Unknown funnel.");
-  const period: Period = (PERIODS as string[]).includes(String(opts.period)) ? (opts.period as Period) : "week";
+  const custom = customRange(opts.from, opts.to);
+  const period: Period = custom ? "day" : (PERIODS as string[]).includes(String(opts.period)) ? (opts.period as Period) : "week";
   const day = opts.date && /^\d{4}-\d{2}-\d{2}$/.test(opts.date) ? opts.date : baliDate();
-  const range = periodRange(period, day);
-  const prevRange = periodRange(period, addDays(range.from, -1));
+  // Any span of days (the last two weeks, a picked range) is read against the same span before it;
+  // its targets are the weekly ones scaled to its length.
+  const range = custom ?? periodRange(period, day);
+  const prevRange = custom ? { from: addDays(custom.from, -spanDays(custom)), to: custom.from } : periodRange(period, addDays(range.from, -1));
   const ws = range.from;
   const lastDay = addDays(range.to, -1);
   const names = await funnelPeople(f);
   const [cur, prev, targetsRaw, weekly] = await Promise.all([
     periodCounts(f, range.from, range.to, names),
     periodCounts(f, prevRange.from, prevRange.to, names),
-    period === "day" ? Promise.resolve({} as Record<string, Record<string, Target>>) : funnelTargets(f, lastDay, period),
-    period === "week" ? Promise.resolve({} as Record<string, Record<string, Target>>) : funnelTargets(f, lastDay, "week"),
+    period === "day" || custom ? Promise.resolve({} as Record<string, Record<string, Target>>) : funnelTargets(f, lastDay, period),
+    period === "week" && !custom ? Promise.resolve({} as Record<string, Record<string, Target>>) : funnelTargets(f, lastDay, "week"),
   ]);
   await nowHabits(f, cur);
   // A cleared target (value -1) means none. With no target for a longer period,

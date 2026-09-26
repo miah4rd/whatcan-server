@@ -11,7 +11,7 @@ import { pool } from "@workspace/db";
 import { logger } from "../logger";
 import { baliDate, leadsBySource, CHANNEL_LABEL } from "../kpi-dashboard";
 import { stageMap, type FunnelKey } from "./automation-map";
-import { teamScorecard, funnelPeople, periodRange, PERIODS, type Period } from "./team";
+import { teamScorecard, funnelPeople, periodRange, customRange, spanDays, PERIODS, type Period } from "./team";
 import { OBJECTION_CATEGORIES, supplyGaps } from "./analytics";
 import { amoLeadNames } from "./data";
 
@@ -39,8 +39,8 @@ const n = (v: unknown) => Number(v ?? 0) || 0;
 
 // The page takes seconds to count (amoCRM sources, every broker's Copilot list): two minutes of memory.
 const memo = new Map<string, { at: number; value: Promise<unknown> }>();
-export function funnelReport(f: FunnelKey, opts: { period?: string; date?: string; who?: string }) {
-  const k = JSON.stringify([f, opts.period, opts.date, opts.who]);
+export function funnelReport(f: FunnelKey, opts: { period?: string; date?: string; who?: string; from?: string; to?: string }) {
+  const k = JSON.stringify([f, opts.period, opts.date, opts.who, opts.from, opts.to]);
   const hit = memo.get(k);
   if (hit && Date.now() - hit.at < 120_000) return hit.value as ReturnType<typeof buildReport>;
   const value = buildReport(f, opts);
@@ -49,33 +49,52 @@ export function funnelReport(f: FunnelKey, opts: { period?: string; date?: strin
   return value;
 }
 
-async function buildReport(f: FunnelKey, opts: { period?: string; date?: string; who?: string }) {
+async function buildReport(f: FunnelKey, opts: { period?: string; date?: string; who?: string; from?: string; to?: string }) {
   if (!PIPE[f]) throw new Error("Unknown funnel.");
   const period: Period = (PERIODS as string[]).includes(String(opts.period)) ? (opts.period as Period) : "week";
   const day = opts.date && /^\d{4}-\d{2}-\d{2}$/.test(opts.date) ? opts.date : baliDate();
-  const range = periodRange(period, day);
-  const prev = periodRange(period, addDays(range.from, -1));
+  const custom = customRange(opts.from, opts.to);
+  const range = custom ?? periodRange(period, day);
+  const prev = custom ? { from: addDays(custom.from, -spanDays(custom)), to: custom.from } : periodRange(period, addDays(range.from, -1));
   const key = PIPE[f];
   const who = opts.who && opts.who !== "team" ? lc(opts.who) : null;
   const P = [key, at(range.from), at(range.to), who];
   const byWho = `($4::text IS NULL OR lower(l.responsible_user) = $4)`;
+  const PP = [key, at(prev.from), at(prev.to), who];
+  const SQL_SENDS = `SELECT coalesce(st.to_stage, l.lead_stage) AS stage, l.responsible_user AS who, count(*)::int AS n, count(*) FILTER (WHERE coalesce(p.auto_sent,false))::int AS auto
+         FROM sent_messages m JOIN leads_sync l ON l.lead_id = m.lead_id
+         LEFT JOIN pending_suggestions p ON p.id = m.suggestion_id
+         LEFT JOIN LATERAL (SELECT to_stage FROM stage_events e WHERE e.lead_id = m.lead_id AND e.changed_at <= m.created_at ORDER BY changed_at DESC LIMIT 1) st ON true
+        WHERE lower(coalesce(l.pipeline,'')) = $1 AND m.created_at >= $2 AND m.created_at < $3 AND m.webhook_status BETWEEN 200 AND 299 AND ${byWho}
+        GROUP BY 1, 2`;
+  const SQL_TYPED = `SELECT l.responsible_user AS who, count(*)::int AS n FROM wa_messages w JOIN leads_sync l ON l.lead_id = w.card_lead_id::text
+        WHERE w.direction = 'out_phone' AND lower(coalesce(l.pipeline,'')) = $1 AND w.created_at >= $2 AND w.created_at < $3 AND ${byWho} GROUP BY 1`;
+  const SQL_DRAFTS = `SELECT l.responsible_user AS who,
+              count(*) FILTER (WHERE p.status = 'approved' AND NOT coalesce(p.auto_sent,false))::int AS as_written,
+              count(*) FILTER (WHERE p.status = 'edited')::int AS edited,
+              count(*) FILTER (WHERE p.status = 'skipped')::int AS skipped,
+              count(*) FILTER (WHERE coalesce(p.auto_sent,false))::int AS auto
+         FROM pending_suggestions p JOIN leads_sync l ON l.lead_id = p.lead_id
+        WHERE lower(coalesce(l.pipeline,'')) = $1 AND p.created_at >= $2 AND p.created_at < $3 AND ${byWho} GROUP BY 1`;
+  const SQL_APPROVE = `SELECT l.responsible_user AS who, round(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM m.created_at - p.created_at) / 60))::int AS min
+         FROM sent_messages m JOIN pending_suggestions p ON p.id = m.suggestion_id JOIN leads_sync l ON l.lead_id = m.lead_id
+        WHERE NOT coalesce(p.auto_sent,false) AND lower(coalesce(l.pipeline,'')) = $1 AND m.created_at >= $2 AND m.created_at < $3 AND m.created_at > p.created_at AND ${byWho} GROUP BY 1`;
 
   const [score, map, people, reached, reachedPrev, nowIn, sends, typed, queueAll, drafts, approve, cards, prevCards, reports, objections, spendRows] = await Promise.all([
-    teamScorecard(f, { period, date: day }),
+    teamScorecard(f, custom ? { from: opts.from, to: opts.to } : { period, date: day }),
     stageMap(f),
     funnelPeople(f),
-    // Cards that reached each stage in the period, and how many of those moves the bot made.
+    // Every stage move in the period, and in the period before: the funnel is built from them below.
     q(
-      `SELECT e.to_stage AS stage, l.responsible_user AS who, count(DISTINCT e.lead_id)::int AS n, count(DISTINCT e.lead_id) FILTER (WHERE e.responsible_user LIKE 'engine:%')::int AS bot
+      `SELECT e.lead_id, e.to_stage AS stage, l.responsible_user AS who, (e.responsible_user LIKE 'engine:%') AS bot
          FROM stage_events e JOIN leads_sync l ON l.lead_id = e.lead_id
-        WHERE lower(coalesce(e.pipeline,'')) = $1 AND e.changed_at >= $2 AND e.changed_at < $3 AND ${byWho} GROUP BY 1, 2`,
+        WHERE lower(coalesce(e.pipeline,'')) = $1 AND e.changed_at >= $2 AND e.changed_at < $3 AND ${byWho}`,
       P,
     ),
-    // The same for the period before, for the change in conversion.
     q(
-      `SELECT e.to_stage AS stage, count(DISTINCT e.lead_id)::int AS n
+      `SELECT e.lead_id, e.to_stage AS stage, l.responsible_user AS who
          FROM stage_events e JOIN leads_sync l ON l.lead_id = e.lead_id
-        WHERE lower(coalesce(e.pipeline,'')) = $1 AND e.changed_at >= $2 AND e.changed_at < $3 AND ${byWho} GROUP BY 1`,
+        WHERE lower(coalesce(e.pipeline,'')) = $1 AND e.changed_at >= $2 AND e.changed_at < $3 AND ${byWho}`,
       [key, at(prev.from), at(prev.to), who],
     ),
     // Cards in each stage now, per person, and those with no stage move for 7 days.
@@ -91,41 +110,27 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
     ),
     // Messages sent through the Copilot, by the stage the card was in: by the autopilot or approved by a person.
     q(
-      `SELECT coalesce(st.to_stage, l.lead_stage) AS stage, l.responsible_user AS who, count(*)::int AS n, count(*) FILTER (WHERE coalesce(p.auto_sent,false))::int AS auto
-         FROM sent_messages m JOIN leads_sync l ON l.lead_id = m.lead_id
-         LEFT JOIN pending_suggestions p ON p.id = m.suggestion_id
-         LEFT JOIN LATERAL (SELECT to_stage FROM stage_events e WHERE e.lead_id = m.lead_id AND e.changed_at <= m.created_at ORDER BY changed_at DESC LIMIT 1) st ON true
-        WHERE lower(coalesce(l.pipeline,'')) = $1 AND m.created_at >= $2 AND m.created_at < $3 AND m.webhook_status BETWEEN 200 AND 299 AND ${byWho}
-        GROUP BY 1, 2`,
+      SQL_SENDS,
       P,
     ),
     // Messages people typed on the phone themselves (the gateway marks them since the channel move).
     q(
-      `SELECT l.responsible_user AS who, count(*)::int AS n FROM wa_messages w JOIN leads_sync l ON l.lead_id = w.card_lead_id::text
-        WHERE w.direction = 'out_phone' AND lower(coalesce(l.pipeline,'')) = $1 AND w.created_at >= $2 AND w.created_at < $3 AND ${byWho} GROUP BY 1`,
+      SQL_TYPED,
       P,
     ),
     copilotQueue(key),
     // Drafts decided in the period, per person: as written, edited, skipped; the autopilot apart.
     q(
-      `SELECT l.responsible_user AS who,
-              count(*) FILTER (WHERE p.status = 'approved' AND NOT coalesce(p.auto_sent,false))::int AS as_written,
-              count(*) FILTER (WHERE p.status = 'edited')::int AS edited,
-              count(*) FILTER (WHERE p.status = 'skipped')::int AS skipped,
-              count(*) FILTER (WHERE coalesce(p.auto_sent,false))::int AS auto
-         FROM pending_suggestions p JOIN leads_sync l ON l.lead_id = p.lead_id
-        WHERE lower(coalesce(l.pipeline,'')) = $1 AND p.created_at >= $2 AND p.created_at < $3 AND ${byWho} GROUP BY 1`,
+      SQL_DRAFTS,
       P,
     ),
     // How long a draft waits for a person's send, per person (median minutes).
     q(
-      `SELECT l.responsible_user AS who, round(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM m.created_at - p.created_at) / 60))::int AS min
-         FROM sent_messages m JOIN pending_suggestions p ON p.id = m.suggestion_id JOIN leads_sync l ON l.lead_id = m.lead_id
-        WHERE NOT coalesce(p.auto_sent,false) AND lower(coalesce(l.pipeline,'')) = $1 AND m.created_at >= $2 AND m.created_at < $3 AND m.created_at > p.created_at AND ${byWho} GROUP BY 1`,
+      SQL_APPROVE,
       P,
     ),
     q(`SELECT l.lead_id, l.responsible_user AS who, l.discard_reason FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, P),
-    q(`SELECT count(*)::int AS n FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, [key, at(prev.from), at(prev.to), who]),
+    q(`SELECT l.lead_id, l.responsible_user AS who FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, [key, at(prev.from), at(prev.to), who]),
     reportRows(f, range, who),
     q(
       `SELECT o.source, o.category, count(DISTINCT o.lead_id)::int AS clients, (array_agg(o.quote ORDER BY o.said_at DESC))[1:2] AS quotes
@@ -136,6 +141,9 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
     ),
     q(`SELECT campaign_name, currency, sum(spend)::float8 AS spend, sum(meta_leads)::int AS meta_leads FROM kpi_ad_spend WHERE day >= $1 AND day < $2 GROUP BY 1, 2`, [range.from, range.to]),
   ]);
+
+  // The same work in the period before, for every number's change (owner, 26.09).
+  const [sendsPrev, typedPrev, draftsPrev, approvePrev, reportsPrev] = await Promise.all([q(SQL_SENDS, PP), q(SQL_TYPED, PP), q(SQL_DRAFTS, PP), q(SQL_APPROVE, PP), reportRows(f, prev, who)]);
 
   // The queue and who waits on us come from the Copilot's own list: what the brokers see.
   const queue = who ? queueAll.filter((x) => lc(x.who) === who) : queueAll;
@@ -151,32 +159,63 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   // path: no conversion is read into them. Entries in a period are not a cohort, so a ratio over 100%
   // or on fewer than 3 cards says nothing and is not shown.
   const SIDE = /closed|lost|won|успешно|закрыто|co-?broke|long term|backlog|weekly check|update availability/i;
+  // The funnel (owner, 26.09: every stage filled): a card counts at a main-path stage when, in the
+  // period, it entered that stage or any later one; a card created in the period counts at the entry
+  // stage (New LEAD / Initial Contact) and every stage before its furthest one. Side stages count
+  // the cards that entered them. So the numbers only fall along the path and a conversion is ≤ 100%.
+  const main = map.stages.filter((st) => !SIDE.test(st.name)).map((st) => lc(st.name));
+  const entryIdx = Math.max(0, main.findIndex((x) => /new lead|initial contact/.test(x)));
+  const furthest = (events: Record<string, unknown>[], created: Record<string, unknown>[]) => {
+    const by = new Map<string, { idx: number; who: string; side: Set<string> }>();
+    const get = (id: string, w: unknown) => by.get(id) ?? by.set(id, { idx: -1, who: String(w ?? ""), side: new Set() }).get(id)!;
+    for (const c of created) get(String(c.lead_id), c.who).idx = Math.max(get(String(c.lead_id), c.who).idx, entryIdx);
+    for (const e of events) {
+      const x = get(String(e.lead_id), e.who);
+      const k = main.indexOf(lc(e.stage));
+      if (k >= 0) x.idx = Math.max(x.idx, k);
+      else x.side.add(lc(e.stage));
+    }
+    return by;
+  };
+  const cur = furthest(reached, cards);
+  const bef = furthest(reachedPrev, prevCards);
+  const reachOf = (by: Map<string, { idx: number; who: string; side: Set<string> }>, stage: string, person?: string) => {
+    const k = main.indexOf(lc(stage));
+    let t = 0;
+    for (const v of by.values()) {
+      if (person && lc(v.who) !== lc(person)) continue;
+      if (k >= 0 ? v.idx >= k : v.side.has(lc(stage))) t++;
+    }
+    return t;
+  };
+  const botMoves = (stage: string) => new Set(reached.filter((e) => lc(e.stage) === lc(stage) && e.bot).map((e) => String(e.lead_id))).size;
   let prevReached: number | null = null;
   let prevReachedBefore: number | null = null;
   const stages = map.stages.map((s) => {
-    const r = sum(reached, "n", s.name);
+    const r = reachOf(cur, s.name);
     const ratio = !SIDE.test(s.name) && prevReached != null && prevReached >= 3 ? Math.round((r / prevReached) * 100) : null;
-    const conv = ratio != null && ratio <= 100 ? ratio : null;
-    if (!SIDE.test(s.name) && r > 0) prevReached = r;
+    const conv = ratio;
+    if (!SIDE.test(s.name)) prevReached = r;
     // The same step's conversion in the period before.
-    const rb = sum(reachedPrev, "n", s.name);
+    const rb = reachOf(bef, s.name);
     const ratioB = !SIDE.test(s.name) && prevReachedBefore != null && prevReachedBefore >= 3 ? Math.round((rb / prevReachedBefore) * 100) : null;
-    const convPrev = ratioB != null && ratioB <= 100 ? ratioB : null;
-    if (!SIDE.test(s.name) && rb > 0) prevReachedBefore = rb;
+    const convPrev = ratioB;
+    if (!SIDE.test(s.name)) prevReachedBefore = rb;
     // Who works the stage now: a person only, a rule in code, the autopilot, or people through the Copilot.
     const workedBy = s.owner === "person" ? "person" : s.owner === "rule" ? "rule" : s.owner === "copilot" ? (s.autopilot === "autopilot" ? "autopilot" : "copilot") : "workflow";
     return {
       name: s.name,
       workedBy,
       reached: r,
-      movedByBot: sum(reached, "bot", s.name),
+      movedByBot: botMoves(s.name),
       // The same stage, card holder by card holder (the funnel by person).
-      byPerson: Object.fromEntries(names.map((p) => [p, reached.filter((r) => lc(r.stage) === lc(s.name) && lc(r.who) === lc(p)).reduce((t, r) => t + n(r.n), 0)])),
+      byPerson: Object.fromEntries(names.map((p) => [p, reachOf(cur, s.name, p)])),
       conv,
       convPrev,
       reachedPrev: rb,
       sent: sum(sends, "n", s.name),
       sentByAutopilot: sum(sends, "auto", s.name),
+      sentPrev: sum(sendsPrev, "n", s.name),
       now: sum(nowIn, "n", s.name),
       stuck: sum(nowIn, "stuck", s.name),
     };
@@ -192,7 +231,12 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   const copilotSent = sends.reduce((s, r) => s + n(r.n) - n(r.auto), 0);
   const phoneTyped = typed.reduce((s, r) => s + n(r.n), 0);
   const allSent = autoSent + copilotSent + phoneTyped;
+  const autoPrev = sendsPrev.reduce((t, r) => t + n(r.auto), 0);
+  const copilotPrev = sendsPrev.reduce((t, r) => t + n(r.n) - n(r.auto), 0);
+  const phonePrev = typedPrev.reduce((t, r) => t + n(r.n), 0);
+  const allPrev = autoPrev + copilotPrev + phonePrev;
   const work = {
+    prev: { autopilot: autoPrev, approvedInCopilot: copilotPrev, typedOnPhone: phonePrev, botShare: allPrev ? Math.round((autoPrev / allPrev) * 100) : null },
     autopilot: autoSent,
     approvedInCopilot: copilotSent,
     typedOnPhone: phoneTyped,
@@ -221,7 +265,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   const belowBudget = cards.filter((c) => /budget/i.test(String(c.discard_reason ?? ""))).length;
   const inflow = {
     newCards: cards.length,
-    prevNewCards: n(prevCards[0]?.n),
+    prevNewCards: prevCards.length,
     sources,
     belowBudget,
     spend: spendTotal ? { amount: Math.round(spendTotal), currency: String(spend[0]?.currency ?? ""), campaigns: spend.map((r) => String(r.campaign_name)), perPaidLead: paidLeads ? Math.round(spendTotal / paidLeads) : null, perCard: cards.length ? Math.round(spendTotal / cards.length) : null } : null,
@@ -234,7 +278,20 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
     const decided = n(d.as_written) + n(d.edited) + n(d.skipped);
     const sc = score.people.find((x) => lc(x.name) === lc(p));
     const rep = reports.filter((r) => lc(r.who) === lc(p));
+    const dp = row(draftsPrev, p)[0] ?? {};
+    const decidedPrev = n(dp.as_written) + n(dp.edited) + n(dp.skipped);
+    const repPrev = reportsPrev.filter((r) => lc(r.who) === lc(p));
     return {
+      prev: {
+        replyMin: sc?.values["reply_min"]?.prev ?? null,
+        approveMin: row(approvePrev, p)[0]?.min == null ? null : n(row(approvePrev, p)[0].min),
+        draftsDecided: decidedPrev,
+        asWrittenPct: decidedPrev ? Math.round((n(dp.as_written) / decidedPrev) * 100) : null,
+        autopilotSent: n(dp.auto),
+        sentByPerson: sendsPrev.filter((r) => lc(r.who) === lc(p)).reduce((t, r) => t + n(r.n) - n(r.auto), 0) + n(row(typedPrev, p)[0]?.n),
+        reportsFiled: repPrev.filter((r) => r.filedAt).length,
+        reportsPlanned: repPrev.length,
+      },
       name: p,
       replyMin: sc?.values["reply_min"]?.v ?? null,
       approveMin: row(approve, p)[0]?.min == null ? null : n(row(approve, p)[0].min),
@@ -250,7 +307,21 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   });
   // Card holders with no work and no target in the period (an admin account, a manager's login) are not rows.
   const brokers = brokersAll.filter((b) => b.draftsDecided || b.sentByPerson || b.reports.planned || b.unanswered || b.stuck || score.people.some((x) => lc(x.name) === lc(b.name) && Object.keys(x.targets).length));
+  const sumPrev = (k: string) => brokers.reduce((t, b) => t + (Number((b.prev as Record<string, unknown>)[k]) || 0), 0);
   const teamRow = {
+    prev: {
+      replyMin: score.team.values["reply_min"]?.prev ?? null,
+      approveMin: null as number | null,
+      draftsDecided: sumPrev("draftsDecided"),
+      asWrittenPct: (() => {
+        const all = draftsPrev.reduce((t, d) => t + n(d.as_written) + n(d.edited) + n(d.skipped), 0);
+        return all ? Math.round((draftsPrev.reduce((t, d) => t + n(d.as_written), 0) / all) * 100) : null;
+      })(),
+      autopilotSent: sumPrev("autopilotSent"),
+      sentByPerson: copilotPrev + phonePrev,
+      reportsFiled: reportsPrev.filter((r) => r.filedAt).length,
+      reportsPlanned: reportsPrev.length,
+    },
     name: "Team",
     replyMin: score.team.values["reply_min"]?.v ?? null,
     approveMin: null as number | null,
@@ -295,7 +366,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   const unBy = new Map<string, number>();
   for (const u of unanswered) unBy.set(String(u.who ?? "nobody"), (unBy.get(String(u.who ?? "nobody")) ?? 0) + 1);
   for (const [p, k] of unBy) flags.push({ level: k >= 5 ? "red" : "amber", who: p, text: `${k} client${k === 1 ? "" : "s"} waiting over 4 hours for ${p}` });
-  if (period !== "day") {
+  if (period !== "day" && !custom) {
     const elapsed = Math.min(1, Math.max(0, (Date.now() - Date.parse(at(range.from))) / (Date.parse(at(range.to)) - Date.parse(at(range.from)))));
     for (const p of score.people) {
       for (const m of score.metrics.filter((x) => x.target)) {
@@ -309,7 +380,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
 
   return {
     funnel: f,
-    period,
+    period: custom ? "custom" : period,
     from: range.from,
     to: range.to,
     who: who ?? "team",
