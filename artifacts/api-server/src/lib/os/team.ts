@@ -87,8 +87,10 @@ const GATES: Record<FunnelKey, Array<[string, string, string]>> = {
   ],
 };
 
-export type Period = "week" | "month" | "quarter" | "year";
-export const PERIODS: Period[] = ["week", "month", "quarter", "year"];
+export type Period = "day" | "week" | "month" | "quarter" | "half" | "year";
+export const PERIODS: Period[] = ["day", "week", "month", "quarter", "half", "year"];
+/** Periods a target can be set for (owner, 26.09): a day is read against its week. */
+export const TARGET_PERIODS: Period[] = ["week", "month", "quarter", "half", "year"];
 /** The calendar period holding a day, as [first day, first day after]. */
 export function periodRange(period: Period, day: string): { from: string; to: string } {
   const [y, m] = day.split("-").map(Number);
@@ -99,6 +101,8 @@ export function periodRange(period: Period, day: string): { from: string; to: st
     return { from: iso(y, q), to: iso(y, q + 3) };
   }
   if (period === "year") return { from: iso(y, 1), to: iso(y + 1, 1) };
+  if (period === "half") return m <= 6 ? { from: iso(y, 1), to: iso(y, 7) } : { from: iso(y, 7), to: iso(y + 1, 1) };
+  if (period === "day") return { from: day, to: addDays(day, 1) };
   const ws = mondayOf(day);
   return { from: ws, to: addDays(ws, 7) };
 }
@@ -343,8 +347,8 @@ export async function funnelTargets(f: FunnelKey, day: string, period: Period = 
   return out;
 }
 export async function setFunnelTarget(by: string, input: { funnel: string; metric: string; who: string; value: number | null; floor?: number | null; from: string; period?: string; note?: string }) {
-  const period = (PERIODS as string[]).includes(String(input.period ?? "week")) ? (String(input.period ?? "week") as Period) : null;
-  if (!period) throw new Error("Pick week, month, quarter or year.");
+  const period = (TARGET_PERIODS as string[]).includes(String(input.period ?? "week")) ? (String(input.period ?? "week") as Period) : null;
+  if (!period) throw new Error("Pick week, month, quarter, half or year.");
   const f = input.funnel as FunnelKey;
   if (!FUNNEL_METRICS[f]) throw new Error("Unknown funnel.");
   if (!FUNNEL_METRICS[f].some((m) => m.key === input.metric && m.target)) throw new Error("No target can be set on that number.");
@@ -386,7 +390,7 @@ export async function teamScorecard(f: FunnelKey, opts: { period?: string; date?
   const [cur, prev, targetsRaw, weekly] = await Promise.all([
     periodCounts(f, range.from, range.to, names),
     periodCounts(f, prevRange.from, prevRange.to, names),
-    funnelTargets(f, lastDay, period),
+    period === "day" ? Promise.resolve({} as Record<string, Record<string, Target>>) : funnelTargets(f, lastDay, period),
     period === "week" ? Promise.resolve({} as Record<string, Record<string, Target>>) : funnelTargets(f, lastDay, "week"),
   ]);
   await nowHabits(f, cur);
@@ -394,7 +398,9 @@ export async function teamScorecard(f: FunnelKey, opts: { period?: string; date?
   // the weekly one scaled to its length stands in, marked as implied.
   const days = Math.round((Date.parse(range.to) - Date.parse(range.from)) / 86400_000);
   const targets: Record<string, Record<string, Target & { implied?: boolean }>> = {};
-  for (const [p, ms] of Object.entries(weekly)) for (const [m, t] of Object.entries(ms)) if (t.value > 0) (targets[p] ??= {})[m] = { ...t, value: Math.round((t.value * days) / 7), floor: t.floor == null ? null : Math.round((t.floor * days) / 7), implied: true };
+  // A day keeps one decimal (2 a week is 0.3 a day, not 0).
+  const scale = (v: number) => (days < 7 ? Math.round(((v * days) / 7) * 10) / 10 : Math.round((v * days) / 7));
+  for (const [p, ms] of Object.entries(weekly)) for (const [m, t] of Object.entries(ms)) if (t.value > 0) (targets[p] ??= {})[m] = { ...t, value: scale(t.value), floor: t.floor == null ? null : scale(t.floor), implied: true };
   for (const [p, ms] of Object.entries(targetsRaw)) for (const [m, t] of Object.entries(ms)) {
     if (t.value >= 0) (targets[p] ??= {})[m] = t;
     else if (targets[p]) delete targets[p][m];

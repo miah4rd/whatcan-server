@@ -122,6 +122,7 @@ import {
   updateCard,
   osFunnelsBrief,
 } from "../lib/os/funnels";
+import { funnelReport } from "../lib/os/funnel-report";
 import { listPlaybooks, readPlaybook, playbookVersion, propose, listProposals, decide, lessons } from "../lib/os/playbooks";
 import { logger } from "../lib/logger";
 import { REACH_STAGE_KEYWORDS } from "../lib/pipelines";
@@ -474,6 +475,18 @@ api.patch("/cards/:id", signedIn, h(async (req) => updateCard(req.osUser!, idp(r
 api.get("/automations", signedIn, h(async (req) => automations(isStaff(req.osUser))));
 // A funnel as the automation sees it: who moves cards into each stage, the autopilot line, readiness.
 api.get("/automations/map", signedIn, h(async (req) => stageMap(String(req.query["funnel"] ?? "rental") as MapFunnel)));
+// One funnel's analytics page: today's flags, targets, work done at every stage, bottlenecks.
+api.get(
+  "/analytics/funnel-report",
+  signedIn,
+  h(async (req) => {
+    const u = req.osUser!;
+    // A broker sees their own numbers; the owner and managers see anyone and the team.
+    const who = isStaff(u) ? (req.query["who"] ? String(req.query["who"]) : undefined) : u.brokerKey || u.name;
+    return funnelReport(String(req.query["funnel"] ?? "rental") as MapFunnel, { period: String(req.query["period"] ?? "week"), date: req.query["date"] ? String(req.query["date"]) : undefined, who });
+  }),
+);
+
 // ── Playbooks: the funnels' regulations (skills/*.md, the one source), proposals, lessons ──
 api.get("/playbooks", signedIn, h(async () => listPlaybooks()));
 api.get("/playbooks/lessons", signedIn, h(async () => lessons()));
