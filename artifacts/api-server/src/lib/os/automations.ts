@@ -189,36 +189,3 @@ export async function automations(staff: boolean) {
   return { rules: out };
 }
 
-export async function setAutomation(user: OsUser, id: string, body: Record<string, unknown>) {
-  const r = RULES.find((x) => x.id === id);
-  if (!r?.switch) throw new Error("This rule has no switch.");
-  if (r.switch.kind === "autopilot") {
-    const mode = String(body["mode"] ?? "off") as AutopilotMode;
-    if (!["off", "dry", "on"].includes(mode)) throw new Error("mode: off, dry or on");
-    let upTo: string | null = null;
-    if (mode !== "off") {
-      const st = await getPipelineStages(r.switch.pipeline);
-      // The autopilot measures its line against every stage (lib/autopilot.ts uses stages.all),
-      // including rule-owned ones like QUALIFIED that the classifier never chooses.
-      const found = (st?.all ?? []).find((s) => s.name.trim().toLowerCase() === String(body["upToStageName"] ?? "").trim().toLowerCase());
-      if (!found || /closed|won|lost/i.test(found.name)) throw new Error("Pick the stage the bot stops before.");
-      upTo = found.name;
-    }
-    const current = await getAutopilotSetting(r.switch.pipeline);
-    const dailyCap = Math.min(100, Math.max(1, Number(body["dailyCap"] ?? current.dailyCap) || 30));
-    await setAutopilotSetting({ pipeline: r.switch.pipeline, mode, upToStageName: upTo, dailyCap });
-  } else if (r.switch.kind === "budget") {
-    const enabled = Boolean(body["enabled"]);
-    const min = Math.max(0, Math.round(Number(body["minMonthlyIdr"] ?? 0)));
-    await setBudgetFilter({ pipeline: r.switch.pipeline, enabled, minMonthlyIdr: min });
-  } else {
-    const v = String(body["value"] ?? "");
-    if (!r.switch.values.includes(v)) throw new Error(`value: ${r.switch.values.join(", ")}`);
-    await pool.query(
-      `INSERT INTO broker_settings (key, value, updated_at) VALUES ($1, $2, now()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
-      [r.switch.key, v],
-    );
-  }
-  await audit(user, "automation.set", id, body);
-  return automations(true);
-}

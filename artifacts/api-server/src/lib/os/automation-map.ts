@@ -15,37 +15,14 @@
  * the time it saved.
  */
 import { pool } from "@workspace/db";
-import { getPipelineStages, clearStageMapCache } from "../stage-classifier";
+import { getPipelineStages } from "../stage-classifier";
 import { getAutopilotSetting } from "../autopilot";
 import { isListingAcquisition } from "../pipelines";
-import { audit, type OsUser } from "./auth";
+
 
 export type FunnelKey = "rental" | "rental-listings" | "unicorn";
 const PIPE: Record<FunnelKey, string> = { rental: "rental", "rental-listings": "rental listings", unicorn: "unicorn" };
 export const AUTOPILOT_RULE_ID: Record<FunnelKey, string> = { rental: "autopilot-rental", "rental-listings": "autopilot-listings", unicorn: "autopilot-sales" };
-
-let ready: Promise<void> | null = null;
-function ensureTable() {
-  if (!ready) {
-    ready = pool
-      .query(
-        `CREATE TABLE IF NOT EXISTS os_stage_rules (
-           pipeline text NOT NULL,
-           stage text NOT NULL,
-           meaning text,
-           updated_by text,
-           updated_at timestamptz NOT NULL DEFAULT now(),
-           PRIMARY KEY (pipeline, stage)
-         )`,
-      )
-      .then(() => undefined)
-      .catch((err) => {
-        ready = null;
-        throw err;
-      });
-  }
-  return ready;
-}
 
 /** Stages set only by people, in every funnel. */
 const PERSON_ONLY = /contract signed|check[-\s]?in|inventory|closed|won|lost|успешно|закрыто|inspection\.?\s*done|rented/i;
@@ -87,12 +64,10 @@ type StageRow = {
 
 export async function stageMap(f: FunnelKey) {
   if (!PIPE[f]) throw new Error("Unknown funnel.");
-  await ensureTable();
   const key = PIPE[f];
-  const [stages, ap, rulesDb, now, moves, drafts] = await Promise.all([
+  const [stages, ap, now, moves, drafts] = await Promise.all([
     getPipelineStages(key),
     getAutopilotSetting(key),
-    pool.query(`SELECT stage, meaning, updated_by, updated_at FROM os_stage_rules WHERE pipeline = $1`, [key]),
     pool.query(`SELECT lead_stage AS stage, count(*)::int AS n FROM leads_sync WHERE lower(coalesce(pipeline,'')) = $1 GROUP BY 1`, [key]),
     pool.query(
       `SELECT to_stage AS stage, count(*) FILTER (WHERE responsible_user LIKE 'engine:%')::int AS bot, count(*) FILTER (WHERE coalesce(responsible_user,'') NOT LIKE 'engine:%')::int AS people
@@ -121,13 +96,11 @@ export async function stageMap(f: FunnelKey) {
   const nowBy = byName(now.rows);
   const movesBy = byName(moves.rows);
   const draftsBy = byName(drafts.rows);
-  const dbBy = byName(rulesDb.rows);
   const selectable = new Map(stages.selectable.map((s) => [lc(s.name), s]));
   const limitIdx = ap.upToStageName ? stages.all.findIndex((s) => lc(s.name) === lc(ap.upToStageName)) : -1;
 
   const rows: StageRow[] = stages.all.map((s, i) => {
     const sel = selectable.get(lc(s.name)) as { meaning?: string } | undefined;
-    const db = dbBy.get(lc(s.name)) as { meaning?: string; updated_by?: string; updated_at?: string } | undefined;
     const rule = RULES[f].find(([re]) => re.test(s.name))?.[1] ?? null;
     let owner: StageRow["owner"];
     let how: string;
@@ -154,8 +127,10 @@ export async function stageMap(f: FunnelKey) {
       howItGetsHere: how,
       // Rule notes ride along on Copilot stages that also have a floor rule (Rental).
       builtIn: owner === "copilot" && rule ? rule : null,
-      editable: owner === "copilot",
-      edited: db?.meaning ? { by: db.updated_by ?? null, at: db.updated_at ? new Date(db.updated_at).toISOString() : null } : null,
+      // The meaning is the funnel's regulation (skills/): changed only by the owner's approval of a
+      // proposal in Playbooks, never here (owner, 26.09).
+      editable: false,
+      edited: null,
       cardsNow: Number((nowBy.get(lc(s.name)) as { n?: number } | undefined)?.n ?? 0),
       movesIn7d: { bot: m?.bot ?? 0, people: m?.people ?? 0 },
       drafts30d: { total: d?.total ?? 0, auto: d?.auto ?? 0, asWritten: d?.as_written ?? 0, edited: d?.edited ?? 0, skipped: d?.skipped ?? 0, readiness: decided >= 5 ? Math.round(((d!.as_written) / decided) * 100) : null },
@@ -166,29 +141,6 @@ export async function stageMap(f: FunnelKey) {
 }
 
 /** Rewrite (or reset, with an empty text) what the Copilot reads about a stage. */
-export async function setStageRule(user: OsUser, f: FunnelKey, stage: string, meaning: string | null) {
-  if (!PIPE[f]) throw new Error("Unknown funnel.");
-  await ensureTable();
-  const key = PIPE[f];
-  const stages = await getPipelineStages(key);
-  const sel = stages?.selectable.find((s) => s.name.trim().toLowerCase() === stage.trim().toLowerCase());
-  if (!sel) throw new Error("The Copilot does not choose this stage from the conversation, so there is no description of it to change.");
-  const text = (meaning ?? "").trim();
-  if (text && (text.length < 20 || text.length > 1200)) throw new Error("Describe the stage in 20 to 1200 characters.");
-  if (text) {
-    await pool.query(
-      `INSERT INTO os_stage_rules (pipeline, stage, meaning, updated_by, updated_at) VALUES ($1, $2, $3, $4, now())
-       ON CONFLICT (pipeline, stage) DO UPDATE SET meaning = EXCLUDED.meaning, updated_by = EXCLUDED.updated_by, updated_at = now()`,
-      [key, sel.name, text, user.login],
-    );
-  } else {
-    await pool.query(`DELETE FROM os_stage_rules WHERE pipeline = $1 AND stage = $2`, [key, sel.name]);
-  }
-  clearStageMapCache();
-  await audit(user, "stage-rule.set", `${key}|${sel.name}`, { meaning: text || null });
-  return stageMap(f);
-}
-
 // ── Work share: the bot and the people ──────────────────────────────────────
 
 export async function workShare(opts: { days: number; funnel?: FunnelKey | null }) {

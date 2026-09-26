@@ -6,6 +6,7 @@ import "./listings.js";
 import "./calendar.js";
 import "./analytics.js";
 import "./funnels.js";
+import "./playbooks.js";
 import "./settings.js";
 import { searchProjects, warmProjects } from "./projects.js";
 
@@ -81,6 +82,7 @@ function navItems() {
     { id: "analytics", label: "Analytics", icon: I.chart },
     { sec: "System" },
     { id: "funnels", label: "Funnels", icon: I.auto },
+    { id: "playbooks", label: "Playbooks", icon: I.book },
     { id: "settings", label: "Settings", icon: I.gear },
   ];
   return items.filter((x) => !x.staffOnly || staff);
@@ -192,7 +194,7 @@ function renderNav() {
       ["more", "More", I.gear],
     ];
     mn.innerHTML = tabs
-      .map(([id, l, ic, c]) => `<button data-go="${id}" class="${cur === id || (id === "more" && ["projects", "analytics", "funnels", "settings", "more"].includes(cur)) ? "active" : ""}">${ic}<span>${l}</span>${c ? `<span class="cnt">${c}</span>` : ""}</button>`)
+      .map(([id, l, ic, c]) => `<button data-go="${id}" class="${cur === id || (id === "more" && ["projects", "analytics", "funnels", "playbooks", "settings", "more"].includes(cur)) ? "active" : ""}">${ic}<span>${l}</span>${c ? `<span class="cnt">${c}</span>` : ""}</button>`)
       .join("");
   }
 }
@@ -485,6 +487,7 @@ screens.more = {
       ["pipeline/rental-listings", "Rental Listings", I.board],
       ...(isStaff() ? [["pipeline/unicorn", "UNICORN sales", I.board]] : []),
       ["funnels", "Funnels", I.auto],
+      ["playbooks", "Playbooks", I.book],
       ["settings", "Settings", I.gear],
     ]
       .map(([id, l, ic]) => `<a class="btn" style="justify-content:flex-start;padding:12px" href="#/${id}">${ic} ${l}</a>`)

@@ -158,6 +158,7 @@ export const I = {
   timeline: svg('<path d="M2 4h6M5 8h7M3.5 12h8"/>', 2),
   trash: svg('<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/>'),
   check: svg('<path d="M3.5 8.5l3 3 6-7"/>', 2),
+  book: svg('<path d="M3 3.5h4a1.5 1.5 0 011.5 1.5v8A1.5 1.5 0 007 11.5H3zM13 3.5H9.5A1.5 1.5 0 008 5v8a1.5 1.5 0 011.5-1.5H13z"/>'),
   wa: '<svg class="ic" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5A6.5 6.5 0 0 0 2.4 11.3L1.5 14.5l3.3-.9A6.5 6.5 0 1 0 8 1.5zm0 1.3a5.2 5.2 0 1 1-2.7 9.6l-.3-.2-1.9.5.5-1.8-.2-.3A5.2 5.2 0 0 1 8 2.8z"/></svg>',
 };
 

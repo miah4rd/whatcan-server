@@ -4,6 +4,7 @@
 // Owner, 26.09: changes to stages live in the OS only. A funnel from amoCRM keeps amoCRM's stages
 // on its board; stage changes here are the plan for the move. Its bot rules act at once, as before.
 import { S, api, esc, I, screens, peeks, on, toast, fail, isStaff, money, dialog, confirmBox, store, rel, fmtDT, emit, onBus, initials, dropColumn, boardListen } from "./core.js";
+import { proposeChange, PLAYBOOK_OF } from "./playbooks.js";
 
 // Tabs for the funnels that come from amoCRM, and the group their other automations sit in.
 const AMO = {
@@ -27,20 +28,16 @@ const CHANGE = {
   gone: ["gone", "no longer in amoCRM"],
 };
 
+// The bot's switches are shown as they stand; a change is a proposal to the owner (Playbooks, 26.09).
 function switchHtml(r) {
   if (!r.switch) return `<span class="owner ${r.owner}" style="margin-left:auto">${r.owner === "code" ? "runs by rule" : r.owner === "site" ? "site switch" : "person decides"}</span>`;
-  const dis = r.editable ? "" : "disabled";
-  if (r.switch.kind === "budget") {
-    const v = r.value || {};
-    return `<div class="toggle">${["on", "off"].map((x) => `<button ${dis} class="${(v.enabled ? "on" : "off") === x ? x : ""}" data-budget="${r.id}" data-on="${x}">${x}</button>`).join("")}</div>`;
-  }
-  const v = String(r.value ?? "");
-  return `<div class="toggle">${(r.options || []).map((x) => `<button ${dis} class="${v === x ? x : ""}" data-set="${r.id}" data-v="${esc(x)}">${esc(x)}</button>`).join("")}</div>`;
+  const v = r.switch.kind === "budget" ? (r.value?.enabled ? "on" : "off") : String(r.value ?? "");
+  return `<span class="row" style="gap:6px;margin-left:auto"><span class="pill">${esc(v || "—")}</span><button class="btn sm ghost" data-propose-rule="${esc(r.id)}">Propose change</button></span>`;
 }
 function ruleCard(x) {
   return `<div class="rule"><div class="rh"><b>${esc(x.name)}</b>${switchHtml(x)}</div>
     <div class="rd"><b>When</b> ${esc(x.when)}<br><b>Then</b> ${esc(x.does)}<br><b>Who hears</b> ${esc(x.notifies)}</div>
-    ${x.switch?.kind === "budget" ? `<div class="faint" style="font-size:11.5px">Threshold: ${money(x.value?.minMonthlyIdr)} / month${x.editable ? ` · <a href="#" data-budget-edit="${x.id}">change</a>` : ""}</div>` : ""}</div>`;
+    ${x.switch?.kind === "budget" ? `<div class="faint" style="font-size:11.5px">Threshold: ${money(x.value?.minMonthlyIdr)} / month</div>` : ""}</div>`;
 }
 function readinessHtml(d) {
   const decided = d.asWritten + d.edited + d.skipped;
@@ -108,7 +105,7 @@ screens.funnels = {
     if (tab === "general") drawGeneral(el, all, staff);
     else if (f.source === "amo") drawAmo(el, f, map, all, staff, redraw);
     else drawOs(el, f, staff, redraw);
-    bindSwitches(el, all, redraw);
+    bindSwitches(el, all, tab);
     if (wantNew && staff) openNew();
   },
 };
@@ -117,36 +114,14 @@ screens.automations = { title: "Funnels", render: ({ route }) => location.replac
 
 function drawGeneral(el, all, staff) {
   const others = all.rules.filter((x) => GENERAL_GROUPS.includes(x.group) && x.switch?.kind !== "autopilot");
-  el.innerHTML = `<div class="page"><h1 class="pt">General</h1><p class="pd">Rules that belong to no single funnel. The switches are the live ones the Copilot reads${staff ? "" : " (only the owner and managers can change them)"}.</p><div class="auto-grid">${others.map(ruleCard).join("")}</div></div>`;
+  el.innerHTML = `<div class="page"><h1 class="pt">General</h1><p class="pd">Rules that belong to no single funnel. The switches are the live ones the Copilot reads, shown as they stand; a change is a proposal the owner approves in Playbooks.</p><div class="auto-grid">${others.map(ruleCard).join("")}</div></div>`;
 }
 
-/** A change to a live switch reaches amoCRM's Copilot too: said in words, then confirmed. */
-async function live(title, fn, msg, redraw) {
-  if (!(await confirmBox("Change a live switch?", `${title}: this changes how the Copilot works right now, for amoCRM too, not only in Unicorn OS.`, "Change it"))) return;
-  try {
-    await fn();
-    toast(msg);
-    redraw();
-  } catch (e) {
-    fail(e);
-  }
-}
-
-function bindSwitches(el, all, redraw) {
-  on(el, "click", "[data-set]", (e, b) => live(b.dataset.set, () => api(`/automations/${b.dataset.set}`, { body: { value: b.dataset.v } }), `Set to ${b.dataset.v}`, redraw));
-  on(el, "click", "[data-budget]", (e, b) => {
-    const x = all.rules.find((y) => y.id === b.dataset.budget);
-    live(x.name, () => api(`/automations/${x.id}`, { body: { enabled: b.dataset.on === "on", minMonthlyIdr: x.value?.minMonthlyIdr || 30000000 } }), `Budget gate ${b.dataset.on}`, redraw);
-  });
-  on(el, "click", "[data-budget-edit]", async (e, a) => {
-    e.preventDefault();
-    const x = all.rules.find((y) => y.id === a.dataset.budgetEdit);
-    const res = await dialog({
-      title: "Budget gate threshold",
-      body: `<label class="fld"><span>Close Rental leads below (IDR per month)</span><input class="in" type="number" name="min" value="${x.value?.minMonthlyIdr || 30000000}" step="1000000"></label>`,
-      actions: [{ label: "Cancel", value: null }, { label: "Save", value: "ok", primary: true }],
-    });
-    if (res) live(x.name, () => api(`/automations/${x.id}`, { body: { enabled: !!x.value?.enabled, minMonthlyIdr: Number(res.values.min) } }), "Threshold saved", redraw);
+function bindSwitches(el, all, tab) {
+  on(el, "click", "[data-propose-rule]", (e, b) => {
+    const x = all.rules.find((y) => y.id === b.dataset.proposeRule);
+    const now = x.switch?.kind === "budget" ? `${x.value?.enabled ? "on" : "off"}, threshold ${money(x.value?.minMonthlyIdr)} / month` : String(x.value ?? "");
+    proposeChange({ file: PLAYBOOK_OF[tab] || "general.md", section: x.name, current: `${x.name}: ${now}. When: ${x.when}. Then: ${x.does}.` });
   });
 }
 
@@ -233,19 +208,17 @@ function drawAmo(el, f, map, all, staff, redraw) {
           ? ""
           : r.removed
             ? `<button class="btn sm" data-restore="${rowKey(r)}">Restore</button>`
-            : `${(s && s.editable) || r.change === "new" ? `<button class="btn sm" data-edit-rule="${rowKey(r)}">Edit what moves it</button>` : ""}${
-                s && s.owner !== "person" && i > 0 ? `<button class="btn sm ghost" data-line="${esc(s.name)}" title="The autopilot sends on its own in every stage above this one">Autopilot up to here</button>` : ""
-              }<span class="row" style="gap:4px"><button class="btn sm ghost" data-rename="${rowKey(r)}">Rename</button><button class="btn sm ghost" data-remove="${rowKey(r)}">Remove</button></span>`
+            : `${r.change === "new" ? `<button class="btn sm" data-edit-rule="${rowKey(r)}">Edit what moves it</button>` : s ? `<button class="btn sm" data-edit-rule="${rowKey(r)}" title="The stage's rule is the funnel's regulation: the owner approves a change">Propose change</button>` : ""}<span class="row" style="gap:4px"><button class="btn sm ghost" data-rename="${rowKey(r)}">Rename</button><button class="btn sm ghost" data-remove="${rowKey(r)}">Remove</button></span>`
       }</div></div>`;
   };
 
   el.innerHTML = `<div class="page"><div class="fn-head"><h1 class="pt">${esc(AMO[f.key][0])}</h1><span class="pill" title="Cards and stages come from amoCRM until the agency moves">from amoCRM</span><span class="spacer"></span><a class="btn sm ghost" href="#/pipeline/${esc(f.key)}">${I.board} Open the board</a></div>
-    <p class="pd">Each stage: what moves a card into it and who owns that move, and how ready it is for the autopilot. The rules for the bot act at once, in amoCRM too. Adding, renaming, moving or removing stages is saved in Unicorn OS for the move; amoCRM keeps its stages until then.</p>
-    <div class="panel ap-panel"><h3>Autopilot <span class="row" style="gap:8px"><div class="toggle">${["on", "dry", "off"].map((x) => `<button ${staff ? "" : "disabled"} class="${ap.mode === x ? x : ""}" data-apmode="${x}">${x}</button>`).join("")}</div><span class="faint">up to ${ap.dailyCap} sends a day</span></span></h3>
-      <p class="faint" style="margin:0;font-size:12px">${ap.mode === "off" ? "Off: people approve every draft in every stage." : `${ap.mode === "dry" ? "Dry run: it logs what it would send and sends nothing. " : ""}The line is before <b>${esc(ap.upToStageName || "—")}</b>: above it the bot sends on its own, from it on people approve.`} Use “Autopilot up to here” on a stage to move the line.</p></div>
+    <p class="pd">Each stage: what moves a card into it and who owns that move, and how ready it is for the autopilot. The rules for the bot are the funnel's regulation (Playbooks): shown here, changed only by a proposal the owner approves. Adding, renaming, moving or removing stages is saved in Unicorn OS for the move; amoCRM keeps its stages until then.</p>
+    <div class="panel ap-panel"><h3>Autopilot <span class="row" style="gap:8px"><span class="pill">${esc(ap.mode)}</span><span class="faint">up to ${ap.dailyCap} sends a day</span><button class="btn sm ghost" id="fn-ap-propose">Propose change</button></span></h3>
+      <p class="faint" style="margin:0;font-size:12px">${ap.mode === "off" ? "Off: people approve every draft in every stage." : `${ap.mode === "dry" ? "Dry run: it logs what it would send and sends nothing. " : ""}The line is before <b>${esc(ap.upToStageName || "—")}</b>: above it the bot sends on its own, from it on people approve.`} Where the autopilot works is part of the funnel's regulation: a change goes to the owner as a proposal.</p></div>
     <div class="stage-map" id="fn-stages">${rows.map(rowHtml).join("")}</div>
     ${staff ? `<div class="row fn-foot"><button class="btn sm" id="fn-add">${I.plus} Add a stage</button>${changes ? `<span class="faint">${changes} change${changes === 1 ? "" : "s"} saved for the move · amoCRM unchanged</span><button class="btn sm ghost" id="fn-discard">Discard the plan</button>` : ""}</div>` : ""}
-    <p class="faint" style="font-size:11.5px">“As written” counts drafts of the last 30 days, by the stage the card was in when the draft was written. A stage is ready for the autopilot at 85% or more, from 20 decided drafts. A rewritten description is what the Copilot reads from now on; rules in code and person-only stages are shown as they are.</p>
+    <p class="faint" style="font-size:11.5px">“As written” counts drafts of the last 30 days, by the stage the card was in when the draft was written. A stage is ready for the autopilot at 85% or more, from 20 decided drafts. The description of a stage is the one the Copilot reads now.</p>
     ${others.length ? `<h3 style="font-size:13px;margin:18px 0 8px">Other automations in this funnel</h3><div class="auto-grid">${others.map(ruleCard).join("")}</div>` : ""}</div>`;
 
   // The first structure change starts the plan (a copy of amoCRM's stages); rows then carry plan ids.
@@ -257,25 +230,14 @@ function drawAmo(el, f, map, all, staff, redraw) {
   const saved = (msg) => (toast(msg), redraw());
   const base = `/funnels/${encodeURIComponent(f.key)}`;
 
-  on(el, "click", "[data-apmode]", (e, b) => {
-    const mode = b.dataset.apmode;
-    if (mode !== "off" && !ap.upToStageName) return toast("Pick the line first: “Autopilot up to here” on the stage where people take over.", { bad: true });
-    live(`Autopilot · ${map.funnel}`, () => api("/automations/autopilot", { body: { funnel: map.funnel, mode, upToStageName: ap.upToStageName, dailyCap: ap.dailyCap } }), `Autopilot ${mode}`, redraw);
-  });
-  on(el, "click", "[data-line]", (e, b) => {
-    const stage = b.dataset.line;
-    const mode = ap.mode === "off" ? "dry" : ap.mode;
-    live(`Autopilot up to ${stage}`, () => api("/automations/autopilot", { body: { funnel: map.funnel, mode, upToStageName: stage, dailyCap: ap.dailyCap } }), ap.mode === "off" ? `Line set before ${stage}; the autopilot starts in dry run` : `People approve from ${stage} on`, redraw);
-  });
+  const playbook = PLAYBOOK_OF[f.key];
+  el.querySelector("#fn-ap-propose")?.addEventListener("click", () =>
+    proposeChange({ file: playbook, section: "Autopilot", current: `Autopilot ${ap.mode}${ap.upToStageName ? `, line before ${ap.upToStageName}` : ""}, up to ${ap.dailyCap} sends a day.` }),
+  );
   on(el, "click", "[data-edit-rule]", async (e, b) => {
     const r = rows.find((x) => rowKey(x) === b.dataset.editRule);
     const s = r.liveName ? stat.get(r.liveName.toLowerCase()) : null;
-    if (s) {
-      const res = await ruleDialog(s.name, s.howItGetsHere, "The Copilot reads this when it decides where a conversation stands. Say what must have happened in the chat, and what is not enough.", !!s.edited);
-      if (!res) return;
-      const meaning = res.action === "reset" ? "" : res.values.rule;
-      return live(`The description of ${s.name}`, () => api("/automations/stage-rule", { body: { funnel: map.funnel, stage: s.name, meaning } }), meaning ? "The Copilot reads the new description from now on" : "Back to the built-in description", redraw);
-    }
+    if (s && r.change !== "new") return proposeChange({ file: playbook, section: `Stage: ${s.name}`, current: s.howItGetsHere });
     const res = await ruleDialog(r.name, r.rule, "A planned stage: the Copilot starts reading this on the day of the move. Say what must have happened in the chat, and what is not enough.", false);
     if (!res) return;
     try {

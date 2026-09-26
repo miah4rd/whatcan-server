@@ -156,6 +156,12 @@ For a Claude session this means:
   `Approved by owner DD.MM.YYYY`. Write that line only when the owner actually said yes in chat,
   and quote what he said in the commit body. Never work around the gate.
 - CLAUDE.md and the memory are notes about how things work; they are not where rules live.
+- **The owner approves in Unicorn OS too** (Playbooks → Proposals, table `os_playbook_proposals`).
+  A proposal with status `approved` is the owner's "yes" for exactly its text: write it into the
+  named `skills/*.md` (and make the code obey it) in a commit whose message says
+  `Approved by owner DD.MM.YYYY — OS proposal #N` and quotes the approved text. The OS then shows
+  the proposal as applied. A `pending` or `rejected` proposal is not a yes. The OS itself cannot
+  write the file: the server's GitHub key is read-only, by design.
 
 ## A funnel's rules are the owner's words, never ours (owner, 26.09.2026)
 

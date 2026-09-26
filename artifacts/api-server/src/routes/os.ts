@@ -82,9 +82,9 @@ import {
   mondayOf,
 } from "../lib/os/analytics";
 import { baliDate } from "../lib/kpi-dashboard";
-import { automations, setAutomation } from "../lib/os/automations";
+import { automations } from "../lib/os/automations";
 import { teamScorecard, setFunnelTarget, type FunnelKey } from "../lib/os/team";
-import { stageMap, setStageRule, workShare, AUTOPILOT_RULE_ID, type FunnelKey as MapFunnel } from "../lib/os/automation-map";
+import { stageMap, workShare, type FunnelKey as MapFunnel } from "../lib/os/automation-map";
 import {
   ensureProjectTables,
   seedFromNotion,
@@ -122,6 +122,7 @@ import {
   updateCard,
   osFunnelsBrief,
 } from "../lib/os/funnels";
+import { listPlaybooks, readPlaybook, playbookVersion, propose, listProposals, decide, lessons } from "../lib/os/playbooks";
 import { logger } from "../lib/logger";
 import { REACH_STAGE_KEYWORDS } from "../lib/pipelines";
 
@@ -473,27 +474,23 @@ api.patch("/cards/:id", signedIn, h(async (req) => updateCard(req.osUser!, idp(r
 api.get("/automations", signedIn, h(async (req) => automations(isStaff(req.osUser))));
 // A funnel as the automation sees it: who moves cards into each stage, the autopilot line, readiness.
 api.get("/automations/map", signedIn, h(async (req) => stageMap(String(req.query["funnel"] ?? "rental") as MapFunnel)));
-api.post(
-  "/automations/stage-rule",
-  staffOnly,
-  h(async (req) => setStageRule(req.osUser!, String(req.body?.funnel ?? "") as MapFunnel, String(req.body?.stage ?? ""), req.body?.meaning == null ? null : String(req.body.meaning))),
-);
-api.post(
-  "/automations/autopilot",
-  staffOnly,
-  h(async (req) => {
-    const f = String(req.body?.funnel ?? "") as MapFunnel;
-    if (!AUTOPILOT_RULE_ID[f]) throw new Error("Unknown funnel.");
-    await setAutomation(req.osUser!, AUTOPILOT_RULE_ID[f], req.body ?? {});
-    return stageMap(f);
-  }),
-);
+// ── Playbooks: the funnels' regulations (skills/*.md, the one source), proposals, lessons ──
+api.get("/playbooks", signedIn, h(async () => listPlaybooks()));
+api.get("/playbooks/lessons", signedIn, h(async () => lessons()));
+api.get("/playbooks/proposals", signedIn, h(async (req) => listProposals({ status: req.query["status"] ? String(req.query["status"]) : undefined, file: req.query["file"] ? String(req.query["file"]) : undefined })));
+api.post("/playbooks/proposals", signedIn, h(async (req) => propose(req.osUser!, req.body ?? {})));
+// Only the owner decides a proposal.
+api.post("/playbooks/proposals/:id/decide", adminOnly, h(async (req) => decide(req.osUser!, idp(req), req.body ?? {})));
+api.get("/playbooks/:file/versions/:commit", signedIn, h(async (req) => playbookVersion(req.params["file"], req.params["commit"])));
+api.get("/playbooks/:file", signedIn, h(async (req) => readPlaybook(req.params["file"])));
+
+// The bot's rules (stage meanings, the autopilot line, the switches) are shown, not changed, in the OS:
+// a change is proposed in Playbooks and applied only with the owner's approval (26.09).
 api.get(
   "/analytics/workshare",
   staffOnly,
   h(async (req) => workShare({ days: Number(req.query["days"] ?? 30) || 30, funnel: (req.query["funnel"] as MapFunnel) || null })),
 );
-api.post("/automations/:id", staffOnly, h(async (req) => setAutomation(req.osUser!, String(req.params["id"]), req.body ?? {})));
 api.get("/integrations", staffOnly, h(async () => integrations()));
 api.get("/team", staffOnly, h(async () => ({ items: await listUsers() })));
 api.post(
