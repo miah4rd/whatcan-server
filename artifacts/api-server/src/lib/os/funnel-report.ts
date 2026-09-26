@@ -37,7 +37,19 @@ async function q(sql: string, params: unknown[]): Promise<Record<string, unknown
 }
 const n = (v: unknown) => Number(v ?? 0) || 0;
 
-export async function funnelReport(f: FunnelKey, opts: { period?: string; date?: string; who?: string }) {
+// The page takes seconds to count (amoCRM sources, every broker's Copilot list): two minutes of memory.
+const memo = new Map<string, { at: number; value: Promise<unknown> }>();
+export function funnelReport(f: FunnelKey, opts: { period?: string; date?: string; who?: string }) {
+  const k = JSON.stringify([f, opts.period, opts.date, opts.who]);
+  const hit = memo.get(k);
+  if (hit && Date.now() - hit.at < 120_000) return hit.value as ReturnType<typeof buildReport>;
+  const value = buildReport(f, opts);
+  memo.set(k, { at: Date.now(), value });
+  value.catch(() => memo.delete(k));
+  return value;
+}
+
+async function buildReport(f: FunnelKey, opts: { period?: string; date?: string; who?: string }) {
   if (!PIPE[f]) throw new Error("Unknown funnel.");
   const period: Period = (PERIODS as string[]).includes(String(opts.period)) ? (opts.period as Period) : "week";
   const day = opts.date && /^\d{4}-\d{2}-\d{2}$/.test(opts.date) ? opts.date : baliDate();
@@ -48,7 +60,7 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
   const P = [key, at(range.from), at(range.to), who];
   const byWho = `($4::text IS NULL OR lower(l.responsible_user) = $4)`;
 
-  const [score, map, people, reached, nowIn, sends, typed, queue, drafts, approve, cards, prevCards, reports, unanswered, objections, spendRows] = await Promise.all([
+  const [score, map, people, reached, nowIn, sends, typed, queueAll, drafts, approve, cards, prevCards, reports, objections, spendRows] = await Promise.all([
     teamScorecard(f, { period, date: day }),
     stageMap(f),
     funnelPeople(f),
@@ -64,7 +76,10 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
       `SELECT l.lead_stage AS stage, l.responsible_user AS who, count(*)::int AS n,
               count(*) FILTER (WHERE coalesce(last.changed_at, l.amo_created_at) < now() - interval '7 days')::int AS stuck
          FROM leads_sync l LEFT JOIN LATERAL (SELECT changed_at FROM stage_events e WHERE e.lead_id = l.lead_id ORDER BY changed_at DESC LIMIT 1) last ON true
-        WHERE lower(coalesce(l.pipeline,'')) = $1 AND ${byWho.replaceAll("$4", "$2")} GROUP BY 1, 2`,
+        WHERE lower(coalesce(l.pipeline,'')) = $1 AND ${byWho.replaceAll("$4", "$2")}
+          -- live work only, as on the board: a message or creation in the last 60 days
+          AND greatest(coalesce(l.last_message_at, 'epoch'), coalesce(l.amo_created_at, 'epoch')) > now() - interval '60 days'
+        GROUP BY 1, 2`,
       [key, who],
     ),
     // Messages sent through the Copilot, by the stage the card was in: by the autopilot or approved by a person.
@@ -83,11 +98,7 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
         WHERE w.direction = 'out_phone' AND lower(coalesce(l.pipeline,'')) = $1 AND w.created_at >= $2 AND w.created_at < $3 AND ${byWho} GROUP BY 1`,
       P,
     ),
-    q(
-      `SELECT p.kind, count(*)::int AS n FROM pending_suggestions p JOIN leads_sync l ON l.lead_id = p.lead_id
-        WHERE p.status = 'pending' AND lower(coalesce(l.pipeline,'')) = $1 AND ${byWho.replaceAll("$4", "$2")} GROUP BY 1`,
-      [key, who],
-    ),
+    copilotQueue(key),
     // Drafts decided in the period, per person: as written, edited, skipped; the autopilot apart.
     q(
       `SELECT l.responsible_user AS who,
@@ -109,13 +120,6 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
     q(`SELECT l.lead_id, l.responsible_user AS who, l.discard_reason FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, P),
     q(`SELECT count(*)::int AS n FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, [key, at(prev.from), at(prev.to), who]),
     reportRows(f, range, who),
-    // Clients waiting on us: a live draft untouched for over 4 hours.
-    q(
-      `SELECT l.responsible_user AS who, p.lead_id, p.triggered_by_message_at AS since FROM pending_suggestions p JOIN leads_sync l ON l.lead_id = p.lead_id
-        WHERE p.status = 'pending' AND p.kind = 'live' AND coalesce(p.triggered_by_message_at, p.created_at) < now() - interval '4 hours'
-          AND lower(coalesce(l.pipeline,'')) = $1 AND ${byWho.replaceAll("$4", "$2")} ORDER BY since`,
-      [key, who],
-    ),
     q(
       `SELECT o.source, o.category, count(DISTINCT o.lead_id)::int AS clients, (array_agg(o.quote ORDER BY o.said_at DESC))[1:2] AS quotes
          FROM os_objections o LEFT JOIN leads_sync l ON l.lead_id = o.lead_id
@@ -125,6 +129,10 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
     ),
     q(`SELECT campaign_name, currency, sum(spend)::float8 AS spend, sum(meta_leads)::int AS meta_leads FROM kpi_ad_spend WHERE day >= $1 AND day < $2 GROUP BY 1, 2`, [range.from, range.to]),
   ]);
+
+  // The queue and who waits on us come from the Copilot's own list: what the brokers see.
+  const queue = who ? queueAll.filter((x) => lc(x.who) === who) : queueAll;
+  const unanswered = queue.filter((x) => x.kind === "live" && x.since != null && Date.now() - x.since > 4 * 3600_000);
 
   // ── people: those who hold cards here, or the one asked for
   const names = who ? people.filter((p) => lc(p) === who) : people;
@@ -169,7 +177,7 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
     botShare: allSent ? Math.round((autoSent / allSent) * 100) : null,
     // A message the bot wrote and a person only approved is half the work saved; one it sent alone, all of it.
     hoursSaved: Math.round(((autoSent * 3 + copilotSent * 2) / 60) * 10) / 10,
-    queue: { live: n(queue.find((x) => x.kind === "live")?.n), push: queue.filter((x) => x.kind !== "live").reduce((s, x) => s + n(x.n), 0) },
+    queue: { live: queue.filter((x) => x.kind === "live").length, push: queue.filter((x) => x.kind !== "live").length },
   };
 
   // ── inflow: new cards, their sources, what they cost
@@ -291,6 +299,37 @@ export async function funnelReport(f: FunnelKey, opts: { period?: string; date?:
     brokers: [...brokers, teamRow],
     bottlenecks,
   };
+}
+
+/**
+ * The Copilot's drafts list for this funnel, as the brokers see it (the same handler the Copilot page
+ * calls, asked over the loopback), one row per draft: whose, which kind, since when the client waits.
+ */
+async function copilotQueue(key: string): Promise<Array<{ who: string; kind: string; since: number | null; leadId: string }>> {
+  const port = process.env["PORT"] || "5000";
+  const holders = await q(
+    `SELECT DISTINCT responsible_user AS who FROM pending_suggestions p JOIN leads_sync l ON l.lead_id = p.lead_id
+      WHERE p.status = 'pending' AND lower(coalesce(l.pipeline,'')) = $1 AND l.responsible_user IS NOT NULL`,
+    [key],
+  );
+  const out: Array<{ who: string; kind: string; since: number | null; leadId: string }> = [];
+  await Promise.all(
+    holders.map(async (h) => {
+      const person = String(h.who);
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/api/public/suggestions?responsibleUser=${encodeURIComponent(person)}`, { signal: AbortSignal.timeout(20_000) });
+        const j = (await r.json()) as { items?: Array<Record<string, unknown>> };
+        for (const it of j.items ?? []) {
+          if (lc(it["pipeline"]) !== key) continue;
+          const since = it["triggered_by_message_at"] ?? it["created_at"];
+          out.push({ who: person, kind: String(it["kind"] ?? ""), since: since ? Date.parse(String(since)) : null, leadId: String(it["lead_id"]) });
+        }
+      } catch (err) {
+        logger.warn({ err, person }, "os funnel report: Copilot list failed");
+      }
+    }),
+  );
+  return out;
 }
 
 /** Viewings (Rental) or inspections (Rental Listings) held in the period, with their report's state. */
