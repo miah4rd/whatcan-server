@@ -28,10 +28,12 @@ export async function buildLearningDigest(days = 7): Promise<string> {
              count(*)::int AS judged,
              count(*) FILTER (WHERE p.status = 'approved' AND (coalesce(p.final_text,'') = '' OR p.final_text = p.suggestion_text))::int AS clean,
              count(*) FILTER (WHERE p.status = 'edited' OR (p.status = 'approved' AND coalesce(p.final_text,'') <> '' AND p.final_text <> p.suggestion_text))::int AS edited,
-             count(*) FILTER (WHERE p.status = 'skipped')::int AS skipped
+             count(*) FILTER (WHERE p.status = 'skipped' AND p.autopilot_skipped_reason IS NULL)::int AS skipped
         FROM pending_suggestions p JOIN leads_sync l ON l.lead_id = p.lead_id
        WHERE coalesce(p.auto_sent, false) = false
-         AND p.status IN ('approved', 'edited', 'skipped')
+         -- a person's verdicts only: a 'skipped' that carries the autopilot's own reason was
+         -- retired by the bot (duplicate reply, parked stage, answered by hand), not judged
+         AND (p.status IN ('approved', 'edited') OR (p.status = 'skipped' AND p.autopilot_skipped_reason IS NULL))
          AND p.created_at > now() - make_interval(days => ${days})
          AND lower(coalesce(p.responsible_user,'')) IN ('amelia', 'yudi')
        GROUP BY 1, 2 ORDER BY 1, 3 DESC`),
