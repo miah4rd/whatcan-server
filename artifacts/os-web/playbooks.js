@@ -2,8 +2,8 @@
 // One source: skills/*.md in the repository as GitHub's master has them (the server fetches every
 // two minutes), the files the code obeys and the deploy's law gate guards; skills/README.md is the
 // pool listing every regulation and where it lives. The OS shows them and keeps no copy. The owner
-// edits a regulation here and saves it: it goes to GitHub in his name and the bot follows it within a
-// minute (lib/regulation.ts). Others propose a change; a Claude session writes an approved one in.
+// edits a regulation here and saves it: it goes to GitHub in his name. The live Copilot does not read
+// it until the move. Others propose a change; a Claude session writes an approved one in.
 import { S, api, esc, screens, on, toast, fail, dialog, rel, fmtDT, store } from "./core.js";
 
 /** The regulation of each funnel. A file that does not exist yet is created by its first approved proposal. */
@@ -174,7 +174,7 @@ screens.playbooks = {
         const art = box.querySelector("#pb-md");
         art.innerHTML = `<textarea class="pb-editor" id="pb-text" spellcheck="false"></textarea>
           <div class="row" style="gap:8px;margin-top:8px"><input class="input" id="pb-note" placeholder="What changed (one line)" style="flex:1"><button class="btn sm" id="pb-cancel">Cancel</button><button class="btn sm primary" id="pb-save">Save and apply</button></div>
-          <div class="faint" style="font-size:12px;margin-top:6px">Saved to GitHub in your name. The Copilot and the autopilot follow it within a minute.</div>`;
+          <div class="faint" style="font-size:12px;margin-top:6px">Saved to GitHub in your name. The live Copilot starts following it after the move to the OS.</div>`;
         const ta = art.querySelector("#pb-text");
         ta.value = doc.text;
         art.querySelector("#pb-cancel").onclick = () => (art.innerHTML = md(doc.text));
@@ -183,7 +183,7 @@ screens.playbooks = {
           e.target.textContent = "Saving…";
           try {
             const out = await api(`/playbooks/${encodeURIComponent(doc.file)}`, { method: "PUT", body: { text: ta.value, note: art.querySelector("#pb-note").value } });
-            toast(out.unchanged ? "Nothing changed." : "Saved. The bot follows it within a minute.");
+            toast(out.unchanged ? "Nothing changed." : "Saved.");
             screens.playbooks.render({ el, tools, route });
           } catch (err) {
             toast(err.message || "Not saved.");

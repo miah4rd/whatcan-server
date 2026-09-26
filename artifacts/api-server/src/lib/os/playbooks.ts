@@ -20,7 +20,6 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { pool } from "@workspace/db";
 import { audit, type OsUser } from "./auth";
-import { refreshRegulations } from "../regulation";
 
 const run = promisify(execFile);
 
@@ -352,8 +351,8 @@ export async function lessons() {
 
 // ── editing in the OS, as in Cowork ──────────────────────────────────────────
 // Owner, 26.09: "I am the one who presses Save in the OS — why a double check". The owner edits a
-// regulation and saves: it is committed in his name to GitHub master (the one source) and the bot
-// follows it within a minute (lib/regulation.ts). The push goes from a separate clone, never from the
+// regulation and saves: it is committed in his name to GitHub master (the one source). The live
+// Copilot does not read it yet (owner, 27.09: nothing in amoCRM + Copilot changes before the move). The push goes from a separate clone, never from the
 // live checkout, so the server's own tree is untouched until the next deploy merges it.
 
 const EDIT_CLONE = "/opt/whatcan-playbooks";
@@ -392,7 +391,6 @@ export async function savePlaybook(user: OsUser, raw: unknown, body: Record<stri
     if (!pushed) throw new Error("GitHub did not take the save. Try again.");
     fetchedAt = 0;
     await git(["fetch", "-q", "github", "master"]);
-    await refreshRegulations(false);
     await audit(user, "playbook.save", f, { note, chars: text.length });
     return { ok: true };
   });
