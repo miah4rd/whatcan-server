@@ -1,8 +1,11 @@
 /**
  * Unicorn OS — Playbooks: the funnels' regulations and what the Copilot has learned (owner, 26.09).
  *
- * One source, as in Cowork: the files in skills/ of this repository. The OS reads the very file the
- * code obeys and the law gate guards (scripts/law-gate.sh); it keeps no copy. What the OS adds:
+ * One source, as in Cowork: the files in skills/ of this repository, read from GitHub's master
+ * (fetched every two minutes), not from the server's checkout, which moves only on a deploy (owner,
+ * 26.09: "no regulation may exist without showing here"). skills/README.md is the pool: the list of
+ * every regulation and where it lives (skills/, a section of CLAUDE.md, or a Cowork skill kept in the
+ * owner's Claude account, which the server cannot read). The OS keeps no copy. What it adds:
  *   · the history of each file, from git;
  *   · proposals: anyone may propose a change (a person here, a Claude session, later the bot);
  *     only the owner approves or rejects. An approval is recorded here with his name, the time and
@@ -20,22 +23,24 @@ import { audit, type OsUser } from "./auth";
 
 const run = promisify(execFile);
 
-/** The repository root: the folder holding skills/ and .git, found upwards from where the server runs. */
+/** The repository root: the folder holding .git, found upwards from where the server runs. */
 function repoRoot(): string {
   let dir = process.cwd();
   for (let i = 0; i < 6; i++) {
-    if (fs.existsSync(path.join(dir, "skills")) && fs.existsSync(path.join(dir, ".git"))) return dir;
+    if (fs.existsSync(path.join(dir, ".git"))) return dir;
     dir = path.dirname(dir);
   }
-  throw new Error("The skills folder was not found next to the server.");
+  throw new Error("The repository was not found next to the server.");
 }
-const skillsDir = () => path.join(repoRoot(), "skills");
 
-/** A playbook file name, never a path: "rental-listings.md". */
+/**
+ * A regulation's id: "rental-listings.md" (a file in skills/), "CLAUDE.md#The viewing report"
+ * (a section of CLAUDE.md), or "cowork:listing-upload-regulation" (a skill kept in Cowork).
+ */
 function fileName(raw: unknown): string {
   const f = String(raw ?? "").trim();
-  if (!/^[a-z0-9-]+\.md$/.test(f)) throw new Error("Unknown playbook.");
-  return f;
+  if (/^[a-z0-9-]+\.md$/.test(f) || /^CLAUDE\.md#[\w .,:'’()/-]{3,120}$/.test(f) || /^cowork:[a-z0-9-]{2,80}$/.test(f)) return f;
+  throw new Error("Unknown playbook.");
 }
 
 async function git(args: string[]): Promise<string> {
@@ -45,6 +50,39 @@ async function git(args: string[]): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/** The remote the server's checkout follows (deploy.sh merges github/master). */
+const REF = "github/master";
+let fetchedAt = 0;
+let fetching: Promise<void> | null = null;
+/** Bring GitHub's master in at most every two minutes; a failed fetch leaves the last one. */
+async function fresh(): Promise<void> {
+  if (Date.now() - fetchedAt < 120_000) return;
+  if (!fetching)
+    fetching = (async () => {
+      await git(["fetch", "-q", "github", "master"]);
+      fetchedAt = Date.now();
+    })().finally(() => {
+      fetching = null;
+    });
+  return fetching;
+}
+async function readAt(p: string): Promise<string | null> {
+  const out = await git(["show", `${REF}:${p}`]);
+  return out === "" ? null : out;
+}
+/** A CLAUDE.md section: from the heading whose words start with `words` to the next heading of its level or higher. */
+async function claudeSection(words: string): Promise<{ heading: string; text: string } | null> {
+  const md = (await readAt("CLAUDE.md")) ?? "";
+  const lines = md.split("\n");
+  const want = words.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean).slice(0, 4).join(" ");
+  const i = lines.findIndex((l) => /^#{2,4}\s/.test(l) && l.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").includes(want));
+  if (i < 0) return null;
+  const level = lines[i].match(/^#+/)![0].length;
+  let j = i + 1;
+  while (j < lines.length && !(new RegExp(`^#{1,${level}}\\s`).test(lines[j]))) j++;
+  return { heading: lines[i].replace(/^#+\s*/, ""), text: lines.slice(i, j).join("\n") };
 }
 
 let ready: Promise<void> | null = null;
@@ -83,38 +121,72 @@ function ensureTables(): Promise<void> {
 const titleOf = (md: string, file: string) => (md.match(/^#\s+(.+)$/m)?.[1] ?? file.replace(/\.md$/, "")).trim();
 const approvedOf = (md: string) => md.match(/^Approved by the owner:\s*(.+)$/im)?.[1]?.trim() ?? null;
 
-/** Every regulation in skills/, with its last change, and how many proposals wait on it. */
+/** Every regulation: the pool (skills/README.md) first, then each regulation it names, as GitHub has them now. */
 export async function listPlaybooks() {
   await ensureTables();
-  const dir = skillsDir();
-  const files = fs.readdirSync(dir).filter((f) => /^[a-z0-9-]+\.md$/.test(f)).sort();
+  await fresh();
   const pending = await pool.query(`SELECT file, count(*)::int AS n FROM os_playbook_proposals WHERE status = 'pending' GROUP BY 1`);
   const waiting = new Map(pending.rows.map((r) => [String(r.file), Number(r.n)]));
-  const items = [];
-  for (const f of files) {
-    const md = fs.readFileSync(path.join(dir, f), "utf8");
-    const last = (await git(["log", "-1", "--format=%h|%aI|%s", "--", `skills/${f}`])).trim().split("|");
-    items.push({
-      file: f,
-      title: titleOf(md, f),
-      approved: approvedOf(md),
-      openQuestions: (md.match(/\[no decision\]|\[нет решения\]/gi) ?? []).length,
-      lastChange: last[0] ? { commit: last[0], at: last[1], subject: last.slice(2).join("|") } : null,
-      pendingProposals: waiting.get(f) ?? 0,
-    });
+  const files = (await git(["ls-tree", "--name-only", REF, "skills/"])).split("\n").map((x) => x.replace(/^skills\//, "")).filter((f) => /^[a-z0-9-]+\.md$/i.test(f));
+  const lastOf = async (p: string) => {
+    const l = (await git(["log", "-1", "--format=%h|%aI|%s", REF, "--", p])).trim().split("|");
+    return l[0] ? { commit: l[0], at: l[1], subject: l.slice(2).join("|") } : null;
+  };
+  const items: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+  const readme = await readAt("skills/README.md");
+  if (readme) {
+    items.push({ file: "README.md", kind: "pool", title: "The pool — every regulation and where it lives", approved: null, lastChange: await lastOf("skills/README.md"), pendingProposals: waiting.get("README.md") ?? 0 });
+    seen.add("README.md");
+    // Each row of the pool's table: the regulation, where it lives, its status.
+    for (const row of readme.split("\n").filter((l) => /^\|/.test(l) && !/^\|[\s:|-]+\|?$/.test(l)).slice(1)) {
+      const [what, where, status] = row.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      for (const m of where.matchAll(/`skills\/([a-z0-9-]+\.md)`/gi)) {
+        if (seen.has(m[1])) continue;
+        seen.add(m[1]);
+        const md = await readAt(`skills/${m[1]}`);
+        items.push({ file: m[1], kind: "bot", title: md ? titleOf(md, m[1]) : what, pool: what, status, approved: md ? approvedOf(md) : null, missing: !md, openQuestions: md ? (md.match(/\[no decision\]|\[нет решения\]/gi) ?? []).length : 0, lastChange: md ? await lastOf(`skills/${m[1]}`) : null, pendingProposals: waiting.get(m[1]) ?? 0 });
+      }
+      for (const m of where.matchAll(/CLAUDE\.md\s+"([^"]+)"/g)) {
+        const id = `CLAUDE.md#${m[1].replace(/…$/, "").trim()}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        items.push({ file: id, kind: "claude-md", title: what, pool: what, status, approved: null, pendingProposals: waiting.get(id) ?? 0 });
+      }
+      if (/cowork|skill `/i.test(where))
+        for (const m of where.matchAll(/`([a-z0-9-]+)`/g)) {
+          if (m[1].includes("/") || seen.has(`cowork:${m[1]}`)) continue;
+          seen.add(`cowork:${m[1]}`);
+          items.push({ file: `cowork:${m[1]}`, kind: "cowork", title: m[1], pool: what, status, approved: null, pendingProposals: waiting.get(`cowork:${m[1]}`) ?? 0 });
+        }
+    }
   }
-  // Proposals may name a regulation not written yet (e.g. rental.md): it shows as a missing file.
-  for (const [f, n] of waiting) if (!files.includes(f)) items.push({ file: f, title: f.replace(/\.md$/, ""), approved: null, openQuestions: 0, lastChange: null, pendingProposals: n, missing: true });
-  return { items };
+  // A file in skills/ the pool does not list yet still shows: nothing is hidden.
+  for (const f of files) {
+    if (seen.has(f)) continue;
+    seen.add(f);
+    const md = (await readAt(`skills/${f}`)) ?? "";
+    items.push({ file: f, kind: "bot", title: titleOf(md, f), approved: approvedOf(md), openQuestions: (md.match(/\[no decision\]|\[нет решения\]/gi) ?? []).length, lastChange: await lastOf(`skills/${f}`), pendingProposals: waiting.get(f) ?? 0, notInPool: true });
+  }
+  for (const [f, n] of waiting) if (!seen.has(f)) items.push({ file: f, kind: "bot", title: f.replace(/\.md$/, ""), missing: true, pendingProposals: n });
+  return { items, source: `GitHub ${REF}`, checkedAt: fetchedAt ? new Date(fetchedAt).toISOString() : null };
 }
 
-/** One regulation: the text as the code obeys it now, and its versions from git. */
+/** One regulation as GitHub has it now, and its versions. */
 export async function readPlaybook(raw: unknown) {
   const f = fileName(raw);
-  const p = path.join(skillsDir(), f);
-  const exists = fs.existsSync(p);
-  const md = exists ? fs.readFileSync(p, "utf8") : "";
-  const log = await git(["log", "-20", "--format=%h|%aI|%an|%s", "--", `skills/${f}`]);
+  await fresh();
+  if (f.startsWith("cowork:")) {
+    const name = f.slice(7);
+    return { file: f, kind: "cowork", exists: false, title: name, approved: null, text: "", versions: [], note: `This is a Cowork skill (${name}), kept in the owner's Claude account. The server cannot read it, so it is not shown here yet. Edit it in Cowork.` };
+  }
+  if (f.startsWith("CLAUDE.md#")) {
+    const sec = await claudeSection(f.slice(10));
+    return { file: f, kind: "claude-md", exists: !!sec, title: sec?.heading ?? f.slice(10), approved: null, text: sec?.text ?? "", versions: [], note: "A section of CLAUDE.md, the notes every Claude session reads." };
+  }
+  const p = `skills/${f}`;
+  const md = await readAt(p);
+  const log = await git(["log", "-20", "--format=%h|%aI|%an|%s", REF, "--", p]);
   const versions = log
     .trim()
     .split("\n")
@@ -123,7 +195,7 @@ export async function readPlaybook(raw: unknown) {
       const [commit, at, author, ...rest] = l.split("|");
       return { commit, at, author, subject: rest.join("|") };
     });
-  return { file: f, exists, title: exists ? titleOf(md, f) : f, approved: approvedOf(md), text: md, versions };
+  return { file: f, kind: f === "README.md" ? "pool" : "bot", exists: md != null, title: md ? titleOf(md, f) : f, approved: md ? approvedOf(md) : null, text: md ?? "", versions };
 }
 
 /** A past version of a regulation, as it was at that commit. */
@@ -131,6 +203,7 @@ export async function playbookVersion(raw: unknown, commitRaw: unknown) {
   const f = fileName(raw);
   const commit = String(commitRaw ?? "");
   if (!/^[0-9a-f]{6,40}$/.test(commit)) throw new Error("Unknown version.");
+  if (!/^[a-z0-9-]+\.md$/i.test(f)) throw new Error("Only files in skills/ have versions.");
   return { file: f, commit, text: await git(["show", `${commit}:skills/${f}`]) };
 }
 
@@ -159,7 +232,7 @@ export async function listProposals(filter: { status?: string; file?: string }) 
   await ensureTables();
   const approved = await pool.query(`SELECT id FROM os_playbook_proposals WHERE status = 'approved' AND applied_commit IS NULL`);
   for (const row of approved.rows) {
-    const hit = (await git(["log", "-1", "--format=%h|%aI", "--grep", `OS proposal #${row.id}\\b`, "-E"])).trim();
+    const hit = (await git(["log", "-1", "--format=%h|%aI", "--grep", `OS proposal #${row.id}\\b`, "-E", REF])).trim();
     if (hit) {
       const [commit, at] = hit.split("|");
       await pool.query(`UPDATE os_playbook_proposals SET status = 'applied', applied_commit = $2, applied_at = $3 WHERE id = $1`, [row.id, commit, at]);

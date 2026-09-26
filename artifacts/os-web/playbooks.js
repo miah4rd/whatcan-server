@@ -1,6 +1,7 @@
 // Unicorn OS — Playbooks (owner, 26.09): the funnels' regulations, as in Cowork.
-// One source: skills/*.md in the repository, the file the code obeys and the deploy's law gate
-// guards. The OS shows it, keeps no copy. A change is a proposal; only the owner approves it; a
+// One source: skills/*.md in the repository as GitHub's master has them (the server fetches every
+// two minutes), the files the code obeys and the deploy's law gate guards; skills/README.md is the
+// pool listing every regulation and where it lives. The OS shows them and keeps no copy. A change is a proposal; only the owner approves it; a
 // Claude session then writes the approved words into the file (and the code) in a commit that
 // names the proposal, and the proposal shows as applied.
 import { S, api, esc, screens, on, toast, fail, dialog, rel, fmtDT, store } from "./core.js";
@@ -140,20 +141,32 @@ screens.playbooks = {
       return;
     }
 
-    const file = route.parts[1] || store.get("pb-file", list.items[0]?.file);
+    const file = route.parts[1] ? decodeURIComponent(route.parts[1]) : store.get("pb-file", list.items[0]?.file);
     store.set("pb-file", file);
     const cur = list.items.find((x) => x.file === file) || list.items[0];
-    el.innerHTML = `<div class="pb-wrap"><div class="pb-list">${list.items
-      .map(
-        (x) => `<a class="pb-item ${x.file === cur?.file ? "on" : ""}" href="#/playbooks/rules/${esc(x.file)}"><b>${esc(x.title)}</b><span class="faint">${x.missing ? "not written yet" : x.approved ? `approved ${esc(x.approved)}` : esc(x.file)}${x.pendingProposals ? ` · ${x.pendingProposals} waiting` : ""}${x.openQuestions ? ` · ${x.openQuestions} open question${x.openQuestions === 1 ? "" : "s"}` : ""}</span></a>`,
-      )
-      .join("")}</div><div class="pb-doc" id="pb-doc"><div class="loading">Opening…</div></div></div>`;
+    const GROUPS = [
+      ["pool", "The pool"],
+      ["bot", "The bot's regulations"],
+      ["claude-md", "Sections of CLAUDE.md"],
+      ["cowork", "Cowork skills (edited in Cowork)"],
+    ];
+    const sub = (x) =>
+      x.kind === "cowork"
+        ? "kept in Cowork"
+        : x.missing
+          ? `${x.status ? esc(x.status) + " · " : ""}not written yet`
+          : [x.approved ? `approved ${esc(x.approved)}` : x.status ? esc(x.status) : "", x.pendingProposals ? `${x.pendingProposals} waiting` : "", x.openQuestions ? `${x.openQuestions} open question${x.openQuestions === 1 ? "" : "s"}` : "", x.notInPool ? "not in the pool" : ""].filter(Boolean).join(" · ");
+    el.innerHTML = `<div class="pb-wrap"><div class="pb-list">${GROUPS.map(([k, l]) => {
+      const xs = list.items.filter((x) => x.kind === k);
+      return xs.length ? `<div class="pb-grp">${esc(l)}</div>${xs.map((x) => `<a class="pb-item ${x.file === cur?.file ? "on" : ""}" href="#/playbooks/rules/${encodeURIComponent(x.file)}"><b>${esc(x.title)}</b><span class="faint">${sub(x)}</span></a>`).join("")}` : "";
+    }).join("")}<div class="faint pb-sync">From ${esc(list.source)}${list.checkedAt ? ` · checked ${esc(fmtDT(list.checkedAt))}` : ""}</div></div><div class="pb-doc" id="pb-doc"><div class="loading">Opening…</div></div></div>`;
     if (!cur) return;
     const doc = await api(`/playbooks/${encodeURIComponent(cur.file)}`);
     const box = el.querySelector("#pb-doc");
     box.innerHTML = `<div class="row pb-docbar"><span class="faint">${esc(doc.file)}${doc.versions[0] ? ` · last change ${esc(fmtDT(doc.versions[0].at))}` : ""}</span><span class="spacer"></span>
         <button class="btn sm primary" id="pb-propose">Propose a change</button>${doc.versions.length ? `<select class="chip" id="pb-ver"><option value="">Current version</option>${doc.versions.map((v) => `<option value="${esc(v.commit)}">${esc(fmtDT(v.at))} · ${esc(v.subject.slice(0, 60))}</option>`).join("")}</select>` : ""}</div>
-      <article class="pb-md" id="pb-md">${doc.exists ? md(doc.text) : `<div class="empty">This regulation is not written yet. Its first approved proposal starts it.</div>`}</article>`;
+      ${doc.note ? `<div class="help">${esc(doc.note)}</div>` : ""}
+      <article class="pb-md" id="pb-md">${doc.exists ? md(doc.text) : doc.kind === "cowork" ? "" : `<div class="empty">This regulation is not written yet. Its first approved proposal starts it.</div>`}</article>`;
     box.querySelector("#pb-propose").onclick = () => proposeChange({ file: doc.file });
     const ver = box.querySelector("#pb-ver");
     if (ver)

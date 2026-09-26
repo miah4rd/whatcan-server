@@ -701,3 +701,7 @@ table.an-t tbody tr{cursor:default}
 .an-box h4{margin:0 0 6px;font-size:12.5px}
 .an-obj{margin:0;padding-left:16px;font-size:12.5px}.an-obj li{margin:5px 0}
 .an-in{width:72px;padding:4px 6px}
+
+.pb-grp{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);font-weight:600;margin:10px 4px 2px}
+.pb-grp:first-child{margin-top:0}
+.pb-sync{font-size:11px;margin:10px 4px 0}
