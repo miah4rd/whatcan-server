@@ -649,19 +649,29 @@ export function priceOf(p: SupabaseProperty): number {
  * path shows (strictShortlistPool → matchPropertiesDetailed for every bot
  * draft and follow-up, candidatesForLead for the edit composer).
  *
- * The owner's order (14.09.2026, evening): the request is the base of
- * everything, and old and new villas mix freely — "у нас аренда, они сдаются,
- * потом опять свободные". Compared in this order, each step only between
- * villas equal on the steps before it:
+ * The owner's order (14.09.2026 evening, 19.09, 26.09): the request is the
+ * base of everything, and old and new villas mix freely — "у нас аренда, они
+ * сдаются, потом опять свободные". Compared in this order, each step only
+ * between villas equal on the steps before it:
  *   1. an area the client named over a neighbour they only allowed;
- *   2. fit (`score`): a price close to their budget (a 50M client sees 45-50
+ *   2. trust (`trustTier`, owner 26.09): inspected by Yudi (Listed) first,
+ *      unchecked (Pre-listed) after, anything with a red flag or construction
+ *      nearby last — "в первую очередь двигает Reliable, которые Юди уже
+ *      проверил"; unchecked ones go only when inspected ones do not fill it;
+ *   3. green (`green`, owner 26.09): a Green flags line from the inspection or
+ *      any key feature checked on the site (garden, enclosed living room,
+ *      workspace, quiet street, no construction) — "их нужно приравнивать к
+ *      грин-флагам";
+ *   4. fit (`score`): a price close to their budget (a 50M client sees 45-50
  *      first), free on their dates, a minimum stay that suits them;
- *   3. not already skipped by the broker in a draft for this lead;
- *   4. what we know about the villa (`quality`): red and green flags from the
- *      inspection, construction nearby, Listed, video, photos, dates confirmed
- *      recently — it never lifts a villa that fits worse;
- *   5. a turn per lead: villas equal on everything alternate between leads
+ *   5. not already skipped by the broker in a draft for this lead;
+ *   6. what else we know about the villa (`quality`): how many flags, video,
+ *      photos, dates confirmed recently;
+ *   7. a turn per lead: villas equal on everything alternate between leads
  *      instead of one always going to all of them.
+ * Viewing reports 29.08-26.09: 7 of 10 viewings failed on the villa itself
+ * (open living room, no garden, ants, mould, construction) — most of them
+ * unchecked villas.
  * How long a listing has been on the site plays no part, and neither do views
  * or how often a villa was sent before.
  *
@@ -703,6 +713,10 @@ export type RankedFit = {
   namedArea: boolean;
   /** 1 = green flags from our inspection, 0 = nothing known, -1 = a red flag or construction nearby. */
   flagTier: number;
+  /** 2 = inspected (Listed) and no red flag, 1 = unchecked (Pre-listed) and no red flag, 0 = a red flag. */
+  trustTier: number;
+  /** A Green flags line or a key feature checked on the site. */
+  green: boolean;
   score: number;
   skipped: boolean;
   quality: number;
@@ -715,6 +729,20 @@ const RANK_DAY_MS = 24 * 60 * 60 * 1000;
 /** A red flag line or the Construction nearby tick in Internal data. */
 export function isRedFlagged(q: ListingQuality | undefined): boolean {
   return !!q && (q.constructionNearby || q.redFlags > 0);
+}
+
+/**
+ * The key features a person checked on the site that count as green flags
+ * (owner, 26.09.2026): clients turn villas down over exactly these.
+ */
+export function greenFeatures(p: SupabaseProperty): string[] {
+  const out: string[] = [];
+  if (p.garden === "small" || p.garden === "large") out.push(`${p.garden} garden`);
+  if (p.living_room === "enclosed") out.push("enclosed living room");
+  if (p.workspace === "desk" || p.workspace === "office_room") out.push(p.workspace === "desk" ? "workspace" : "office room");
+  if (p.quiet_area === true) out.push("quiet street");
+  if (p.no_construction_nearby === true) out.push("no construction next door");
+  return out;
 }
 
 /** A stable per-lead shuffle position (FNV-1a) — the same lead always sees the same order. */
@@ -887,14 +915,20 @@ export function rankShortlistFits(fits: SupabaseProperty[], r: ClientRequest, ct
     // filters, then green-flagged villas go first and red-flagged ones last — "why send a client
     // a villa we know something bad about". Construction nearby is a red flag too.
     const flagTier = isRedFlagged(q) ? -1 : (q?.greenFlags ?? 0) > 0 ? 1 : 0;
+    // Trust, then green (owner, 26.09.2026): inspected villas first, unchecked after, red last.
+    const trustTier = flagTier < 0 ? 0 : p.pre_listed === false ? 2 : 1;
+    const features = greenFeatures(p);
+    const green = flagTier >= 0 && ((q?.greenFlags ?? 0) > 0 || features.length > 0);
+    if (features.length > 0) note(`checked on the site: ${features.join(", ")}`);
 
-    return { p, namedArea, flagTier, score, skipped, quality, why, whyClient };
+    return { p, namedArea, flagTier, trustTier, green, score, skipped, quality, why, whyClient };
   });
   const key = ctx.rotationKey ?? "";
   return out.sort(
     (a, b) =>
       Number(b.namedArea) - Number(a.namedArea) ||
-      b.flagTier - a.flagTier ||
+      b.trustTier - a.trustTier ||
+      Number(b.green) - Number(a.green) ||
       b.score - a.score ||
       Number(a.skipped) - Number(b.skipped) ||
       b.quality - a.quality ||
@@ -2350,6 +2384,10 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
     // these before" block any more: broker_property_picks is bumped by every
     // approve of the bot's OWN picks, so it fed the oldest villas back in.
     const whyOf = new Map(ranked.map((x) => [x.p.id, x.why]));
+    // Trust and green decide inside a price group too (owner, 26.09.2026): the model's choice
+    // keeps its order only among villas of the same trust and green.
+    const rankOf = new Map(ranked.map((x) => [x.p.id, x.trustTier * 2 + Number(x.green)]));
+    const trustLine = (p: SupabaseProperty) => (ranked.find((x) => x.p.id === p.id)?.trustTier === 2 ? "INSPECTED " : "");
     // With the ladder every price group gets its own share of the catalog —
     // the ranking favours prices near the budget, so a flat top 12 could hold
     // no cheaper villa at all.
@@ -2360,7 +2398,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
       .map((p, i) => {
         const style = styleHint(p);
         const why = (whyOf.get(p.id) ?? []).join("; ");
-        return `${i + 1}. ${bandLine(p)}${summaryLine(p)}${why ? ` | why: ${why}` : ""}${style ? ` | ${style}` : ""}`;
+        return `${i + 1}. ${bandLine(p)}${trustLine(p)}${summaryLine(p)}${why ? ` | why: ${why}` : ""}${style ? ` | ${style}` : ""}`;
       })
       .join("\n");
     const brokerRevision = opts.brokerInstruction
@@ -2376,7 +2414,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
 
 ${opts.mustAttach ? MUST_ATTACH_RULE : DECLINE_RULES}
 
-EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first: first by how closely the villa matches the request (an area they named over a neighbour, a price close to their budget without going over it, free on their dates, a minimum stay that suits them, and the key features they asked for — a garden, a place to work, an enclosed living room, a quiet street), then villas with green flags from our inspection go first, then, only between villas that match equally, by what we know about the villa (inspected (Listed), a video tour, a full photo set, dates confirmed recently). Villas with a red flag or construction nearby are only in the catalog when nothing else fits, and then they are at the bottom. How long a listing has been on the site plays no part: rentals come free again and again. Each line gives its reasons after "why:". Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, never because it is cheaper, older, newer or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously. A "checked:" part lists key features a person verified (garden, living room, workspace, quiet street, no construction next door); a feature missing from it is UNKNOWN, not absent.
+EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first: an area they named over a neighbour; then villas our team inspected (tagged INSPECTED) before unchecked ones — an unchecked villa is only for when inspected ones do not fill the shortlist; then villas with green flags (a green flag from the inspection, or a checked garden, enclosed living room, workspace, quiet street, no construction next door); then how closely the villa matches the request (a price close to their budget, free on their dates, a minimum stay that suits them, the key features they asked for); then the rest of what we know (a video tour, a full photo set, dates confirmed recently). Villas with a red flag or construction nearby are only in the catalog when nothing else fits, and then they are at the bottom. NEVER pick an unchecked villa over an INSPECTED one of the same price group. How long a listing has been on the site plays no part: rentals come free again and again. Each line gives its reasons after "why:". Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, never because it is cheaper, older, newer or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously. A "checked:" part lists key features a person verified (garden, living room, workspace, quiet street, no construction next door); a feature missing from it is UNKNOWN, not absent.
 
 ${
         banded
@@ -2439,9 +2477,14 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
         return true;
       };
       for (const b of PRICE_BANDS) {
+        const inBand = [
+          ...picked.filter((p) => bandOf(p) === b),
+          ...candidates.filter((p) => bandOf(p) === b && !picked.includes(p)),
+        ];
+        // Stable: the model's picks stay ahead only of villas of the same trust and green.
+        inBand.sort((x, y) => (rankOf.get(y.id) ?? 0) - (rankOf.get(x.id) ?? 0));
         let n = 0;
-        for (const p of picked) if (n < PER_PRICE_BAND && bandOf(p) === b && add(p)) n++;
-        for (const p of candidates) if (n < PER_PRICE_BAND && bandOf(p) === b && !ladder.includes(p) && add(p)) n++;
+        for (const p of inBand) if (n < PER_PRICE_BAND && add(p)) n++;
       }
       outcome.priceBands = Object.fromEntries(ladder.map((p) => [p.id.toUpperCase(), bandOf(p)!]));
       logger.info(

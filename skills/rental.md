@@ -48,12 +48,18 @@ the broker's tap (owner's rule since the start).
 2. 15 minutes later, if the client is silent: Amelia's first message, a shortlist built from the
    form, approved in Copilot. A client who answers inside those 15 minutes cancels it.
 
-## 5. The shortlist (04.09, 14.09, 21.09)
+## 5. The shortlist (04.09, 14.09, 21.09, 26.09)
 
 - Bedrooms, area and budget are the request. Only villas that fit: the right number of bedrooms,
   the named area (neighbours only if the client allowed), free on the move-in date (04.09, 14.09).
 - Price ladder around the budget: up to 2 below (70–90%), up to 2 in budget, up to 2 above
   (100–125%), so the client sees the price in comparison (21.09).
+- Order inside the request (26.09): villas inspected by Yudi (Listed) go first; unchecked ones
+  (Pre-listed) only when inspected ones do not fill the shortlist; any villa with a red flag or
+  construction nearby goes last, even if Listed. Inside each group villas with green flags go
+  first — a Green flags line from the inspection or a feature checked on the site (garden,
+  enclosed living room, workspace, quiet street, no construction). Then the price closest to the
+  budget. The same order holds inside every price group of the ladder.
 - Layout: an intro that repeats the request with its details (garden, kitchen, quiet), then the
   villas by price group with a caption and link each, then "which ones do you like?" (21.09).
 - Never write that a villa is free now — availability is checked after the client chooses (21.09).
