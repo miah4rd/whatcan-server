@@ -38,6 +38,10 @@ main { padding: 12px 12px 0; max-width: 640px; margin: 0 auto; }
 .opt.on { background: rgba(45,212,191,.16); border-color: #2dd4bf; color: #5eead4; }
 .opt.on.bad { background: rgba(248,113,113,.14); border-color: #f87171; color: #fca5a5; }
 .flags { display: grid; gap: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.chip { border: 1px solid #2a3146; background: #161b2a; color: #e6e8ee; border-radius: 16px; padding: 6px 10px; font-size: 13px; font-family: inherit; cursor: pointer; }
+.chip.on.red { background: #4a1d24; border-color: #f87171; }
+.chip.on.green { background: #173826; border-color: #4ade80; }
 .flag { display: flex; gap: 6px; align-items: center; }
 .flag input { flex: 1; min-width: 0; background: #0f1320; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 10px; font-size: 16px; font-family: inherit; }
 .flag.red input { border-left: 3px solid #f87171; }
@@ -171,10 +175,33 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     }).catch(function () { $("#saved").textContent = "not saved — offline?"; });
   }
 
+  // Usual flags as one-tap chips (owner, 26.09.2026); anything else is typed below them.
+  var PRESET = {
+    green: ["Garden", "Large garden", "Enclosed living room", "Closed kitchen", "Workspace / office", "Quiet street", "No construction nearby", "Family-friendly", "Pet-friendly", "Good condition", "Well maintained", "Walk to the beach", "Walk to cafes", "Rice field view", "Staff on site", "Nothing special"],
+    red: ["Construction nearby", "Road noise", "Open living room", "No garden", "Small garden", "Damp / mould smell", "Ants / insects", "Old, needs maintenance", "Poor build quality", "Small rooms", "Steep stairs", "Nothing special"]
+  };
+  function isPreset(kind, v) { var t = String(v || "").trim().toLowerCase(); return PRESET[kind].some(function (c) { return c.toLowerCase() === t; }); }
+  function hasFlag(kind, c) { return S[kind].some(function (v) { return String(v).trim().toLowerCase() === c.toLowerCase(); }); }
+  function toggleFlag(kind, c) {
+    if (hasFlag(kind, c)) {
+      S[kind] = S[kind].filter(function (v) { return String(v).trim().toLowerCase() !== c.toLowerCase(); });
+    } else {
+      if (c !== "Nothing special") S[kind] = S[kind].filter(function (v) { return String(v).trim().toLowerCase() !== "nothing special"; });
+      else S[kind] = S[kind].filter(function (v) { return !isPreset(kind, v) || !String(v).trim(); });
+      S[kind].push(c);
+    }
+    if (kind === "red" && c === "Construction nearby") S.construction = hasFlag("red", c);
+    scheduleSave(); render();
+  }
+
   function flagsHtml(kind) {
-    var h = '<div class="flags">';
+    var h = '<div class="chips">' + PRESET[kind].map(function (c) {
+      return '<button class="chip ' + kind + (hasFlag(kind, c) ? " on" : "") + '" data-chip="' + kind + '" data-c="' + esc(c) + '">' + esc(c) + "</button>";
+    }).join("") + '</div><div class="flags">';
+    if (!S[kind].some(function (v) { return !isPreset(kind, v); })) S[kind].push("");
     S[kind].forEach(function (v, i) {
-      h += '<div class="flag ' + kind + '"><input id="' + kind + i + '" data-k="' + kind + '" data-i="' + i + '" value="' + esc(v) + '" placeholder="' + (kind === "red" ? "e.g. road noise at night" : "e.g. sunset view from the pool") + '"><button class="x" data-del="' + kind + '" data-i="' + i + '" aria-label="Remove">&times;</button></div>';
+      if (isPreset(kind, v)) return;
+      h += '<div class="flag ' + kind + '"><input id="' + kind + i + '" data-k="' + kind + '" data-i="' + i + '" value="' + esc(v) + '" placeholder="' + (kind === "red" ? "Anything else, e.g. mosque nearby" : "Anything else, e.g. sunset view from the pool") + '"><button class="x" data-del="' + kind + '" data-i="' + i + '" aria-label="Remove">&times;</button></div>';
     });
     return h + '<button class="add" data-add="' + kind + '">+ Add ' + kind + " flag</button></div>";
   }
@@ -294,7 +321,8 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     });
     document.querySelectorAll("[data-del]").forEach(function (b) { b.onclick = function () { var k = b.getAttribute("data-del"); S[k].splice(+b.getAttribute("data-i"), 1); if (!S[k].length) S[k] = [""]; scheduleSave(); render(); }; });
     document.querySelectorAll("[data-add]").forEach(function (b) { b.onclick = function () { var k = b.getAttribute("data-add"); S[k].push(""); render(); var n = document.getElementById(k + (S[k].length - 1)); if (n) n.focus(); }; });
-    $("#constr").onchange = function () { S.construction = $("#constr").checked; scheduleSave(); };
+    $("#constr").onchange = function () { S.construction = $("#constr").checked; if (S.construction !== hasFlag("red", "Construction nearby")) { toggleFlag("red", "Construction nearby"); return; } scheduleSave(); };
+    document.querySelectorAll("[data-chip]").forEach(function (b) { b.onclick = function () { toggleFlag(b.getAttribute("data-chip"), b.getAttribute("data-c")); }; });
     var nt = $("#notes");
     nt.oninput = function () { var before = missing().join(); S.notes = nt.value; scheduleSave(); $("#tidy").disabled = !nt.value.trim(); if (missing().join() !== before) rerenderKeep("notes"); };
     $("#mic").onclick = dictate;
