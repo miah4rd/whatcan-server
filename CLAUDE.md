@@ -138,6 +138,25 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
 - `nice -n 10`, one ffmpeg thread, one photo at a time, 50 s per tick.
   `PHOTO_VARIANTS_DISABLED=1` pauses it.
 
+## A funnel's rules are the owner's words, never ours (owner, 26.09.2026)
+
+The bot must work by the structure the brokers teach it through Copilot, not by rules a session
+invents. On 07.09 a session added "minimum stay" and "the earliest day we could bring a client to
+view it" to the listing funnel's QUALIFIED bar (commit ba15157) with no word from the owner. Its only
+reason was a CLIENT-funnel problem ("clients asked to see seven of our listings and one could be
+shown") — fixed by adding a requirement to the LISTING funnel, where there are no client viewings at
+all: the listing funnel qualifies, then Yudi books an INSPECTION. It held 96 of 107 answered owner
+cards in TAKEN TO WORK for almost three weeks. Removed 26.09.
+
+- Every condition that decides a stage (`meetsQualified`, `desiredStage`, the reply prompt's
+  "a card is qualified once…", the nudge asks) carries the owner's words and the date in a comment.
+  No quote, no rule. If a rule seems needed, ask the owner first; do not ship it and report it later.
+- A problem seen in one funnel is not fixed by adding a requirement to another funnel.
+- Rental Listings QUALIFIED (owner, 26.09.2026): (1) the owner or the owner's own staff, not another
+  agency; (2) the price with our 10% commission position. Everything else (bedrooms, photos,
+  description) comes from the internet; minimum stay and the visit come after qualification.
+  A commission other than 10% is not accepted.
+
 ## Rules that exist because of a production bug
 
 - **amoCRM `content` timestamps are Moscow time (UTC+3), not UTC.** Parsing them
