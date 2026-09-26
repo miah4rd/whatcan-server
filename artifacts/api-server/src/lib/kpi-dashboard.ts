@@ -235,6 +235,23 @@ const amoCache = new Map<string, { at: number; value: unknown }>();
  * The leads amoCRM created in a span of Bali days, each with its segment and channel, the same way
  * this dashboard counts them (Unicorn OS analytics reads its sources from here: one rule, one number).
  */
+/** Leads amoCRM created in a span of Bali days, with their custom fields (the demand matrix reads its cells from them). */
+export async function leadsCreatedWithFields(from: string, to: string): Promise<Array<{ id: string; pipelineId: number; field: (ids: number[]) => string }>> {
+  const leads = await amoLeadsCreated(from, to);
+  return leads.map((l) => ({
+    id: String(l.id),
+    pipelineId: l.pipeline_id,
+    // The first filled field of a group of synonyms (bali-demand-matrix: fallback by groups).
+    field: (ids: number[]) => {
+      for (const id of ids) {
+        const v = l.custom_fields_values?.find((x) => x.field_id === id)?.values?.map((x) => x.value).filter((x) => x != null && String(x).trim() !== "").join(", ");
+        if (v) return String(v);
+      }
+      return "";
+    },
+  }));
+}
+
 export async function leadsBySource(from: string, to: string): Promise<Array<{ id: string; segment: "clients" | "sales" | "owners"; channel: Channel }>> {
   const leads = await amoLeadsCreated(from, to);
   return leads.map((l) => ({ id: String(l.id), ...classifyLead(l) }));

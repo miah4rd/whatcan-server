@@ -12,8 +12,9 @@ import { logger } from "../logger";
 import { baliDate, leadsBySource, CHANNEL_LABEL } from "../kpi-dashboard";
 import { stageMap, type FunnelKey } from "./automation-map";
 import { teamScorecard, funnelPeople, periodRange, customRange, spanDays, PERIODS, type Period } from "./team";
-import { OBJECTION_CATEGORIES, supplyGaps } from "./analytics";
+import { OBJECTION_CATEGORIES } from "./analytics";
 import { amoLeadNames } from "./data";
+import { demandMatrix } from "./demand-matrix";
 
 const PIPE: Record<FunnelKey, string> = { rental: "rental", "rental-listings": "rental listings", unicorn: "unicorn" };
 const SEGMENT: Record<FunnelKey, "clients" | "owners" | "sales"> = { rental: "clients", "rental-listings": "owners", unicorn: "sales" };
@@ -129,8 +130,8 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
       SQL_APPROVE,
       P,
     ),
-    q(`SELECT l.lead_id, l.responsible_user AS who, l.discard_reason FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, P),
-    q(`SELECT l.lead_id, l.responsible_user AS who, l.discard_reason FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, [key, at(prev.from), at(prev.to), who]),
+    q(`SELECT l.lead_id, l.responsible_user AS who, l.discard_reason, l.req_budget_idr_monthly FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, P),
+    q(`SELECT l.lead_id, l.responsible_user AS who, l.discard_reason, l.req_budget_idr_monthly FROM leads_sync l WHERE lower(coalesce(l.pipeline,'')) = $1 AND l.amo_created_at >= $2 AND l.amo_created_at < $3 AND ${byWho}`, [key, at(prev.from), at(prev.to), who]),
     reportRows(f, range, who),
     q(
       `SELECT o.lead_id, o.source, o.category, o.quote, o.said_at, coalesce(l.responsible_user, o.broker) AS who
@@ -156,7 +157,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
       `SELECT
          (SELECT count(*) FROM sent_messages m JOIN leads_sync l ON l.lead_id = m.lead_id WHERE lower(coalesce(l.pipeline,'')) = $1 AND m.created_at >= $2 AND m.created_at < $3 AND NOT (m.webhook_status BETWEEN 200 AND 299))::int AS failed,
          (SELECT count(*) FROM sent_messages m JOIN leads_sync l ON l.lead_id = m.lead_id WHERE lower(coalesce(l.pipeline,'')) = $1 AND m.created_at >= $4 AND m.created_at < $5 AND NOT (m.webhook_status BETWEEN 200 AND 299))::int AS failed_prev,
-         (SELECT count(*) FROM wa_messages w WHERE w.status = 'error' AND w.created_at >= $2 AND w.created_at < $3)::int AS wa_errors,
+         (SELECT count(*) FROM wa_messages w WHERE w.status = 'error' AND coalesce(w.error,'') <> 'not_on_whatsapp' AND w.created_at >= $2 AND w.created_at < $3)::int AS wa_errors,
          (SELECT extract(epoch FROM now() - max(updated_at)) / 60 FROM leads_sync)::int AS sync_lag_min,
          (SELECT coalesce(sum(cost_usd), 0) FROM ai_usage WHERE created_at > now() - interval '24 hours')::float8 AS ai_24h,
          (SELECT value FROM broker_settings WHERE key = 'ai_daily_cap_usd' LIMIT 1) AS ai_cap`,
@@ -239,6 +240,24 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
       stuck: sum(nowIn, "stuck", s.name),
     };
   });
+
+  // Targets read the funnel itself (owner, 26.09: "take the data from the funnel, by stage, invent
+  // nothing"): each target metric is the number of cards that reached its stage in the period, per
+  // person and for the team — the very numbers of the stage table.
+  const TARGET_STAGE: Record<FunnelKey, Record<string, RegExp>> = {
+    rental: { leads: /^new lead$/i, shortlisted: /^options sent$/i, viewings_held: /^viewing done$/i, deals: /^contract signed$/i },
+    "rental-listings": { leads: /^initial contact$/i, taken: /^taken to work$/i, qualified: /^qualified/i, prelisted: /^qualified/i, inspections_agreed: /^inspection sc/i, inspections_held: /^inspection sc/i, listed: /^live$/i },
+    unicorn: { leads: /^new lead$/i, options: /^options sent$/i, viewings: /^viewing scheduled$/i, won: /^closed - won$/i },
+  };
+  for (const [metric, re] of Object.entries(TARGET_STAGE[f])) {
+    const st = map.stages.find((x) => re.test(x.name.trim()));
+    if (!st) continue;
+    for (const p of score.people) {
+      p.values[metric] = { v: reachOf(cur, st.name, p.name), prev: reachOf(bef, st.name, p.name) };
+    }
+    score.team.values[metric] = { v: reachOf(cur, st.name), prev: reachOf(bef, st.name) };
+  }
+  const targetStage = Object.fromEntries(Object.entries(TARGET_STAGE[f]).map(([m, re]) => [m, map.stages.find((x) => re.test(x.name.trim()))?.name ?? null]));
 
   // "Stuck" per person counts the funnel's main path only: side stages (co-broke, long term, closed)
   // and stage names amoCRM no longer has are not work waiting to move.
@@ -381,14 +400,21 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
       })
       .sort((x, y) => y.clients - x.clients);
   };
-  let supply: Array<Record<string, unknown>> = [];
-  if (f === "rental") {
+  // Demand and supply by the owner's method (demand-matrix.ts): the listing search's target.
+  let matrix: Awaited<ReturnType<typeof demandMatrix>> | null = null;
+  if (f !== "unicorn") {
     try {
-      supply = ((await supplyGaps(14)).segments as Array<Record<string, unknown>>).slice(0, 5);
-    } catch {
-      supply = [];
+      matrix = await demandMatrix();
+    } catch (err) {
+      logger.warn({ err }, "os funnel report: demand matrix failed");
     }
   }
+  const supply = (matrix?.cells ?? []) as unknown as Array<Record<string, unknown>>;
+
+  // Reports against the calendar: every viewing (Rental) or inspection (Rental Listings) of the period,
+  // with what the calendar shows, whether a report exists and whether it was filed on time.
+  const calendar = f === "unicorn" ? [] : await reportCalendar(f, range, who);
+
   // Bottlenecks: signals on every side, each against the period before, green / amber / red. They say
   // where to look; the why stays the owner's weekly review with the AI (owner, 26.09).
   type Sig = { side: string; label: string; value: string; was: string | null; status: "ok" | "warn" | "bad"; note?: string };
@@ -397,9 +423,14 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   const volCh = pctChange(inflow.newCards, prevCards.length);
   sig.push({ side: "Inflow", label: "New cards", value: String(inflow.newCards), was: String(prevCards.length), status: volCh != null && volCh <= -40 ? "bad" : volCh != null && volCh <= -20 ? "warn" : "ok", note: volCh != null ? `${volCh > 0 ? "+" : ""}${volCh}%` : undefined });
   if (f === "rental") {
-    const bb = cards.length ? Math.round((cards.filter((c) => /budget/i.test(String(c.discard_reason ?? ""))).length / cards.length) * 100) : 0;
-    const bbPrev = prevCards.length ? Math.round((prevCards.filter((c) => /budget/i.test(String(c.discard_reason ?? ""))).length / prevCards.length) * 100) : 0;
-    sig.push({ side: "Lead quality", label: "New cards below the 30M budget", value: `${bb}%`, was: `${bbPrev}%`, status: bb >= 45 ? "bad" : bb >= 30 ? "warn" : "ok" });
+    // Of the new clients who named a budget, the share below the 30M floor.
+    const share = (xs: Record<string, unknown>[]) => {
+      const named = xs.filter((c) => Number(c.req_budget_idr_monthly) > 0);
+      return named.length ? Math.round((named.filter((c) => Number(c.req_budget_idr_monthly) < 30_000_000).length / named.length) * 100) : null;
+    };
+    const bb = share(cards);
+    const bbPrev = share(prevCards);
+    if (bb != null) sig.push({ side: "Lead quality", label: "New clients with a budget below 30M", value: `${bb}%`, was: bbPrev == null ? null : `${bbPrev}%`, status: bb >= 45 ? "bad" : bb >= 30 ? "warn" : "ok", note: "of those who named one" });
   }
   const lostNow = stagesOut.find((x) => /closed.*lost/i.test(x.name));
   if (lostNow) {
@@ -413,9 +444,10 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   sig.push({ side: "Agent", label: "Overdue tasks on live cards", value: String(teamRow.overdueTasks), was: null, status: teamRow.overdueTasks >= 50 ? "bad" : teamRow.overdueTasks >= 10 ? "warn" : "ok" });
   sig.push({ side: "Agent", label: "Cards stuck 7 days on the main path", value: String(teamRow.stuck), was: null, status: teamRow.stuck >= 60 ? "bad" : teamRow.stuck >= 20 ? "warn" : "ok" });
   if (teamRow.asWrittenPct != null) sig.push({ side: "Agent", label: "Drafts sent without an edit", value: `${teamRow.asWrittenPct}%`, was: teamRow.prev.asWrittenPct == null ? null : `${teamRow.prev.asWrittenPct}%`, status: teamRow.prev.asWrittenPct != null && teamRow.asWrittenPct < teamRow.prev.asWrittenPct - 10 ? "warn" : "ok", note: "the bot learning the team's way" });
-  if (f === "rental") {
-    const short = (supply as Array<Record<string, unknown>>).filter((x) => Number(x["matchingVillas"]) < Number(x["requests"]));
-    sig.push({ side: "Supply", label: "Asked-for kinds of villa short of stock (14 days)", value: String(short.length), was: null, status: short.length >= 3 ? "bad" : short.length ? "warn" : "ok", note: short.slice(0, 3).map((x) => `${x["bedrooms"] ?? ""}BR ${x["area"]} ${x["band"]}`).join(", ") || undefined });
+  if (matrix) {
+    const short = matrix.cells.filter((c) => c.demand > 2 && (c.coeff == null || c.coeff > 1));
+    sig.push({ side: "Supply", label: "Cells short of villas (coefficient > 1, 3+ requests)", value: String(short.length), was: null, status: short.length >= 4 ? "bad" : short.length ? "warn" : "ok", note: short.slice(0, 3).map((c) => c.cell).join(", ") || undefined });
+    sig.push({ side: "Supply", label: "Dead stock: listings no one asks for", value: `${matrix.deadStock.share}%`, was: null, status: matrix.deadStock.share >= 40 ? "bad" : matrix.deadStock.share >= 25 ? "warn" : "ok", note: `${matrix.deadStock.listings} of ${matrix.live}` });
   }
   if (f === "rental-listings") {
     const qn = stagesOut.find((x) => /qualified/i.test(x.name));
@@ -423,7 +455,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
   }
   const t = tech[0] ?? {};
   sig.push({ side: "System", label: "Sends that failed", value: String(n(t.failed)), was: String(n(t.failed_prev)), status: n(t.failed) >= 5 ? "bad" : n(t.failed) > 0 ? "warn" : "ok" });
-  sig.push({ side: "System", label: "WhatsApp gateway errors", value: String(n(t.wa_errors)), was: null, status: n(t.wa_errors) >= 5 ? "bad" : n(t.wa_errors) > 0 ? "warn" : "ok" });
+  sig.push({ side: "System", label: "WhatsApp gateway errors, all lines (not counting numbers without WhatsApp)", value: String(n(t.wa_errors)), was: null, status: n(t.wa_errors) >= 5 ? "bad" : n(t.wa_errors) > 0 ? "warn" : "ok" });
   sig.push({ side: "System", label: "amoCRM sync, minutes since the last update", value: String(n(t.sync_lag_min)), was: null, status: n(t.sync_lag_min) > 60 ? "bad" : n(t.sync_lag_min) > 15 ? "warn" : "ok" });
   const cap = Number(t.ai_cap) > 0 ? Number(t.ai_cap) : 25;
   sig.push({ side: "System", label: "AI spend in the last 24 h", value: `$${n(t.ai_24h).toFixed(2)}`, was: null, status: n(t.ai_24h) >= cap * 0.8 ? "bad" : n(t.ai_24h) >= cap * 0.5 ? "warn" : "ok", note: `cap $${cap}` });
@@ -434,6 +466,7 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
     ourSide: [...brokers.map((b) => ({ name: b.name, unanswered: b.unanswered, stuck: b.stuck, overdueTasks: b.overdueTasks, reportsMissing: b.reports.missing })), { name: "Team", unanswered: teamRow.unanswered, stuck: teamRow.stuck, overdueTasks: teamRow.overdueTasks, reportsMissing: teamRow.reports.missing }],
     stuckByStage: stagesOut.filter((s) => s.stuck > 0).sort((a, b) => b.stuck - a.stuck).slice(0, 4).map((s) => ({ stage: s.name, stuck: s.stuck, workedBy: s.workedBy })),
     inflow: { newCards: inflow.newCards, prevNewCards: inflow.prevNewCards, belowBudget, supply },
+    matrix,
   };
 
   // ── today: the red flags, as of now, whatever the period
@@ -464,9 +497,10 @@ async function buildReport(f: FunnelKey, opts: { period?: string; date?: string;
     people,
     reportDueHours: REPORT_DUE_HOURS,
     flags,
-    targets: score,
+    targets: { ...score, targetStage },
     work: { ...work, inflow, stages: stagesOut },
     brokers: [...brokers, teamRow],
+    calendar,
     bottlenecks,
   };
 }
@@ -500,6 +534,62 @@ async function copilotQueue(key: string): Promise<Array<{ who: string; kind: str
     }),
   );
   return out;
+}
+
+/**
+ * Every viewing or inspection of the period as the calendar, the report table and the funnel see it,
+ * so a gap shows: on the calendar with no report form, a report not filed, filed late, or a report
+ * with no calendar entry (owner, 26.09: "record every mismatch, e.g. a broker forgot the report").
+ */
+async function reportCalendar(f: FunnelKey, range: { from: string; to: string }, who: string | null) {
+  const rows =
+    f === "rental"
+      ? await q(
+          `WITH cal AS (SELECT lead_id::text AS lead_id, viewing_at AS at, summary FROM viewing_calendar_events WHERE viewing_at >= $1 AND viewing_at < $2),
+                rep AS (SELECT lead_id::text AS lead_id, viewing_at AS at, status, outcome, filed_at, property_code FROM viewing_reports WHERE viewing_at >= $1 AND viewing_at < $2)
+           SELECT coalesce(c.lead_id, r.lead_id) AS lead_id, coalesce(r.at, c.at) AS at, c.summary, (c.lead_id IS NOT NULL) AS on_calendar,
+                  (r.lead_id IS NOT NULL) AS has_report, r.status, r.outcome, r.filed_at, r.property_code, l.responsible_user AS who
+             FROM cal c FULL JOIN rep r ON r.lead_id = c.lead_id AND abs(extract(epoch FROM r.at - c.at)) < 3600
+             LEFT JOIN leads_sync l ON l.lead_id = coalesce(c.lead_id, r.lead_id)
+            WHERE ($3::text IS NULL OR lower(l.responsible_user) = $3) ORDER BY 2`,
+          [at(range.from), at(range.to), who],
+        )
+      : await q(
+          `WITH slot AS (SELECT lead_id::text AS lead_id, visit_at AS at, status FROM listing_inspection_slots WHERE superseded_at IS NULL AND visit_at >= $1 AND visit_at < $2),
+                cal AS (SELECT unnest(lead_ids)::text AS lead_id, visit_at AS at, summary FROM inspection_calendar_events WHERE visit_at >= $1 AND visit_at < $2)
+           SELECT s.lead_id, s.at, s.status AS slot_status, c.summary, (c.lead_id IS NOT NULL) AS on_calendar,
+                  ir.id IS NOT NULL AS has_report, ir.status, NULL AS outcome, coalesce(ir.filed_at, ir.done_at) AS filed_at, ir.property_code, l.responsible_user AS who
+             FROM slot s LEFT JOIN cal c ON c.lead_id = s.lead_id AND abs(extract(epoch FROM c.at - s.at)) < 3600
+             LEFT JOIN LATERAL (SELECT * FROM inspection_reports x WHERE x.lead_id::text = s.lead_id ORDER BY coalesce(x.filed_at, x.done_at, x.created_at) DESC LIMIT 1) ir ON true
+             LEFT JOIN leads_sync l ON l.lead_id = s.lead_id
+            WHERE coalesce(s.status,'') NOT IN ('cancelled') AND ($3::text IS NULL OR lower(l.responsible_user) = $3) ORDER BY 2`,
+          [at(range.from), at(range.to), who],
+        );
+  const names = await amoLeadNames([...new Set(rows.map((r) => String(r.lead_id)))]).catch(() => new Map<string, string>());
+  const now = Date.now();
+  return rows.map((r) => {
+    const start = Date.parse(String(r.at));
+    const filed = r.filed_at ? Date.parse(String(r.filed_at)) : null;
+    const past = start < now;
+    const due = start + REPORT_DUE_HOURS * 3600_000;
+    let state: string;
+    if (!past) state = "upcoming";
+    else if (!r.has_report) state = "no report form";
+    else if (r.status === "cancelled") state = "cancelled";
+    else if (filed == null) state = now > due ? "not filed" : "due soon";
+    else state = filed > due ? "filed late" : "filed";
+    return {
+      leadId: String(r.lead_id),
+      name: names.get(String(r.lead_id)) ?? null,
+      who: r.who ?? null,
+      at: r.at,
+      villa: r.property_code ?? null,
+      onCalendar: !!r.on_calendar,
+      outcome: r.outcome ?? null,
+      state,
+      mismatch: past && (!r.on_calendar || state === "no report form" || state === "not filed" || state === "filed late"),
+    };
+  });
 }
 
 /** Viewings (Rental) or inspections (Rental Listings) held in the period, with their report's state. */

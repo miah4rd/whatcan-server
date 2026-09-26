@@ -751,3 +751,9 @@ details.an-obj li a{color:var(--text);font-weight:600;text-decoration:underline;
 .bn-r:first-of-type{border-top:0}
 .bn-r b{font-weight:600}.bn-r.bad b{color:var(--bad)}.bn-r.warn b{color:var(--push)}
 .bn-r .faint{font-size:11px;text-align:right}
+
+.bn-r{grid-template-columns:minmax(0,1fr) auto auto}
+.bn-ch{font-size:11px;text-align:right;white-space:nowrap}
+.an-kpis>div.ok b{color:var(--live)}.an-kpis>div.warn b{color:var(--push)}.an-kpis>div.bad b{color:var(--bad)}
+table.an-t tr.mis td{background:var(--hot-bg)}
+table.an-t td a{color:var(--text);text-decoration:underline;text-decoration-color:var(--border-2);text-underline-offset:2px}

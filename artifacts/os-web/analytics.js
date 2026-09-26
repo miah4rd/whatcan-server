@@ -103,7 +103,8 @@ const dash = (v) => (v == null || v === "" ? "—" : v);
 const delta = (v, p, lower = false, unit = "") => {
   if (p == null || v == null || v === p) return "";
   const good = lower ? v < p : v > p;
-  return `<span class="an-d ${good ? "up" : "down"}" title="${esc(String(p))}${esc(unit.trim() === "pp" ? "%" : unit)} the period before">${v > p ? "▲" : "▼"} ${Math.abs(v - p)}${unit}</span>`;
+  const pc = !unit && p > 0 ? ` (${v > p ? "+" : "−"}${Math.round((Math.abs(v - p) / p) * 100)}%)` : "";
+  return `<span class="an-d ${good ? "up" : "down"}" title="${esc(String(p))}${esc(unit.trim() === "pp" ? "%" : unit)} the period before">${v > p ? "▲" : "▼"} ${Math.abs(v - p)}${unit}${pc}</span>`;
 };
 const deltaMin = (v, p) => {
   if (p == null || v == null || v === p) return "";
@@ -164,6 +165,7 @@ screens.analytics = {
       ${flagsHtml(d)}
       ${targetsHtml(d)}
       ${workHtml(d)}
+      ${reportsHtml(d)}
       ${objectionsHtml(d)}
       ${bottlenecksHtml(d)}
     </div>`;
@@ -212,7 +214,7 @@ function targetBar(label, v, t, prev, pace) {
   const status = share >= 1 ? "done" : share >= pace * 0.85 ? "ok" : share >= pace * 0.6 ? "warn" : "bad";
   const word = { done: "done", ok: "on pace", warn: "a little behind", bad: "behind" }[status];
   return `<div class="tb ${status}"><div class="tb-top"><span>${esc(label)}</span><span class="tb-st">${word}</span></div>
-    <div class="tb-num"><b>${v}</b><span>/ ${goal}${t.implied ? `<span class="faint" title="scaled from the weekly target"> ~</span>` : t.summed ? `<span class="faint" title="the sum of the people's targets"> Σ</span>` : ""}</span>${prev != null ? `<small class="faint">last ${prev}</small>` : ""}</div>
+    <div class="tb-num"><b>${v}</b><span>/ ${goal}${t.implied ? `<span class="faint" title="scaled from the weekly target"> ~</span>` : t.summed ? `<span class="faint" title="the sum of the people's targets"> Σ</span>` : ""}</span><small>${delta(v, prev)}${prev != null ? ` <span class="faint">was ${prev}</span>` : ""}</small></div>
     <div class="tb-bar"><i style="width:${Math.min(100, Math.round(share * 100))}%"></i><em style="left:${Math.round(pace * 100)}%" title="where it should be by now"></em></div></div>`;
 }
 function targetsHtml(d) {
@@ -220,9 +222,15 @@ function targetsHtml(d) {
   const pace = d.period === "day" ? 1 : elapsedShare(d);
   const working = new Set(d.brokers.map((b) => b.name.toLowerCase()));
   const people = sc.people.filter((p) => (d.who === "team" ? working.has(p.name.toLowerCase()) || Object.keys(p.targets).length : p.name.toLowerCase() === d.who));
+  // One card line per funnel stage: two target metrics counting the same stage show once (the one with a target).
+  const stageOf = (m) => sc.targetStage?.[m.key] || metricName(d.funnel, m);
   const tmetrics = sc.metrics.filter((m) => m.target);
   const card = (name, values, targets, team) => {
-    const bars = tmetrics.filter((m) => targets[m.key] && targets[m.key].value > 0).map((m) => targetBar(metricName(d.funnel, m), values[m.key]?.v ?? 0, targets[m.key], values[m.key]?.prev, pace));
+    const seenStage = new Set();
+    const bars = tmetrics
+      .filter((m) => targets[m.key] && targets[m.key].value > 0)
+      .filter((m) => (seenStage.has(stageOf(m)) ? false : seenStage.add(stageOf(m))))
+      .map((m) => targetBar(stageOf(m), values[m.key]?.v ?? 0, targets[m.key], values[m.key]?.prev, pace));
     return `<div class="tc ${team ? "team" : ""}"><div class="tc-h">${esc(name)}</div>${bars.join("") || `<p class="faint" style="margin:0;font-size:12px">No target set.</p>`}</div>`;
   };
   // A card for everyone with a target, and the team; the rest are named in one line to set theirs.
@@ -236,7 +244,7 @@ function targetsHtml(d) {
   return `<section class="panel an-ch"><h2><span class="an-n">1</span>Targets <span class="faint">what we want · ${Math.round(pace * 100)}% of the period gone</span>${isStaff() ? `<button class="btn sm" id="an-set-targets" style="margin-left:auto">Edit targets</button>` : ""}</h2>
     <div class="tcs">${cards}</div>
     <details class="an-more"><summary>The funnel by person: cards that reached each stage</summary><div class="an-scroll"><table class="grid an-t">${head}${body}</table></div></details>
-    <p class="faint an-note">Counted from the conversations and reports, not from stage moves. The mark on a bar is where it should be by now. A weekly target repeats every week until it is changed.</p></section>`;
+    <p class="faint an-note">Each target counts the cards that reached its stage of the funnel in the period, as in the stage table. The mark on a bar is where it should be by now; ▲▼ against the period before. A weekly target repeats every week until it is changed.</p></section>`;
 }
 
 async function setTargets(d, funnel, period, date) {
@@ -249,7 +257,7 @@ async function setTargets(d, funnel, period, date) {
     wide: true,
     body: `<label class="fld" style="max-width:220px"><span>For each</span><select class="in" name="period">${TARGET_PERIODS.map((p) => `<option ${p === per ? "selected" : ""} value="${p}">${PERIODS.find((x) => x[0] === p)[1]}</option>`).join("")}</select></label>
       <p class="faint" style="font-size:12px;margin:8px 0">A target repeats every period (every week for a weekly one) until you change it here; a change applies from the period that holds ${esc(date)}. Empty = no target. The team's target, if empty, is the sum of its people's.</p>
-      <div class="an-scroll"><table class="grid an-t"><tr><th>Who</th>${metrics.map((m) => `<th>${esc(metricName(funnel, m))}</th>`).join("")}</tr>${who
+      <div class="an-scroll"><table class="grid an-t"><tr><th>Who</th>${metrics.map((m) => `<th>${esc(sc.targetStage?.[m.key] || metricName(funnel, m))}</th>`).join("")}</tr>${who
         .map(([k, name, t]) => `<tr><td>${esc(name)}</td>${metrics.map((m) => `<td><input class="in an-in" type="number" min="0" step="1" name="t:${esc(k)}:${m.key}" value="${t[m.key] && !t[m.key].implied && !t[m.key].summed ? t[m.key].value : ""}"></td>`).join("")}</tr>`)
         .join("")}</table></div>`,
     actions: [{ label: "Cancel", value: null }, { label: "Save", value: "ok", primary: true }],
@@ -315,7 +323,35 @@ function workHtml(d) {
     <p class="faint an-note">Stage moves in a period are entries, not a cohort: conversion over 100% or on fewer than 3 cards is not shown. A report is due ${d.reportDueHours} hours after the ${d.funnel === "rental-listings" ? "inspection" : "viewing"} starts.</p></section>`;
 }
 
-// ── 3. Objections: what the client (or owner) said against it; every reason opens to its objections ──
+// ── 3. Reports: every viewing or inspection against the calendar and its report ──
+const STATE = { filed: ["filed", "ok"], "filed late": ["filed late", "warn"], "not filed": ["not filed", "bad"], "no report form": ["no report form", "bad"], "due soon": ["due soon", ""], upcoming: ["upcoming", ""], cancelled: ["cancelled", ""] };
+function reportsHtml(d) {
+  const rows = d.calendar || [];
+  if (d.funnel === "unicorn") return "";
+  const kind = d.funnel === "rental-listings" ? "inspection" : "viewing";
+  const past = rows.filter((r) => r.state !== "upcoming");
+  const count = (st) => past.filter((r) => r.state === st).length;
+  const off = past.filter((r) => !r.onCalendar).length;
+  const tiles = [
+    [`${kind === "inspection" ? "Inspections" : "Viewings"} held`, past.filter((r) => r.state !== "cancelled").length, ""],
+    ["Reports filed", count("filed") + count("filed late"), "ok"],
+    ["Filed late", count("filed late"), count("filed late") ? "warn" : ""],
+    ["Not filed", count("not filed"), count("not filed") ? "bad" : ""],
+    ["No report form", count("no report form"), count("no report form") ? "bad" : ""],
+    ["Not on the calendar", off, off ? "warn" : ""],
+  ];
+  return `<section class="panel an-ch"><h2><span class="an-n">3</span>Reports <span class="faint">after every ${kind}</span></h2>
+    <p class="faint an-note">Every ${kind} of the period as the calendar and the report table see it. A report is due ${d.reportDueHours} hours after the start. A mismatch is a red row: not filed, filed late, a ${kind} with no report form, or one missing from the calendar.</p>
+    <div class="an-kpis">${tiles.map(([l, v, c]) => `<div class="${c}"><span class="faint">${esc(l)}</span><b>${v}</b></div>`).join("")}</div>
+    ${rows.length ? `<div class="an-scroll"><table class="grid an-t"><tr><th>When</th><th>Client</th><th>Broker</th><th>Villa</th><th>Calendar</th><th>Report</th>${kind === "viewing" ? "<th>Outcome</th>" : ""}</tr>${rows
+      .map((r) => {
+        const [lbl, cls] = STATE[r.state] || [r.state, ""];
+        return `<tr class="${r.mismatch ? "mis" : ""}"><td>${esc(fmtDT(r.at))}</td><td><a href="#" data-lead="${esc(r.leadId)}">${esc(r.name || "#" + r.leadId)}</a></td><td>${esc(r.who || "—")}</td><td>${esc(r.villa || "—")}</td><td>${r.onCalendar ? "✓" : `<span class="bad">missing</span>`}</td><td><span class="pill ${cls}">${esc(lbl)}</span></td>${kind === "viewing" ? `<td>${esc(r.outcome || "—")}</td>` : ""}</tr>`;
+      })
+      .join("")}</table></div>` : `<p class="faint">No ${kind}s in the period.</p>`}</section>`;
+}
+
+// ── 4. Objections: what the client (or owner) said against it; every reason opens to its objections ──
 function objectionList(title, rows) {
   if (!rows) return "";
   return `<div class="an-box"><h4>${esc(title)}</h4>${
@@ -335,7 +371,7 @@ function objectionsHtml(d) {
     d.funnel === "rental-listings"
       ? objectionList("Owners, before the inspection", cs.beforeInspection)
       : `${objectionList("Before the viewing (after the options)", cs.beforeViewing)}${objectionList("After the viewing (the reports)", cs.afterViewing)}`;
-  return `<section class="panel an-ch"><h2><span class="an-n">3</span>Objections <span class="faint">what ${d.funnel === "rental-listings" ? "owners" : "clients"} said against it</span></h2>
+  return `<section class="panel an-ch"><h2><span class="an-n">4</span>Objections <span class="faint">what ${d.funnel === "rental-listings" ? "owners" : "clients"} said against it</span></h2>
     <p class="faint an-note">Ranked by clients; ▲▼ against the period before (fewer is better). Click a reason for every objection behind it, and a name for the card with the whole conversation.</p>
     <div class="an-cols">${body}</div></section>`;
 }
@@ -351,20 +387,29 @@ function bottlenecksHtml(d) {
     if (!xs.length) return "";
     const st = xs.reduce((m, x) => (worst[x.status] < worst[m] ? x.status : m), "ok");
     return `<div class="bn ${st}"><div class="bn-h"><i></i>${esc(side)}</div>${xs
-      .map((x) => `<div class="bn-r ${x.status}"><span>${esc(x.label)}${x.note ? ` <span class="faint">· ${esc(x.note)}</span>` : ""}</span><b>${esc(x.value)}</b>${x.was != null ? `<span class="faint">was ${esc(x.was)}</span>` : "<span></span>"}</div>`)
+      .map((x) => {
+        const v = parseFloat(String(x.value).replace(/[^0-9.-]/g, ""));
+        const w = x.was == null ? null : parseFloat(String(x.was).replace(/[^0-9.-]/g, ""));
+        const upGood = /new cards|weakest step|qualified|without an edit/i.test(x.label);
+        const ch = w == null || isNaN(v) || isNaN(w) ? "" : delta(v, w, !upGood, /%/.test(x.value) ? " pp" : "");
+        return `<div class="bn-r ${x.status}"><span>${esc(x.label)}${x.note ? ` <span class="faint">· ${esc(x.note)}</span>` : ""}</span><b>${esc(x.value)}</b><span class="bn-ch">${ch}${x.was != null ? ` <span class="faint">was ${esc(x.was)}</span>` : ""}</span></div>`;
+      })
       .join("")}</div>`;
   }).join("");
   const ours = `<div class="an-scroll"><table class="grid an-t"><tr><th>Who</th><th class="r">Waiting 4h+ now</th><th class="r">Cards stuck 7d+</th><th class="r">Overdue tasks</th><th class="r">Reports missing</th></tr>${b.ourSide
     .map((r) => `<tr class="${r.name === "Team" ? "tm" : ""}"><td>${esc(r.name)}</td><td class="r ${r.unanswered ? "bad" : ""}">${r.unanswered || "—"}</td><td class="r">${r.stuck || "—"}</td><td class="r">${r.overdueTasks || "—"}</td><td class="r ${r.reportsMissing ? "bad" : ""}">${r.reportsMissing || "—"}</td></tr>`)
     .join("")}</table></div>${b.stuckByStage.length ? `<p class="an-line">Stuck most: ${b.stuckByStage.map((s) => `${esc(s.stage)} <b>${s.stuck}</b> <span class="faint">(${esc((WORKED_BY[s.workedBy] || [s.workedBy])[0])})</span>`).join(" · ")}</p>` : ""}`;
-  const supply = (b.inflow.supply || []).length
-    ? `<table class="grid an-t"><tr><th>Asked for (last 14 days)</th><th class="r">Requests</th><th class="r">Villas that fit</th></tr>${b.inflow.supply
-        .map((s) => `<tr><td>${esc([s.bedrooms ? s.bedrooms + "BR" : "", s.area, s.band].filter(Boolean).join(" · "))}</td><td class="r">${s.requests ?? "—"}</td><td class="r ${Number(s.matchingVillas) < Number(s.requests) ? "bad" : ""}">${s.matchingVillas ?? "—"}</td></tr>`)
-        .join("")}</table>`
+  const m = b.matrix;
+  const supply = m
+    ? `<p class="faint an-note">The owner's method (25.09): a cell is bedrooms × area × budget; demand = every Rental lead of the last 14 days (closed ones too), a lead naming several of our areas counts in each; supply = live listings free within 3 months. Coefficient = % of demand ÷ % of supply: over 1 or ∞ = short, look for villas; under 1 = surplus, do not. Plan: top down by demand among short cells with 3+ requests, at most 4 a cell, 20 a day.</p>
+      <div class="an-scroll"><table class="grid an-t"><tr><th>#</th><th>Cell</th><th class="r">Demand 14d</th><th class="r">% demand</th><th class="r">Listings</th><th class="r">% supply</th><th class="r">Coefficient</th><th class="r">Plan</th></tr>${m.cells
+        .map((c, i) => `<tr><td>${i + 1}</td><td>${esc(c.cell)}</td><td class="r">${c.demand}</td><td class="r">${c.demandPct}</td><td class="r">${c.listings}</td><td class="r">${c.supplyPct}</td><td class="r ${c.coeff == null || c.coeff > 1 ? "bad" : "ok"}">${c.coeff == null ? "∞" : c.coeff}</td><td class="r"><b>${c.plan || (c.demand <= 2 ? `<span class="faint">noise</span>` : "—")}</b></td></tr>`)
+        .join("")}</table></div>
+      <p class="an-line"><b>${m.planned}</b> villas to look for today · ${m.placements} placements from ${m.leads} leads · ${m.live} live listings${m.surplus.length ? `<br>Surplus (coefficient under 1): ${esc(m.surplus.join(", "))}` : ""}<br>Dead stock: <b>${m.deadStock.listings}</b> of ${m.live} (${m.deadStock.share}%)${m.deadStock.cells.length ? ` · ${esc(m.deadStock.cells.join(", "))}` : ""}<br><span class="faint">Labelling: ${m.quality.leads} leads · ${m.quality.placed} in the matrix · ${m.quality.incomplete} missing bedrooms, area or budget · ${m.quality.foreign} not our areas · ${m.quality.belowFloor} below the 30M floor</span></p>`
     : "";
-  return `<section class="panel an-ch"><h2><span class="an-n">4</span>Bottlenecks <span class="faint">where to look first</span></h2>
+  return `<section class="panel an-ch"><h2><span class="an-n">5</span>Bottlenecks <span class="faint">where to look first</span></h2>
     <p class="faint an-note">Signals on every side, against the period before. They show where the funnel is held; the why is the weekly review.</p>
     <div class="bns">${groups}</div>
     <details class="an-more"><summary>Our side, person by person</summary>${ours}</details>
-    ${supply ? `<details class="an-more"><summary>Supply: villas for what clients ask</summary>${supply}</details>` : ""}</section>`;
+    ${supply ? `<details class="an-more" ${d.funnel === "rental-listings" ? "open" : ""}><summary>Demand and supply: what villas to look for</summary>${supply}</details>` : ""}</section>`;
 }
