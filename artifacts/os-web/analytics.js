@@ -95,35 +95,59 @@ function label(d) {
   return d.period === "day" ? f.toLocaleDateString("en-GB", { ...o, weekday: "short" }) : `${f.toLocaleDateString("en-GB", o)} – ${t.toLocaleDateString("en-GB", { ...o, year: "numeric" })}`;
 }
 
-// ── Today ──
+// ── Today: tiles, one per kind of problem, the number first ──
 function flagsHtml(d) {
-  if (!d.flags.length) return `<div class="an-today ok">${I.check}<span><b>Today</b> · all in order: no missing reports, nobody waiting over 4 hours, targets on pace.</span></div>`;
-  const red = d.flags.filter((x) => x.level === "red");
-  return `<div class="an-today ${red.length ? "bad" : "warn"}"><b>Today · ${d.flags.length} to look at</b><ul>${d.flags
-    .map((x) => `<li class="${x.level}">${x.leadId ? `<a href="#" data-lead="${esc(x.leadId)}">${esc(x.text)}</a>` : esc(x.text)}</li>`)
-    .join("")}</ul></div>`;
+  // Behind-the-pace targets show in chapter 1 as cards; the tiles are what needs a hand now.
+  const now = d.flags.filter((x) => !/behind the pace/.test(x.text));
+  if (!now.length) return `<div class="an-today ok">${I.check}<span><b>Today</b> · all in order: no missing reports, nobody waiting over 4 hours.</span></div>`;
+  const tiles = [];
+  const reports = now.filter((x) => x.leadId);
+  if (reports.length)
+    tiles.push(`<div class="an-tile red"><b>${reports.length}</b><span>${d.funnel === "rental-listings" ? "inspection" : "viewing"} report${reports.length === 1 ? "" : "s"} not filed</span><ul>${reports
+      .map((x) => `<li><a href="#" data-lead="${esc(x.leadId)}">${esc(x.text.replace(/^.*? for /, "").replace(/ \(.*$/, ""))}</a> <span class="faint">${esc(x.who || "")}</span></li>`)
+      .join("")}</ul></div>`);
+  for (const x of now.filter((x) => !x.leadId)) {
+    const m = x.text.match(/^(\d+) clients? waiting over 4 hours for (.+)$/);
+    if (m) tiles.push(`<div class="an-tile ${x.level === "red" ? "red" : "amber"}"><b>${m[1]}</b><span>waiting over 4 h</span><em>${esc(m[2])}</em></div>`);
+    else tiles.push(`<div class="an-tile amber"><span>${esc(x.text)}</span></div>`);
+  }
+  return `<div class="an-today-h"><b>Today</b> <span class="faint">${now.length} to look at</span></div><div class="an-tiles">${tiles.join("")}</div>`;
 }
 
-// ── 1. Targets ──
+// ── 1. Targets: a card per person and the team; each target a bar with where it should be by now ──
+function elapsedShare(d) {
+  const from = Date.parse(d.from + "T00:00:00+08:00");
+  const to = Date.parse(d.to + "T00:00:00+08:00");
+  return Math.min(1, Math.max(0, (Date.now() - from) / (to - from)));
+}
+function targetBar(label, v, t, prev, pace) {
+  const goal = t.value;
+  const share = goal > 0 ? v / goal : 0;
+  const status = share >= 1 ? "done" : share >= pace * 0.85 ? "ok" : share >= pace * 0.6 ? "warn" : "bad";
+  const word = { done: "done", ok: "on pace", warn: "a little behind", bad: "behind" }[status];
+  return `<div class="tb ${status}"><div class="tb-top"><span>${esc(label)}</span><span class="tb-st">${word}</span></div>
+    <div class="tb-num"><b>${v}</b><span>/ ${goal}${t.implied ? `<span class="faint" title="scaled from the weekly target"> ~</span>` : t.summed ? `<span class="faint" title="the sum of the people's targets"> Σ</span>` : ""}</span>${prev != null ? `<small class="faint">last ${prev}</small>` : ""}</div>
+    <div class="tb-bar"><i style="width:${Math.min(100, Math.round(share * 100))}%"></i><em style="left:${Math.round(pace * 100)}%" title="where it should be by now"></em></div></div>`;
+}
 function targetsHtml(d) {
   const sc = d.targets;
-  // The people who work this funnel (the brokers table's rows) and anyone with a target here.
+  const pace = d.period === "day" ? 1 : elapsedShare(d);
   const working = new Set(d.brokers.map((b) => b.name.toLowerCase()));
-  const rows = sc.people.filter((p) => (d.who === "team" ? working.has(p.name.toLowerCase()) || Object.keys(p.targets).length : p.name.toLowerCase() === d.who));
-  const cell = (v, t, prev) => {
-    if (!t || !(t.value > 0)) return `<td class="r">${v}${delta(v, prev)}</td>`;
-    const pct = Math.round((v / t.value) * 100);
-    return `<td class="r"><b class="${pct >= 100 ? "ok" : pct >= 60 ? "" : "bad"}">${v}</b> / ${t.value}${t.implied ? `<span class="faint" title="scaled from the weekly target"> ~</span>` : ""}${delta(v, prev)}</td>`;
+  const people = sc.people.filter((p) => (d.who === "team" ? working.has(p.name.toLowerCase()) || Object.keys(p.targets).length : p.name.toLowerCase() === d.who));
+  const tmetrics = sc.metrics.filter((m) => m.target);
+  const card = (name, values, targets, team) => {
+    const bars = tmetrics.filter((m) => targets[m.key] && targets[m.key].value > 0).map((m) => targetBar(m.label, values[m.key]?.v ?? 0, targets[m.key], values[m.key]?.prev, pace));
+    return `<div class="tc ${team ? "team" : ""}"><div class="tc-h">${esc(name)}</div>${bars.join("") || `<p class="faint" style="margin:0;font-size:12px">No target set.</p>`}</div>`;
   };
-  const head = `<tr><th>Metric</th>${rows.map((p) => `<th class="r">${esc(p.name)}</th>`).join("")}${d.who === "team" ? `<th class="r">Team</th>` : ""}</tr>`;
+  const cards = [...people.map((p) => card(p.name, p.values, p.targets, false)), d.who === "team" ? card("Team (manager)", sc.team.values, sc.team.targets, true) : ""].join("");
+  const head = `<tr><th>Metric</th>${people.map((p) => `<th class="r">${esc(p.name)}</th>`).join("")}${d.who === "team" ? `<th class="r">Team</th>` : ""}</tr>`;
   const body = sc.metrics
-    .map((m) => `<tr class="${m.target ? "tg" : ""}"><td>${esc(m.label)}${m.target ? "" : ` <span class="faint">·</span>`}</td>${rows.map((p) => cell(p.values[m.key]?.v ?? 0, p.targets[m.key], p.values[m.key]?.prev)).join("")}${
-      d.who === "team" ? cell(sc.team.values[m.key]?.v ?? 0, sc.team.targets[m.key], sc.team.values[m.key]?.prev) : ""
-    }</tr>`)
+    .map((m) => `<tr><td>${esc(m.label)}</td>${people.map((p) => `<td class="r">${p.values[m.key]?.v ?? 0}${delta(p.values[m.key]?.v ?? 0, p.values[m.key]?.prev)}</td>`).join("")}${d.who === "team" ? `<td class="r">${sc.team.values[m.key]?.v ?? 0}${delta(sc.team.values[m.key]?.v ?? 0, sc.team.values[m.key]?.prev)}</td>` : ""}</tr>`)
     .join("");
-  return `<section class="panel an-ch"><h2><span class="an-n">1</span>Targets <span class="faint">what we want</span>${isStaff() ? `<button class="btn sm" id="an-set-targets" style="margin-left:auto">Set targets</button>` : ""}</h2>
-    <p class="faint an-note">Counted from the conversations and reports, not from stage moves. Bold is done against the target; ▲▼ against the period before. A target is set per person and for the team, for a week, month, quarter, half-year or year${d.period === "day" ? "; a day reads its week's target" : ""}.</p>
-    <div class="an-scroll"><table class="grid an-t">${head}${body}</table></div></section>`;
+  return `<section class="panel an-ch"><h2><span class="an-n">1</span>Targets <span class="faint">what we want · ${Math.round(pace * 100)}% of the period gone</span>${isStaff() ? `<button class="btn sm" id="an-set-targets" style="margin-left:auto">Edit targets</button>` : ""}</h2>
+    <div class="tcs">${cards}</div>
+    <details class="an-more"><summary>Every number of the funnel, by person</summary><div class="an-scroll"><table class="grid an-t">${head}${body}</table></div></details>
+    <p class="faint an-note">Counted from the conversations and reports, not from stage moves. The mark on a bar is where it should be by now. A weekly target repeats every week until it is changed.</p></section>`;
 }
 
 async function setTargets(d, funnel, period, date) {
@@ -132,10 +156,10 @@ async function setTargets(d, funnel, period, date) {
   const metrics = sc.metrics.filter((m) => m.target);
   const who = [...sc.people.map((p) => [p.name.toLowerCase(), p.name, p.targets]), ["team", "Team (manager)", sc.team.targets]];
   const r = await dialog({
-    title: "Targets",
+    title: "Edit targets",
     wide: true,
     body: `<label class="fld" style="max-width:220px"><span>For each</span><select class="in" name="period">${TARGET_PERIODS.map((p) => `<option ${p === per ? "selected" : ""} value="${p}">${PERIODS.find((x) => x[0] === p)[1]}</option>`).join("")}</select></label>
-      <p class="faint" style="font-size:12px;margin:8px 0">Starting with the period that holds ${esc(date)}. Empty = no target. The team's target, if empty, is the sum of its people's.</p>
+      <p class="faint" style="font-size:12px;margin:8px 0">A target repeats every period (every week for a weekly one) until you change it here; a change applies from the period that holds ${esc(date)}. Empty = no target. The team's target, if empty, is the sum of its people's.</p>
       <div class="an-scroll"><table class="grid an-t"><tr><th>Who</th>${metrics.map((m) => `<th>${esc(m.label)}</th>`).join("")}</tr>${who
         .map(([k, name, t]) => `<tr><td>${esc(name)}</td>${metrics.map((m) => `<td><input class="in an-in" type="number" min="0" step="1" name="t:${esc(k)}:${m.key}" value="${t[m.key] && !t[m.key].implied && !t[m.key].summed ? t[m.key].value : ""}"></td>`).join("")}</tr>`)
         .join("")}</table></div>`,
