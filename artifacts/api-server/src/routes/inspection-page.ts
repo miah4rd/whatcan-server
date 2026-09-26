@@ -254,7 +254,7 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
       '<label for="kv_drive_folder_url">Drive folder</label><input class="txt" id="kv_drive_folder_url" value="' + esc(ed.drive_folder_url != null ? ed.drive_folder_url : p.drive_folder_url || "") + '">' +
       "</div></details>";
 
-    h += '<div class="row" style="margin-top:16px"><button class="send" id="done"' + (m.length ? " disabled" : "") + ">Report done &rarr; live</button></div>" +
+    h += '<div class="row" style="margin-top:16px"><button class="send" id="done">Report done &rarr; live</button></div>" +
       '<div class="row">' + (m.length ? '<span class="missing">Still needed: ' + esc(m.join(", ")) + "</span>" : '<span class="status">Everything is filled. The bot applies it to the site, amoCRM and the chat, and checks each one.</span>') + "</div>" +
       '<div class="row" style="margin-top:14px"><button class="link" id="lostlink">Villa doesn&rsquo;t fit &mdash; not listing &rsaquo;</button></div>' +
       '<div class="row" style="margin-top:6px"><button class="link" id="nogo" style="color:#8a93a8">The visit didn&rsquo;t happen &mdash; drop this report &rsaquo;</button></div>' +
@@ -444,6 +444,9 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
 
   // ── Report done ──
   function done() {
+    // Every field is required (owner, 26.09.2026): the button always answers — a popup names what is empty.
+    var m = missing();
+    if (m.length) { alert("The report can't be sent yet. Fill in: " + m.join(", ") + ". No red or green flag? Write so, e.g. \"nothing special\"."); return; }
     var btn = $("#done") || $("#recheck");
     if (btn) btn.disabled = true;
     save().then(function () {

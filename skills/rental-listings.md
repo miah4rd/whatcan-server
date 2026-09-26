@@ -20,6 +20,13 @@ Approved by the owner: 26.09.2026.
 
 Autopilot: everything up to QUALIFIED and everything from live on. Yudi: only QUALIFIED → live. (24.09)
 
+The inspection report (26.09): every field is required — the villa code, Listed on the site, Red
+flags, Green flags and the notes. The report cannot be sent with any of them empty; the button
+answers with a popup that names what is missing. No red or green flag at the villa → Yudi writes
+so ("nothing special"); such a line is not a flag. The flags decide the order of every client
+shortlist (skills/rental.md §5): clients turn villas down over the garden, the living room and
+construction nearby.
+
 ## 2. What QUALIFIED means (26.09)
 
 Two facts, both required:

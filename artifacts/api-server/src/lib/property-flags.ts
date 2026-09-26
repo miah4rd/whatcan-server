@@ -48,12 +48,19 @@ let quality: { at: number; byId: Map<string, ListingQuality> } | null = null;
 const TEMPORARY_PHOTOS = /temporar\w*[^.\n]{0,80}(photo|frame|image|set|shoot)|(photo|frame|image)s?\b[^.\n]{0,160}temporar/i;
 const CONSTRUCTION = /construct|building site|bangun|proyek/i;
 
+/**
+ * A line that says there is no flag. The report requires both lists (owner, 26.09.2026: "пускай
+ * пишет, типа ничего особенного в ней нет"), so "nothing special" in Red flags is not a red flag
+ * and must not send an inspected villa to the bottom.
+ */
+const NO_FLAG = /^(none|nothing|no|nope|n\/?a|nil|-+|nothing (special|in particular|to note|found|bad|major|much)|no (red|green)? ?flags?( found)?|no issues?|not really|tidak ada|ga ada|gak ada|nggak ada|nothing special about it|ничего( особенного)?|нет)[.!\s]*$/i;
+
 /** "- heated pool\n• quiet street" → two flags; bullets and numbering are not content. */
-function flagLines(text: string | null): string[] {
+export function flagLines(text: string | null): string[] {
   return String(text ?? "")
     .split(/\r?\n/)
     .map((l) => l.replace(/^[\s\-•*·–—\d.)]+/, "").trim())
-    .filter((l) => l.length > 1);
+    .filter((l) => l.length > 1 && !NO_FLAG.test(l));
 }
 
 export async function listingQualityById(): Promise<Map<string, ListingQuality>> {
