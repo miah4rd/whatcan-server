@@ -20,6 +20,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { pool } from "@workspace/db";
 import { audit, type OsUser } from "./auth";
+import { refreshRegulations } from "../regulation";
 
 const run = promisify(execFile);
 
@@ -347,4 +348,54 @@ export async function lessons() {
     decided14d: decided,
     situations: [...by.entries()].map(([situation, items]) => ({ situation, count: items.length, items })).sort((a, b) => b.count - a.count),
   };
+}
+
+// ── editing in the OS, as in Cowork ──────────────────────────────────────────
+// Owner, 26.09: "I am the one who presses Save in the OS — why a double check". The owner edits a
+// regulation and saves: it is committed in his name to GitHub master (the one source) and the bot
+// follows it within a minute (lib/regulation.ts). The push goes from a separate clone, never from the
+// live checkout, so the server's own tree is untouched until the next deploy merges it.
+
+const EDIT_CLONE = "/opt/whatcan-playbooks";
+const PUSH_URL = "git@github.com:miah4rd/whatcan-server.git";
+const GIT_SSH = "ssh -i /root/.ssh/whatcan_github_write -o IdentitiesOnly=yes -o BatchMode=yes";
+let saving: Promise<unknown> = Promise.resolve();
+
+async function inClone(args: string[], cwd = EDIT_CLONE): Promise<string> {
+  const { stdout } = await run("git", args, { cwd, timeout: 90_000, maxBuffer: 8 << 20, env: { ...process.env, GIT_SSH_COMMAND: GIT_SSH } });
+  return stdout;
+}
+
+export async function savePlaybook(user: OsUser, raw: unknown, body: Record<string, unknown>) {
+  if (user.role !== "admin") throw new Error("Only the owner saves a regulation.");
+  const f = fileName(raw);
+  if (!/^[a-z0-9-]+\.md$/.test(f)) throw new Error("Cowork skills and CLAUDE.md sections are edited where they live.");
+  const text = String(body["text"] ?? "").replace(/\r\n/g, "\n").replace(/\n*$/, "\n");
+  if (text.trim().length < 40) throw new Error("The regulation is empty.");
+  if (text.length > 80_000) throw new Error("The regulation is too long.");
+  const note = clean(body["note"], 200).replace(/\s+/g, " ") || "edited in the OS";
+  const job = saving.then(async () => {
+    if (!fs.existsSync(path.join(EDIT_CLONE, ".git"))) await inClone(["clone", "-q", "--depth", "50", PUSH_URL, EDIT_CLONE], "/opt");
+    const day = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10).split("-").reverse().join(".");
+    let pushed = false;
+    for (let i = 0; i < 3 && !pushed; i++) {
+      await inClone(["fetch", "-q", "origin", "master"]);
+      await inClone(["reset", "-q", "--hard", "origin/master"]);
+      const p = path.join(EDIT_CLONE, "skills", f);
+      if (!fs.existsSync(p)) throw new Error("No such regulation on GitHub.");
+      if (fs.readFileSync(p, "utf8") === text) return { ok: true, unchanged: true };
+      fs.writeFileSync(p, text);
+      await inClone(["add", `skills/${f}`]);
+      await inClone(["-c", `user.name=${user.name}`, "-c", "user.email=info@unicorn-property.com", "commit", "-q", "-m", `Playbook ${f}: ${note}\n\nApproved in Unicorn OS by ${user.name} (owner) ${day}, saved in the Playbooks editor.`]);
+      pushed = await inClone(["push", "-q", "origin", "HEAD:master"]).then(() => true, () => false);
+    }
+    if (!pushed) throw new Error("GitHub did not take the save. Try again.");
+    fetchedAt = 0;
+    await git(["fetch", "-q", "github", "master"]);
+    await refreshRegulations(false);
+    await audit(user, "playbook.save", f, { note, chars: text.length });
+    return { ok: true };
+  });
+  saving = job.catch(() => undefined);
+  return job;
 }

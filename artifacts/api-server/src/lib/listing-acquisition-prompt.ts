@@ -26,6 +26,7 @@
  * messages (owner-voice.ts), and nothing the thread already answers is asked
  * again (owner-thread-known.ts — in the prompt, and cut from the finished draft).
  */
+import { regulationBlock } from "./regulation";
 import { db, leadsSyncTable, brokerSettingsTable } from "@workspace/db";
 import { eq, isNull, and } from "drizzle-orm";
 import { chatCompletionJSON, WRITER_MODEL } from "./ai-client";
@@ -451,7 +452,8 @@ Task: write the next WhatsApp reply, following the WHAT TO DO rules based on wha
     chatCompletionJSON<{ reply?: string; contact_type?: string }>({
       model: WRITER_MODEL,
       label: "listing-acquisition",
-      cachePrefix: SYSTEM_PROMPT,
+      // The owner's regulation (skills/rental-listings.md) joins the cached prefix; a save in Playbooks applies at once.
+      cachePrefix: SYSTEM_PROMPT + regulationBlock("rental listings"),
       system,
       messages: [{ role: "user", content: prompt + extra }],
       max_tokens: 400,

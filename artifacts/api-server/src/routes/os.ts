@@ -123,7 +123,7 @@ import {
   osFunnelsBrief,
 } from "../lib/os/funnels";
 import { funnelReport } from "../lib/os/funnel-report";
-import { listPlaybooks, readPlaybook, playbookVersion, propose, listProposals, decide, lessons } from "../lib/os/playbooks";
+import { listPlaybooks, readPlaybook, playbookVersion, propose, listProposals, decide, lessons, savePlaybook } from "../lib/os/playbooks";
 import { logger } from "../lib/logger";
 import { REACH_STAGE_KEYWORDS } from "../lib/pipelines";
 
@@ -502,6 +502,7 @@ api.post("/playbooks/proposals", signedIn, h(async (req) => propose(req.osUser!,
 api.post("/playbooks/proposals/:id/decide", adminOnly, h(async (req) => decide(req.osUser!, idp(req), req.body ?? {})));
 api.get("/playbooks/:file/versions/:commit", signedIn, h(async (req) => playbookVersion(req.params["file"], req.params["commit"])));
 api.get("/playbooks/:file", signedIn, h(async (req) => readPlaybook(req.params["file"])));
+api.put("/playbooks/:file", adminOnly, h(async (req) => savePlaybook(req.osUser!, req.params["file"], req.body ?? {})));
 
 // The bot's rules (stage meanings, the autopilot line, the switches) are shown, not changed, in the OS:
 // a change is proposed in Playbooks and applied only with the owner's approval (26.09).

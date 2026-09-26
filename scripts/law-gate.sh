@@ -12,7 +12,8 @@ bad=0
 for f in $changed; do
   # every commit in the range that touches this file must carry the owner's approval
   for c in $(git log --format=%H "$from..$to" -- "$f"); do
-    if ! git log -1 --format=%B "$c" | grep -qi "approved by owner"; then
+    # A save in Unicorn OS Playbooks by the owner or a manager is an approval too (owner, 26.09: "as in Cowork").
+    if ! git log -1 --format=%B "$c" | grep -qiE "approved by owner|approved in unicorn os by"; then
       echo "LAW GATE: $f changed in $(git log -1 --format='%h %s' "$c" | cut -c1-90) — no 'Approved by owner <date>' in the commit"
       bad=1
     fi

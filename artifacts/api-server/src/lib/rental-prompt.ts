@@ -1,3 +1,4 @@
+import { regulationBlock } from "./regulation";
 /**
  * System prompt for the Rental pipeline — renting a villa for a stay, not
  * buying property. Kept separate from the Sales/Unicorn prompt in
@@ -122,7 +123,8 @@ export function buildRentalPromptParts(opts: {
   correctionsBlock?: string;
   langRule?: string;
 }): { prefix: string; tail: string } {
-  const prefix = buildStableHalf({ kb: opts.kb, langRule: opts.langRule });
+  // The owner's regulation (skills/rental.md) rides in the cached prefix: re-read when the file changes.
+  const prefix = buildStableHalf({ kb: opts.kb, langRule: opts.langRule }) + regulationBlock("rental");
   const tail = `The client's current CRM stage is: ${
     opts.leadStage ? `"${opts.leadStage}"` : "UNKNOWN (infer from conversation)"
   }

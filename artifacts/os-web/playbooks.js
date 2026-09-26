@@ -1,9 +1,9 @@
 // Unicorn OS — Playbooks (owner, 26.09): the funnels' regulations, as in Cowork.
 // One source: skills/*.md in the repository as GitHub's master has them (the server fetches every
 // two minutes), the files the code obeys and the deploy's law gate guards; skills/README.md is the
-// pool listing every regulation and where it lives. The OS shows them and keeps no copy. A change is a proposal; only the owner approves it; a
-// Claude session then writes the approved words into the file (and the code) in a commit that
-// names the proposal, and the proposal shows as applied.
+// pool listing every regulation and where it lives. The OS shows them and keeps no copy. The owner
+// edits a regulation here and saves it: it goes to GitHub in his name and the bot follows it within a
+// minute (lib/regulation.ts). Others propose a change; a Claude session writes an approved one in.
 import { S, api, esc, screens, on, toast, fail, dialog, rel, fmtDT, store } from "./core.js";
 
 /** The regulation of each funnel. A file that does not exist yet is created by its first approved proposal. */
@@ -164,10 +164,34 @@ screens.playbooks = {
     const doc = await api(`/playbooks/${encodeURIComponent(cur.file)}`);
     const box = el.querySelector("#pb-doc");
     box.innerHTML = `<div class="row pb-docbar"><span class="faint">${esc(doc.file)}${doc.versions[0] ? ` · last change ${esc(fmtDT(doc.versions[0].at))}` : ""}</span><span class="spacer"></span>
-        <button class="btn sm primary" id="pb-propose">Propose a change</button>${doc.versions.length ? `<select class="chip" id="pb-ver"><option value="">Current version</option>${doc.versions.map((v) => `<option value="${esc(v.commit)}">${esc(fmtDT(v.at))} · ${esc(v.subject.slice(0, 60))}</option>`).join("")}</select>` : ""}</div>
+        ${isOwner() && doc.kind !== "cowork" && /^[a-z0-9-]+\.md$/.test(doc.file) && doc.exists ? `<button class="btn sm primary" id="pb-edit">Edit</button>` : ""}<button class="btn sm ${isOwner() ? "" : "primary"}" id="pb-propose">Propose a change</button>${doc.versions.length ? `<select class="chip" id="pb-ver"><option value="">Current version</option>${doc.versions.map((v) => `<option value="${esc(v.commit)}">${esc(fmtDT(v.at))} · ${esc(v.subject.slice(0, 60))}</option>`).join("")}</select>` : ""}</div>
       ${doc.note ? `<div class="help">${esc(doc.note)}</div>` : ""}
       <article class="pb-md" id="pb-md">${doc.exists ? md(doc.text) : doc.kind === "cowork" ? "" : `<div class="empty">This regulation is not written yet. Its first approved proposal starts it.</div>`}</article>`;
     box.querySelector("#pb-propose").onclick = () => proposeChange({ file: doc.file });
+    const edit = box.querySelector("#pb-edit");
+    if (edit)
+      edit.onclick = () => {
+        const art = box.querySelector("#pb-md");
+        art.innerHTML = `<textarea class="pb-editor" id="pb-text" spellcheck="false"></textarea>
+          <div class="row" style="gap:8px;margin-top:8px"><input class="input" id="pb-note" placeholder="What changed (one line)" style="flex:1"><button class="btn sm" id="pb-cancel">Cancel</button><button class="btn sm primary" id="pb-save">Save and apply</button></div>
+          <div class="faint" style="font-size:12px;margin-top:6px">Saved to GitHub in your name. The Copilot and the autopilot follow it within a minute.</div>`;
+        const ta = art.querySelector("#pb-text");
+        ta.value = doc.text;
+        art.querySelector("#pb-cancel").onclick = () => (art.innerHTML = md(doc.text));
+        art.querySelector("#pb-save").onclick = async (e) => {
+          e.target.disabled = true;
+          e.target.textContent = "Saving…";
+          try {
+            const out = await api(`/playbooks/${encodeURIComponent(doc.file)}`, { method: "PUT", body: { text: ta.value, note: art.querySelector("#pb-note").value } });
+            toast(out.unchanged ? "Nothing changed." : "Saved. The bot follows it within a minute.");
+            screens.playbooks.render({ el, tools, route });
+          } catch (err) {
+            toast(err.message || "Not saved.");
+            e.target.disabled = false;
+            e.target.textContent = "Save and apply";
+          }
+        };
+      };
     const ver = box.querySelector("#pb-ver");
     if (ver)
       ver.onchange = async () => {
