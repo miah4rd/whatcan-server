@@ -281,7 +281,7 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
       '<label for="kv_drive_folder_url">Drive folder</label><input class="txt" id="kv_drive_folder_url" value="' + esc(ed.drive_folder_url != null ? ed.drive_folder_url : p.drive_folder_url || "") + '">' +
       "</div></details>";
 
-    h += '<div class="row" style="margin-top:16px"><button class="send" id="done">Report done &rarr; live</button></div>" +
+    h += '<div class="row" style="margin-top:16px"><button class="send" id="done">Report done &rarr; live</button></div>' +
       '<div class="row">' + (m.length ? '<span class="missing">Still needed: ' + esc(m.join(", ")) + "</span>" : '<span class="status">Everything is filled. The bot applies it to the site, amoCRM and the chat, and checks each one.</span>') + "</div>" +
       '<div class="row" style="margin-top:14px"><button class="link" id="lostlink">Villa doesn&rsquo;t fit &mdash; not listing &rsaquo;</button></div>' +
       '<div class="row" style="margin-top:6px"><button class="link" id="nogo" style="color:#8a93a8">The visit didn&rsquo;t happen &mdash; drop this report &rsaquo;</button></div>' +
