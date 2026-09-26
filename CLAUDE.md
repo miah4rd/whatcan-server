@@ -138,6 +138,25 @@ q75, 600/900/1600 wide) into `/opt/photo-variants` and serves
 - `nice -n 10`, one ffmpeg thread, one photo at a time, 50 s per tick.
   `PHOTO_VARIANTS_DISABLED=1` pauses it.
 
+## THE LAW: `skills/` is the regulation, and a session never edits it (owner, 26.09.2026)
+
+`skills/rental-listings.md` is the regulation of the Rental Listings funnel, written by the owner
+only. It is the single source of what the bot does on that funnel: stages and who moves them, what
+QUALIFIED means, what the bot asks and in which order, commission, sorting out, nudges, sending
+limits, the weekly check. The owner's model: Copilot is the trainee mode — a broker's edit is a
+lesson, an approve without edit is an accepted example — and autopilot only repeats what people
+approved. It never invents a rule of its own.
+
+For a Claude session this means:
+- **Never edit a file in `skills/`.** Not a word. If a rule seems missing or wrong, say so to the
+  owner in chat and wait for his "yes"; then the owner's words go in, with the date.
+- **The code obeys the regulation.** Where they disagree, the code is the bug.
+- **The law gate** (`scripts/law-gate.sh`, run by `deploy.sh`) refuses a deploy that changes
+  `skills/*` or the stage / qualification / ask / limit code unless every such commit says
+  `Approved by owner DD.MM.YYYY`. Write that line only when the owner actually said yes in chat,
+  and quote what he said in the commit body. Never work around the gate.
+- CLAUDE.md and the memory are notes about how things work; they are not where rules live.
+
 ## A funnel's rules are the owner's words, never ours (owner, 26.09.2026)
 
 The bot must work by the structure the brokers teach it through Copilot, not by rules a session
