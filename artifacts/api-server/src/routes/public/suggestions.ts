@@ -5,6 +5,7 @@ import { desc, inArray, eq, and, sql } from "drizzle-orm";
 import { cleanLeadName } from "../../lib/lead-display-name";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { getPushStageWhitelist } from "../../lib/push-stage-whitelist";
+import { asksForSuggestions } from "../../lib/os/availability-ask";
 import { computePushPriority, computeNextFollowupDays, isAdaptiveBroker, PUSH_DAILY_CAP } from "../../lib/adaptive-followup";
 import { delegatedStagesByPipeline } from "../../lib/autopilot";
 import { dueReportsForLeads } from "../../lib/viewing-report";
@@ -589,6 +590,12 @@ router.get("/suggestions", async (req, res) => {
         return Object.keys(extra).length > 0 ? { ...i, ...extra } : i;
       }),
     );
+    // "Client waiting — is the villa free?" items carry their question (lib/os/availability-ask.ts).
+    const asks = await asksForSuggestions(withFlags.map((x: { id: unknown }) => String(x.id))).catch(() => new Map<string, Record<string, unknown>>());
+    for (let k = 0; k < withFlags.length; k++) {
+      const a = asks.get(String((withFlags[k] as { id: unknown }).id));
+      if (a) withFlags[k] = { ...withFlags[k], availability_ask: a } as (typeof withFlags)[number];
+    }
     // The Copilot's own first draft, when an edit has replaced it (suggest.ts keeps it aside).
     const firsts = await pool
       .query(`SELECT id::text, original_text FROM pending_suggestions WHERE original_text IS NOT NULL AND id::text = ANY($1)`, [withFlags.map((x: { id: unknown }) => String(x.id))])

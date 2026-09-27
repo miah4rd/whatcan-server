@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { villaIdsIn, villaLinks } from "../../lib/villa-maps";
 import { randomUUID } from "crypto";
 import { eq, and } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL, type ChatMessage } from "../../lib/ai-client";
@@ -203,6 +204,36 @@ router.post("/suggest", async (req, res) => {
   // revised text and links are persisted before the response leaves. A null
   // attachments payload means "links untouched" and leaves the row's links.
   const respond = async (payload: Record<string, unknown>): Promise<void> => {
+    // The broker asks for the location / map / video tour / Drive folder (owner, 27.09.2026): the villa's
+    // own link from the site's Internal data rides along as its own message, never invented.
+    try {
+      const ask = String(body.feedback || body.revisionChain?.[body.revisionChain.length - 1]?.feedback || "");
+      const want = {
+        maps: /\b(map|maps|location|locat|pin|address|where)\b|карт|локац|адрес|пин|lokasi|alamat/i.test(ask),
+        video: /\bvideo|tour\b|видео/i.test(ask),
+        drive: /\bdrive|folder|photos?\b|папк|фото|диск/i.test(ask),
+      };
+      if ((want.maps || want.video || want.drive) && typeof payload["text"] === "string") {
+        const atts = Array.isArray(payload["attachments"]) ? (payload["attachments"] as Array<{ type?: string; url?: string; label?: string }>) : [];
+        let ids = villaIdsIn(`${ask}\n${payload["text"]}\n${atts.map((x) => x.url ?? "").join("\n")}`);
+        if (!ids.length) {
+          const t = await pool.query(`SELECT text FROM lead_messages WHERE lead_id = $1 AND text IS NOT NULL ORDER BY sent_at DESC LIMIT 20`, [body.leadId]).catch(() => ({ rows: [] as Array<{ text: string }> }));
+          ids = villaIdsIn(t.rows.map((r) => r.text).join("\n")).slice(0, 1);
+        }
+        const links = await villaLinks(ids.slice(0, 3)).catch(() => []);
+        const extra: Array<{ type: "link"; label: string; url: string }> = [];
+        for (const v of links) {
+          if (want.maps && v.maps) extra.push({ type: "link", label: `📍 ${v.id} location`, url: v.maps });
+          if (want.video && v.video) extra.push({ type: "link", label: `🎬 ${v.id} video tour`, url: v.video });
+          if (want.drive && v.drive) extra.push({ type: "link", label: `📁 ${v.id} photos`, url: v.drive });
+        }
+        const have = new Set(atts.map((x) => x.url));
+        const add = extra.filter((x) => !have.has(x.url));
+        if (add.length) payload["attachments"] = [...atts, ...add];
+      }
+    } catch (err) {
+      req.log.warn({ err }, "suggest: villa links not added (non-fatal)");
+    }
     const pendingId = typeof body.pendingId === "string" ? body.pendingId.trim() : "";
     if (pendingId && typeof payload["text"] === "string" && (payload["text"] as string).trim()) {
       try {

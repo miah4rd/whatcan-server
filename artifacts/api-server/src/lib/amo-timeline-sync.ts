@@ -979,7 +979,11 @@ function pumpFast(): void {
     fastActive++;
     const started = Date.now();
     refreshLeadFromTimeline(leadId)
-      .then((r) => logger.info({ leadId, ms: Date.now() - started, stored: r.stored, live: r.liveCreated }, "fast refresh from the WhatsApp gateway"))
+      .then((r) => {
+        logger.info({ leadId, ms: Date.now() - started, stored: r.stored, live: r.liveCreated }, "fast refresh from the WhatsApp gateway");
+        // An owner's answer to a question about a villa becomes the client's reply now.
+        if (r.stored) void import("./os/availability-ask").then((m) => m.onLeadMessages(leadId)).catch(() => undefined);
+      })
       .catch(() => undefined)
       .finally(() => {
         fastActive--;

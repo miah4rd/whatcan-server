@@ -706,7 +706,7 @@ export function guardAnswer(a: AvailabilityAnswer | null, reply: string, today: 
   return a;
 }
 
-async function readAnswer(villa: string, question: string, reply: string, today: string): Promise<AvailabilityAnswer | null> {
+export async function readAnswer(villa: string, question: string, reply: string, today: string): Promise<AvailabilityAnswer | null> {
   return chatCompletionJSON<AvailabilityAnswer>({
     model: HELPER_MODEL,
     label: "listing:weekly-availability-answer",

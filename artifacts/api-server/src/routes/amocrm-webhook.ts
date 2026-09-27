@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { isClosingOnly, hasUpcomingViewing } from "../lib/os/viewing-day";
 import { notProtectedDraft } from "../lib/protected-drafts";
 import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, contactEventsTable, stageEventsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
@@ -242,6 +243,12 @@ export async function queueSuggestion(opts: {
       return;
     }
     weeklyCheckNoPush = weekly === "needs_person";
+    // "Thank you, see you there" after a booked viewing needs no answer — the next word is the
+    // viewing-day confirmation (lib/os/viewing-day.ts, the way Amelia works; owner, 27.09.2026).
+    if (!opts.requestedByBroker && isClosingOnly(opts.leadMessageText) && (await hasUpcomingViewing(opts.leadId))) {
+      logger.info({ leadId: opts.leadId, said: String(opts.leadMessageText ?? "").slice(0, 80) }, "viewing booked and the client only closed — no LIVE draft");
+      return;
+    }
   }
   const brokerId = brokerKey(opts.responsibleUser);
 

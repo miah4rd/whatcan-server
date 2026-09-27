@@ -84,6 +84,40 @@ const PAGE_HTML = `<!doctype html>
   .badge.notask { background: #23293b; color: #6b7488; }
   .badge.vreport { background: rgba(251,191,36,.14); color: #fbbf24; }
   .badge.afterv { background: #96782F; color: #fff; }
+  .badge.waiting { background: #D64545; color: #fff; }
+  .aa { border: 1px solid #D64545; border-radius: 12px; padding: 12px; margin: 10px 0; }
+  .aa-head { font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+  .aa-villas { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
+  .aa-lbl { font-size: 12px; opacity: .7; }
+  .aa-chip { border: 1px solid #2a3146; border-radius: 16px; padding: 3px 10px; font-size: 12.5px; font-weight: 600; }
+  .aa-dim { font-weight: 400; opacity: .6; }
+  .aa-x { background: none; border: 0; color: inherit; cursor: pointer; font-size: 14px; padding: 0 0 0 4px; opacity: .6; }
+  .aa-add { font-size: 12.5px; }
+  .aa-box { border-radius: 10px; padding: 10px 12px; }
+  .aa-auto { background: rgba(45,212,191,.08); border: 1px solid rgba(45,212,191,.45); }
+  .aa-manual { background: rgba(251,191,36,.06); border: 1px dashed rgba(251,191,36,.5); }
+  .aa-title { font-weight: 700; font-size: 13.5px; }
+  .aa-sub { font-size: 12px; opacity: .75; margin: 2px 0 8px; }
+  .aa-line { font-size: 12.5px; margin: 4px 0; }
+  .aa-go { width: 100%; padding: 10px; border-radius: 8px; border: 0; background: #2dd4bf; color: #0b0e17; font-weight: 700; font-size: 14px; cursor: pointer; margin-top: 4px; }
+  .aa-or { text-align: center; font-size: 12px; opacity: .6; margin: 8px 0; }
+  .aa-villa { border-top: 1px solid rgba(127,127,127,.2); padding-top: 8px; margin-top: 8px; }
+  .aa-villa:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+  .aa-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .aa-done { color: #1E8E5A; font-weight: 600; font-size: 12.5px; }
+  .aa-st { font-size: 12.5px; margin-top: 8px; }
+  .aa-qline { font-size: 15px; font-weight: 600; margin: 2px 0 4px; }
+  .aa-vline { font-size: 13px; opacity: .9; margin-bottom: 10px; line-height: 1.5; }
+  .aa-change { font-size: 12px; opacity: .6; margin-left: 6px; }
+  .aa-calls { margin-top: 10px; font-size: 13px; }
+  .aa-call { color: inherit; text-decoration: none; border: 1px solid rgba(251,191,36,.6); border-radius: 16px; padding: 4px 10px; display: inline-block; margin: 2px 4px 2px 0; }
+  .aa-manual-row { display: flex; gap: 6px; align-items: center; margin-top: 10px; font-size: 13px; }
+  .aa-manual-row input { flex: 1; }
+  .aa-send { border: 0; border-radius: 8px; padding: 8px 12px; background: #fbbf24; color: #0b0e17; font-weight: 700; cursor: pointer; }
+  .aa-q { width: 100%; font-size: 14px; font-weight: 600; padding: 7px 9px; border-radius: 8px; border: 1px solid #2a3146; background: transparent; color: inherit; margin-bottom: 8px; }
+  .aa-text { width: 100%; min-height: 60px; margin: 6px 0; }
+  .aa-go2 { background: #fbbf24; }
+  .aa-small { width: auto; padding: 5px 10px; margin: 4px 0; font-size: 12.5px; }
   .vr-fork .vr-opt { display: block; width: 100%; text-align: left; padding: 10px 12px; font-size: 14px; margin-bottom: 6px; }
   /* Viewing report — lives inside the card, above the draft. Three parts:
      outcome (one tap), the client's feedback (the one field worth words),
@@ -1010,6 +1044,8 @@ const PAGE_HTML = `<!doctype html>
     if (item.viewing_report) html += '<span class="badge vreport">&#x1F4CB; viewing report</span>';
     if (item.inspection_report) html += '<span class="badge vreport">&#x1F50D; inspection report</span>';
     if (item.autopilotSkippedReason === "viewing report filed") html += '<span class="badge afterv">&#x1F4CB; After viewing</span>';
+    if (item.availability_ask) html += '<span class="badge waiting">&#x23F3; Client waiting for your answer</span>';
+    if (item.autopilotSkippedReason === "viewing day confirmation") html += '<span class="badge waiting" style="background:#2F6FED">&#x1F4C5; Viewing today</span>';
     if (item.profile_temperature) html += tempBadge(item.profile_temperature);
     // Which funnel this lead lives in. Only while viewing ALL pipelines — once
     // the broker has narrowed to one, every card would repeat the same word.
@@ -1431,8 +1467,11 @@ const PAGE_HTML = `<!doctype html>
         push: all.filter(function (i) { return i.kind === "push" && !isReachStage(i.lead_stage); }),
       };
       // The message after a viewing comes first in Push (owner, 27.09): a client who just viewed a villa is the hottest one.
-      var afterV = function (i) { return i.autopilotSkippedReason === "viewing report filed"; };
-      items.push = items.push.filter(afterV).concat(items.push.filter(function (i) { return !afterV(i); }));
+      // Order: a client waiting for our answer, then after-viewing and viewing-today, then the rest.
+      var afterV = function (i) { return i.autopilotSkippedReason === "viewing report filed" || i.autopilotSkippedReason === "viewing day confirmation"; };
+      items.push = items.push.filter(function (i) { return i.availability_ask; })
+        .concat(items.push.filter(function (i) { return !i.availability_ask && afterV(i); }))
+        .concat(items.push.filter(function (i) { return !i.availability_ask && !afterV(i); }));
       updateAppBadge();
       // Checked on the same beat as the inbox, so a fault surfaces as fast as work does.
       refreshStuck();
@@ -1944,6 +1983,7 @@ const PAGE_HTML = `<!doctype html>
       viewing_report: item.viewing_report || null,
       // The open inspection report (lib/inspection-report.ts): a link to its own screen.
       inspection_report: item.inspection_report || null,
+      availability_ask: item.availability_ask || null,
       pipeline: item.pipeline || null,
       _skipExpanded: false,
       _skipTaskMode: false,
@@ -2833,6 +2873,80 @@ const PAGE_HTML = `<!doctype html>
     return '<div class="vr-row"><button class="vr-opt" id="sch-open">&#x1F4C5; Set the inspection date</button></div>' +
       '<div class="vr-row" id="sch-row" hidden><input type="datetime-local" id="sch-at"><button class="vr-send" id="sch-save" style="padding:8px 14px">Save</button><span class="vr-status" id="sch-st"></span></div>';
   }
+  // "Client waiting — is the villa free?" (owner, 27.09): call the owner and tap the answer, or let the
+  // Copilot ask the owner. Either way the reply to the client comes back as a draft here.
+  function renderAvailabilityAsk(it) {
+    var a = it.availability_ask, c = a.candidates || [], picked = a.villa_ids || [], ans = a.answers || {}, own = a.owner_state || {};
+    var label = function (id) { var v = c.find(function (x) { return x.id === id; }); return v && v.label !== id ? v.label : ""; };
+    var h = '<div class="aa" id="aa">';
+    h += '<div class="aa-head">&#x23F3; Client waiting for an answer</div>';
+    h += '<div class="aa-qline">' + esc(a.question || "") + '</div>';
+    h += '<div class="aa-vline">' + (picked.length ? picked.map(function (id) { return '<b>' + esc(id) + '</b>' + (label(id) ? ' ' + esc(label(id)) : '') + (ans[id] ? ' &#x2713; ' + esc(ans[id].text) : own[id] === "sent" ? ' &middot; asked, waiting' : own[id] === "draft" ? ' &middot; question on the villa card to approve' : ''); }).join('<br>') : 'The bot is asking the client which villa.') + ' <a href="#" class="aa-change" id="aa-change">change</a></div>';
+    // Corrections, hidden until "change": the question and the villas.
+    h += '<div id="aa-edit" style="display:none"><input class="aa-q" id="aa-q" value="' + esc(a.question || "") + '"><div class="aa-villas">';
+    picked.forEach(function (id) { h += '<span class="aa-chip">' + esc(id) + (ans[id] ? '' : ' <button class="aa-x" data-aa-rm="' + esc(id) + '">&times;</button>') + '</span>'; });
+    var rest = c.filter(function (v) { return picked.indexOf(v.id) < 0; });
+    if (rest.length) {
+      h += '<select class="aa-add" id="aa-add"><option value="">+ villa</option>';
+      rest.forEach(function (v) { h += '<option value="' + esc(v.id) + '">' + esc(v.id + (v.label !== v.id ? " · " + v.label : "")) + '</option>'; });
+      h += '</select>';
+    }
+    h += '</div></div>';
+    if (picked.length && picked.some(function (id) { return !ans[id] && !own[id]; })) h += '<button class="aa-go" id="aa-owner">&#x1F916; Ask the owner</button>';
+    var oc = a.owner_contacts || {};
+    var calls = picked.filter(function (id) { return oc[id] && oc[id].phone; }).map(function (id) { return '<a class="aa-call" href="tel:' + esc(oc[id].phone) + '">&#x1F4DE; ' + esc((oc[id].name || id) + " " + oc[id].phone) + '</a>'; });
+    if (calls.length) h += '<div class="aa-calls">' + calls.join(" ") + '</div>';
+    h += '<div class="aa-manual-row"><span>Called?</span><input class="att-add-input" id="aa-text" placeholder="What did the owner say?"><button class="aa-send" id="aa-text-ok">&rarr;</button></div>';
+    h += '<div class="aa-st" id="aa-st"></div>';
+    h += '</div>';
+    return h;
+  }
+  function bindAvailabilityAsk(it) {
+    var box = $("#aa");
+    if (!box || !it.availability_ask) return;
+    var a = it.availability_ask;
+    function say(t) { var st = $("#aa-st"); if (st) st.textContent = t; }
+    function post(path, body, done) {
+      say("Working…");
+      body.askId = a.id;
+      fetch(API + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json(); })
+        .then(function (d) { if (!d.ok) { say(d.error || "Did not work."); return; } done(d); })
+        .catch(function () { say("No connection."); });
+    }
+    function reload() { fetchInbox().then(function () { var f = (items.push || []).find(function (x) { return x.availability_ask && x.availability_ask.id === a.id; }); if (f && openItem) { openItem.availability_ask = f.availability_ask; renderDetail(); } }); }
+    function toLive(msg) {
+      showToast(msg);
+      openItem = null; editing = false; activeTab = "live";
+      fetchInbox().then(function () { openLeadById(it.lead_id); }).catch(function () { render(); });
+    }
+    function villas(list) { post("/availability-villas", { villas: list }, function () { a.villa_ids = list; say(""); renderDetail(); }); }
+    box.querySelectorAll("[data-aa-rm]").forEach(function (b) {
+      b.onclick = function () { var id = b.getAttribute("data-aa-rm"); villas((a.villa_ids || []).filter(function (x) { return x !== id; })); };
+    });
+    var add = $("#aa-add");
+    if (add) add.onchange = function () { if (add.value) villas((a.villa_ids || []).concat([add.value])); };
+    var ch = $("#aa-change");
+    if (ch) ch.onclick = function (e) { e.preventDefault(); var ed = $("#aa-edit"); ed.style.display = ed.style.display === "none" ? "" : "none"; };
+    var q = $("#aa-q");
+    if (q) q.onchange = function () { var v = q.value.trim(); if (v && v !== a.question) post("/availability-question", { question: v }, function () { a.question = v; say("Saved."); }); };
+    var cb = $("#aa-clarify");
+    if (cb) cb.onclick = function () { post("/availability-clarify", {}, function () { toLive("The question to the client is ready in Live"); }); };
+    var ob = $("#aa-owner");
+    if (ob) ob.onclick = function () {
+      post("/availability-ask-owner", {}, function (d) {
+        showToast(d.mode === "auto" ? "Asked the owner on WhatsApp" : "The question to the owner is on the villa’s card (Rental Listings) to approve");
+        say(d.missing && d.missing.length ? "No owner number for " + d.missing.join(", ") + ": call and write the answer below." : "");
+        reload();
+      });
+    };
+    $("#aa-text-ok").onclick = function () {
+      var t = $("#aa-text").value.trim();
+      if (!t) { say("Write what the owner said."); return; }
+      post("/availability-answer", { text: t }, function () { toLive("The reply to the client is ready in Live"); });
+    };
+  }
+
   function bindSchedule(leadId) {
     var open = $("#sch-open");
     if (!open) return;
@@ -3046,6 +3160,9 @@ const PAGE_HTML = `<!doctype html>
 
     html += renderViewingReport(it);
     html += renderInspectionReport(it);
+    // "Client waiting — is the villa free?": a question for the broker, not a message (lib/os/availability-ask.ts).
+    // The message controls stay in the page (their handlers expect them) but are hidden.
+    if (it.availability_ask) html += renderAvailabilityAsk(it) + '<div style="display:none">';
 
     html += '<div class="body-block">';
     if (editing) {
@@ -3134,6 +3251,7 @@ const PAGE_HTML = `<!doctype html>
       html += '<button class="act edit" id="edit-btn" ' + ((it.busy || it.loading) ? "disabled" : "") + '>\\u270e Edit</button>';
     }
     html += '</div>';
+    if (it.availability_ask) html += '</div>';
 
     if (it._skipExpanded) {
       html += '<div class="skip-panel">';
@@ -3181,6 +3299,7 @@ const PAGE_HTML = `<!doctype html>
     bindViewingReport(it);
     bindInspectionStart(it);
     bindSchedule(it.lead_id);
+    bindAvailabilityAsk(it);
 
     $("#back-btn").onclick = function () { openItem = null; editing = false; render(); };
 

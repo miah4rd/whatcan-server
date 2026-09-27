@@ -31,6 +31,8 @@ import { startLinkResume } from "./lib/link-resume";
 import { startViewingCalendarSync } from "./lib/viewing-calendar";
 import { startInspectionBookingPass } from "./lib/inspection-booking";
 import { startAfterViewingReminder } from "./lib/after-viewing-reminder";
+import { startAvailabilityAskPass } from "./lib/os/availability-ask";
+import { startViewingDayPass } from "./lib/os/viewing-day";
 import { startInspectionReportPass } from "./lib/inspection-report";
 import { startVisitWatch } from "./lib/listing-progress";
 import inspectionPageRouter from "./routes/inspection-page";
@@ -136,6 +138,9 @@ startViewingCalendarSync();
 startInspectionBookingPass();
 // The message after a viewing, unsent after a day: the broker is reminded (lib/after-viewing-reminder.ts).
 startAfterViewingReminder();
+// "Client waiting for the owner's answer" and the viewing-day confirmation (owner, 27.09.2026).
+startAvailabilityAskPass();
+startViewingDayPass();
 // Inspection report due 30 minutes after an agreed inspection (lib/inspection-report.ts).
 startInspectionReportPass();
 // Agreed villa visits read again every 30 minutes, live cards included (lib/listing-progress.ts).

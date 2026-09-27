@@ -23,6 +23,7 @@ import { incrementBrokerPick } from "../../lib/broker-picks-tracker.js";
 import { reconcileTextWithAttachments, allAttachmentsNamed, villasNamedInText, textNamesVilla, dropUnpublishedAttachments, isLadderLayout, type GeneratedSuggestion } from "../../lib/generate-suggestion";
 import { fetchAllPropertiesForPriceLookup, describePropertiesByIds } from "../../lib/property-catalog";
 import { recordCommitment } from "../../lib/commitment-scheduler.js";
+import { AVAILABILITY_ASK_VERDICT, maybeStartAvailabilityAsk } from "../../lib/os/availability-ask.js";
 
 // amoCRM status IDs for the Unicorn Property pipeline (PIPELINE 8347534)
 // Maps each follow-up stage to the NEXT stage — bot auto-advances on approve.
@@ -294,6 +295,11 @@ router.post("/approve", async (req, res) => {
 
   if (!sug) {
     res.status(404).json({ error: "Suggestion not found" });
+    return;
+  }
+  // "Client waiting — is the villa free?" is a question for the broker, never a message to the client.
+  if ((sug.autopilotSkippedReason ?? "").startsWith(AVAILABILITY_ASK_VERDICT + ":")) {
+    res.status(400).json({ ok: false, error: "This is a question for you, not a message: answer it with the buttons on the card." });
     return;
   }
 
@@ -791,6 +797,8 @@ router.post("/approve", async (req, res) => {
       // ── Detect "I'll check and get back to you" promises — the client is
       // waiting on US here, so the normal wait-for-reply clock never fires.
       recordCommitment(sug.leadId, currentResponsibleUser, body.message).catch(() => {});
+      // "I'll check with the owner" opens the question on the card (lib/os/availability-ask.ts).
+      maybeStartAvailabilityAsk(sug.leadId, finalMessage, currentResponsibleUser).catch((err) => req.log.warn({ err }, "availability ask: not opened"));
 
       // Listing funnel: a message going out is a fact the stage depends on
       // (Initial Contact → TAKEN TO WORK). Signals only, no model call; the

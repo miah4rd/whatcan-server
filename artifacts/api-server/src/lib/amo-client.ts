@@ -551,3 +551,6 @@ export async function createAmoTask(
 
 export const AMO_SUBDOMAIN_VAL = AMO_SUBDOMAIN;
 export const hasCredentials = () => Boolean(LONG_LIVED_TOKEN || (CLIENT_ID && CLIENT_SECRET));
+
+/** Copilot OS runs this code on its own CRM (AMO_API_BASE set); Copilot Amo does not. */
+export const OS_MODE = !!process.env["AMO_API_BASE"];

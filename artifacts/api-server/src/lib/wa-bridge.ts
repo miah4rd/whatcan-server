@@ -76,6 +76,7 @@ export async function ensureWaTables(): Promise<void> {
     ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS stage text;
     ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS responsible text;
     ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS card_lead_id bigint;
+    ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS quoted_wa_id text;
     ALTER TABLE wa_conversations ADD COLUMN IF NOT EXISTS amo_chat_id text;
     ALTER TABLE wa_conversations ADD COLUMN IF NOT EXISTS contact_id bigint;
     CREATE TABLE IF NOT EXISTS wa_link_tokens (
@@ -249,10 +250,10 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
     // Real time of the message, status 'history'; a row that already exists
     // (the message came live too) is left as it is.
     const h = await pool.query(
-      `INSERT INTO wa_messages (session, wa_id, direction, phone, type, text, status, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'history', to_timestamp($7))
+      `INSERT INTO wa_messages (session, wa_id, direction, phone, type, text, status, created_at, quoted_wa_id)
+       VALUES ($1, $2, $3, $4, $5, $6, 'history', to_timestamp($7), $8)
        ON CONFLICT (session, wa_id) WHERE wa_id IS NOT NULL DO NOTHING RETURNING id`,
-      [ev.session, ev.id, direction, ev.phone, ev.type, ev.text, ev.timestamp],
+      [ev.session, ev.id, direction, ev.phone, ev.type, ev.text, ev.timestamp, ev.quotedId ?? null],
     );
     if (h.rows.length && ev.phone && ev.type !== "reaction") {
       const card = await cardForPhone(ev.phone, await resolveResponsibleId(ev.session));
@@ -263,11 +264,11 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
   // On a retried event the row already exists: carry on unless it already
   // reached amoCRM (a failed import must be retried, not skipped).
   const ins = await pool.query(
-    `INSERT INTO wa_messages (session, wa_id, direction, phone, type, text, media_file)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO wa_messages (session, wa_id, direction, phone, type, text, media_file, quoted_wa_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (session, wa_id) WHERE wa_id IS NOT NULL DO UPDATE SET error = wa_messages.error
      RETURNING id, mirrored`,
-    [ev.session, ev.id, direction, ev.phone, ev.type, ev.text, ev.media?.file ?? null],
+    [ev.session, ev.id, direction, ev.phone, ev.type, ev.text, ev.media?.file ?? null, ev.quotedId ?? null],
   );
   if (!ins.rows.length || ins.rows[0].mirrored) return;
 
