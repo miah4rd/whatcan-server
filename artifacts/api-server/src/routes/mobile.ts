@@ -1472,6 +1472,15 @@ const PAGE_HTML = `<!doctype html>
       items.push = items.push.filter(function (i) { return i.availability_ask; })
         .concat(items.push.filter(function (i) { return !i.availability_ask && afterV(i); }))
         .concat(items.push.filter(function (i) { return !i.availability_ask && !afterV(i); }));
+      // The same queues as Copilot OS (owner, 27.09): Live, Push (the qualification follow-ups
+      // included, after the rest), All. Reach is not a tab of its own any more.
+      items.push = items.push.concat(items.reach);
+      items.reach = [];
+      // All, top to bottom, the same as in Copilot OS: a client waiting for our answer, then
+      // after-viewing and viewing-today, then every Live reply, then the rest of Push.
+      var liveNotFirst = items.push.filter(function (i) { return !i.availability_ask && !afterV(i); });
+      items.all = items.push.filter(function (i) { return i.availability_ask || afterV(i); })
+        .concat(items.live).concat(liveNotFirst);
       updateAppBadge();
       // Checked on the same beat as the inbox, so a fault surfaces as fast as work does.
       refreshStuck();
@@ -2418,7 +2427,8 @@ const PAGE_HTML = `<!doctype html>
 
   function renderList() {
     var list = sortedList(activeTab);
-    var tabDef = [["live", "Live"], ["reach", "Reach"], ["push", "Push"]];
+    var tabDef = [["live", "Live"], ["push", "Push"], ["all", "All"]];
+    if (activeTab === "reach") activeTab = "push";
     var html = "";
     html += '<header>';
     html += '<div class="top-row">';
@@ -2523,6 +2533,8 @@ const PAGE_HTML = `<!doctype html>
         ? "All live replies handled. New ones will appear here as leads respond."
         : activeTab === "reach"
           ? "No qualification follow-ups due right now. They appear when amoCRM tasks are due."
+          : activeTab === "all"
+            ? "Nothing to do: every client is handled."
           : "No active pipeline follow-ups right now.";
       html += '<div class="empty">All caught up \\ud83c\\udf89<br>' + emptyText + '</div>';
     } else {
@@ -2540,7 +2552,7 @@ const PAGE_HTML = `<!doctype html>
         html += '<div class="badges">' + cardBadges(item) + "</div>";
         var previewText = (item.kind === "live" && item.last_lead_text) ? item.last_lead_text : (item.suggestion_text || "");
         html += '<div class="card-preview">' + esc(previewText.slice(0, 160)) + "</div>";
-        var footLabel = item.responsible_user ? item.responsible_user : (activeTab === "live" ? "Live reply" : activeTab === "reach" ? "Reach follow-up" : "Push follow-up");
+        var footLabel = item.responsible_user ? item.responsible_user : (item.kind === "live" ? "Live reply" : "Push follow-up");
         html += '<div class="card-foot"><span>' + esc(footLabel) + '</span><span class="card-arrow">\\u203a</span></div>';
         html += "</div>";
       }
@@ -2677,7 +2689,7 @@ const PAGE_HTML = `<!doctype html>
       el.onclick = function () {
         var id = el.getAttribute("data-id");
         var found = list.find(function (i) { return i.id === id; });
-        if (found) openDetail(found, activeTab);
+        if (found) openDetail(found, activeTab === "all" || activeTab === "push" ? (found.kind === "live" ? "live" : "push") : activeTab);
       };
       var link = el.querySelector("[data-leadlink]");
       if (link) link.addEventListener("click", function (e) { e.stopPropagation(); });
