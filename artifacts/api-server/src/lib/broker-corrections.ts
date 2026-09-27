@@ -251,13 +251,19 @@ export async function learnFromEdit(
   originalText: string,
   editedText: string,
   ctx?: { pipeline?: string | null; leadStage?: string | null; kind?: string | null; lastLeadText?: string | null },
-): Promise<void> {
+): Promise<boolean> {
   const before = (originalText ?? "").trim();
   const after = (editedText ?? "").trim();
-  if (!before || !after || before === after) return;
+  if (!before || !after || before === after) return false;
   const brokerId = brokerKey(brokerName);
 
   try {
+    // Owner, 27.09: a broker tries approaches and changes their mind; what they send has to be
+    // able to add a preference, change one, or take one back. The model sees what is already
+    // taught, so a send that drops something a lesson asked for comes back as the reversal
+    // ("Do not ask the price in the first message"), which then retires the old lesson below.
+    const taught = await activeLessons(brokerId, 40);
+    const taughtList = taught.length ? taught.map((l) => `- ${l.instruction}`).join("\n") : "(none yet)";
     const parsed = await chatCompletionJSON<{ instruction?: string; situation?: string }>({
       model: HELPER_MODEL,
       label: "learn-edit",
@@ -269,13 +275,13 @@ Respond with JSON only: {"instruction": "...", "situation": "style|${SITUATIONS.
       messages: [
         {
           role: "user",
-          content: `AI draft:\n"${before.slice(0, 600)}"\n\nBroker sent instead:\n"${after.slice(0, 600)}"`,
+          content: `What this broker has already taught:\n${taughtList}\n\nIf the change adds something new, state it. If it removes or reverses something taught above, state the reversal plainly (e.g. "Do not ask the price in the first message"). If it only repeats what is taught, return an empty instruction.\n\nAI draft:\n"${before.slice(0, 600)}"\n\nBroker sent instead:\n"${after.slice(0, 600)}"`,
         },
       ],
       max_tokens: 120,
     });
     const instruction = parsed.instruction?.trim();
-    if (!instruction || instruction.length < 5) return;
+    if (!instruction || instruction.length < 5) return false;
 
     // Same rule as learnFromRevision: the code knows the moment, the model only
     // gets to say that a lesson is about the voice rather than the moment.
@@ -289,21 +295,23 @@ Respond with JSON only: {"instruction": "...", "situation": "style|${SITUATIONS.
     const situation: LessonTag = guessed === "style" ? "style" : (derived ?? guessed ?? "style");
 
     const existing = await activeLessons(brokerId, 60);
-    if (existing.some((r) => similar(r.instruction, instruction))) return;
+    if (existing.some((r) => similar(r.instruction, instruction))) return false;
 
     const situationContext = ctx
       ? [ctx.pipeline, ctx.leadStage].filter(Boolean).join(" / ") || null
       : null;
     if (situation !== "owner_intake" && !lessonAppliesToClients(instruction)) {
       logger.info({ brokerId, instruction, situation }, "lesson not stored — client drafts never ask who the villa is for");
-      return;
+      return false;
     }
     await db.insert(brokerCorrectionsTable).values({ brokerId, instruction, situation, situationContext });
     logger.info({ brokerId, instruction, situation }, "learned from the broker's manual edit");
 
     await retireContradicted(brokerId, instruction, existing);
+    return true;
   } catch (err) {
     logger.warn({ err, brokerId }, "learnFromEdit failed (non-fatal)");
+    return false;
   }
 }
 

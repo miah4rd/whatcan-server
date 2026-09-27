@@ -662,7 +662,9 @@ export async function composeReplyWithListings(opts: {
   emptyPoolGuidance?: string;
   /** A fact about the candidate list itself (e.g. drawn from the nearest area, not the client's). */
   poolNote?: string;
-}): Promise<{ text: string; listingIds: string[]; decision: "keep_current" | "none_this_message" | "new_selection" } | null> {
+  /** An image the broker attached to this edit (an example to follow, or the real chat). */
+  image?: { type: "image"; source: { type: "base64"; media_type: string; data: string } } | null;
+}): Promise<{ text: string; listingIds: string[]; decision: "keep_current" | "none_this_message" | "new_selection"; note: string | null } | null> {
   const current = opts.currentAttachments.length
     ? opts.currentAttachments.map((a) => `${a.id} — ${a.label}`).join("\n")
     : "(none)";
@@ -670,6 +672,7 @@ export async function composeReplyWithListings(opts: {
   try {
     const result = await chatCompletionJSON<{
       message?: string;
+      note?: string;
       listing_ids?: string[];
       attachments_decision?: string;
     }>({
@@ -679,6 +682,14 @@ export async function composeReplyWithListings(opts: {
 
 ──────────────────────────────────────────
 THE BROKER'S INSTRUCTION IS THE HIGHEST AUTHORITY HERE.
+
+ORDER OF AUTHORITY (owner, 27.09.2026 — the broker owns the messages of their stage):
+1. The facts listed at the end of this prompt. Nobody overrides them.
+2. The broker: this instruction, and everything in the current draft they did not ask to change —
+   its questions, requests, order and structure were read and kept by them. Never remove a question,
+   request or sentence from the current draft unless the instruction asks for it.
+3. Everything else above — stage scripts, CTA rules, and the preferences the broker taught on
+   earlier edits — is only the default for when nobody steers. Where it disagrees with 1–2, it loses.
 
 You are revising a draft the broker has read and rejected. Everything above —
 tone rules, structure rules, stage rules, CTA rules — is the DEFAULT, for when
@@ -690,7 +701,7 @@ You decide BOTH things as one decision: the message text AND which property
 links go with it (listing_ids).
 ${
         (opts.priorInstructions ?? []).length > 0
-          ? `\nInstructions the broker ALREADY gave while editing this same message — every one of them still stands; the newest instruction adds to them and never silently undoes them:\n${opts
+          ? `\nInstructions the broker ALREADY gave while editing this same message, oldest first. Each still stands UNLESS the newest instruction changes, reverses or contradicts it — then the NEWEST wins: the broker changed their mind (owner, 27.09: "ask price and commission" and then "ask them in the next message" must end with no price question). Where the newest says nothing about a point, the earlier instruction keeps applying:\n${opts
               .priorInstructions!.map((i) => `- ${i}`)
               .join("\n")}\n`
           : ""
@@ -727,11 +738,23 @@ Facts you never break (these are facts, not style, and the broker is not asking 
 
 Language: write in ${opts.language ?? "the language the CLIENT writes in"} — unless the broker's instruction explicitly asks for another language, in which case obey the broker.
 
-Respond with JSON only: {"message": "<the WhatsApp message>", "attachments_decision": "keep_current|none_this_message|new_selection", "listing_ids": ["ID", ...]}`,
+An instruction about TONE or WORDING only ("warmer", "friendlier", "shorter", "more polite", "sound more human", "add my name") changes the wording and nothing else: every question, fact and request in the current draft stays in the message, even where a rule above would have left one out. The broker liked the content; they asked only for the voice (owner, 27.09: "make it warmer" dropped one of the two key questions).
+
+Talk back to the broker in "note", like a colleague would: ONE short sentence in the language of their instruction saying what you changed ("Убрал цену, спрошу её следующим сообщением"). If the instruction is genuinely unclear or could mean two different things, do NOT guess: keep "message" exactly as the current draft and put ONE short question in "note".
+
+Respond with JSON only: {"message": "<the WhatsApp message>", "note": "<one short sentence to the broker>", "attachments_decision": "keep_current|none_this_message|new_selection", "listing_ids": ["ID", ...]}`,
       messages: [
         {
           role: "user",
-          content: `Conversation so far:\n${conversationWindow(opts.conversation)}\n\nCurrent draft:\n${opts.currentDraft}\n\nTHE BROKER'S INSTRUCTION:\n"${opts.brokerInstruction}"`,
+          content: opts.image
+            ? [
+                {
+                  type: "text",
+                  text: `Conversation so far:\n${conversationWindow(opts.conversation)}\n\nCurrent draft:\n${opts.currentDraft}\n\nTHE BROKER'S INSTRUCTION:\n"${opts.brokerInstruction}"\n\nThe broker attached the image below. Their instruction says what it is. If they present it as an example of how to write ("like this", "example", "пример", "вот так", "как здесь"), follow its structure, tone, length and way of asking — NOT its facts, names or prices. If it shows the real chat with this client, read it as the true state of the conversation.`,
+                },
+                opts.image,
+              ]
+            : `Conversation so far:\n${conversationWindow(opts.conversation)}\n\nCurrent draft:\n${opts.currentDraft}\n\nTHE BROKER'S INSTRUCTION:\n"${opts.brokerInstruction}"`,
         },
       ],
       max_tokens: 900,
@@ -747,7 +770,8 @@ Respond with JSON only: {"message": "<the WhatsApp message>", "attachments_decis
         : ids.length === 0
           ? ("none_this_message" as const)
           : ("new_selection" as const);
-    return { text, listingIds: ids, decision };
+    const note = String(result.note ?? "").trim().slice(0, 400) || null;
+    return { text, listingIds: ids, decision, note };
   } catch (err) {
     logger.warn({ err }, "composeReplyWithListings failed — falling back to the split path");
     return null;

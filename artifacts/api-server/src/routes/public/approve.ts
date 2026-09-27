@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { learnFromEdit } from "../../lib/broker-corrections";
+import { refreshQueuedDrafts } from "../../lib/refresh-queued-drafts";
 import { shouldSuppressPush } from "../../lib/stage-routing";
 import { db, pendingSuggestionsTable, sentMessagesTable, leadsSyncTable, stageEventsTable, brokerCorrectionsTable, leadCrmTasksTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
@@ -750,7 +751,19 @@ router.post("/approve", async (req, res) => {
         pipeline: prevSyncRow?.pipeline ?? null,
         leadStage: explicitNewStage ?? prevSyncRow?.leadStage ?? null,
         kind: sug.kind,
-      }).catch(() => {});
+      })
+        // A new preference: the broker's other waiting drafts at this stage are written again with it.
+        .then((learned) =>
+          learned
+            ? refreshQueuedDrafts({
+                broker: sug.responsibleUser ?? String(body.brokerId),
+                pipeline: prevSyncRow?.pipeline ?? null,
+                leadStage: prevSyncRow?.leadStage ?? null,
+                exceptId: String(body.suggestionId ?? ""),
+              })
+            : 0,
+        )
+        .catch(() => {});
     }
 
     // A message that never left is not a follow-up to schedule, a promise to keep or a stage fact.

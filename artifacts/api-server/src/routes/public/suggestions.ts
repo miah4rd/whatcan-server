@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable, brokerSettingsTable } from "@workspace/db";
+import { db, pool, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable, brokerSettingsTable } from "@workspace/db";
 import { desc, inArray, eq, and, sql } from "drizzle-orm";
 import { cleanLeadName } from "../../lib/lead-display-name";
 import { parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
@@ -579,7 +579,12 @@ router.get("/suggestions", async (req, res) => {
         return Object.keys(villa_flags).length > 0 ? { ...i, villa_flags } : i;
       }),
     );
-    res.json({ items: withFlags });
+    // The Copilot's own first draft, when an edit has replaced it (suggest.ts keeps it aside).
+    const firsts = await pool
+      .query(`SELECT id::text, original_text FROM pending_suggestions WHERE original_text IS NOT NULL AND id::text = ANY($1)`, [withFlags.map((x: { id: unknown }) => String(x.id))])
+      .then((r) => new Map(r.rows.map((x) => [String(x.id), String(x.original_text)])))
+      .catch(() => new Map<string, string>());
+    res.json({ items: withFlags.map((x: Record<string, unknown>) => (firsts.has(String(x["id"])) ? { ...x, original_text: firsts.get(String(x["id"])) } : x)) });
   } catch (err) {
     req.log.error({ err }, "suggestions fetch error");
     res.status(500).json({ error: "DB error" });

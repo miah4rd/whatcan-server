@@ -1670,8 +1670,8 @@ const PAGE_HTML = `<!doctype html>
         body: JSON.stringify({
           suggestionId: item.id,
           message: finalText,
-          edited: finalText.trim() !== (item.original || "").trim(),
-          originalText: item.original || "",
+          edited: finalText.trim() !== (item.firstText || item.original || "").trim(),
+          originalText: item.firstText || item.original || "",
           brokerId: activeBroker(),
           // Send the CURRENT attachment list — the broker may have removed or
           // added property links while editing, and the server would otherwise
@@ -1756,6 +1756,13 @@ const PAGE_HTML = `<!doctype html>
   }
 
   async function rewriteServer(item, feedback) {
+    // Every version of this draft, so the broker can step back (owner, 27.09): the first one is
+    // the Copilot's own draft, and it is also what a send is learned against.
+    if (!item.versions) item.versions = [];
+    if (!item.firstText) item.firstText = item.original || item.text;
+    if (!item.versions.length || item.versions[item.versions.length - 1] !== item.text) item.versions.push(item.text);
+    if (!item.dialog) item.dialog = [];
+    item.dialog.push({ who: "you", text: feedback.trim() });
     if (!item.revisionChain) item.revisionChain = [];
     item.revisionChain.push({ draft: item.text, feedback: feedback.trim() });
     var messages = (item.recent_messages || []).map(function (m) {
@@ -1801,6 +1808,8 @@ const PAGE_HTML = `<!doctype html>
       }
       var json = await res.json();
       if (json && json.text) item.text = json.text;
+      // The Copilot says what it understood, or asks, like a colleague in a chat.
+      item.dialog.push({ who: "copilot", text: (json && json.note) || "Done." });
       // A revision about the listings re-picks them server-side. Links the
       // broker added by hand stay — they overrode the bot on purpose. But when
       // the panel was curated, the server now echoes the broker's own set back
@@ -1849,6 +1858,24 @@ const PAGE_HTML = `<!doctype html>
     }
   }
 
+  // Step back through this draft's versions (owner, 27.09). The version on screen becomes the draft.
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!t || !openItem) return;
+    if (t.id === "ver-back" && openItem.versions && openItem.versions.length) {
+      openItem.text = openItem.versions.pop();
+      openItem.dialog = (openItem.dialog || []).concat([{ who: "copilot", text: "Back to the previous version." }]);
+      if (openItem.revisionChain && openItem.revisionChain.length) openItem.revisionChain.pop();
+      render();
+    } else if (t.id === "ver-first" && (openItem.firstText || (openItem.versions && openItem.versions[0]))) {
+      openItem.text = openItem.firstText || openItem.versions[0];
+      openItem.versions = [];
+      openItem.revisionChain = [];
+      openItem.dialog = (openItem.dialog || []).concat([{ who: "copilot", text: "Back to the first version." }]);
+      render();
+    }
+  });
+
   function openDetail(item, tabKind) {
     var nextStages = stagesAfterCurrent(item.lead_stage || "");
     // Non-terminal stages apply themselves server-side on approve, so the only
@@ -1870,6 +1897,7 @@ const PAGE_HTML = `<!doctype html>
       profile_temperature_source: item.profile_temperature_source || null,
       text: item.suggestion_text || "",
       original: item.suggestion_text || "",
+      firstText: item.original_text || null,
       _contextImage: null,
       recent_messages: Array.isArray(item.recent_messages) ? item.recent_messages : [],
       form_answers: Array.isArray(item.form_answers) ? item.form_answers : null,
@@ -3014,6 +3042,14 @@ const PAGE_HTML = `<!doctype html>
       html += '<label class="section">Suggested message</label>';
       html += '<div class="msg-text">' + linkify(esc(it.text)) + '</div>';
       html += renderAttachments(it, false);
+      if (it.versions && it.versions.length) {
+        html += '<div class="ai-dialog">';
+        // The exchange itself is not shown (owner, 27.09: it cluttered the card); only the versions.
+        if (it.versions && it.versions.length) {
+          html += '<div class="ai-ver-row"><button class="mini" id="ver-back">\u2190 Previous version</button><button class="mini" id="ver-first">First version</button></div>';
+        }
+        html += '</div>';
+      }
     }
     if (it.error) html += '<div class="err-text">' + esc(it.error) + '</div>';
     html += '</div>';
@@ -3627,6 +3663,22 @@ const PAGE_HTML = `<!doctype html>
  * host=os and get PAGE_HTML untouched.
  */
 const OS_SKIN_CSS = `
+html.os-skin .ai-dialog{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+html.os-skin .ai-say{max-width:88%;padding:7px 10px;border-radius:10px;font-size:12.5px;line-height:1.45;white-space:pre-wrap}
+html.os-skin .ai-say.you{align-self:flex-end;background:var(--accent-bg);color:var(--accent-text)}
+html.os-skin .ai-say.cp{align-self:flex-start;background:var(--surface-2);color:var(--text)}
+html.os-skin .ai-ver-row{display:flex;gap:6px;margin-top:2px}
+
+/* Phones (owner, 27.09): iPhone zooms into any field under 16px, so fields are 16px there; the
+   message box and the "tell the AI what to change" box are taller, like a messenger's. */
+@media (hover: none) and (pointer: coarse) {
+  html.os-skin input, html.os-skin select, html.os-skin textarea, html.os-skin .aiinput { font-size: 16px !important; }
+  html.os-skin #msg-text { min-height: 34vh; }
+  html.os-skin .aiinput { min-height: 96px; }
+}
+html.os-skin #msg-text { min-height: 180px; }
+html.os-skin .aiinput { min-height: 72px; resize: vertical; }
+
 html.os-skin{--bg:#F6F4EF;--surface:#FFFFFF;--surface-2:#F1EEE7;--surface-3:#E9E5DC;--text:#1E1A16;--text-2:#5C554D;--text-3:#8C8479;--border:#E4DFD5;--border-2:#D3CCBF;--accent:#96782F;--accent-2:#B69A54;--accent-bg:#F3EBD6;--accent-text:#6E561C;--on-accent:#1E1A16;--live:#1E8E5A;--live-bg:#E4F4EB;--reach:#2F6FED;--reach-bg:#E6EEFD;--push:#C27A0A;--push-bg:#FBEFD9;--hot:#D64545;--hot-bg:#FBE5E5;--bad:#D64545;--shadow:0 1px 2px rgba(30,26,22,.06),0 8px 24px rgba(30,26,22,.10)}
 html.os-skin[data-os-theme=dark]{--bg:#1B1612;--surface:#241E19;--surface-2:#2D2620;--surface-3:#372F27;--text:#F1ECE4;--text-2:#B8AFA3;--text-3:#857C70;--border:#352D25;--border-2:#4A4035;--accent:#C9A85C;--accent-2:#B69A54;--accent-bg:#3A3020;--accent-text:#E3C77E;--on-accent:#1E1A16;--live:#3FB37B;--live-bg:#1B3327;--reach:#6A93F5;--reach-bg:#1D2A45;--push:#E0A23B;--push-bg:#3A2E16;--hot:#EF6B6B;--hot-bg:#3E2222;--bad:#EF6B6B;--shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px rgba(0,0,0,.45)}
 html.os-skin body{font-family:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:13px;line-height:1.45;background:var(--surface);color:var(--text);-webkit-font-smoothing:antialiased}

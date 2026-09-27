@@ -2,7 +2,7 @@ import { Router } from "express";
 import { randomUUID } from "crypto";
 import { eq, and } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL, type ChatMessage } from "../../lib/ai-client";
-import { db, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
+import { db, pool, leadsSyncTable, leadMessagesTable, pendingSuggestionsTable } from "@workspace/db";
 import { parseDialogContent, formatDialogForAI, conversationWindow } from "../../lib/dialog-parser";
 import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing";
 import { getQualificationSteps } from "../../lib/settings";
@@ -193,6 +193,10 @@ router.options("/suggest", (_req, res) => {
   res.sendStatus(204);
 });
 
+/** A fact, not a style rule: the text points at links under it ("link below", "ссылка ниже", "see
+ * the options below"). Only this may cut a broker's edited text — nothing is below it. */
+const NO_LINK_BELOW = (t: string) => /\b(links?|options?|villas?)\s+(is\s+|are\s+)?below\b|\bbelow\s+(is|are)\b|ссылк\S*\s+ниже|варианты\s+ниже/i.test(t);
+
 router.post("/suggest", async (req, res) => {
   const body = req.body as Body;
   // The row is the single source of truth for what the broker approves: the
@@ -202,6 +206,10 @@ router.post("/suggest", async (req, res) => {
     const pendingId = typeof body.pendingId === "string" ? body.pendingId.trim() : "";
     if (pendingId && typeof payload["text"] === "string" && (payload["text"] as string).trim()) {
       try {
+        // The Copilot's own first draft is kept aside on the first edit (owner, 27.09: a revision
+        // overwrote it and "back to how it was" had nothing to go back to).
+        await pool.query(`ALTER TABLE pending_suggestions ADD COLUMN IF NOT EXISTS original_text text`).catch(() => undefined);
+        await pool.query(`UPDATE pending_suggestions SET original_text = suggestion_text WHERE id = $1 AND original_text IS NULL`, [pendingId]).catch(() => undefined);
         const set: Record<string, unknown> = { suggestionText: payload["text"] };
         if (Array.isArray(payload["attachments"])) set["attachments"] = payload["attachments"];
         await db.update(pendingSuggestionsTable).set(set).where(and(eq(pendingSuggestionsTable.id, pendingId), eq(pendingSuggestionsTable.status, "pending")));
@@ -487,7 +495,7 @@ ${transcript || "(no messages yet)"}`;
         type: "text",
         text:
           baseText +
-          `\n\n[THE BROKER ATTACHED A SCREENSHOT of the actual amoCRM chat. Treat it as the SOURCE OF TRUTH for the real conversation, its order, and the lead's current state — the stored history above may be missing messages or have them out of order. Re-read the whole situation from the screenshot AND the broker's note (which may be correcting what you saw or your judgment), then write the best next message. Do not just tweak wording — fix your understanding first.]`,
+          `\n\n[THE BROKER ATTACHED AN IMAGE. Their note says what it is. If they present it as an example of how to write ("like this", "example", "пример", "вот так"), follow its structure, tone, length and way of asking — not its facts, names or prices. If it shows the real chat with this client, treat it as the source of truth for the conversation and its order, and fix your understanding first.]`,
       },
       imageBlock,
     ];
@@ -728,12 +736,11 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
     // Every edit is a lesson. Saved server-side and off the critical path, so
     // learning no longer depends on which surface the broker edits from — the
     // mobile page never saved a correction at all.
-    if (revision)
-      void learnFromRevision(brokerId, revision, {
-        pipeline: dbPipeline,
-        leadStage,
-        lastLeadText: lastLeadTextForSituation,
-      });
+    // Owner, 27.09: a lesson is learned from what was actually SENT (approve.ts → learnFromEdit,
+    // the first draft against the sent text), never from each dictated step: "ask the price" said
+    // once while trying things became a permanent rule, and "ask it next time" could not undo it.
+    void learnFromRevision;
+    void lastLeadTextForSituation;
 
     if (process.env["ONE_PASS_COMPOSE"] !== "0" && revision && body.leadId) {
       try {
@@ -808,6 +815,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             pool.candidates.length === 0
               ? `NOTHING in our catalog is inside this client's request (${describeRequest(pool.request)})${pool.fitsInclSent > 0 ? " that they have not already been sent" : ""}. Attach nothing unless the broker names a villa. Never promise to check, look, find, pull together or come back with a shortlist. Unless the broker's instruction says otherwise, ask exactly ONE concrete question: ${relaxQuestion(pool.hint)}.`
               : undefined,
+          image: imageBlock,
           poolNote: pool.widenedArea
             ? `NOTHING that fits is in the area the client asked for (${pool.widenedArea.asked.join(", ")}). Every property above is in ${pool.widenedArea.used.join(" or ")}: the broker asked for options, so offer these, and say plainly in the message that they are in ${pool.widenedArea.used.join(" / ")} because there is nothing in ${pool.widenedArea.asked.join(", ")} right now. Never present them as being in the area the client asked for.`
             : undefined,
@@ -1110,7 +1118,8 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
                 { leadId: body.leadId, idsReturned: composed.listingIds, poolSize: pool.lines.length, curated: curatedDetected, curatedLocked },
                 "suggest: composer chose new_selection with nothing to attach — any offer in the text is removed",
               );
-              finalText = await stripUnbackedListingOffer(composed.text, true);
+              // The broker's words stay; only a message that says a link is below with none there is cut.
+              finalText = NO_LINK_BELOW(composed.text) ? await stripUnbackedListingOffer(composed.text, true) : composed.text;
               mustReconcile = false;
             }
           }
@@ -1130,7 +1139,8 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           } else if (
             chosen.length === 0 &&
             composed.decision !== "new_selection" &&
-            (modelDropped.length > 0 || DESCRIBES_A_VILLA.test(finalText))
+            (modelDropped.length > 0 || DESCRIBES_A_VILLA.test(finalText)) &&
+            NO_LINK_BELOW(finalText)
           ) {
             finalText = await stripUnbackedListingOffer(finalText, true);
           }
@@ -1163,6 +1173,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           );
           await respond({
             text: finalText,
+            note: composed.note,
             rationale,
             suggestionId: randomUUID(),
             task_hint: taskHint ?? null,
