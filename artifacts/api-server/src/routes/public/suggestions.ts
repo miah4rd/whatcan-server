@@ -13,6 +13,7 @@ import { openReportsForLeads } from "../../lib/inspection-report";
 import { isPendingVisible, dedupePushPerLead, repliedSignalFromTimeline, loadReplySignals } from "../../lib/pending-visibility";
 import { findStuckLeads } from "../../lib/stuck-leads";
 import { flagsForAttachments } from "../../lib/property-flags";
+import { listPipelines } from "../../lib/wa-routing";
 
 const router = Router();
 
@@ -551,6 +552,35 @@ router.get("/suggestions", async (req, res) => {
         try { return Number(BigInt(b.lead_id) - BigInt(a.lead_id)); } catch { return 0; }
       });
     }
+
+    // ── LIVE: the stage closest to the deal first (owner, 27.09.2026) ──────────
+    // «чем ближе лид на этапе воронки ближе к сделке, тем он приоритетнее… кому нам
+    // нужно быстрее ответить? Тот, кто быстрее к сделке или на этапе квалификации?»
+    // The order is amoCRM's own stage order of the lead's funnel (never a hand list: a
+    // rename would silently break it). Parked and lost stages go last. Same stage: the
+    // client who has waited longest first. Push keeps its own ranking above.
+    try {
+      const pipes = await listPipelines();
+      const pos = new Map<string, number>();
+      for (const p of pipes) {
+        for (const st of p.stages) {
+          const parked = /long term|long-term|co-broke|backlog|mailing|lost/i.test(st.name) || st.id === 143;
+          pos.set(`${p.name.trim().toLowerCase()}|${st.name.trim().toLowerCase()}`, parked ? -1 : st.sort);
+        }
+      }
+      const stagePos = (i: (typeof enriched)[0]): number =>
+        pos.get(`${String(i.pipeline ?? "").trim().toLowerCase()}|${String(i.lead_stage ?? "").trim().toLowerCase()}`) ?? -0.5;
+      const waitedSince = (i: (typeof enriched)[0]): number => {
+        const t = i.last_message_at ? new Date(i.last_message_at).getTime() : NaN;
+        return Number.isFinite(t) ? t : Number.MAX_SAFE_INTEGER;
+      };
+      const live = enriched.filter((i) => i.kind === "live")
+        .map((i, k) => ({ i, k }))
+        .sort((a, b) => (stagePos(b.i) - stagePos(a.i)) || (waitedSince(a.i) - waitedSince(b.i)) || (a.k - b.k))
+        .map((x) => x.i);
+      let n = 0;
+      enriched = enriched.map((i) => (i.kind === "live" ? live[n++] : i));
+    } catch { /* amoCRM unreadable: keep the order above */ }
 
     // ── Hand-picked priority wins over every ranking above ──────────────────
     //
