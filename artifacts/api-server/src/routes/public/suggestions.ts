@@ -562,11 +562,14 @@ router.get("/suggestions", async (req, res) => {
     try {
       const pipes = await listPipelines();
       const pos = new Map<string, number>();
+      // Position as the share of the funnel's way to the deal (0..1), so a Rental and a
+      // UNICORN card compare fairly: the funnels have different numbers of stages.
       for (const p of pipes) {
-        for (const st of p.stages) {
+        const n = Math.max(1, p.stages.length - 1);
+        p.stages.forEach((st, idx) => {
           const parked = /long term|long-term|co-broke|backlog|mailing|lost/i.test(st.name) || st.id === 143;
-          pos.set(`${p.name.trim().toLowerCase()}|${st.name.trim().toLowerCase()}`, parked ? -1 : st.sort);
-        }
+          pos.set(`${p.name.trim().toLowerCase()}|${st.name.trim().toLowerCase()}`, parked ? -1 : idx / n);
+        });
       }
       const stagePos = (i: (typeof enriched)[0]): number =>
         pos.get(`${String(i.pipeline ?? "").trim().toLowerCase()}|${String(i.lead_stage ?? "").trim().toLowerCase()}`) ?? -0.5;
