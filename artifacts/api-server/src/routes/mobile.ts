@@ -1435,6 +1435,7 @@ const PAGE_HTML = `<!doctype html>
           openItem.original = freshOpen.suggestion_text || "";
           openItem.attachments = Array.isArray(freshOpen.attachments) ? freshOpen.attachments.slice() : [];
           openItem.villa_flags = freshOpen.villa_flags || null;
+          openItem.villa_trust = freshOpen.villa_trust || null;
           openItem.inspection_report = freshOpen.inspection_report || null;
           openItem.recent_messages = Array.isArray(freshOpen.recent_messages) ? freshOpen.recent_messages : [];
           openItem.lead_stage = freshOpen.lead_stage || null;
@@ -1914,6 +1915,7 @@ const PAGE_HTML = `<!doctype html>
       form_answers: Array.isArray(item.form_answers) ? item.form_answers : null,
       attachments: Array.isArray(item.attachments) ? item.attachments.slice() : [],
       villa_flags: item.villa_flags || null,
+      villa_trust: item.villa_trust || null,
       loading: false,
       busy: false,
       error: "",
