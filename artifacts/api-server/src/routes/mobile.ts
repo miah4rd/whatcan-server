@@ -1189,6 +1189,16 @@ const PAGE_HTML = `<!doctype html>
         }
         // Flags a broker set in the site's Internal data for this villa. For the
         // broker only: they never enter the text or the links the client receives.
+        // Why this villa is where it is in the list (owner, 27.09): inspected or not, green and red flags.
+        var tr = item.villa_trust && a.url ? item.villa_trust[a.url] : null;
+        if (tr) {
+          var bits = [];
+          bits.push(tr.listed === true ? "\u2705 Listed (inspected)" : tr.listed === false ? "\u23f3 Pre-listed (not inspected)" : "status unknown");
+          if (tr.greenFlags) bits.push("\ud83d\udfe2 " + tr.greenFlags + " green flag" + (tr.greenFlags === 1 ? "" : "s"));
+          if (tr.features && tr.features.length) bits.push("\u2713 " + tr.features.join(", "));
+          if (tr.redFlags) bits.push("\ud83d\udea9 " + tr.redFlags + " red flag" + (tr.redFlags === 1 ? "" : "s"));
+          html += '<div class="att att-trust" style="font-size:11.5px;opacity:.85;margin:-2px 0 4px 22px">' + esc(bits.join(" \u00b7 ")) + '</div>';
+        }
         var fl = item.villa_flags && a.url ? item.villa_flags[a.url] : null;
         if (fl && fl.constructionNearby) {
           html += '<div class="att att-flag"><span>\\ud83d\\udea9</span><span class="attlbl">Red flag: construction nearby</span></div>';

@@ -1,3 +1,4 @@
+import { trustForAttachments } from "../../lib/villa-trust";
 import { Router } from "express";
 import { db, pool, pendingSuggestionsTable, leadsSyncTable, leadMessagesTable, brokerSettingsTable } from "@workspace/db";
 import { desc, inArray, eq, and, sql } from "drizzle-orm";
@@ -575,8 +576,14 @@ router.get("/suggestions", async (req, res) => {
     const withFlags = await Promise.all(
       enriched.map(async (i) => {
         const attachments = (i as unknown as { attachments?: Array<{ type?: string; url?: string | null }> }).attachments;
-        const villa_flags = await flagsForAttachments(attachments).catch(() => ({}));
-        return Object.keys(villa_flags).length > 0 ? { ...i, villa_flags } : i;
+        const [villa_flags, villa_trust] = await Promise.all([
+          flagsForAttachments(attachments).catch(() => ({})),
+          trustForAttachments(attachments).catch(() => ({})),
+        ]);
+        const extra: Record<string, unknown> = {};
+        if (Object.keys(villa_flags).length > 0) extra["villa_flags"] = villa_flags;
+        if (Object.keys(villa_trust).length > 0) extra["villa_trust"] = villa_trust;
+        return Object.keys(extra).length > 0 ? { ...i, ...extra } : i;
       }),
     );
     // The Copilot's own first draft, when an edit has replaced it (suggest.ts keeps it aside).
