@@ -2,7 +2,7 @@ import { Router } from "express";
 import { learnFromEdit } from "../../lib/broker-corrections";
 import { refreshQueuedDrafts } from "../../lib/refresh-queued-drafts";
 import { shouldSuppressPush } from "../../lib/stage-routing";
-import { db, pendingSuggestionsTable, sentMessagesTable, leadsSyncTable, stageEventsTable, brokerCorrectionsTable, leadCrmTasksTable } from "@workspace/db";
+import { db, pool, pendingSuggestionsTable, sentMessagesTable, leadsSyncTable, stageEventsTable, brokerCorrectionsTable, leadCrmTasksTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { nextFollowupDate, parseDialogContent, countTrailingOurMessages } from "../../lib/dialog-parser";
 import { computeNextFollowupDays, isAdaptiveBroker } from "../../lib/adaptive-followup";
@@ -736,6 +736,13 @@ router.post("/approve", async (req, res) => {
         messengerSource,
       );
     }
+
+    // The stage the message was sent at: the card moves on after the send, and this message is the
+    // structure of THAT stage (owner, 27.09 — see refresh-queued-drafts.ts).
+    void pool
+      .query(`ALTER TABLE pending_suggestions ADD COLUMN IF NOT EXISTS sent_stage text`)
+      .then(() => pool.query(`UPDATE pending_suggestions SET sent_stage = $2 WHERE id::text = $1`, [String(body.suggestionId ?? ""), prevSyncRow?.leadStage ?? null]))
+      .catch(() => undefined);
 
     // ── Learn from manual edits ─────────────────────────────────────────────
     if (

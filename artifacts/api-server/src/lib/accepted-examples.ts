@@ -29,15 +29,14 @@ export async function acceptedExamples(
   if (!who) return [];
   try {
     const res = await db.execute(sql`
-      SELECT p.suggestion_text AS text
+      SELECT coalesce(nullif(p.final_text, ''), p.suggestion_text) AS text
         FROM pending_suggestions p
         JOIN leads_sync l ON l.lead_id = p.lead_id
-       WHERE p.status = 'approved'
+       WHERE p.status IN ('approved', 'edited')
          AND coalesce(p.auto_sent, false) = false
          AND lower(coalesce(p.responsible_user, '')) = ${who}
-         AND (coalesce(p.final_text, '') = '' OR p.final_text = p.suggestion_text)
          AND p.created_at > now() - make_interval(days => ${WINDOW_DAYS})
-         AND length(p.suggestion_text) BETWEEN 20 AND 1200
+         AND length(coalesce(nullif(p.final_text, ''), p.suggestion_text)) BETWEEN 20 AND 1200
          AND (${sql.raw(SITUATION_CASE)}) = ${situation ?? "options"}
        ORDER BY p.created_at DESC
        LIMIT ${limit}
@@ -56,8 +55,10 @@ export async function acceptedExamplesBlock(brokerName: string | null | undefine
   if (!ex.length) return "";
   const clip = (t: string) => (t.length > MAX_CHARS ? t.slice(0, MAX_CHARS).trimEnd() + "…" : t);
   return (
-    `\n\nMESSAGES THE BROKER APPROVED AND SENT WITHOUT CHANGING, in this same situation — the accepted shape. ` +
-    `Match their length, layout and tone (the facts, names and villas here are NOT for reuse):\n` +
+    // Owner, 27.09: what the broker last SENT in this moment is the structure of this stage's message —
+    // an edit included. It outranks the lessons above where they differ.
+    `\n\nTHE BROKER'S OWN MESSAGES IN THIS SAME SITUATION, newest first — what they actually sent (edited or as drafted). ` +
+    `The FIRST one is the current structure of this message: write yours with the same questions, in the same order, the same greeting, self-introduction and sign-off, the same length and tone; only the facts about this villa or client change (the facts, names and villas below are NOT for reuse). Where a preference above disagrees with it, the broker's latest message wins:\n` +
     ex.map((t) => `«${clip(t).replace(/\n{2,}/g, "\n").replace(/\n/g, " ⏎ ")}»`).join("\n")
   );
 }
