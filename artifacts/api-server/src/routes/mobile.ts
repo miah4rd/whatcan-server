@@ -269,6 +269,8 @@ const PAGE_HTML = `<!doctype html>
   .att-add-input { flex: 1; min-width: 0; background: #141827; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; font-family: inherit; }
   .att-add-input:focus { outline: none; border-color: #2dd4bf; }
   .att-add-btn { background: #23293b; color: #b6bccd; border: 1px solid #2a3146; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; flex: none; }
+  .vt-chips { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 1px 0 6px 22px; font-size: 11px; opacity: .85; }
+  .vt { white-space: nowrap; }
   .att-pick-btn { display: block; width: 100%; background: rgba(45,212,191,.14); color: #2dd4bf; border: 1px solid rgba(45,212,191,.4); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; margin-top: 8px; }
   .picker-overlay { position: fixed; inset: 0; z-index: 999; background: rgba(6,10,16,.78); display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; opacity: 0; transition: opacity .16s ease; }
   .picker-overlay.show { opacity: 1; }
@@ -1157,6 +1159,20 @@ const PAGE_HTML = `<!doctype html>
   // rendering them in the read-only view would give the broker dead controls.
   // Bot-picked property links are removable too: the broker needs to be able to
   // drop or swap a listing they disagree with, not just the ones they added.
+  // Compact villa markers (owner, 27.09): one short line under the link — status, then green and red
+  // flags as flag icons with a word or two. For the broker only.
+  var SHORT_FEATURE = { "small garden": "garden", "large garden": "big garden", "enclosed living room": "closed living", "workspace": "workspace", "office room": "office", "quiet street": "quiet", "no construction next door": "no construction" };
+  function trustChips(tr) {
+    if (!tr) return "";
+    var G = '<span style="color:#1E8E5A;font-weight:700">\u2691</span>', R = '<span style="color:#D64545;font-weight:700">\u2691</span>';
+    var chips = [tr.listed === true ? "\u2705 Listed" : tr.listed === false ? "\u23f3 Pre-listed" : ""];
+    (tr.features || []).forEach(function (f) { chips.push(G + " " + esc(SHORT_FEATURE[f] || f)); });
+    if (tr.greenFlags) chips.push(G + " " + esc(tr.greenFlags === 1 ? "inspection +" : "inspection +" + tr.greenFlags));
+    if (tr.construction) chips.push(R + " construction");
+    if (tr.redFlags) chips.push(R + " " + esc(tr.redFlags === 1 ? "red flag" : tr.redFlags + " red flags"));
+    return '<div class="vt-chips">' + chips.filter(Boolean).map(function (c) { return '<span class="vt">' + c + "</span>"; }).join("") + "</div>";
+  }
+
   function renderAttachments(item, removable) {
     if (!item.attachments || !item.attachments.length) return "";
     var html = '<div class="atts">';
@@ -1191,15 +1207,7 @@ const PAGE_HTML = `<!doctype html>
         // broker only: they never enter the text or the links the client receives.
         // Why this villa is where it is in the list (owner, 27.09): inspected or not, green and red flags.
         var tr = item.villa_trust && a.url ? item.villa_trust[a.url] : null;
-        if (tr) {
-          var bits = [];
-          bits.push(esc(tr.listed === true ? "\u2705 Listed (inspected)" : tr.listed === false ? "\u23f3 Pre-listed (not inspected)" : "status unknown"));
-          // Flags, green and red, as flags (owner, 27.09).
-          if (tr.greenFlags) bits.push('<span style="color:#1E8E5A;font-weight:700">\u2691</span> ' + esc(tr.greenFlags + " green flag" + (tr.greenFlags === 1 ? "" : "s")));
-          if (tr.features && tr.features.length) bits.push(esc("\u2713 " + tr.features.join(", ")));
-          if (tr.redFlags) bits.push('<span style="color:#D64545;font-weight:700">\u2691</span> ' + esc(tr.redFlags + " red flag" + (tr.redFlags === 1 ? "" : "s")));
-          html += '<div class="att att-trust" style="font-size:11.5px;opacity:.85;margin:-2px 0 4px 22px">' + bits.join(" \u00b7 ") + '</div>';
-        }
+        if (tr) html += trustChips(tr);
         var fl = item.villa_flags && a.url ? item.villa_flags[a.url] : null;
         if (fl && fl.constructionNearby) {
           html += '<div class="att att-flag"><span>\\ud83d\\udea9</span><span class="attlbl">Red flag: construction nearby</span></div>';
