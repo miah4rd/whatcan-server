@@ -1,4 +1,5 @@
 import { Router } from "express";
+import villaLinksRouter from "./villa-links";
 import suggestRouter from "./suggest";
 import suggestionsRouter from "./suggestions";
 import feedbackRouter from "./feedback";
@@ -72,5 +73,6 @@ router.use(brokerAgentRouter);
 router.use(reportRouter);
 router.use(clientsRouter);
 router.use(applyLeadRouter);
+router.use(villaLinksRouter);
 
 export default router;

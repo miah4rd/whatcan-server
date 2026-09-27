@@ -354,6 +354,13 @@ const PAGE_HTML = `<!doctype html>
   .resched-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
   .resched-toggle { background: none; border: none; color: #6b7488; font-size: 12px; padding: 4px 0; cursor: pointer; text-decoration: underline; }
   .resched-date { background: #141827; color: #e6e8ee; border: 1px solid #2a3146; border-radius: 8px; padding: 7px 10px; font-size: 12.5px; font-family: inherit; }
+  #msg-resize { margin: 2px 0 6px; }
+  .att-menu { border: 1px solid #2a3146; border-radius: 10px; padding: 6px; margin: 6px 0; }
+  .att-mi { padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+  .att-mi:hover { background: rgba(127,127,127,.12); }
+  .att-mi-dim { font-size: 12px; opacity: .6; padding: 4px 10px; }
+  .att-villa { padding: 6px 10px; font-size: 13px; border-top: 1px solid rgba(127,127,127,.2); }
+  .att-chip { display: inline-block; margin: 4px 6px 0 0; padding: 4px 10px; border: 1px solid #2a3146; border-radius: 14px; cursor: pointer; font-size: 12.5px; }
   .conv-resize { height: 12px; margin: -6px 0 8px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; touch-action: none; }
   .conv-resize::before { content: ""; width: 44px; height: 4px; border-radius: 3px; background: #2a3146; }
   .conv-resize:hover::before { background: #3b445e; }
@@ -1267,6 +1274,10 @@ const PAGE_HTML = `<!doctype html>
   // The system can't tell "forgot to remove" from "kept on purpose" — so it
   // doesn't guess: it only ever acts on the explicit × tap, and instead warns
   // when the list grows past what a client should be shown.
+  // The message editor keeps the height the broker dragged it to (owner, 27.09).
+  var msgSplit = 0;
+  try { msgSplit = Number(localStorage.getItem("copilot_msgsplit")) || 0; } catch (e) {}
+
   function addAttachmentLink(item, url) {
     item.attachments = item.attachments || [];
     for (var i = 0; i < item.attachments.length; i++) {
@@ -3180,8 +3191,10 @@ const PAGE_HTML = `<!doctype html>
     if (editing) {
       html += '<label class="section">Edit message</label>';
       html += '<textarea id="msg-text" placeholder="Edit message…">' + esc(editValue) + '</textarea>';
+      html += '<div class="conv-resize" id="msg-resize" title="Drag to resize"></div>';
       html += renderAttachments(it, true);
-      html += '<button class="att-pick-btn" id="att-pick-btn">\\ud83c\\udf10 Choose on site</button>';
+      html += '<button class="att-pick-btn" id="att-pick-btn">&#x1F4CE; Attach</button>';
+      html += '<div class="att-menu" id="att-menu" style="display:none"></div>';
       html += '<div class="att-add-row"><input class="att-add-input" id="att-add-url" placeholder="…or paste a property link"><button class="att-add-btn" id="att-add-btn">+ Add</button></div>';
       html += '<input type="file" id="file-input" accept="image/*" style="display:none">';
       html += '<div class="ai-input-wrap">';
@@ -3423,14 +3436,71 @@ const PAGE_HTML = `<!doctype html>
         };
       }
       var attPickBtn = $("#att-pick-btn");
+      // One Attach menu, like WhatsApp and Copilot OS (owner, 27.09): a villa from the site, or for a
+      // villa of this conversation its Google Maps, video tour, Drive folder or page. Each goes out as a
+      // link of its own under the message. After adding, the view stays at the links, not the top.
+      var addLinksAndStay = function (urls) {
+        // Purely additive — see addAttachmentLink's comment for why nothing
+        // gets auto-removed here. The × button is the only way a link leaves.
+        for (var i = 0; i < urls.length; i++) addAttachmentLink(it, urls[i]);
+        renderDetail();
+        setTimeout(function () { var b = $("#att-pick-btn"); if (b && b.scrollIntoView) b.scrollIntoView({ block: "center" }); }, 60);
+      };
       if (attPickBtn) {
         attPickBtn.onclick = function () {
-          openPropertyPicker(function (urls) {
-            // Purely additive — see addAttachmentLink's comment for why nothing
-            // gets auto-removed here. The × button is the only way a link leaves.
-            for (var i = 0; i < urls.length; i++) addAttachmentLink(it, urls[i]);
-            renderDetail();
-          });
+          var menu = $("#att-menu");
+          if (menu.style.display !== "none") { menu.style.display = "none"; return; }
+          menu.style.display = "";
+          var head = '<div class="att-mi" data-mi="site">&#x1F310; Villa from the site</div>';
+          menu.innerHTML = head + '<div class="att-mi-dim">Loading this client&rsquo;s villas&hellip;</div>';
+          var bindMenu = function (villas) {
+            menu.querySelectorAll("[data-mi]").forEach(function (el) {
+              el.onclick = function () {
+                var k = el.getAttribute("data-mi");
+                menu.style.display = "none";
+                if (k === "site") { openPropertyPicker(addLinksAndStay); return; }
+                var parts = k.split("|"), v = (villas || []).find(function (x) { return x.id === parts[1]; });
+                if (v && v[parts[0]]) addLinksAndStay([v[parts[0]]]);
+              };
+            });
+          };
+          bindMenu([]);
+          fetch(API + "/villa-links?leadId=" + encodeURIComponent(it.lead_id)).then(function (r) { return r.json(); }).then(function (d) {
+            var vs = (d && d.villas) || [], h = head;
+            vs.forEach(function (v) {
+              var b = [];
+              if (v.maps) b.push('<span class="att-chip" data-mi="maps|' + esc(v.id) + '">&#x1F4CD; Map</span>');
+              if (v.video) b.push('<span class="att-chip" data-mi="video|' + esc(v.id) + '">&#x1F3AC; Video tour</span>');
+              if (v.drive) b.push('<span class="att-chip" data-mi="drive|' + esc(v.id) + '">&#x1F4C1; Drive</span>');
+              if (v.site) b.push('<span class="att-chip" data-mi="site1|' + esc(v.id) + '">&#x1F310; Page</span>');
+              if (b.length) h += '<div class="att-villa"><b>' + esc(v.id) + '</b> <span class="att-mi-dim">' + esc(v.title) + '</span><div>' + b.join("") + '</div></div>';
+            });
+            if (!vs.length) h += '<div class="att-mi-dim">No villa in this conversation yet.</div>';
+            menu.innerHTML = h;
+            vs.forEach(function (v) { v.site1 = v.site; });
+            bindMenu(vs);
+          }).catch(function () {});
+        };
+      }
+      // The handle under the message editor, like the conversation's (owner, 27.09).
+      var _msgHandle = $("#msg-resize");
+      var _msgBox = $("#msg-text");
+      if (_msgHandle && _msgBox) {
+        if (msgSplit) _msgBox.style.height = msgSplit + "px";
+        _msgHandle.onpointerdown = function (e) {
+          e.preventDefault();
+          var startY = e.clientY, startH = _msgBox.offsetHeight;
+          function mv(ev) {
+            msgSplit = Math.max(90, Math.min(1400, startH + (ev.clientY - startY)));
+            _msgBox.style.height = msgSplit + "px";
+          }
+          function up() {
+            document.removeEventListener("pointermove", mv);
+            document.removeEventListener("pointerup", up);
+            try { localStorage.setItem("copilot_msgsplit", String(msgSplit)); } catch (e2) {}
+          }
+          document.addEventListener("pointermove", mv);
+          document.addEventListener("pointerup", up);
         };
       }
       var fileInput = $("#file-input");
