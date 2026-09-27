@@ -7,6 +7,7 @@
  * Types 89 = incoming message from client
  * Types 90 = outgoing message (bot/broker)
  */
+import { notProtectedDraft } from "./protected-drafts";
 import { db, leadMessagesTable, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { mediaMarker } from "./media-message";
 import { eq, and, sql, isNotNull, not } from "drizzle-orm";
@@ -718,6 +719,7 @@ export async function syncIncomingMessageDetection(): Promise<{ detected: number
             .delete(pendingSuggestionsTable)
             .where(
               and(
+        notProtectedDraft(),
                 eq(pendingSuggestionsTable.leadId, lead.leadId),
                 eq(pendingSuggestionsTable.status, "pending"),
                 eq(pendingSuggestionsTable.kind, "push"),
@@ -1104,6 +1106,7 @@ async function processQuickPollLead(
   await db
     .delete(pendingSuggestionsTable)
     .where(and(
+        notProtectedDraft(),
       eq(pendingSuggestionsTable.leadId, leadId),
       eq(pendingSuggestionsTable.status, "pending"),
       eq(pendingSuggestionsTable.kind, "push"),

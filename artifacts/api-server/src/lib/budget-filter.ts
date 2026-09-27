@@ -18,6 +18,7 @@
  * spent: a new inbound message (both LIVE detectors), the unanswered-lead pass,
  * and the scout/ad seeding pass.
  */
+import { notProtectedDraft } from "./protected-drafts";
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { logger } from "./logger";
@@ -156,7 +157,8 @@ export async function enforceBudgetFilter(leadId: string, extraTexts?: string[])
     await db
       .delete(pendingSuggestionsTable)
       .where(
-        and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending")),
+        and(
+        notProtectedDraft(),eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending")),
       );
     logger.warn(
       { leadId, budgetIdr: budget, minIdr: setting.minMonthlyIdr, impliedFrom },

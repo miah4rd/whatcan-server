@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { notProtectedDraft } from "../lib/protected-drafts";
 import { db, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, contactEventsTable, stageEventsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { chatCompletion, WRITER_MODEL } from "../lib/ai-client";
@@ -263,6 +264,7 @@ export async function queueSuggestion(opts: {
       .delete(pendingSuggestionsTable)
       .where(
         and(
+        notProtectedDraft(),
           eq(pendingSuggestionsTable.leadId, opts.leadId),
           eq(pendingSuggestionsTable.status, "pending"),
           eq(pendingSuggestionsTable.kind, "push"),
@@ -657,6 +659,7 @@ router.post("/amocrm/webhook", async (req, res) => {
           .delete(pendingSuggestionsTable)
           .where(
             and(
+        notProtectedDraft(),
               eq(pendingSuggestionsTable.leadId, leadId),
               eq(pendingSuggestionsTable.status, "pending"),
               eq(pendingSuggestionsTable.kind, "live"),

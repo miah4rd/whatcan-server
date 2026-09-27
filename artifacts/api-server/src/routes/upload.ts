@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { notProtectedDraft } from "../lib/protected-drafts";
 import { db, brokerSettingsTable, pendingSuggestionsTable, leadsSyncTable } from "@workspace/db";
 import { eq, like, isNull, and, or } from "drizzle-orm";
 import { getAllPropertiesForAdmin, invalidateCache } from "../lib/property-catalog";
@@ -147,6 +148,7 @@ router.post("/admin/lead-debug", async (req, res) => {
     // Clear any stale LIVE suggestions for this lead before creating PUSH
     await db.delete(pendingSuggestionsTable).where(
       and(
+        notProtectedDraft(),
         eq(pendingSuggestionsTable.leadId, leadId),
         eq(pendingSuggestionsTable.kind, "live"),
         eq(pendingSuggestionsTable.status, "pending"),

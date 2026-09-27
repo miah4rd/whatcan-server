@@ -1,4 +1,5 @@
 import { db, pool, leadsSyncTable, pendingSuggestionsTable, aiSuggestionsTable, leadMessagesTable } from "@workspace/db";
+import { notProtectedDraft } from "./protected-drafts";
 import { lt, isNotNull, eq, and, or, isNull, inArray, desc, sql } from "drizzle-orm";
 import { chatCompletion, chatCompletionJSON, WRITER_MODEL, HELPER_MODEL } from "./ai-client";
 import { nextFollowupDate, parseDialogContent, formatDialogForAI, countTrailingOurMessages, describeConversationTiming, conversationWindow } from "./dialog-parser";
@@ -666,6 +667,7 @@ export async function processFollowups(): Promise<void> {
         .delete(pendingSuggestionsTable)
         .where(
           and(
+        notProtectedDraft(),
             inArray(pendingSuggestionsTable.leadId, leadIds),
             eq(pendingSuggestionsTable.kind, "live"),
             eq(pendingSuggestionsTable.status, "pending"),
@@ -1513,6 +1515,7 @@ export async function processUnansweredLive(): Promise<void> {
           .delete(pendingSuggestionsTable)
           .where(
             and(
+        notProtectedDraft(),
               eq(pendingSuggestionsTable.leadId, lead.leadId),
               eq(pendingSuggestionsTable.kind, "live"),
               eq(pendingSuggestionsTable.status, "pending"),

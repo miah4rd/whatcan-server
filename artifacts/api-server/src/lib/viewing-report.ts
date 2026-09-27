@@ -75,6 +75,9 @@ export const VIEWING_FOLLOWUP_VERDICT = "viewing follow-up due";
 
 export type ViewingOutcome = "go" | "think" | "no" | "no_show" | "cancelled" | "rescheduled";
 export const NEXT_STEPS = [
+  // The fork of 27.09.2026 (owner): after a viewing the broker picks ONE way on — new options (a second
+  // round), towards the deal, or wait for the client's decision. The older steps stay readable.
+  "Towards the deal",
   "Send price & terms",
   "Deposit to hold it",
   "Second visit",
@@ -370,6 +373,25 @@ function stepDue(nextBy: string | null): Date {
 /** Stages only a person sets and only a person leaves. */
 const HANDS_OFF_STAGE = /check[-\s]?in|inventory|contract\s*signed/i;
 const VIEWING_DONE_STAGE = /viewing\s*(done|held|completed)/i;
+const NEGOTIATION_STAGE = /negotiat/i;
+
+/** "Towards the deal": the card goes on to Negotiation (forward only, Rental only, never a person's stage). */
+async function markNegotiation(leadId: string): Promise<string | null> {
+  const lead = await getAmoLead(leadId).catch(() => null);
+  if (!lead?.status_id || !lead.pipeline_id || CLOSED_STATUS_IDS.has(lead.status_id)) return null;
+  const where = await amoStageFor(lead.pipeline_id, lead.status_id).catch(() => null);
+  if (!where || pipelineKind(where.pipeline) !== "rental" || HANDS_OFF_STAGE.test(where.stage ?? "")) return null;
+  const cur = where.all.findIndex((st) => st.id === lead.status_id);
+  const neg = where.all.findIndex((st) => NEGOTIATION_STAGE.test(st.name));
+  if (cur < 0 || neg < 0 || cur >= neg) return null;
+  const target = where.all[neg]!;
+  if (!(await updateLeadStatus(leadId, target.id))) return null;
+  const [sync] = await db.select({ responsibleUser: leadsSyncTable.responsibleUser }).from(leadsSyncTable).where(eq(leadsSyncTable.leadId, leadId)).limit(1);
+  await db.update(leadsSyncTable).set({ leadStage: target.name, leadStageId: String(target.id), updatedAt: new Date() }).where(eq(leadsSyncTable.leadId, leadId));
+  await db.insert(stageEventsTable).values({ leadId, fromStage: where.stage, toStage: target.name, pipeline: where.pipeline, responsibleUser: sync?.responsibleUser ?? null }).catch(() => undefined);
+  logger.info({ leadId, from: where.stage, to: target.name }, "viewing report: towards the deal — card moved");
+  return target.name;
+}
 
 /**
  * The filed report moves the card to "Viewing done".
@@ -486,6 +508,7 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
       logger.warn({ err, leadId }, "viewing report: stage not moved (non-fatal)");
       return null;
     });
+    if (nextSteps.includes("Towards the deal")) stage = (await markNegotiation(leadId).catch(() => null)) ?? stage;
   }
 
   // 1. The slot only: a viewing that did not happen frees the slot, a
@@ -516,7 +539,8 @@ export async function fileReport(input: FileReportInput): Promise<{ ok: boolean;
     const mine = open.filter((t) => (t.text ?? "").startsWith(REPORT_TASK_PREFIX));
     if (mine.length) await amoPatch(`/api/v4/tasks`, mine.map((t) => ({ id: t.id, is_completed: true, result: { text: "Report filed in Copilot" } })));
     if (nextSteps.length && !nextSteps.every((s) => s === "Close")) {
-      const due = stepDue(nextBy);
+      // "Wait for their decision" comes back in two days unless the broker set a date.
+      const due = !nextBy && nextSteps.every((s) => s === "Wait for client's decision") ? new Date(Date.now() + 48 * 3_600_000) : stepDue(nextBy);
       const lead = await getAmoLead(leadId);
       await createAmoTask(leadId, `${NEXT_STEP_TASK_PREFIX}: ${nextSteps.join(", ")}`, due, lead?.responsible_user_id ?? undefined);
     }
@@ -639,7 +663,7 @@ async function composeClientDraft(
       max_tokens: 300,
       temperature: 0.4,
       system: `You write ${broker}'s next WhatsApp message to a rental client in Bali, right after a villa viewing. You have the broker's viewing report; the client never sees the report. Write ONLY the message, in English, under 80 words, warm and concrete, no links, no bullet points, no subject line.
-Rules: acknowledge what the client said or felt (from the feedback); state the concrete next thing the broker is doing (from the next steps) and, if the report says so, when; if terms or a price are still being confirmed with the owner, say the broker is confirming them today rather than inventing numbers; if the client didn't show or the villa cancelled, propose a new slot politely; if the outcome is "Not this one", ask what would make the next option right and say new options are coming. Never mention "report", "system" or "Copilot". You cannot attach anything: never write "link below", "here are options", "sending you villas" or promise a list — say what the broker will do and by when instead. Sign as ${broker} only if the thread shows the broker signing.`,
+Rules: acknowledge what the client said or felt (from the feedback); state the concrete next thing the broker is doing (from the next steps) and, if the report says so, when; if terms or a price are still being confirmed with the owner, say the broker is confirming them today rather than inventing numbers; if the client didn't show or the villa cancelled, propose a new slot politely; if the outcome is "Not this one", ask what would make the next option right and say new options are coming; if the next step is "Towards the deal", treat it as a yes and move to the concrete next step of the deal — confirm the price and terms with the owner today, and ask what the lease needs from them (the move-in date, the name for the contract) and that a deposit holds the villa; never invent a price, a deposit amount or a date. Never mention "report", "system" or "Copilot". You cannot attach anything: never write "link below", "here are options", "sending you villas" or promise a list — say what the broker will do and by when instead. Sign as ${broker} only if the thread shows the broker signing.`,
       messages: [{ role: "user", content: `Client: ${name || "the client"}${property ? ` · villa ${property}` : ""}\n\nRecent thread:\n${thread}\n\nViewing report:\n${report}` }],
     });
     const text = (out.content ?? "").trim();

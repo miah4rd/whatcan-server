@@ -83,6 +83,8 @@ const PAGE_HTML = `<!doctype html>
   .badge.today { background: #1f3a2e; color: #4ade80; }
   .badge.notask { background: #23293b; color: #6b7488; }
   .badge.vreport { background: rgba(251,191,36,.14); color: #fbbf24; }
+  .badge.afterv { background: #96782F; color: #fff; }
+  .vr-fork .vr-opt { display: block; width: 100%; text-align: left; padding: 10px 12px; font-size: 14px; margin-bottom: 6px; }
   /* Viewing report — lives inside the card, above the draft. Three parts:
      outcome (one tap), the client's feedback (the one field worth words),
      next steps (taps + a date). */
@@ -1007,6 +1009,7 @@ const PAGE_HTML = `<!doctype html>
     var html = taskStatusBadge(item.next_followup_at);
     if (item.viewing_report) html += '<span class="badge vreport">&#x1F4CB; viewing report</span>';
     if (item.inspection_report) html += '<span class="badge vreport">&#x1F50D; inspection report</span>';
+    if (item.autopilotSkippedReason === "viewing report filed") html += '<span class="badge afterv">&#x1F4CB; After viewing</span>';
     if (item.profile_temperature) html += tempBadge(item.profile_temperature);
     // Which funnel this lead lives in. Only while viewing ALL pipelines — once
     // the broker has narrowed to one, every card would repeat the same word.
@@ -1427,6 +1430,9 @@ const PAGE_HTML = `<!doctype html>
         reach: all.filter(function (i) { return i.kind === "push" && isReachStage(i.lead_stage); }),
         push: all.filter(function (i) { return i.kind === "push" && !isReachStage(i.lead_stage); }),
       };
+      // The message after a viewing comes first in Push (owner, 27.09): a client who just viewed a villa is the hottest one.
+      var afterV = function (i) { return i.autopilotSkippedReason === "viewing report filed"; };
+      items.push = items.push.filter(afterV).concat(items.push.filter(function (i) { return !afterV(i); }));
       updateAppBadge();
       // Checked on the same beat as the inbox, so a fault surfaces as fast as work does.
       refreshStuck();
@@ -2706,10 +2712,14 @@ const PAGE_HTML = `<!doctype html>
     h += '<label class="section">2 &middot; Client&rsquo;s feedback <span style="text-transform:none;letter-spacing:0;color:#6b7488">(objections, if any &middot; in your words)</span></label>';
     h += '<textarea id="vr-feedback" placeholder="What they liked, what is not right, what they said about price, dates, condition\u2026"></textarea>';
     h += '<div class="vr-row"><button class="ai-mic-btn" id="vr-voice" title="Voice input">\ud83c\udfa4 Dictate</button></div>';
-    h += '<label class="section">3 &middot; Next steps <span style="text-transform:none;letter-spacing:0;color:#6b7488">(tap what you&rsquo;ll do)</span></label>';
-    h += '<div class="vr-opts" id="vr-steps">';
-    for (var i = 0; i < VR_STEPS.length; i++) h += '<span class="vr-opt' + (VR_STEPS[i] === "Close" ? " bad" : "") + '" data-v="' + esc(VR_STEPS[i]) + '">' + esc(VR_STEPS[i]) + '</span>';
+    // The fork (owner, 27.09): one way on, and Copilot writes the next message for it.
+    h += '<label class="section">3 &middot; What next?</label>';
+    h += '<div class="vr-opts vr-fork" id="vr-steps">';
+    h += '<span class="vr-opt" data-v="New shortlist|Second visit">&#x1F501; New options &middot; second round</span>';
+    h += '<span class="vr-opt" data-v="Towards the deal">&#x27A1;&#xFE0F; Towards the deal</span>';
+    h += '<span class="vr-opt warn" data-v="Wait for client&#39;s decision">&#x23F3; Wait for their decision</span>';
     h += '</div>';
+    h += '<div class="vr-opts" id="vr-steps2" style="margin-top:6px"><span class="vr-opt" data-v="Counter-offer to owner">+ counter-offer to the owner</span><span class="vr-opt bad" data-v="Close">Close the lead</span></div>';
     h += '<div class="vr-row"><span class="vr-status">By when</span><input type="date" id="vr-by"></div>';
     h += '<label class="section">4 &middot; Photos &amp; video <span style="text-transform:none;letter-spacing:0;color:#6b7488">(optional &middot; if you filmed the villa)</span></label>';
     h += '<div class="vr-row"><label class="ai-mic-btn" style="cursor:pointer">&#x1F4F7; Add photos<input type="file" id="vr-pics" accept="image/*" multiple hidden></label><label class="ai-mic-btn" style="cursor:pointer">&#x1F3AC; Add video<input type="file" id="vr-vid" accept="video/*" hidden></label></div>';
@@ -2881,7 +2891,8 @@ const PAGE_HTML = `<!doctype html>
     }
     pick("vr-outcome", true, function (v) { setOutcome(v, "vr-outcome"); });
     pick("vr-noshow", true, function (v) { setOutcome(v, "vr-noshow"); });
-    pick("vr-steps", false, null);
+    pick("vr-steps", true, null);
+    pick("vr-steps2", false, null);
     $("#vr-noshow-link").onclick = function (e) { e.preventDefault(); $("#vr-noshow").hidden = !$("#vr-noshow").hidden; };
     $("#vr-voice").onclick = function () { startVoiceDictation($("#vr-feedback"), $("#vr-voice")); };
     $("#vr-pics").onchange = function () { var f = [].slice.call(this.files || []); this.value = ""; if (f.length) vrAddFiles(it, f, "photo"); };
@@ -2890,7 +2901,7 @@ const PAGE_HTML = `<!doctype html>
     $("#vr-send").onclick = async function () {
       if (!outcome || it._vrUploads) return;
       var steps = [];
-      document.querySelectorAll("#vr-steps .vr-opt.on").forEach(function (o) { steps.push(o.getAttribute("data-v")); });
+      document.querySelectorAll("#vr-steps .vr-opt.on, #vr-steps2 .vr-opt.on").forEach(function (o) { o.getAttribute("data-v").split("|").forEach(function (v) { steps.push(v); }); });
       var btn = $("#vr-send"); btn.disabled = true; $("#vr-status").textContent = "Sending\u2026";
       try {
         var r = await fetch(API + "/viewing-report", {

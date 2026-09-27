@@ -19,6 +19,7 @@
  *
  * Lifting it = emptying EXCLUDED_AREAS, on the owner's word only.
  */
+import { notProtectedDraft } from "./protected-drafts";
 import { db, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { and, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
@@ -101,7 +102,8 @@ export async function enforceExcludedAreaFilter(leadId: string, extraNotes?: str
       .where(eq(leadsSyncTable.leadId, leadId));
     await db
       .delete(pendingSuggestionsTable)
-      .where(and(eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending")));
+      .where(and(
+        notProtectedDraft(),eq(pendingSuggestionsTable.leadId, leadId), eq(pendingSuggestionsTable.status, "pending")));
     logger.warn(
       { leadId, places: verdict.places },
       "excluded-area filter: rental lead auto-closed to Lost — asks only for an area we do not work yet (Uluwatu / Ubud / Sanur)",

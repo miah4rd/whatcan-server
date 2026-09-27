@@ -28,6 +28,7 @@
  * routed here: approve.ts creates the next task itself, sometimes on an
  * adaptive cadence a flat reschedule would destroy.
  */
+import { notProtectedDraft } from "./protected-drafts";
 import { db, pendingSuggestionsTable, contactEventsTable } from "@workspace/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { getOpenAmoTasks, closeAmoTasksForLead, createAmoTask, getAmoLead } from "./amo-client";
@@ -128,6 +129,7 @@ export async function reconcileTasksAfterManualReply(opts: {
   await db
     .delete(pendingSuggestionsTable)
     .where(and(
+        notProtectedDraft(),
       eq(pendingSuggestionsTable.leadId, leadId),
       eq(pendingSuggestionsTable.status, "pending"),
       eq(pendingSuggestionsTable.kind, "live"),
@@ -135,6 +137,7 @@ export async function reconcileTasksAfterManualReply(opts: {
   await db
     .delete(pendingSuggestionsTable)
     .where(and(
+        notProtectedDraft(),
       eq(pendingSuggestionsTable.leadId, leadId),
       eq(pendingSuggestionsTable.status, "pending"),
       eq(pendingSuggestionsTable.kind, "push"),

@@ -30,6 +30,7 @@ import { startInspectionCalendarSync } from "./lib/inspection-calendar";
 import { startLinkResume } from "./lib/link-resume";
 import { startViewingCalendarSync } from "./lib/viewing-calendar";
 import { startInspectionBookingPass } from "./lib/inspection-booking";
+import { startAfterViewingReminder } from "./lib/after-viewing-reminder";
 import { startInspectionReportPass } from "./lib/inspection-report";
 import { startVisitWatch } from "./lib/listing-progress";
 import inspectionPageRouter from "./routes/inspection-page";
@@ -133,6 +134,8 @@ startLinkResume();
 startViewingCalendarSync();
 // QUALIFIED listing cards: a PUSH draft for Yudi asking the owner to let him inspect, in his own words; see lib/inspection-booking.ts.
 startInspectionBookingPass();
+// The message after a viewing, unsent after a day: the broker is reminded (lib/after-viewing-reminder.ts).
+startAfterViewingReminder();
 // Inspection report due 30 minutes after an agreed inspection (lib/inspection-report.ts).
 startInspectionReportPass();
 // Agreed villa visits read again every 30 minutes, live cards included (lib/listing-progress.ts).

@@ -503,7 +503,10 @@ router.get("/suggestions", async (req, res) => {
                 .values({ key: focusKey, value: payload })
                 .onConflictDoUpdate({ target: brokerSettingsTable.key, set: { value: payload } });
             } catch { /* non-fatal — degrades to no-quota, never blocks the inbox */ }
-            const shownActivePush = activePush.filter((i) => servedSet.has(i.lead_id));
+            // The message after a viewing is never held back by the daily nudge quota (owner, 27.09).
+            const shownActivePush = activePush.filter(
+              (i) => servedSet.has(i.lead_id) || (i as { autopilotSkippedReason?: string | null }).autopilotSkippedReason === "viewing report filed",
+            );
             enriched = [...liveOrReach, ...shownActivePush];
           } else {
             enriched = [...liveOrReach, ...activePush.slice(0, pushTarget)];

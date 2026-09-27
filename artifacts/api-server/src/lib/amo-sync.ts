@@ -3,6 +3,7 @@
  * Fetches ALL leads from amoCRM API and updates lead_stage + pipeline + responsible_user.
  * Runs every 5 minutes in background.
  */
+import { notProtectedDraft } from "./protected-drafts";
 import { db, leadsSyncTable, pendingSuggestionsTable, sentMessagesTable } from "@workspace/db";
 import { eq, ne, and, inArray, isNull, or, ilike, notLike, gte, lte } from "drizzle-orm";
 import { WEEKLY_CHECK_KIND } from "./weekly-check-reply";
@@ -458,6 +459,7 @@ export async function syncTaskSchedule(): Promise<void> {
         .delete(pendingSuggestionsTable)
         .where(
           and(
+        notProtectedDraft(),
             inArray(pendingSuggestionsTable.leadId, ids),
             eq(pendingSuggestionsTable.kind, "push"),
             eq(pendingSuggestionsTable.status, "pending"),
@@ -799,6 +801,7 @@ export async function syncOutgoingEvents(lookbackMs = 30 * 60 * 1000): Promise<n
       .delete(pendingSuggestionsTable)
       .where(
         and(
+        notProtectedDraft(),
           eq(pendingSuggestionsTable.leadId, leadId),
           eq(pendingSuggestionsTable.status, "pending"),
           eq(pendingSuggestionsTable.kind, "live"),
