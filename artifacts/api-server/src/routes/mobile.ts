@@ -1193,11 +1193,12 @@ const PAGE_HTML = `<!doctype html>
         var tr = item.villa_trust && a.url ? item.villa_trust[a.url] : null;
         if (tr) {
           var bits = [];
-          bits.push(tr.listed === true ? "\u2705 Listed (inspected)" : tr.listed === false ? "\u23f3 Pre-listed (not inspected)" : "status unknown");
-          if (tr.greenFlags) bits.push("\ud83d\udfe2 " + tr.greenFlags + " green flag" + (tr.greenFlags === 1 ? "" : "s"));
-          if (tr.features && tr.features.length) bits.push("\u2713 " + tr.features.join(", "));
-          if (tr.redFlags) bits.push("\ud83d\udea9 " + tr.redFlags + " red flag" + (tr.redFlags === 1 ? "" : "s"));
-          html += '<div class="att att-trust" style="font-size:11.5px;opacity:.85;margin:-2px 0 4px 22px">' + esc(bits.join(" \u00b7 ")) + '</div>';
+          bits.push(esc(tr.listed === true ? "\u2705 Listed (inspected)" : tr.listed === false ? "\u23f3 Pre-listed (not inspected)" : "status unknown"));
+          // Flags, green and red, as flags (owner, 27.09).
+          if (tr.greenFlags) bits.push('<span style="color:#1E8E5A;font-weight:700">\u2691</span> ' + esc(tr.greenFlags + " green flag" + (tr.greenFlags === 1 ? "" : "s")));
+          if (tr.features && tr.features.length) bits.push(esc("\u2713 " + tr.features.join(", ")));
+          if (tr.redFlags) bits.push('<span style="color:#D64545;font-weight:700">\u2691</span> ' + esc(tr.redFlags + " red flag" + (tr.redFlags === 1 ? "" : "s")));
+          html += '<div class="att att-trust" style="font-size:11.5px;opacity:.85;margin:-2px 0 4px 22px">' + bits.join(" \u00b7 ") + '</div>';
         }
         var fl = item.villa_flags && a.url ? item.villa_flags[a.url] : null;
         if (fl && fl.constructionNearby) {
