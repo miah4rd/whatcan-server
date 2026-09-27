@@ -181,30 +181,12 @@ const IT_ABOUT_A_VILLA = /\b(is it|it is|it's|is this|is that|see it|like it|lov
 /** A next step on a villa: its price, where, when, a viewing, a yes. */
 const NEXT_STEP_ON_A_VILLA =
   /\b(price|how much|cost|rate|discount|negotiat\w*|deposit|contract|lease|sign|book(ing)?|reserve|reservation|lock (it|this|that|the \w+) in|take (it|this|that)|go (for|with) (it|this|that)|avail\w*|free (from|on|in)|still (free|open|there)|when (can|could|is|will)|where|location|address|maps?|pin|how far|distance|viewing|visit|view (it|this|that)|see (it|this|that|the (villa|house|place))|come (and |to )?see|check (it|this|that) out|tour|photos?|pictures?|video|(i|we) (really )?(like|love|want|prefer)|interested in|keen on|go ahead|better)\b/i;
-const PAST_BROWSING_STAGE = /viewing\s*(scheduled|done)|zoom|negotiat|reservation|contract|check\s*in|closed|won/i;
+/** A viewing named by the client, or proposed by us: visit, viewing, come and see, lihat, survey. */
+const VIEWING_AGREEMENT = /\b(visit|viewing|view (it|them|the \w+)|see (it|them|the (villa|villas|house|place))|come (and |to )?see|lihat|survey)\b/i;
+/** A time for it: a day, a part of the day, a clock time. */
+const VIEWING_TIME = /\b(today|tomorrow|tonight|morning|afternoon|evening|noon|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|besok|hari ini|pagi|siang|sore|\d{1,2}(:\d{2})?\s?(am|pm)|at \d{1,2})\b/i;
+const PAST_BROWSING_STAGE = /viewing\s*(suggested|scheduled|done)|zoom|negotiat|reservation|contract|check\s*in|closed|won/i;
 
-async function oneVillaFocusCheck(leadId: string, said: string, stage: string | null): Promise<{ focus: boolean; why: string } | null> {
-  try {
-    const res = await Promise.race([
-      chatCompletionJSON<{ focus?: unknown; why?: unknown }>({
-        model: HELPER_MODEL,
-        label: "shortlist-gate",
-        system: `A client of a Bali villa rental agency wrote the message below. We have already sent them links to some villas. Decide ONE thing: does this message clearly sit on ONE villa we already sent and move it to a next step — asking its price, location or availability, asking to view it, saying they like it, or arranging, confirming or reporting on a viewing or a deal for it?
-focus=false when they ask for more, other or similar villas, say what they saw is not right, give a new wish (budget, area, size, dates, pool, garden, pets, parking), or anything else. When unsure, false.
-Respond with JSON only: {"focus": true|false, "why": "<at most 12 words>"}`,
-        messages: [{ role: "user", content: `CRM stage: ${stage ?? "unknown"}\nClient's latest message(s):\n${said.slice(0, 800)}` }],
-        max_tokens: 60,
-        temperature: 0,
-      }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
-    ]);
-    if (!res || typeof res.focus !== "boolean") return null;
-    return { focus: res.focus, why: String(res.why ?? "").slice(0, 120) };
-  } catch (err) {
-    logger.warn({ err, leadId }, "shortlist gate: model check failed — options go");
-    return null;
-  }
-}
 
 export async function decideShortlistGate(opts: {
   leadId: string;
@@ -252,26 +234,70 @@ export async function decideShortlistGate(opts: {
     };
   }
 
+  // Agreeing to a viewing, or naming its time, answers the viewing we proposed: the villa is the one being
+  // discussed, and a new shortlist would ignore their yes (27.09.2026, test client 900000037: "Yeah, we can
+  // visit tomorrow afternoon" got three new villas instead of a confirmed time).
+  const visitWord = VIEWING_AGREEMENT.exec(own);
+  if (visitWord) {
+    const lastOurs = ours[ours.length - 1] ?? "";
+    const timeNamed = VIEWING_TIME.exec(own);
+    if (timeNamed || VIEWING_AGREEMENT.test(lastOurs)) {
+      return {
+        skip: true,
+        reason: "the client agrees to a viewing or names its time",
+        evidence: { phrase: visitWord[0], time: timeNamed?.[0] ?? null, said },
+      };
+    }
+  }
+
   const areas = [...areaNamesInText(own), ...fuzzyAreaNamesInText(own), ...landmarkAreasInText(own).map((l) => l.landmark)];
   const criteria = NEW_CRITERIA.exec(own);
   if (criteria || areas.length > 0) {
     return { skip: false, reason: "the client gives new or changed criteria", evidence: { phrase: criteria?.[0] ?? null, areas, said } };
   }
 
-  const late = PAST_BROWSING_STAGE.test(opts.leadStage ?? "");
-  const weakRef = idsIn.length > 0 || !!ref || turn.some((t) => t.startsWith(">>"));
-  if (late || weakRef) {
-    const verdict = await oneVillaFocusCheck(opts.leadId, own || raw, opts.leadStage ?? null);
-    if (verdict?.focus) {
-      return { skip: true, reason: "model check: the client is on one villa or its viewing", evidence: { why: verdict.why, stage: opts.leadStage ?? null, said } };
-    }
-    return {
-      skip: false,
-      reason: verdict ? "model check: not settled on one villa — options go" : "model check unavailable — options go",
-      evidence: { why: verdict?.why ?? null, stage: opts.leadStage ?? null, said },
-    };
+  // The stage decides (owner, 27.09.2026): from "viewing Suggested" on, the card is past the shortlist —
+  // new villas only when the client asks for more or gives new criteria (both handled above).
+  if (PAST_BROWSING_STAGE.test(opts.leadStage ?? "")) {
+    return { skip: true, reason: "the card is past the shortlist stage — no new villas unless asked", evidence: { stage: opts.leadStage ?? null, said } };
   }
-  return { skip: false, reason: "no sign the client is settled on one villa — options go", evidence: { said } };
+  // Unsure: the model reads the conversation and the stage, not only the last line (owner, 27.09.2026:
+  // this replaces "when unsure, the shortlist goes" of 14.09). Only a failed check falls back to options.
+  const thread = msgs.slice(-12).map((m) => `${m.from === "us" ? "Us" : "Client"}: ${String(m.text ?? "").replace(/\s+/g, " ").slice(0, 300)}`).join("\n");
+  const verdict = await newOptionsCheck(opts.leadId, thread, opts.leadStage ?? null);
+  if (verdict && !verdict.options) {
+    return { skip: true, reason: "model check (whole conversation): no new villas now", evidence: { why: verdict.why, stage: opts.leadStage ?? null, said } };
+  }
+  return {
+    skip: false,
+    reason: verdict ? "model check (whole conversation): new villas now" : "model check unavailable — options go",
+    evidence: { why: verdict?.why ?? null, stage: opts.leadStage ?? null, said },
+  };
+}
+
+/** Does the next reply carry NEW villas? Read from the conversation and the stage, not the last line. */
+async function newOptionsCheck(leadId: string, thread: string, stage: string | null): Promise<{ options: boolean; why: string } | null> {
+  try {
+    const res = await Promise.race([
+      chatCompletionJSON<{ options?: unknown; why?: unknown }>({
+        model: HELPER_MODEL,
+        label: "shortlist-gate",
+        system: `A Bali villa rental agency is answering a client on WhatsApp. We have already sent them some villas. From the WHOLE conversation below and the CRM stage, decide ONE thing: should our next reply send NEW villas?
+options=true when the client wants more or different villas, says what they saw is not right, gives a new wish (budget, area, size, dates, pool, garden, pets, parking), or we have not really shown them anything that fits yet.
+options=false when the conversation is moving forward on villas already sent: they like one, ask about one (price, place, availability), a viewing is being proposed, agreed, confirmed or rescheduled, or they answer a question we asked about those villas.
+Respond with JSON only: {"options": true|false, "why": "<at most 12 words>"}`,
+        messages: [{ role: "user", content: `CRM stage: ${stage ?? "unknown"}\nConversation (oldest first):\n${thread.slice(-4000)}` }],
+        max_tokens: 60,
+        temperature: 0,
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+    ]);
+    if (!res || typeof res.options !== "boolean") return null;
+    return { options: res.options, why: String(res.why ?? "").slice(0, 120) };
+  } catch (err) {
+    logger.warn({ err, leadId }, "shortlist gate: model check failed — options go");
+    return null;
+  }
 }
 
 /**
