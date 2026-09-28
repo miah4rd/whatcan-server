@@ -843,6 +843,20 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
         // nothing below). An empty curated panel leaves the decision to the
         // instruction; a curated panel WITH links stays exactly as chosen.
         const curatedLocked = curatedDetected && currentIds.length > 0;
+        // Owner 28.09.2026 ("what Amelia wants"): the broker asked for options and nothing is inside
+        // the request — the closest REAL villa goes out WITH its link, and the text says plainly how
+        // it differs (3 bedrooms instead of 4, over the budget, free a few days later). Never a
+        // villa described without its link, never an invented one.
+        const closest =
+          pool.candidates.length === 0 &&
+          !curatedLocked &&
+          (BROKER_ASKS_FOR_OPTIONS.test(revision) || !!pool.request.releaseBudget || !!pool.request.releaseDates) &&
+          pool.hint?.example
+            ? pool.hint.example
+            : null;
+        const closestLine = closest
+          ? [{ id: closest.id, line: `${closest.id} | ${closest.title} | ${closest.bedrooms ?? "?"}BR | ${closest.area ?? ""} | Rp ${Math.round(closest.priceIdr / 100000) / 10} million a month${closest.freeFrom ? ` | free from ${closest.freeFrom}` : ""} | OUTSIDE the request: ${pool.hint!.suggestion}` }]
+          : [];
         const composed = await composeReplyWithListings({
           systemPrompt: system,
           conversation: transcript,
@@ -854,13 +868,14 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
             label: known.get(id.toUpperCase())?.label ?? id,
           })),
           attachmentsCurated: curatedLocked,
-          candidates: pool.lines,
+          candidates: closest ? closestLine : pool.lines,
           language: outputLang === "auto" ? null : outputLang,
           // An empty pool used to come back as "let me check … I'll come back
           // with a proper shortlist" (Chloé, 14.09) — a promise that reaches
           // the client empty. One concrete question instead.
-          emptyPoolGuidance:
-            pool.candidates.length === 0
+          emptyPoolGuidance: closest
+            ? `NOTHING in our catalog is inside this client's request (${describeRequest(pool.request)}). The broker asked for options, so attach the ONE closest real villa listed above (${closest.id}) and say plainly how it differs from what they asked for (${pool.hint!.suggestion}). Describe only that villa; never mention any other villa, price or date.`
+            : pool.candidates.length === 0
               ? `NOTHING in our catalog is inside this client's request (${describeRequest(pool.request)})${pool.fitsInclSent > 0 ? " that they have not already been sent" : ""}. Attach nothing unless the broker names a villa. Never promise to check, look, find, pull together or come back with a shortlist. Unless the broker's instruction says otherwise, ask exactly ONE concrete question: ${relaxQuestion(pool.hint)}.`
               : undefined,
           image: imageBlock,
@@ -931,6 +946,7 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           const allowedOutside = new Set<string>([
             ...(curatedDetected ? currentIds.map((i) => i.toUpperCase()) : []),
             ...namedIds,
+            ...(closest ? [closest.id.toUpperCase()] : []),
           ]);
           const invented = composed.listingIds.filter((id) => !byId.has(id) && !allowedOutside.has(id));
           if (invented.length > 0) {
