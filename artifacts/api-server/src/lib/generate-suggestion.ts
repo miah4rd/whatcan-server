@@ -1300,6 +1300,36 @@ function replaceInternalCodes(text: string, byId: Map<string, { title: string }>
   return out;
 }
 
+/**
+ * Owner 28.09.2026: a draft with NO villa attached described two villas that do not exist
+ * ("1. 4 Bedroom Villa in Canggu, Rp 55 million a month, free from 1 November") — Amelia had asked
+ * for villas at a different budget and nothing was inside it. "We definitely don't need fake villas
+ * … how can we visit it, how can we sell it". With nothing attached, a villa described with a price
+ * (a numbered option, or "villa … Rp 55 million") is removed and the message says plainly that
+ * nothing fits right now.
+ */
+export const DESCRIBED_VILLA = /(^|\n)\s*\d\.\s[^\n]*(Rp\s?\d|\d+\s?(million|juta|jt)\b)|(villa|bedroom|\dBR)[^.\n]{0,80}(Rp\s?\d+([.,]\d+)?\s?(million|juta|jt|M)\b)/i;
+
+export async function removeUnattachedVillas(text: string, leadId: string): Promise<string> {
+  try {
+    const out = await chatCompletion({
+      model: WRITER_MODEL,
+      label: "draft-check:no-invented-villas",
+      system: `You edit one WhatsApp message a broker is about to send a client. NO villa is attached to it, so any villa it describes — a numbered option, a bedroom count with an area and a price, a "free from" date — is not something we can send, show or visit. Remove every such description of a specific villa and every list of options. If that leaves the message without its point, say plainly and briefly that we don't have a villa that fits their request right now. Keep the greeting, anything else it says, the question at the end, the language and the voice. Never add a villa, a price or a date. Output only the message.`,
+      messages: [{ role: "user", content: text }],
+      max_tokens: 500,
+    });
+    const cleaned = sanitizeSuggestion(out.content);
+    if (cleaned.trim().length > 15 && !DESCRIBED_VILLA.test(cleaned)) {
+      logger.warn({ leadId }, "draft check: removed villas described in a message with nothing attached");
+      return cleaned;
+    }
+  } catch (err) {
+    logger.warn({ err, leadId }, "draft check: could not remove unattached villas (non-fatal)");
+  }
+  return text;
+}
+
 async function removePromiseOfOptions(text: string, leadId: string): Promise<string> {
   try {
     const out = await chatCompletion({
@@ -1512,6 +1542,7 @@ export async function enforceRequestOnDraft(opts: {
   const strays2 = strays(text);
   if (strays2.length > 0) text = await removeVillaMentions(text, strays2.map((id) => byId.get(id)?.title ?? id), opts.leadId);
   if (attachments.length === 0) text = stripDanglingLinkPromises(text, opts.leadId);
+  if (attachments.length === 0 && opts.rental && DESCRIBED_VILLA.test(text)) text = await removeUnattachedVillas(text, opts.leadId);
   const o = opts.picked?.outcome;
   if (attachments.length === 0 && o && o.hasCore && o.fitCount === 0 && !o.declined && !opts.picked?.skipped && ASKS_OR_PROMISES_TO_SEND.test(text)) {
     text = await removePromiseOfOptions(text, opts.leadId);

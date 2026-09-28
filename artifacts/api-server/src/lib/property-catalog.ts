@@ -1179,6 +1179,13 @@ export function extractBudgetFloorIdr(messages: string[]): number | null {
 const BROKER_RELEASES_AREA =
   /(other|another|different|wider|any)\s+(area|areas|location|locations|zone)|elsewhere|anywhere else|(drop|forget|ignore|beyond|outside)[^.]{0,20}(area|location)|не фокусируйся|в других районах|другие районы|другой район|другом районе|не важен район|шире по район|расширь.{0,15}район|посмотри.{0,20}других/i;
 
+/** Owner 28.09.2026: the broker asking for villas above / around a different budget. */
+const BROKER_RELEASES_BUDGET =
+  /(different|higher|bigger|other|another|more|over|above|beyond|stretch(ed)?)\s+(the\s+|his\s+|her\s+|their\s+)?(budget|price)|(slightly|a bit|a little)\s+(more|over|above|higher|different)|over (the |his |her |their )?budget|above (the |his |her |their )?budget|(budget|price)\s+(slightly|a bit|a little)\s+(higher|more|over|different)|di atas budget|lebih mahal|выше бюджет|дороже|другой бюджет|другим бюджет/i;
+/** The broker saying the dates may move ("a few days later is fine"). "Don't change the date" does not match. */
+const BROKER_RELEASES_DATES =
+  /(flexible|different|other|later|earlier)\s+(move[- ]?in\s+)?dates?|dates?\s+(are|is)\s+flexible|a (few|couple of) days (later|earlier)|ignore (the )?dates?|any (move[- ]?in )?date|другие даты|даты не важны|гибкие даты/i;
+
 /**
  * Reads the broker's revision into a structured intent.
  *
@@ -1384,6 +1391,14 @@ export type ClientRequest = {
   nearbyOk: boolean;
   /** The broker lifted the area filter on an edit ("look elsewhere"). */
   releaseArea: boolean;
+  /**
+   * Owner 28.09.2026 (Amelia: "send him villas at slightly different budget"): the broker asked
+   * for villas outside the client's budget — the ceiling becomes 125% of it for this edit.
+   */
+  releaseBudget?: boolean;
+  /** The broker said the dates can move: a villa free up to 7 days after the move-in, and a
+   * minimum stay longer than theirs, count as inside (the owner is asked). */
+  releaseDates?: boolean;
   /** Client-facing monthly price ceiling, rupiah. No headroom is ever added. */
   budgetMaxIdr: number | null;
   budgetMinIdr: number | null;
@@ -1497,6 +1512,8 @@ export function describeRequest(r: ClientRequest): string {
     );
   }
   if (r.areas.length > 0) parts.push(`${r.areas.join(" / ")}${r.nearbyOk ? " or nearby" : ""}${r.releaseArea ? " (area released by the broker)" : ""}`);
+  if (r.releaseBudget) parts.push("budget stretched up to 25% by the broker");
+  if (r.releaseDates) parts.push("dates flexible by a week (broker)");
   if (r.budgetAroundIdr) {
     parts.push(`around ${millions(r.budgetAroundIdr)} a month`);
   } else if (r.budgetMaxIdr !== null) {
@@ -1654,6 +1671,8 @@ export async function resolveClientRequest(inp: RequestInputs): Promise<ClientRe
     areas: [],
     nearbyOk: false,
     releaseArea: broker.some((t) => BROKER_RELEASES_AREA.test(t) || BROKER_RELEASES_AREA_WIDE.test(t)),
+    releaseBudget: broker.some((t) => BROKER_RELEASES_BUDGET.test(t)),
+    releaseDates: broker.some((t) => BROKER_RELEASES_DATES.test(t)),
     budgetMaxIdr: null,
     budgetMinIdr: null,
     budgetAroundIdr: null,
@@ -2006,8 +2025,8 @@ export function requestMisfitDims(p: SupabaseProperty, r: ClientRequest, now: Da
       // The price ladder (above): 70-125% of the stated budget is inside —
       // only while PRICE_LADDER_ON; otherwise the ceiling is the budget itself.
       if (price <= 0) out.push({ dim: "budget", why: "no published price" });
-      else if (!PRICE_LADDER_ON && price > r.budgetMaxIdr)
-        out.push({ dim: "budget", why: `${millions(price)} is over ${millions(r.budgetMaxIdr)}` });
+      else if (!PRICE_LADDER_ON && price > (r.releaseBudget ? Math.round(r.budgetMaxIdr * 1.25) : r.budgetMaxIdr))
+        out.push({ dim: "budget", why: `${millions(price)} is over ${millions(r.budgetMaxIdr)}${r.releaseBudget ? " by more than 25%" : ""}` });
       else if (!PRICE_LADDER_ON) {
         // inside the budget: nothing to add
       } else if (price > Math.round(r.budgetMaxIdr * PRICE_BAND_HIGH))
@@ -2022,11 +2041,12 @@ export function requestMisfitDims(p: SupabaseProperty, r: ClientRequest, now: Da
       const minStay = Number(p.min_stay_months ?? 0);
       const monthly = Number(p.monthly_price_idr ?? 0) > 0 || Number(p.monthly_price_usd ?? 0) > 0;
       const yearly = Number(p.yearly_price_idr ?? 0) > 0 || Number(p.yearly_price_usd ?? 0) > 0;
-      if (minStay > r.stayMonths) out.push({ dim: "dates", why: `minimum stay ${minStay} months` });
+      if (minStay > r.stayMonths && !r.releaseDates) out.push({ dim: "dates", why: `minimum stay ${minStay} months` });
       else if (!monthly && yearly && r.stayMonths < 12) out.push({ dim: "dates", why: "yearly contract only" });
     }
     if (r.moveIn) {
-      if (p.free_from && p.free_from > r.moveIn) {
+      const latest = r.releaseDates ? addDaysIso(r.moveIn, 7) : r.moveIn;
+      if (p.free_from && p.free_from > latest) {
         out.push({ dim: "dates", why: `free only from ${p.free_from}` });
       } else {
         const end = addMonthsIso(r.moveIn, r.stayMonths ?? 1);
@@ -2038,6 +2058,12 @@ export function requestMisfitDims(p: SupabaseProperty, r: ClientRequest, now: Da
   }
   if (!offerableNow(p, now)) out.push({ dim: "dates", why: `free only from ${p.free_from}` });
   return out;
+}
+
+function addDaysIso(iso: string, days: number): string {
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
 export function requestMisfits(p: SupabaseProperty, r: ClientRequest, now: Date = new Date()): string[] {
@@ -2465,7 +2491,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
   // attached (owner, 14.09: offer only inside the request) — the strict
   // shortlist answers instead.
   const revisionMovesSearch =
-    !!brokerIntent && (brokerIntent.releaseArea || brokerIntent.areas.length > 0 || !!brokerIntent.bedrooms);
+    (!!brokerIntent && (brokerIntent.releaseArea || brokerIntent.areas.length > 0 || !!brokerIntent.bedrooms)) || !!request.releaseBudget || !!request.releaseDates;
   if (!revisionMovesSearch) {
     const anchorIds = new Set(
       (opts.recentLeadMessages ?? []).flatMap((m) => Array.from(m.matchAll(PROPERTY_ID_REGEX)).map((x) => x[1]!.toUpperCase())),

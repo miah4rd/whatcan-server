@@ -9,7 +9,7 @@ import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing"
 import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
-import { allAttachmentsNamed, pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment, alreadySentPropertyIds, relaxQuestion, stripUnbackedListingOffer } from "../../lib/generate-suggestion";
+import { allAttachmentsNamed, pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment, alreadySentPropertyIds, relaxQuestion, stripUnbackedListingOffer, DESCRIBED_VILLA, removeUnattachedVillas } from "../../lib/generate-suggestion";
 import { brokerDisplayName } from "../../lib/broker-identity";
 import { getLeadCardCriteria } from "../../lib/lead-card-fields";
 import { learnFromRevision, correctionsPromptBlock, deriveSituation } from "../../lib/broker-corrections";
@@ -235,6 +235,23 @@ router.post("/suggest", async (req, res) => {
       req.log.warn({ err }, "suggest: villa links not added (non-fatal)");
     }
     const pendingId = typeof body.pendingId === "string" ? body.pendingId.trim() : "";
+    // Owner 28.09.2026: a revision with no villa attached must not describe villas (Nicklas,
+    // 23616101: "slightly different budget" → nothing inside it → two invented 4BR villas).
+    try {
+      if (typeof payload["text"] === "string" && DESCRIBED_VILLA.test(payload["text"] as string)) {
+        let links = 0;
+        if (Array.isArray(payload["attachments"])) {
+          links = (payload["attachments"] as Array<{ url?: string }>).filter((a) => /\/property\//i.test(a.url ?? "")).length;
+        } else if (pendingId) {
+          const r = await pool.query(`SELECT attachments FROM pending_suggestions WHERE id = $1`, [pendingId]).catch(() => ({ rows: [] as Array<{ attachments: unknown }> }));
+          const a = r.rows[0]?.attachments;
+          links = Array.isArray(a) ? (a as Array<{ url?: string }>).filter((x) => /\/property\//i.test(x.url ?? "")).length : 0;
+        }
+        if (links === 0) payload["text"] = await removeUnattachedVillas(payload["text"] as string, String(body.leadId ?? ""));
+      }
+    } catch (err) {
+      req.log.warn({ err }, "suggest: unattached-villa check failed (non-fatal)");
+    }
     if (pendingId && typeof payload["text"] === "string" && (payload["text"] as string).trim()) {
       try {
         // The Copilot's own first draft is kept aside on the first edit (owner, 27.09: a revision
