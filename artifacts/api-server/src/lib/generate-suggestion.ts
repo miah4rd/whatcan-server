@@ -1244,7 +1244,7 @@ export function shortlistPromptBlock(picked: PickedAttachments | null | undefine
       Object.keys(bands).length > 0
         ? ` THE VILLAS GO OUT AS THEIR OWN MESSAGES right after yours, each with its own caption and grouped by price around their budget (${above.length ? "some above it, " : ""}${below.length ? "some below it, " : ""}the rest within it). Write ONLY the lead-in: whatever you need to say back to the client, then that you've put together a few options for their request with its details. Do not list, name or describe the villas and never say one is available or free.`
         : "";
-    return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it.${ladder} If you give a number of villas, it is exactly ${picked.attachments.length}.${advisory}`;
+    return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it.${ladder} If you give a number of villas, it is exactly ${picked.attachments.length}.${FEATURE_CLAIM_RULE}${advisory}`;
   }
   const question = relaxQuestion(o.hint);
   const exceptExample = o.hint?.example ? " except the one closest option the question below names" : "";
@@ -2083,6 +2083,14 @@ export async function buildPromptAdditions(opts: {
 
   return buildLeadNameRule(opts.dialogMessages) + attachedRule + anchorLine + stockLine + currencyRule + adRule + identityRule + viewingBlock + pushBlock + learned;
 }
+
+/**
+ * Owner 28.09.2026: features come from Yudi's inspection or from the listing's online pages, and
+ * many villas have a feature "not checked". A draft for a dog owner called three villas
+ * "pet-friendly" when only one listing said so. A feature is said of a villa only when that
+ * villa's own label lists it.
+ */
+const FEATURE_CLAIM_RULE = ` FEATURES: each attached villa's label lists the only features we know it has. Never say a villa has a feature — pet-friendly, a garden, an enclosed living room or kitchen, a quiet street, kid-friendly, modern style, a workspace — unless THAT villa's own label says so, and never say it of "all of them" unless every label does. When the client asked for something a villa's label does not show, say plainly that you will confirm it with the owner.`;
 
 export async function generateSuggestion(opts: {
   leadId: string;
