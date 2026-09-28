@@ -398,15 +398,17 @@ export async function processSourcedLeadOutreach(): Promise<number> {
       // The paid lead is on their phone right now. Answer immediately, with no
       // broker in the loop — see lib/ad-lead-autoreply.ts for why this one
       // message is allowed to send itself and what refuses it.
-      if (adListing || catalogForm) {
-        await sendAdLeadWelcome({
-          leadId: lead.leadId,
-          responsibleUser: lead.responsibleUser,
-          listingId: adListing?.id ?? null,
-          clientName: leadName,
-          content,
-        }).catch((err) => logger.error({ err, leadId: lead.leadId }, "ad welcome threw"));
-      }
+      // Organic leads from the Facebook-group scout get the same welcome
+      // (owner, 28.09.2026: "the same approach for both"), read from the same
+      // card fields; sendAdLeadWelcome refuses when the card has no request.
+      await sendAdLeadWelcome({
+        leadId: lead.leadId,
+        responsibleUser: lead.responsibleUser,
+        listingId: adListing?.id ?? null,
+        clientName: leadName,
+        content,
+        organic: !(adListing || catalogForm),
+      }).catch((err) => logger.error({ err, leadId: lead.leadId }, "ad welcome threw"));
 
       logger.info(
         { leadId: lead.leadId, leadName, stage: lead.leadStage, adListing: adListing?.id ?? null, catalogForm },

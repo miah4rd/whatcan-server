@@ -184,6 +184,37 @@ function requestLine(answers: LeadCardAnswers): string {
  * bare link as the very first thing from an unknown number is what spam looks
  * like to WhatsApp's own filters.
  */
+/**
+ * The must-have question (owner, 28.09.2026 — Version A, bullet points, for
+ * every Rental lead, Meta and organic alike). Over 01.08-27.09 the villas that
+ * lost viewings and deals failed on exactly these features, which the welcome
+ * never asked about: garden 18 clients, enclosed living room and kitchen 16,
+ * modern style 16, pets 11, quiet street / construction 11, kids 8, workspace 5.
+ * The price line is the owner's: each feature can cost more, so clients name
+ * only what really matters. A feature the client already wrote in the form's
+ * free text is in the request line above and is not asked again.
+ */
+const MUST_HAVE_OPTIONS: { label: string; already: RegExp }[] = [
+  { label: "garden", already: /garden|yard/i },
+  { label: "enclosed living room and kitchen", already: /enclosed|closed living|living room|kitchen/i },
+  { label: "modern style", already: /modern|style/i },
+  { label: "pets or kids", already: /\bpets?\b|dog|cat|kids?\b|child/i },
+  { label: "quiet street, no construction nearby", already: /quiet|construction|noise/i },
+  { label: "workspace", already: /work ?space|office|desk/i },
+];
+
+export function mustHaveQuestion(notes: string | null | undefined): string | null {
+  const said = notes && !isNonAnswer(notes) ? notes : "";
+  const left = MUST_HAVE_OPTIONS.filter((o) => !o.already.test(said));
+  if (left.length === 0) return null;
+  return [
+    "To send you the most suitable options, is any of this important for you?",
+    ...left.map((o) => `• ${o.label}`),
+    "",
+    "Just so you know, each of these can add a bit to the price, so pick only what really matters to you.",
+  ].join("\n");
+}
+
 function welcomeText(opts: {
   clientName: string;
   brokerName: string;
@@ -206,7 +237,8 @@ function welcomeText(opts: {
 
   const request = requestLine(opts.answers);
   if (request) {
-    return `${hi} ${who} Got your request: ${request}. Did I get that right?`;
+    const ask = mustHaveQuestion(opts.answers.notes);
+    return `${hi} ${who}\nGot your request: ${request}. Did I get that right?${ask ? `\n\n${ask}` : ""}`;
   }
   // Nothing on the card to read back: the old open question is the honest one.
   const about = opts.listingLabel ? ` about ${opts.listingLabel}` : "";
@@ -247,6 +279,12 @@ export async function sendAdLeadWelcome(opts: {
   listingId: string | null;
   clientName: string;
   content: string;
+  /**
+   * Organic (Facebook-group scout) lead, owner 28.09.2026: "the same approach,
+   * absolutely the same things" as a Meta lead. Sent only when the card holds a
+   * request to read back — otherwise the lead keeps the ordinary draft path.
+   */
+  organic?: boolean;
 }): Promise<boolean> {
   const { leadId, responsibleUser, listingId } = opts;
   if (!(await autoWelcomeEnabled())) {
@@ -330,6 +368,11 @@ export async function sendAdLeadWelcome(opts: {
     moveIn: null,
     notes: null,
   };
+
+  if (opts.organic && !requestLine(answers)) {
+    logger.info({ leadId }, "organic welcome skipped — no request on the card to read back; the ordinary draft path stays");
+    return false;
+  }
 
   const text = welcomeText({
     clientName: opts.clientName,

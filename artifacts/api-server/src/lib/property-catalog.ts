@@ -1825,6 +1825,16 @@ function requestAreaSet(r: ClientRequest): string[] {
  * (a range's upper figure): below = 70-90% of B, in = 90-100%, above = 100-125%.
  * Bedrooms, area and dates stay strict filters; only the money is a corridor.
  */
+/**
+ * Owner, 28.09.2026: the ladder is OFF. Over 21-26.09 the first shortlist as a
+ * ladder got a client reply 2 times in 9 against 17 in 24 for the old format
+ * (about three villas within budget) — "if the old format worked better, let's
+ * get back to the previous one". With this false, Rental matching is the old
+ * one: price at or under the stated budget, up to three villas, text and links
+ * as before; priceBands stays empty so no ladder layout is ever built.
+ */
+export const PRICE_LADDER_ON = false;
+
 export const PRICE_BAND_LOW = 0.7;
 export const PRICE_BAND_IN = 0.9;
 export const PRICE_BAND_HIGH = 1.25;
@@ -1871,9 +1881,14 @@ export function requestMisfitDims(p: SupabaseProperty, r: ClientRequest, now: Da
   if (p.listing_type === "rent") {
     const price = priceOf(p);
     if (r.budgetMaxIdr !== null) {
-      // The price ladder (above): 70-125% of the stated budget is inside.
+      // The price ladder (above): 70-125% of the stated budget is inside —
+      // only while PRICE_LADDER_ON; otherwise the ceiling is the budget itself.
       if (price <= 0) out.push({ dim: "budget", why: "no published price" });
-      else if (price > Math.round(r.budgetMaxIdr * PRICE_BAND_HIGH))
+      else if (!PRICE_LADDER_ON && price > r.budgetMaxIdr)
+        out.push({ dim: "budget", why: `${millions(price)} is over ${millions(r.budgetMaxIdr)}` });
+      else if (!PRICE_LADDER_ON) {
+        // inside the budget: nothing to add
+      } else if (price > Math.round(r.budgetMaxIdr * PRICE_BAND_HIGH))
         out.push({ dim: "budget", why: `${millions(price)} is well over ${millions(r.budgetMaxIdr)}` });
       else if (price < Math.round(r.budgetMaxIdr * PRICE_BAND_LOW))
         out.push({ dim: "budget", why: `${millions(price)} is far under ${millions(r.budgetMaxIdr)}` });
@@ -2372,7 +2387,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
   // The price ladder (owner, 21.09.2026): a bot's own Rental shortlist with a
   // stated budget carries up to two villas in each price group. A broker's
   // revision keeps its own limit — the broker is choosing, not the ladder.
-  const banded = opts.listingType === "rent" && budgetKnown && !opts.brokerInstruction;
+  const banded = PRICE_LADDER_ON && opts.listingType === "rent" && budgetKnown && !opts.brokerInstruction;
   const bandOf = (p: SupabaseProperty): PriceBand | null => (banded ? priceBandOf(priceOf(p), request.budgetMaxIdr) : null);
   if (banded) limit = PER_PRICE_BAND * PRICE_BANDS.length;
   const bandLine = (p: SupabaseProperty) => {

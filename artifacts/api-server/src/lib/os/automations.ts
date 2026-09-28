@@ -35,7 +35,7 @@ const RULES: Rule[] = [
   // ── Rental clients ──
   { id: "ad-welcome", group: "Rental clients", name: "Welcome on a new form lead", owner: "code",
     when: "A Meta form, website form or catalog form lead is created in Rental.",
-    does: "Sends one template, no AI: \"Got your request: … Did I get that right?\" No link. Withheld when every place named is one we have no villas in (the card is flagged ⊘ Review).",
+    does: "Sends one template, no AI, to every Rental lead (Meta and organic): \"Got your request: … Did I get that right?\" plus the must-have question (garden, enclosed living and kitchen, modern style, pets or kids, quiet street, workspace — each can add to the price). No link. Withheld when every place named is one we have no villas in (the card is flagged ⊘ Review).",
     notifies: "Nobody; the thread shows it.",
     switch: { kind: "setting", key: "ad_auto_welcome", values: ["on", "off"], default: "on" } },
   { id: "opening", group: "Rental clients", name: "Broker's first message after 15 minutes", owner: "code",
