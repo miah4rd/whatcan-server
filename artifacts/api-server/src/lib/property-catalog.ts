@@ -799,6 +799,41 @@ export function clientFeatureMatch(p: SupabaseProperty, w: ClientWants | undefin
   return { asked, has, lacks };
 }
 
+/**
+ * Owner 28.09.2026: when options go out, the message ties each villa to the client's own features
+ * ("this one has the garden you wanted") — only what the listing confirms; the rest is "I'll check
+ * with the owner". The client's features in their words, and per villa which are confirmed.
+ */
+export function clientWantLabels(w: ClientWants | undefined): string[] {
+  return [
+    w?.garden ? "a garden" : "",
+    w?.enclosedLiving ? "an enclosed living room" : "",
+    w?.workspace ? "a place to work" : "",
+    w?.quiet ? "a quiet street" : "",
+    w?.pets ? "a pet-friendly place" : "",
+    w?.kids ? "a place that suits children" : "",
+    w?.modern ? "a modern style" : "",
+  ].filter(Boolean);
+}
+export function clientFeatureReport(p: SupabaseProperty, w: ClientWants | undefined): { has: string[]; unknown: string[] } {
+  const has: string[] = [];
+  const unknown: string[] = [];
+  const put = (want: boolean | undefined, yes: string | null, no: boolean, label: string) => {
+    if (!want) return;
+    if (yes) has.push(yes);
+    else if (!no) unknown.push(label);
+  };
+  put(w?.garden, p.garden === "large" ? "a large garden" : p.garden === "small" ? "a garden" : null, p.garden === "none", "the garden");
+  put(w?.enclosedLiving, p.living_room === "enclosed" ? (p.kitchen === "enclosed" ? "an enclosed living room and kitchen" : "an enclosed living room") : null, p.living_room === "open", "the enclosed living room");
+  put(w?.workspace, p.workspace === "office_room" ? "a separate office room" : p.workspace === "desk" ? "a workspace" : null, p.workspace === "none", "a workspace");
+  put(w?.quiet, p.street === "quiet" || p.quiet_area === true ? "a quiet street" : null, p.street === "busy" || p.quiet_area === false, "how quiet the street is");
+  const pets = petsAllowed(p);
+  put(w?.pets, pets === true ? (p.pets_policy === "small_only" ? "small pets allowed" : "pets allowed") : null, pets === false, "the pet policy");
+  put(w?.kids, p.kid_friendly === true ? "kid-friendly" : null, p.kid_friendly === false, "whether it suits children");
+  put(w?.modern, p.style === "modern" ? "a modern style" : null, p.style === "traditional", "the style");
+  return { has, unknown };
+}
+
 /** A red flag line or the Construction nearby tick in Internal data. */
 export function isRedFlagged(q: ListingQuality | undefined): boolean {
   return !!q && (q.constructionNearby || q.redFlags > 0);
@@ -2206,6 +2241,8 @@ export type ShortlistOutcome = {
   namedOutside: OutsideVilla[];
   /** Rental with a stated budget: the price group of each attached villa (id upper-cased). */
   priceBands?: Record<string, PriceBand>;
+  /** The client's own features (28.09.2026) and, per attached villa (id upper-cased), which it confirms. */
+  featureReport?: { asked: string[]; villas: Record<string, { title: string; has: string[]; unknown: string[] }> };
 };
 
 export type OutsideVilla = { id: string; title: string; why: string[] };
@@ -2483,7 +2520,16 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
     rotationKey: opts.leadId,
     namedIds: [...namedInThread, ...(opts.clickedListingId ? [opts.clickedListingId.toUpperCase()] : [])],
   });
-  const done = (picks: SupabaseProperty[]) => ({ picks: picks.map(toPick), outcome });
+  const done = (picks: SupabaseProperty[]) => {
+    const asked = clientWantLabels(request.wants);
+    if (asked.length && picks.length) {
+      outcome.featureReport = {
+        asked,
+        villas: Object.fromEntries(picks.map((p) => [p.id.toUpperCase(), { title: p.title ?? p.id, ...clientFeatureReport(p, request.wants) }])),
+      };
+    }
+    return { picks: picks.map(toPick), outcome };
+  };
 
   // 1. The villa the lead named themselves — answered alone, but ONLY when it
   // is inside their own request. A villa they clicked that is over their

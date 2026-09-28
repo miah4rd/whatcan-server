@@ -1218,6 +1218,20 @@ Output only the corrected message.${missingNote}`;
  * passed, or — when nothing is inside it — an honest "nothing exactly within
  * your request right now" and ONE question about which part could flex.
  */
+/**
+ * Owner 28.09.2026: "when we send options we need to mention those specific features if they have
+ * them in their qualification request" — each villa tied to what the client asked for, only what the
+ * listing confirms.
+ */
+function featureMentionBlock(o: ShortlistOutcome): string {
+  const fr = o.featureReport;
+  if (!fr || !fr.asked.length) return "";
+  const lines = Object.values(fr.villas).map(
+    (v) => `- ${v.title}: has ${v.has.length ? v.has.join(", ") : "none of them confirmed"}${v.unknown.length ? `; not confirmed yet: ${v.unknown.join(", ")}` : ""}`,
+  );
+  return ` THE CLIENT ASKED FOR ${fr.asked.join(", ")}. For each villa, tell them which of these it has, in their terms (e.g. "this one has the garden you wanted"):\n${lines.join("\n")}\nFor anything "not confirmed yet", say you'll check it with the owner. Never say a villa has something that is not listed after "has".`;
+}
+
 export function shortlistPromptBlock(picked: PickedAttachments | null | undefined): string {
   const o = picked?.outcome;
   if (!picked || !o || !o.hasCore) return "";
@@ -1244,7 +1258,7 @@ export function shortlistPromptBlock(picked: PickedAttachments | null | undefine
       Object.keys(bands).length > 0
         ? ` THE VILLAS GO OUT AS THEIR OWN MESSAGES right after yours, each with its own caption and grouped by price around their budget (${above.length ? "some above it, " : ""}${below.length ? "some below it, " : ""}the rest within it). Write ONLY the lead-in: whatever you need to say back to the client, then that you've put together a few options for their request with its details. Do not list, name or describe the villas and never say one is available or free.`
         : "";
-    return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it.${ladder} If you give a number of villas, it is exactly ${picked.attachments.length}.${FEATURE_CLAIM_RULE}${advisory}`;
+    return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it.${ladder} If you give a number of villas, it is exactly ${picked.attachments.length}.${FEATURE_CLAIM_RULE}${featureMentionBlock(o)}${advisory}`;
   }
   const question = relaxQuestion(o.hint);
   const exceptExample = o.hint?.example ? " except the one closest option the question below names" : "";
