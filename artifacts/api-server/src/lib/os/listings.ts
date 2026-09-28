@@ -55,11 +55,12 @@ const PUBLIC_COLS = [
   "id", "title", "area", "type", "bedrooms", "bathrooms", "land_size", "build_size", "listing_type", "is_draft", "pre_listed",
   "monthly_price_idr", "yearly_price_idr", "price_usd", "price_on_request", "min_stay_months", "rental_included", "rental_excluded",
   "tags", "features", "images", "video_url", "description", "lat", "lng", "views", "garden", "workspace", "living_room",
-  "quiet_area", "no_construction_nearby", "pool_sun", "listing_source", "created_at", "updated_at", "status", "ownership", "lease_years",
+  "quiet_area", "no_construction_nearby", "pool_sun", "kitchen", "pets_policy", "kid_friendly", "kid_note", "style", "street",
+  "features_source", "features_checked_at", "price_confirmed_at", "upfront_months", "deposit_note", "listing_source", "created_at", "updated_at", "status", "ownership", "lease_years",
 ];
 const PRIVATE_COLS = [
   "property_id", "owner_name", "owner_phone", "owner_email", "exact_address", "google_maps_url", "drive_folder_url", "notes",
-  "construction_nearby", "construction_checked_on", "red_flags", "green_flags", "updated_at",
+  "construction_nearby", "construction_checked_on", "red_flags", "green_flags", "viewing_contact", "viewing_times", "updated_at",
 ];
 
 export type Availability = { status: string | null; start_date: string | null; end_date: string | null; note?: string | null };
@@ -181,6 +182,14 @@ const PUBLIC_RULES: Record<string, Rule> = {
   workspace: oneOf(["none", "desk", "office_room"]),
   living_room: oneOf(["open", "enclosed"]),
   quiet_area: bool,
+  kitchen: oneOf(["open", "enclosed"]),
+  pets_policy: oneOf(["allowed", "small_only", "not_allowed"]),
+  kid_friendly: bool,
+  kid_note: str(300),
+  style: oneOf(["modern", "traditional", "mixed"]),
+  street: oneOf(["quiet", "some_traffic", "busy"]),
+  upfront_months: int(0, 24),
+  deposit_note: str(200),
   pool_sun: str(200),
   price_on_request: bool,
   pre_listed: bool,
@@ -308,7 +317,7 @@ Rules:
 - Change ONLY what the instruction asks. Never touch other fields. Never invent facts (prices, sizes, dates) the instruction does not state.
 - Public website text (title, description, tags, features) is ENGLISH, plain and factual. Titles follow the catalog style "3BR Villa with Private Pool in Pererenan".
 - Prices are rupiah integers: "45 million" / "45 juta" / "45jt" = 45000000. monthly_price_idr / yearly_price_idr.
-- garden: none|small|large; workspace: none|desk|office_room; living_room: open|enclosed.
+- garden: none|small|large; workspace: none|desk|office_room; living_room: open|enclosed; kitchen: open|enclosed; pets_policy: allowed|small_only|not_allowed; kid_friendly: true|false; style: modern|traditional|mixed; street: quiet|some_traffic|busy.
 - "free from" / "available from" a date goes to free_from (use the next future occurrence of a date given without a year; today is ${today()}). "free now" = "now". Otherwise null.
 - Internal data (owner_name, owner_phone, exact_address, google_maps_url, drive_folder_url, notes, red_flags, green_flags, construction_nearby, construction_checked_on) goes to private_changes. red_flags / green_flags are one item per line; append to the existing text unless told to replace.
 - Photos cannot be changed by instruction; say so in questions if asked.
