@@ -46,6 +46,10 @@ function view(rep: ReportRow) {
     cover: rep.cover,
     video_url: rep.video_url,
     private_edits: rep.private_edits ?? {},
+    features: rep.features ?? null,
+    red_checks: rep.red_checks ?? null,
+    terms: rep.terms ?? null,
+    viewing: rep.viewing ?? null,
     checks: rep.checks ?? [],
     not_listing_reason: rep.not_listing_reason,
     wa_message_id: rep.wa_message_id,
@@ -68,6 +72,8 @@ router.get("/public/inspection-report/:id", async (req, res) => {
           red_flags: site.priv.red_flags,
           green_flags: site.priv.green_flags,
           construction_nearby: site.priv.construction_nearby,
+          viewing_contact: site.priv.viewing_contact ?? null,
+          viewing_times: site.priv.viewing_times ?? null,
         }
       : null,
     reasons: NOT_LISTING_REASONS,
@@ -99,6 +105,10 @@ router.post("/public/inspection-report/:id/save", async (req, res) => {
     photosSkipped: b.photosSkipped === null || typeof b.photosSkipped === "string" ? b.photosSkipped : undefined,
     videoSkipped: b.videoSkipped === null || typeof b.videoSkipped === "string" ? b.videoSkipped : undefined,
     privateEdits: b.privateEdits && typeof b.privateEdits === "object" ? b.privateEdits : undefined,
+    features: b.features && typeof b.features === "object" ? b.features : undefined,
+    redChecks: b.redChecks && typeof b.redChecks === "object" ? b.redChecks : undefined,
+    terms: b.terms && typeof b.terms === "object" ? b.terms : undefined,
+    viewing: b.viewing && typeof b.viewing === "object" ? b.viewing : undefined,
   });
   if (!rep) { res.status(404).json({ error: "report not found" }); return; }
   res.json({ ok: true, report: view(rep), missing: missingFields(rep, true) });

@@ -84,6 +84,13 @@ export type SupabaseProperty = {
   // Key features from the site (owner, 16.09.2026): what clients choose a villa by. null = nobody
   // checked, never "no" — an unchecked villa is neither rewarded nor punished for it.
   garden?: "none" | "small" | "large" | null;
+  /** Owner 28.09.2026 — from Yudi's inspection report, or found online for a Pre-listed villa (features_source). */
+  kitchen?: "enclosed" | "open" | null;
+  pets_policy?: "allowed" | "small_only" | "not_allowed" | null;
+  kid_friendly?: boolean | null;
+  style?: "modern" | "traditional" | "mixed" | null;
+  street?: "quiet" | "some_traffic" | "busy" | null;
+  features_source?: "inspection" | "online" | null;
   workspace?: "none" | "desk" | "office_room" | null;
   living_room?: "open" | "enclosed" | null;
   quiet_area?: boolean | null;
@@ -141,7 +148,7 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
 
   const url =
     `${SUPABASE_URL}/rest/v1/properties` +
-    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,created_at,min_stay_months,pre_listed,video_url,images,garden,workspace,living_room,quiet_area,no_construction_nearby` +
+    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,created_at,min_stay_months,pre_listed,video_url,images,garden,workspace,living_room,quiet_area,no_construction_nearby,kitchen,pets_policy,kid_friendly,style,street,features_source` +
     `&is_draft=eq.false` +
     `&status=neq.sold` +
     `&order=created_at.desc`;
@@ -323,6 +330,13 @@ export function keyFeatureBits(p: SupabaseProperty, withNegatives = false): stri
   if (p.quiet_area === true) out.push("quiet street");
   else if (p.quiet_area === false && withNegatives) out.push("busy street");
   if (p.no_construction_nearby === true) out.push("no construction next door");
+  if (p.kitchen === "enclosed") out.push("enclosed kitchen");
+  else if (p.kitchen === "open") out.push("open kitchen");
+  if (p.pets_policy === "allowed") out.push("pets allowed");
+  else if (p.pets_policy === "small_only") out.push("small pets allowed");
+  else if (p.pets_policy === "not_allowed" && withNegatives) out.push("no pets");
+  if (p.kid_friendly === true) out.push("kid-friendly");
+  if (p.style) out.push(`${p.style} style`);
   return out;
 }
 
@@ -752,6 +766,8 @@ const RANK_DAY_MS = 24 * 60 * 60 * 1000;
  * nobody wrote it down ("not checked" is not "no").
  */
 export function petsAllowed(p: SupabaseProperty): boolean | null {
+  if (p.pets_policy === "allowed" || p.pets_policy === "small_only") return true;
+  if (p.pets_policy === "not_allowed") return false;
   const text = `${JSON.stringify(p.features ?? "")} ${p.description ?? ""}`;
   if (/no pets|pets? (are )?not allowed|not pet[- ]friendly/i.test(text)) return false;
   if (/pet[- ]?friendly|pets? (are )?(allowed|welcome)/i.test(text)) return true;
@@ -775,9 +791,11 @@ export function clientFeatureMatch(p: SupabaseProperty, w: ClientWants | undefin
   check(w?.garden, p.garden === "small" || p.garden === "large", p.garden === "none");
   check(w?.enclosedLiving, p.living_room === "enclosed", p.living_room === "open");
   check(w?.workspace, p.workspace === "desk" || p.workspace === "office_room", p.workspace === "none");
-  check(w?.quiet, p.quiet_area === true || p.no_construction_nearby === true, p.quiet_area === false);
+  check(w?.quiet, p.street === "quiet" || p.quiet_area === true || p.no_construction_nearby === true, p.street === "busy" || p.quiet_area === false);
   const pets = petsAllowed(p);
   check(w?.pets, pets === true, pets === false);
+  check(w?.kids, p.kid_friendly === true, p.kid_friendly === false);
+  check(w?.modern, p.style === "modern", p.style === "traditional");
   return { asked, has, lacks };
 }
 
@@ -792,7 +810,11 @@ export function isRedFlagged(q: ListingQuality | undefined): boolean {
  */
 export function greenFeatures(p: SupabaseProperty): string[] {
   const out: string[] = [];
-  if (petsAllowed(p) === true) out.push("pets allowed");
+  if (petsAllowed(p) === true) out.push(p.pets_policy === "small_only" ? "small pets allowed" : "pets allowed");
+  if (p.kitchen === "enclosed") out.push("enclosed kitchen");
+  if (p.kid_friendly === true) out.push("kid-friendly");
+  if (p.style === "modern") out.push("modern style");
+  if (p.street === "quiet" && p.quiet_area !== true) out.push("quiet street");
   if (p.garden === "small" || p.garden === "large") out.push(`${p.garden} garden`);
   if (p.living_room === "enclosed") out.push("enclosed living room");
   if (p.workspace === "desk" || p.workspace === "office_room") out.push(p.workspace === "desk" ? "workspace" : "office room");

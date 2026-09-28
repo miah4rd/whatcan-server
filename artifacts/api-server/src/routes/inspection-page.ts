@@ -137,6 +137,11 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
         photosSkip: r.photos_skipped != null, photosWhy: r.photos_skipped || "",
         videoSkip: r.video_skipped != null, videoWhy: r.video_skipped || "",
         edits: r.private_edits || {},
+        features: r.features || {},
+        rc: r.red_checks || {},
+        terms: r.terms || {},
+        viewing: r.viewing || { contact: p.viewing_contact || "", times: p.viewing_times || "" },
+        extras: lines(r.green_flags).filter(function (g) { return EXTRAS.indexOf(g) >= 0; }),
         status: r.status,
         checks: r.checks || [],
       };
@@ -153,9 +158,18 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     var m = [];
     if (!S.code) m.push("the villa code");
     if (!listed) m.push("switch to Listed");
-    if (!filled(S.red)) m.push("a red flag");
-    if (!filled(S.green)) m.push("a green flag");
-    if (!S.notes.trim()) m.push("your notes");
+    var nf = FEATURES.filter(function (f) { return S.features[f[0]] === undefined || S.features[f[0]] === null; });
+    if (nf.length) m.push("features: " + nf.map(function (f) { return f[1].toLowerCase(); }).join(", "));
+    if (S.features.kid_friendly === false && !String(S.features.kid_note || "").trim()) m.push("why it is not ideal for kids");
+    var nr = REDS.filter(function (r) { return typeof S.rc[r[0]] !== "boolean"; });
+    if (nr.length) m.push("red flags (yes or no): " + nr.map(function (r) { return r[1].toLowerCase(); }).join(", "));
+    if (!(Number(S.terms.monthly_m) > 0) && !(Number(S.terms.yearly_m) > 0)) m.push("the price confirmed with the owner");
+    if (S.terms.min_stay == null || S.terms.min_stay === "") m.push("minimum stay");
+    if (S.terms.upfront == null || S.terms.upfront === "") m.push("months paid upfront");
+    if (!String(S.terms.deposit || "").trim()) m.push("deposit");
+    if (!String(S.viewing.contact || "").trim()) m.push("who opens the villa for viewings");
+    if (!String(S.viewing.times || "").trim()) m.push("when viewings are possible");
+    if (!S.notes.trim()) m.push("your impression");
     if (!S.photos.length && !(S.photosSkip && S.photosWhy.trim())) m.push(S.photosSkip ? "why there are no new photos" : "photos (or tick no new photos)");
     if (!S.video && !(S.videoSkip && S.videoWhy.trim())) m.push(S.videoSkip ? "why there is no video tour" : "a video tour (or tick no video)");
     if (uploads) m.push("wait for the uploads");
@@ -171,7 +185,7 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     clearTimeout(saveTimer);
     return fetch(API + "/save", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ propertyCode: S.code, red: S.red, green: S.green, construction: S.construction, notes: S.notes, photos: S.photos, cover: S.cover, video: S.video, photosSkipped: S.photos.length || !S.photosSkip ? null : S.photosWhy, videoSkipped: S.video || !S.videoSkip ? null : S.videoWhy, privateEdits: S.edits }),
+      body: JSON.stringify({ propertyCode: S.code, green: S.extras, features: S.features, redChecks: S.rc, terms: numTerms(), viewing: S.viewing, notes: S.notes, photos: S.photos, cover: S.cover, video: S.video, photosSkipped: S.photos.length || !S.photosSkip ? null : S.photosWhy, videoSkipped: S.video || !S.videoSkip ? null : S.videoWhy, privateEdits: S.edits }),
     }).then(function (r) { return r.json(); }).then(function (d) {
       if (d.ok) { $("#saved").textContent = "saved"; if (d.report && d.report.property_code && !S.code) S.code = d.report.property_code; }
       else $("#saved").textContent = "not saved";
@@ -179,7 +193,64 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     }).catch(function () { $("#saved").textContent = "not saved — offline?"; });
   }
 
-  // Usual flags as one-tap chips (owner, 26.09.2026); anything else is typed below them.
+  // The deep-request features, red flags and terms (owner, 28.09.2026): every line required.
+  var FEATURES = [
+    ["garden", "Garden", [["none", "None"], ["small", "Small"], ["large", "Large"]]],
+    ["living_room", "Living room", [["enclosed", "Enclosed"], ["open", "Open-plan"]]],
+    ["kitchen", "Kitchen", [["enclosed", "Enclosed"], ["open", "Open"]]],
+    ["pets_policy", "Pets", [["allowed", "Allowed"], ["small_only", "Small only"], ["not_allowed", "Not allowed"]]],
+    ["kid_friendly", "Kids", [[true, "Kid-friendly"], [false, "Not ideal"]]],
+    ["style", "Style", [["modern", "Modern"], ["traditional", "Traditional"], ["mixed", "Mixed"]]],
+    ["street", "Street", [["quiet", "Quiet lane"], ["some_traffic", "Some traffic"], ["busy", "Busy road"]]],
+    ["workspace", "Workspace", [["none", "None"], ["desk", "Desk"], ["office_room", "Office room"]]]
+  ];
+  var REDS = [["construction", "Construction nearby"], ["road_noise", "Road noise"], ["damp", "Damp / mould smell"], ["ants", "Ants / insects"], ["condition", "Poor condition"], ["build", "Poor build quality"], ["access", "Bad access road"], ["small_rooms", "Small rooms"], ["stairs", "Steep stairs"]];
+  var EXTRAS = ["Walk to the beach", "Walk to cafes", "Rice field view", "Ocean view", "Staff on site", "Well maintained"];
+  function numTerms() {
+    var t = S.terms, n = function (v) { var x = parseFloat(String(v == null ? "" : v).replace(",", ".")); return isNaN(x) ? null : x; };
+    return { monthly_m: n(t.monthly_m), yearly_m: n(t.yearly_m), min_stay: n(t.min_stay), upfront: n(t.upfront), deposit: String(t.deposit || "").trim() || null };
+  }
+  function ok(b) { return '<span class="req' + (b ? " ok" : "") + '">' + (b ? "&#10003;" : "required") + "</span>"; }
+  function featuresHtml() {
+    var h = "";
+    FEATURES.forEach(function (f) {
+      h += '<div class="kv" style="grid-template-columns:96px minmax(0,1fr)"><label>' + f[1] + '</label><div class="opts">';
+      f[2].forEach(function (o) {
+        var on = S.features[f[0]] === o[0];
+        h += '<button class="opt' + (on ? " on" + (o[0] === false || o[0] === "not_allowed" || o[0] === "busy" ? " bad" : "") : "") + '" data-f="' + f[0] + '" data-v="' + String(o[0]) + '">' + o[1] + "</button>";
+      });
+      h += "</div></div>";
+      if (f[0] === "kid_friendly" && S.features.kid_friendly === false) h += '<input class="txt" id="kidnote" style="margin-top:6px" placeholder="Why? e.g. pool not fenced, steep stairs" value="' + esc(S.features.kid_note || "") + '">';
+    });
+    var lst = L.listing || {};
+    if (lst.features_source === "online") h += '<div class="status" style="margin-top:6px">Found online (not checked): ' + esc([lst.garden && "garden " + lst.garden, lst.living_room && "living " + lst.living_room, lst.pets_policy && "pets " + lst.pets_policy, lst.style].filter(Boolean).join(" · ") || "nothing") + "</div>";
+    return h;
+  }
+  function redsHtml() {
+    var h = "";
+    REDS.forEach(function (r) {
+      var v = S.rc[r[0]];
+      h += '<div class="kv" style="grid-template-columns:150px minmax(0,1fr)"><label>' + r[1] + '</label><div class="opts"><button class="opt' + (v === true ? " on bad" : "") + '" data-rc="' + r[0] + '" data-v="1">Yes</button><button class="opt' + (v === false ? " on" : "") + '" data-rc="' + r[0] + '" data-v="0">No</button></div></div>';
+    });
+    return h + '<input class="txt" id="rcother" style="margin-top:8px" placeholder="Anything else wrong? e.g. mosque next door (optional)" value="' + esc(S.rc.other || "") + '">';
+  }
+  function extrasHtml() {
+    return '<div class="chips">' + EXTRAS.map(function (c) { return '<button class="chip green' + (S.extras.indexOf(c) >= 0 ? " on" : "") + '" data-ex="' + esc(c) + '">' + esc(c) + "</button>"; }).join("") + "</div>";
+  }
+  function termsHtml() {
+    var t = S.terms, lst = L.listing || {}, mil = function (v) { return v ? Math.round(v / 100000) / 10 : ""; };
+    var site = [lst.monthly_price_idr ? mil(lst.monthly_price_idr) + "M/month" : "", lst.yearly_price_idr ? mil(lst.yearly_price_idr) + "M/year" : "", lst.min_stay_months ? "min " + lst.min_stay_months + " months" : ""].filter(Boolean).join(" · ");
+    var inp = function (id, label, ph, v) { return "<label>" + label + '</label><input class="txt" id="t_' + id + '" inputmode="decimal" placeholder="' + ph + '" value="' + esc(v == null ? "" : v) + '">'; };
+    return '<div class="kv">' + inp("monthly_m", "Monthly, M", "34", t.monthly_m) + inp("yearly_m", "Yearly, M", "380", t.yearly_m) + inp("min_stay", "Min stay, months", "3", t.min_stay) + inp("upfront", "Upfront, months", "2", t.upfront) +
+      '<label>Deposit</label><input class="txt" id="t_deposit" placeholder="10% or 1 month" value="' + esc(t.deposit || "") + '"></div>' +
+      (site ? '<div class="status" style="margin-top:6px">On the site now: ' + esc(site) + " &mdash; write what the owner confirmed today</div>" : "");
+  }
+  function viewingHtml() {
+    return '<div class="kv"><label>Who opens</label><input class="txt" id="v_contact" placeholder="Made (staff) +62 812…" value="' + esc(S.viewing.contact || "") + '">' +
+      '<label>When</label><input class="txt" id="v_times" placeholder="Every day 10-17, call 1 hour before" value="' + esc(S.viewing.times || "") + '"></div>';
+  }
+
+  // Old flag chips (kept for reports filed before 28.09).
   var PRESET = {
     green: ["Garden", "Large garden", "Enclosed living room", "Closed kitchen", "Workspace / office", "Quiet street", "No construction nearby", "Family-friendly", "Pet-friendly", "Good condition", "Well maintained", "Walk to the beach", "Walk to cafes", "Rice field view", "Staff on site", "Nothing special"],
     red: ["Construction nearby", "Road noise", "Open living room", "No garden", "Small garden", "Damp / mould smell", "Ants / insects", "Old, needs maintenance", "Poor build quality", "Small rooms", "Steep stairs", "Nothing special"]
@@ -256,11 +327,17 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     }
     h += '<div class="section">Listing status <span class="req' + (listed ? " ok" : "") + '">' + (listed ? "&#10003;" : "required") + "</span></div>" +
       '<div class="opts"><button class="opt' + (!listed ? " on bad" : "") + '" data-listed="0">Pre-listed</button><button class="opt' + (listed ? " on" : "") + '" data-listed="1">&#10003; Listed &mdash; inspected</button></div>';
-    h += '<div class="section">&#x1F534; Red flags <span class="req' + (filled(S.red) ? " ok" : "") + '">' + (filled(S.red) ? "&#10003;" : "at least one") + "</span></div>" + flagsHtml("red") +
-      '<label class="check"><input type="checkbox" id="constr"' + (S.construction ? " checked" : "") + "> Construction nearby</label>";
-    h += '<div class="section">&#x1F7E2; Green flags <span class="req' + (filled(S.green) ? " ok" : "") + '">' + (filled(S.green) ? "&#10003;" : "at least one") + "</span></div>" + flagsHtml("green");
-    h += '<div class="section">Your notes <span class="req' + (S.notes.trim() ? " ok" : "") + '">' + (S.notes.trim() ? "&#10003;" : "required") + "</span></div>" +
-      '<textarea id="notes" placeholder="Condition, owner&rsquo;s terms, anything the team should know &mdash; or dictate it">' + esc(S.notes) + "</textarea>" +
+    var featDone = FEATURES.every(function (f) { return S.features[f[0]] !== undefined && S.features[f[0]] !== null; }) && !(S.features.kid_friendly === false && !String(S.features.kid_note || "").trim());
+    var redDone = REDS.every(function (r) { return typeof S.rc[r[0]] === "boolean"; });
+    var termsDone = (Number(numTerms().monthly_m) > 0 || Number(numTerms().yearly_m) > 0) && numTerms().min_stay != null && numTerms().upfront != null && !!numTerms().deposit;
+    var viewDone = !!String(S.viewing.contact || "").trim() && !!String(S.viewing.times || "").trim();
+    h += '<div class="section">&#x1F3E1; Villa features ' + ok(featDone) + "</div>" + featuresHtml();
+    h += '<div class="section">&#x1F534; Red flags &mdash; yes or no for each ' + ok(redDone) + "</div>" + redsHtml();
+    h += '<div class="section">&#x1F7E2; Extras <span class="req ok">optional</span></div>' + extrasHtml();
+    h += '<div class="section">&#x1F4B0; Price and terms confirmed with the owner ' + ok(termsDone) + "</div>" + termsHtml();
+    h += '<div class="section">&#x1F511; Viewings ' + ok(viewDone) + "</div>" + viewingHtml();
+    h += '<div class="section">Your impression ' + ok(!!S.notes.trim()) + "</div>" +
+      '<textarea id="notes" placeholder="How does the villa feel? Who would it suit? Anything the team should know &mdash; or dictate it">' + esc(S.notes) + "</textarea>" +
       '<div class="row"><button class="btn" id="mic">&#x1F3A4; Dictate</button><button class="btn" id="lang">' + (lang === "en-US" ? "EN" : "ID") + '</button><button class="btn ai" id="tidy"' + (S.notes.trim() ? "" : " disabled") + '>&#x2728; Tidy up with AI</button><span class="status" id="tidyst"></span></div>';
 
     var mediaOk = (S.photos.length || (S.photosSkip && S.photosWhy.trim())) && (S.video || (S.videoSkip && S.videoWhy.trim()));
@@ -335,7 +412,21 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
     });
     document.querySelectorAll("[data-del]").forEach(function (b) { b.onclick = function () { var k = b.getAttribute("data-del"); S[k].splice(+b.getAttribute("data-i"), 1); if (!S[k].length) S[k] = [""]; scheduleSave(); render(); }; });
     document.querySelectorAll("[data-add]").forEach(function (b) { b.onclick = function () { var k = b.getAttribute("data-add"); S[k].push(""); render(); var n = document.getElementById(k + (S[k].length - 1)); if (n) n.focus(); }; });
-    $("#constr").onchange = function () { S.construction = $("#constr").checked; if (S.construction !== hasFlag("red", "Construction nearby")) { toggleFlag("red", "Construction nearby"); return; } scheduleSave(); };
+    document.querySelectorAll("[data-f]").forEach(function (b) { b.onclick = function () {
+      var k = b.getAttribute("data-f"), v = b.getAttribute("data-v");
+      S.features[k] = v === "true" ? true : v === "false" ? false : v;
+      scheduleSave(); render(); if (k === "kid_friendly" && S.features[k] === false) { var kn = $("#kidnote"); if (kn) kn.focus(); }
+    }; });
+    var kn = $("#kidnote"); if (kn) kn.oninput = function () { var before = missing().join(); S.features.kid_note = kn.value; scheduleSave(); if (missing().join() !== before) rerenderKeep("kidnote"); };
+    document.querySelectorAll("[data-rc]").forEach(function (b) { b.onclick = function () { S.rc[b.getAttribute("data-rc")] = b.getAttribute("data-v") === "1"; scheduleSave(); render(); }; });
+    var ro = $("#rcother"); if (ro) ro.oninput = function () { S.rc.other = ro.value; scheduleSave(); };
+    document.querySelectorAll("[data-ex]").forEach(function (b) { b.onclick = function () { var c = b.getAttribute("data-ex"), i = S.extras.indexOf(c); if (i >= 0) S.extras.splice(i, 1); else S.extras.push(c); scheduleSave(); render(); }; });
+    ["monthly_m", "yearly_m", "min_stay", "upfront", "deposit"].forEach(function (k) {
+      var el = $("#t_" + k); if (el) el.oninput = function () { var before = missing().join(); S.terms[k] = el.value; scheduleSave(); if (missing().join() !== before) rerenderKeep("t_" + k); };
+    });
+    ["contact", "times"].forEach(function (k) {
+      var el = $("#v_" + k); if (el) el.oninput = function () { var before = missing().join(); S.viewing[k] = el.value; scheduleSave(); if (missing().join() !== before) rerenderKeep("v_" + k); };
+    });
     document.querySelectorAll("[data-chip]").forEach(function (b) { b.onclick = function () { toggleFlag(b.getAttribute("data-chip"), b.getAttribute("data-c")); }; });
     var nt = $("#notes");
     nt.oninput = function () { var before = missing().join(); S.notes = nt.value; scheduleSave(); $("#tidy").disabled = !nt.value.trim(); if (missing().join() !== before) rerenderKeep("notes"); };
@@ -490,7 +581,7 @@ details.more summary { font-size: 12.5px; color: #8a93a8; cursor: pointer; }
   function done() {
     // Every field is required (owner, 26.09.2026): the button always answers — a popup names what is empty.
     var m = missing();
-    if (m.length) { alert("The report can't be sent yet. Fill in: " + m.join(", ") + ". No red or green flag? Write so, e.g. \"nothing special\"."); return; }
+    if (m.length) { alert("The report can't be sent yet. Fill in: " + m.join(", ") + "."); return; }
     var btn = $("#done") || $("#recheck");
     if (btn) btn.disabled = true;
     save().then(function () {

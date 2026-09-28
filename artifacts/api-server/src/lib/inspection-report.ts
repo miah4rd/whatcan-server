@@ -55,6 +55,56 @@ const LIVE_STAGES = new Set<number>([LISTING_STAGE.LIVE, LISTING_STAGE.WEEKLY_CH
 const CLOSED = new Set<number>([142, 143]);
 const CODE_RX = /(?<![A-Za-z0-9-])(R-[A-Za-z]+-\d+)(?![0-9])/g;
 
+// ── The deep-request features, red flags and terms (owner, 28.09.2026) ─────────
+// "Copy the deep request features into this inspection report … it should be required." The same
+// features clients are asked about in the first message; each answer is written to the listing's
+// own column, which is what Copilot ranks villas by (property-catalog.ts rankShortlistFits).
+export type ReportFeatures = {
+  garden?: "none" | "small" | "large";
+  living_room?: "enclosed" | "open";
+  kitchen?: "enclosed" | "open";
+  pets_policy?: "allowed" | "small_only" | "not_allowed";
+  kid_friendly?: boolean;
+  kid_note?: string;
+  style?: "modern" | "traditional" | "mixed";
+  street?: "quiet" | "some_traffic" | "busy";
+  workspace?: "none" | "desk" | "office_room";
+};
+export const FEATURE_KEYS = ["garden", "living_room", "kitchen", "pets_policy", "kid_friendly", "style", "street", "workspace"] as const;
+/** Red flags — what clients turned villas down over at viewings (01.08-27.09): a yes/no for each. */
+export const RED_CHECKS: Array<[string, string]> = [
+  ["construction", "Construction nearby"],
+  ["road_noise", "Road noise"],
+  ["damp", "Damp / mould smell"],
+  ["ants", "Ants / insects"],
+  ["condition", "Poor condition, needs maintenance"],
+  ["build", "Poor build quality"],
+  ["access", "Bad access road"],
+  ["small_rooms", "Small rooms"],
+  ["stairs", "Steep stairs"],
+];
+export type ReportTerms = { monthly_m?: number | null; yearly_m?: number | null; min_stay?: number | null; upfront?: number | null; deposit?: string | null };
+
+const FEATURE_LABEL = (f: ReportFeatures): string[] =>
+  [
+    f.garden === "large" ? "Large garden" : f.garden === "small" ? "Garden" : null,
+    f.living_room === "enclosed" ? "Enclosed living room" : null,
+    f.kitchen === "enclosed" ? "Enclosed kitchen" : null,
+    f.pets_policy === "allowed" ? "Pets allowed" : f.pets_policy === "small_only" ? "Small pets allowed" : null,
+    f.kid_friendly === true ? "Kid-friendly" : null,
+    f.style === "modern" ? "Modern style" : null,
+    f.street === "quiet" ? "Quiet street" : null,
+    f.workspace === "office_room" ? "Office room" : f.workspace === "desk" ? "Workspace" : null,
+  ].filter((x): x is string => !!x);
+
+/** The red flag lines from the checks: every "yes", plus Yudi's own line; "Nothing" when all are no. */
+function redLines(rc: Record<string, boolean | string> | null): string[] {
+  const out = RED_CHECKS.filter(([k]) => rc?.[k] === true).map(([, l]) => l);
+  const other = typeof rc?.["other"] === "string" ? String(rc["other"]).trim() : "";
+  if (other) out.push(other);
+  return out.length ? out : ["Nothing found"];
+}
+
 export type CheckState = "ok" | "bad" | "warn" | "run" | "todo";
 export type Check = { key: string; label: string; state: CheckState; detail: string };
 export type ReportRow = {
@@ -77,6 +127,11 @@ export type ReportRow = {
   /** Why no video tour was shot; null = not skipped. */
   video_skipped: string | null;
   private_edits: Record<string, string> | null;
+  /** Owner 28.09.2026 — every one required (see FEATURE_KEYS / RED_CHECKS / TERM_KEYS). */
+  features: ReportFeatures | null;
+  red_checks: Record<string, boolean | string> | null;
+  terms: ReportTerms | null;
+  viewing: { contact?: string; times?: string } | null;
   previous_images: string[] | null;
   checks: Check[] | null;
   not_listing_reason: string | null;
@@ -121,6 +176,7 @@ export function ensureTable(): Promise<void> {
     .then(() => pool.query(`CREATE INDEX IF NOT EXISTS inspection_reports_lead ON inspection_reports (lead_id, status)`))
     .then(() => pool.query(`ALTER TABLE inspection_reports ADD COLUMN IF NOT EXISTS drive_copies JSONB NOT NULL DEFAULT '{}'`))
     .then(() => pool.query(`ALTER TABLE inspection_reports ADD COLUMN IF NOT EXISTS photos_skipped TEXT, ADD COLUMN IF NOT EXISTS video_skipped TEXT`))
+    .then(() => pool.query(`ALTER TABLE inspection_reports ADD COLUMN IF NOT EXISTS features JSONB, ADD COLUMN IF NOT EXISTS red_checks JSONB, ADD COLUMN IF NOT EXISTS terms JSONB, ADD COLUMN IF NOT EXISTS viewing JSONB`))
     .then(() => undefined)
     .catch((err) => {
       ensured = null;
@@ -194,7 +250,7 @@ export function signedUpload(code: string, kind: "photo" | "video", fileName: st
   return signedStorageUpload(code, kind, fileName, "insp");
 }
 
-type Property = { id: string; title: string | null; area: string | null; bedrooms: number | null; images: string[] | null; video_url: string | null; pre_listed: boolean | null; is_draft: boolean | null };
+type Property = { id: string; title: string | null; area: string | null; bedrooms: number | null; images: string[] | null; video_url: string | null; pre_listed: boolean | null; is_draft: boolean | null } & Record<string, unknown>;
 type Private = {
   property_id: string;
   owner_name: string | null;
@@ -206,12 +262,16 @@ type Private = {
   red_flags: string | null;
   green_flags: string | null;
   construction_nearby: boolean | null;
+  viewing_contact?: string | null;
+  viewing_times?: string | null;
 };
 
 export async function siteListing(code: string): Promise<{ property: Property | null; priv: Private | null }> {
-  const [property] = await siteGet<Property[]>(`properties?select=id,title,area,bedrooms,images,video_url,pre_listed,is_draft&id=eq.${enc(code)}`);
+  const [property] = await siteGet<Property[]>(
+    `properties?select=id,title,area,bedrooms,images,video_url,pre_listed,is_draft,garden,living_room,kitchen,pets_policy,kid_friendly,kid_note,style,street,workspace,monthly_price_idr,yearly_price_idr,min_stay_months,upfront_months,deposit_note,features_source&id=eq.${enc(code)}`,
+  );
   const [priv] = await siteGet<Private[]>(
-    `property_private?select=property_id,owner_name,owner_phone,google_maps_url,exact_address,drive_folder_url,notes,red_flags,green_flags,construction_nearby&property_id=eq.${enc(code)}`,
+    `property_private?select=property_id,owner_name,owner_phone,google_maps_url,exact_address,drive_folder_url,notes,red_flags,green_flags,construction_nearby,viewing_contact,viewing_times&property_id=eq.${enc(code)}`,
   );
   return { property: property ?? null, priv: priv ?? null };
 }
@@ -442,6 +502,10 @@ export type DraftInput = {
   photosSkipped?: string | null;
   videoSkipped?: string | null;
   privateEdits?: Record<string, string>;
+  features?: ReportFeatures;
+  redChecks?: Record<string, boolean | string>;
+  terms?: ReportTerms;
+  viewing?: { contact?: string; times?: string };
 };
 
 const lines = (a: string[] | undefined) => (a ?? []).map((s) => s.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 12);
@@ -450,6 +514,7 @@ const storageUrl = (u: string) => {
   return !!base && u.startsWith(`${base}/storage/v1/object/public/property-`);
 };
 const PRIVATE_KEYS = ["owner_name", "owner_phone", "google_maps_url", "drive_folder_url"] as const;
+const FEATURE_GREEN_ALL = ["large garden", "garden", "enclosed living room", "enclosed kitchen", "pets allowed", "small pets allowed", "kid-friendly", "modern style", "quiet street", "office room", "workspace"];
 
 export async function saveDraft(id: string, input: DraftInput): Promise<ReportRow | null> {
   const rep = await getReport(id);
@@ -461,6 +526,26 @@ export async function saveDraft(id: string, input: DraftInput): Promise<ReportRo
     if (typeof v === "string") edits[k] = v.trim().slice(0, 500);
   }
   const photos = (input.photos ?? rep.photos ?? []).filter(storageUrl).slice(0, 40);
+  const features: ReportFeatures = { ...(rep.features ?? {}), ...(input.features ?? {}) };
+  const redChecks = { ...(rep.red_checks ?? {}), ...(input.redChecks ?? {}) };
+  const terms: ReportTerms = { ...(rep.terms ?? {}), ...(input.terms ?? {}) };
+  const viewing = { ...(rep.viewing ?? {}), ...(input.viewing ?? {}) };
+  await pool.query(`UPDATE inspection_reports SET features = $2::jsonb, red_checks = $3::jsonb, terms = $4::jsonb, viewing = $5::jsonb WHERE id = $1`, [
+    id,
+    JSON.stringify(features),
+    JSON.stringify(redChecks),
+    JSON.stringify(terms),
+    JSON.stringify(viewing),
+  ]);
+  // Red flags come from the yes/no checks; green flags are the features the villa has plus Yudi's extras.
+  const answeredRed = RED_CHECKS.some(([k]) => typeof redChecks[k] === "boolean");
+  if (answeredRed) input.red = redLines(redChecks);
+  if (typeof redChecks["construction"] === "boolean") input.construction = redChecks["construction"] === true;
+  const featureGreen = FEATURE_LABEL(features);
+  if (featureGreen.length || input.green) {
+    const extras = lines(input.green ?? (rep.green_flags ?? "").split("\n")).filter((g) => !FEATURE_GREEN_ALL.includes(g.toLowerCase()));
+    input.green = [...featureGreen, ...extras];
+  }
   const r = await pool.query(
     `UPDATE inspection_reports SET
         property_code = COALESCE($2, property_code),
@@ -511,9 +596,23 @@ export function missingFields(rep: ReportRow, listed: boolean): string[] {
   const m: string[] = [];
   if (!rep.property_code) m.push("which villa (code)");
   if (!listed) m.push("switch to Listed");
-  if (!(rep.red_flags ?? "").trim()) m.push("a red flag");
-  if (!(rep.green_flags ?? "").trim()) m.push("a green flag");
-  if (!(rep.notes ?? "").trim()) m.push("your notes");
+  const f = rep.features ?? {};
+  const featureNames: Record<string, string> = { garden: "garden", living_room: "living room", kitchen: "kitchen", pets_policy: "pets", kid_friendly: "kids", style: "style", street: "street", workspace: "workspace" };
+  const noFeature = FEATURE_KEYS.filter((k) => f[k] === undefined || f[k] === null);
+  if (noFeature.length) m.push(`features: ${noFeature.map((k) => featureNames[k]).join(", ")}`);
+  if (f.kid_friendly === false && !(f.kid_note ?? "").trim()) m.push("why it is not ideal for kids");
+  const rc = rep.red_checks ?? {};
+  const noRed = RED_CHECKS.filter(([k]) => typeof rc[k] !== "boolean").map(([, l]) => l.toLowerCase());
+  if (noRed.length) m.push(`red flags (yes or no): ${noRed.join(", ")}`);
+  const t = rep.terms ?? {};
+  if (!(Number(t.monthly_m) > 0) && !(Number(t.yearly_m) > 0)) m.push("the price confirmed with the owner");
+  if (t.min_stay == null) m.push("minimum stay");
+  if (t.upfront == null) m.push("months paid upfront");
+  if (!(t.deposit ?? "").toString().trim()) m.push("deposit");
+  const v = rep.viewing ?? {};
+  if (!(v.contact ?? "").trim()) m.push("who opens the villa for viewings");
+  if (!(v.times ?? "").trim()) m.push("when viewings are possible");
+  if (!(rep.notes ?? "").trim()) m.push("your impression");
   // Photos and the video tour, or a signed "skipped on purpose" with a reason (owner, 26.09.2026).
   if (!(rep.photos ?? []).length && !(rep.photos_skipped ?? "").trim()) m.push("photos (or tick “no new photos” and say why)");
   if (!rep.video_url && !(rep.video_skipped ?? "").trim()) m.push("a video tour (or tick “no video” and say why)");
@@ -521,7 +620,7 @@ export function missingFields(rep: ReportRow, listed: boolean): string[] {
 }
 
 const CHECK_LABELS: Array<[string, string]> = [
-  ["internal", "Red & green flags, notes saved"],
+  ["internal", "Features, red flags, price and notes on the site"],
   ["photos", "Photos on the site, yours first"],
   ["video", "Video tour on the site"],
   ["listed", "Listing switched to Listed"],
@@ -654,7 +753,40 @@ async function applyInternal(rep: ReportRow): Promise<[CheckState, string]> {
     notes,
   };
   for (const [k, v] of Object.entries(rep.private_edits ?? {})) if ((PRIVATE_KEYS as readonly string[]).includes(k) && v) row[k] = v;
+  if (rep.viewing?.contact) row["viewing_contact"] = rep.viewing.contact.trim();
+  if (rep.viewing?.times) row["viewing_times"] = rep.viewing.times.trim();
+  if (typeof rep.red_checks?.["construction"] === "boolean") row["construction_checked_on"] = new Date().toISOString().slice(0, 10);
   await siteWrite("POST", "property_private?on_conflict=property_id", [row], "resolution=merge-duplicates,return=representation");
+
+  // The listing's own columns — what the site shows and Copilot ranks by (owner, 28.09.2026).
+  const f = rep.features ?? {};
+  const t = rep.terms ?? {};
+  const listingPatch: Record<string, unknown> = {
+    garden: f.garden ?? null,
+    living_room: f.living_room ?? null,
+    kitchen: f.kitchen ?? null,
+    pets_policy: f.pets_policy ?? null,
+    kid_friendly: f.kid_friendly ?? null,
+    kid_note: f.kid_friendly === false ? (f.kid_note ?? "").trim() || null : null,
+    style: f.style ?? null,
+    street: f.street ?? null,
+    workspace: f.workspace ?? null,
+    quiet_area: f.street === "quiet" ? true : f.street === "busy" ? false : null,
+    no_construction_nearby: typeof rep.red_checks?.["construction"] === "boolean" ? rep.red_checks["construction"] !== true : null,
+    features_source: "inspection",
+    features_checked_at: new Date().toISOString(),
+    price_confirmed_at: new Date().toISOString(),
+    upfront_months: t.upfront ?? null,
+    deposit_note: (t.deposit ?? "").toString().trim() || null,
+  };
+  if (Number(t.monthly_m) > 0) listingPatch["monthly_price_idr"] = Math.round(Number(t.monthly_m) * 1_000_000);
+  if (Number(t.yearly_m) > 0) listingPatch["yearly_price_idr"] = Math.round(Number(t.yearly_m) * 1_000_000);
+  if (t.min_stay != null) listingPatch["min_stay_months"] = Number(t.min_stay);
+  await siteWrite("PATCH", `properties?id=eq.${enc(code)}`, listingPatch);
+  const [lp] = await siteGet<Record<string, unknown>[]>(`properties?select=garden,living_room,kitchen,pets_policy,style,street,features_source&id=eq.${enc(code)}`);
+  if (!lp || lp["features_source"] !== "inspection" || lp["garden"] !== (f.garden ?? null) || lp["pets_policy"] !== (f.pets_policy ?? null)) {
+    return ["bad", "the site did not keep the villa features (read back differs)"];
+  }
   const { priv: after } = await siteListing(code);
   const same =
     after &&
@@ -664,7 +796,7 @@ async function applyInternal(rep: ReportRow): Promise<[CheckState, string]> {
   if (!same) return ["bad", "the site did not keep what was sent (read back differs)"];
   const r = String(row["red_flags"]).split("\n").length;
   const g = String(row["green_flags"]).split("\n").length;
-  return ["ok", `${r} red · ${g} green · notes${rep.construction_nearby ? " · construction nearby" : ""} — read back from the site`];
+  return ["ok", `features, price and terms on the listing · ${r} red · ${g} green · notes${rep.construction_nearby ? " · construction nearby" : ""} — read back from the site`];
 }
 
 async function headOk(u: string): Promise<boolean> {
@@ -739,12 +871,24 @@ async function moveCard(rep: ReportRow): Promise<[CheckState, string]> {
   return ["bad", `card #${rep.lead_id} is still in status ${lead?.status_id ?? "?"} — Yudi and the owner got the pass's push`];
 }
 
+function termsLine(t: ReportTerms): string {
+  return [
+    Number(t.monthly_m) > 0 ? `${t.monthly_m}M/month` : null,
+    Number(t.yearly_m) > 0 ? `${t.yearly_m}M/year` : null,
+    t.min_stay != null ? `min ${t.min_stay} months` : null,
+    t.upfront != null ? `${t.upfront} months upfront` : null,
+    t.deposit ? `deposit ${t.deposit}` : null,
+  ].filter(Boolean).join(" · ");
+}
+
 function reportNote(rep: ReportRow): string {
   return [
     `INSPECTION REPORT — ${rep.property_code}, ${fmt(new Date(rep.visit_at))}`,
     `Red flags: ${(rep.red_flags ?? "").split("\n").join("; ")}`,
     `Green flags: ${(rep.green_flags ?? "").split("\n").join("; ")}`,
     `Notes: ${(rep.notes ?? "").replace(/\n/g, " ")}`,
+    rep.terms ? `Price and terms: ${termsLine(rep.terms)}` : null,
+    rep.viewing?.contact ? `Viewings: ${rep.viewing.contact}${rep.viewing.times ? `, ${rep.viewing.times}` : ""}` : null,
     rep.photos?.length ? `New photos: ${rep.photos.length}` : null,
     rep.video_url ? "New video tour" : null,
     rep.photos_skipped ? `No new photos, on purpose: ${rep.photos_skipped}` : null,
@@ -828,6 +972,7 @@ export function groupMessage(rep: ReportRow, property: Property | null): string 
     `🔴 ${red}`,
     `🟢 ${green}`,
     note ? `📝 ${note}` : null,
+    rep.terms ? `💰 ${termsLine(rep.terms)}` : null,
     media.length ? `📸 ${media.join(" + ")} on the site` : null,
     rep.photos_skipped ? `⚠️ No new photos: ${rep.photos_skipped}` : null,
     rep.video_skipped ? `⚠️ No video tour: ${rep.video_skipped}` : null,
