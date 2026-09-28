@@ -918,6 +918,9 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           } else if (composed.decision === "none_this_message") {
             composed.listingIds = composed.listingIds.filter((id) => leadOwnIds.has(id));
           }
+          // The closest real villa the broker's request for options earned goes out, whatever the
+          // model decided (owner 28.09.2026: "what Amelia wants" — the options WITH their links).
+          if (closest) composed.listingIds = [closest.id.toUpperCase()];
 
           // The broker's word is law on this path: the chosen IDs are applied as
           // chosen. No budget swap, no language override, no dedupe — those
@@ -1199,6 +1202,9 @@ If no clear scheduled contact → return {"taskDate": null, "taskText": null}`,
           const finalIds = new Set(chosen.map((c) => (c.url.match(/\/property\/([A-Za-z0-9-]+)/i)?.[1] ?? "").toUpperCase()));
           const modelDropped = modelIds.filter((id) => !finalIds.has(id.toUpperCase()));
           if (modelDropped.length > 0 && chosen.length > 0) {
+            mustReconcile = true;
+          } else if (closest && chosen.length > 0 && !allAttachmentsNamed(finalText, chosen)) {
+            // The closest villa is attached but the text did not present it: the text follows the link.
             mustReconcile = true;
           } else if (
             chosen.length === 0 &&
