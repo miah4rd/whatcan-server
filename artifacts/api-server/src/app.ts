@@ -34,6 +34,7 @@ import { startAfterViewingReminder } from "./lib/after-viewing-reminder";
 import { startAvailabilityAskPass } from "./lib/os/availability-ask";
 import { startViewingDayPass } from "./lib/os/viewing-day";
 import { startInspectionReportPass } from "./lib/inspection-report";
+import { startListingFeatureFill } from "./lib/listing-features-fill";
 import { startVisitWatch } from "./lib/listing-progress";
 import inspectionPageRouter from "./routes/inspection-page";
 import flagsBackfillRouter from "./routes/flags-backfill";
@@ -143,6 +144,7 @@ startAvailabilityAskPass();
 startViewingDayPass();
 // Inspection report due 30 minutes after an agreed inspection (lib/inspection-report.ts).
 startInspectionReportPass();
+startListingFeatureFill();
 // Agreed villa visits read again every 30 minutes, live cards included (lib/listing-progress.ts).
 startVisitWatch();
 // Meta Ads spend for the /kpi page, pulled through Make every 4 hours; see lib/kpi-dashboard.ts.
