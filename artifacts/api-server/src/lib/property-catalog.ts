@@ -649,6 +649,15 @@ export function priceOf(p: SupabaseProperty): number {
  * path shows (strictShortlistPool → matchPropertiesDetailed for every bot
  * draft and follow-up, candidatesForLead for the edit composer).
  *
+ * CURRENT ORDER (owner, 28.09.2026) — `tier` replaces steps 2-3 below: after the
+ * named area, red flags always last, and two groups. A client who named features
+ * of their own (the deep request asked in the first message): Listed with their
+ * features, Pre-listed with them, Listed without, Pre-listed without. A client
+ * with the basic request only: Listed with green flags, Listed without,
+ * Pre-listed with, Pre-listed without. Green flags and features are one thing.
+ * matchPropertiesDetailed shows the model only the groups needed to fill the
+ * shortlist and sorts the picks back into this order.
+ *
  * The owner's order (14.09.2026 evening, 19.09, 26.09): the request is the
  * base of everything, and old and new villas mix freely — "у нас аренда, они
  * сдаются, потом опять свободные". Compared in this order, each step only
@@ -717,6 +726,17 @@ export type RankedFit = {
   trustTier: number;
   /** A Green flags line or a key feature checked on the site. */
   green: boolean;
+  /**
+   * The owner's order (28.09.2026), 4 = first … 1 = last clean, 0 = red flag (always last).
+   * Deep request (the client named features): Listed with their features 4, Pre-listed with
+   * their features 3, Listed without 2, Pre-listed without 1. Basic request only: Listed with
+   * green flags 4, Listed without 3, Pre-listed with 2, Pre-listed without 1.
+   */
+  tier: number;
+  /** How many of the client's own features the villa confirms. */
+  featureHits: number;
+  /** Green flags known (inspection lines + checked features). */
+  greenCount: number;
   score: number;
   skipped: boolean;
   quality: number;
@@ -725,6 +745,41 @@ export type RankedFit = {
 };
 
 const RANK_DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Pets allowed, read from what the listing already says: the "Pet Friendly"
+ * feature chip or the description. True / false when it says so, null when
+ * nobody wrote it down ("not checked" is not "no").
+ */
+export function petsAllowed(p: SupabaseProperty): boolean | null {
+  const text = `${JSON.stringify(p.features ?? "")} ${p.description ?? ""}`;
+  if (/no pets|pets? (are )?not allowed|not pet[- ]friendly/i.test(text)) return false;
+  if (/pet[- ]?friendly|pets? (are )?(allowed|welcome)/i.test(text)) return true;
+  return null;
+}
+
+/**
+ * The client's own features (the deep request) against what we know of a villa.
+ * Only the features a listing records can be checked: garden, enclosed living
+ * room, workspace, quiet street / no construction, pets. Kids and modern style
+ * have no listing field — the matcher weighs them from the description.
+ */
+export function clientFeatureMatch(p: SupabaseProperty, w: ClientWants | undefined): { asked: number; has: number; lacks: number } {
+  let asked = 0, has = 0, lacks = 0;
+  const check = (want: boolean | undefined, yes: boolean, no: boolean) => {
+    if (!want) return;
+    asked++;
+    if (yes) has++;
+    else if (no) lacks++;
+  };
+  check(w?.garden, p.garden === "small" || p.garden === "large", p.garden === "none");
+  check(w?.enclosedLiving, p.living_room === "enclosed", p.living_room === "open");
+  check(w?.workspace, p.workspace === "desk" || p.workspace === "office_room", p.workspace === "none");
+  check(w?.quiet, p.quiet_area === true || p.no_construction_nearby === true, p.quiet_area === false);
+  const pets = petsAllowed(p);
+  check(w?.pets, pets === true, pets === false);
+  return { asked, has, lacks };
+}
 
 /** A red flag line or the Construction nearby tick in Internal data. */
 export function isRedFlagged(q: ListingQuality | undefined): boolean {
@@ -737,6 +792,7 @@ export function isRedFlagged(q: ListingQuality | undefined): boolean {
  */
 export function greenFeatures(p: SupabaseProperty): string[] {
   const out: string[] = [];
+  if (petsAllowed(p) === true) out.push("pets allowed");
   if (p.garden === "small" || p.garden === "large") out.push(`${p.garden} garden`);
   if (p.living_room === "enclosed") out.push("enclosed living room");
   if (p.workspace === "desk" || p.workspace === "office_room") out.push(p.workspace === "desk" ? "workspace" : "office room");
@@ -921,14 +977,34 @@ export function rankShortlistFits(fits: SupabaseProperty[], r: ClientRequest, ct
     const green = flagTier >= 0 && ((q?.greenFlags ?? 0) > 0 || features.length > 0);
     if (features.length > 0) note(`checked on the site: ${features.join(", ")}`);
 
-    return { p, namedArea, flagTier, trustTier, green, score, skipped, quality, why, whyClient };
+    // The owner's order (28.09.2026): red flags always last; with a deep request the client's
+    // own features outrank inspection, with a basic request inspection outranks green flags.
+    const fm = clientFeatureMatch(p, r.wants);
+    const listed = p.pre_listed === false;
+    const hasTheirs = fm.asked > 0 && fm.has === fm.asked;
+    const tier =
+      flagTier < 0
+        ? 0
+        : fm.asked > 0
+          ? listed && hasTheirs ? 4 : hasTheirs ? 3 : listed ? 2 : 1
+          : listed && green ? 4 : listed ? 3 : green ? 2 : 1;
+    if (fm.asked > 0) note(`has ${fm.has} of the ${fm.asked} feature(s) they asked for${fm.lacks ? `, lacks ${fm.lacks}` : ""}`);
+    if (r.wants?.pets) {
+      const pa = petsAllowed(p);
+      if (pa === true) note("pets allowed (they have a pet)", true);
+      else if (pa === false) note("no pets, and they have a pet");
+    }
+    const greenCount = features.length + (q?.greenFlags ?? 0);
+
+    return { p, namedArea, flagTier, trustTier, green, tier, featureHits: fm.has, greenCount, score, skipped, quality, why, whyClient };
   });
   const key = ctx.rotationKey ?? "";
   return out.sort(
     (a, b) =>
       Number(b.namedArea) - Number(a.namedArea) ||
-      b.trustTier - a.trustTier ||
-      Number(b.green) - Number(a.green) ||
+      b.tier - a.tier ||
+      b.featureHits - a.featureHits ||
+      b.greenCount - a.greenCount ||
       b.score - a.score ||
       Number(a.skipped) - Number(b.skipped) ||
       b.quality - a.quality ||
@@ -1303,7 +1379,16 @@ export type ClientRequest = {
   sources: { bedrooms: RequestSource; areas: RequestSource; budget: RequestSource; moveIn: RequestSource; stay: RequestSource };
 };
 
-export type ClientWants = { garden: boolean; workspace: boolean; enclosedLiving: boolean; quiet: boolean };
+export type ClientWants = {
+  garden: boolean;
+  workspace: boolean;
+  enclosedLiving: boolean;
+  quiet: boolean;
+  /** Owner, 28.09.2026: asked in the first message with the rest — pets or kids, modern style. */
+  pets?: boolean;
+  kids?: boolean;
+  modern?: boolean;
+};
 
 /** Words a wish must stand on in what a person wrote; the AI decides whether it IS a wish. */
 const WANT_EVIDENCE: Record<keyof ClientWants, RegExp> = {
@@ -1311,6 +1396,9 @@ const WANT_EVIDENCE: Record<keyof ClientWants, RegExp> = {
   workspace: /office|work ?space|work(?:ing)? from home|\bwfh\b|\bdesk\b|\bstudy\b|кабинет|рабоч/i,
   enclosedLiving: /living|lounge|open[- ]?plan|гостин/i,
   quiet: /quiet|calm|peaceful|nois|construct|building site|тих|шум|строй/i,
+  pets: /\bpets?\b|\bdogs?\b|\bcats?\b|puppy|kitten|anjing|kucing|собак|кош|питом/i,
+  kids: /\bkids?\b|child|children|baby|toddler|\banak\b|дет|ребен|ребён/i,
+  modern: /modern|contemporary|brand[- ]new|new build|minimalis|современ/i,
 };
 
 export type RequestInputs = {
@@ -1403,6 +1491,9 @@ export function describeRequest(r: ClientRequest): string {
     r.wants?.workspace ? "a place to work" : "",
     r.wants?.enclosedLiving ? "an enclosed living room" : "",
     r.wants?.quiet ? "a quiet street" : "",
+    r.wants?.pets ? "a pet-friendly place" : "",
+    r.wants?.kids ? "a place for children" : "",
+    r.wants?.modern ? "a modern style" : "",
   ].filter(Boolean);
   if (wants.length) parts.push(`wants ${wants.join(", ")}`);
   return parts.join(", ") || "no stated criteria";
@@ -1581,6 +1672,9 @@ export async function resolveClientRequest(inp: RequestInputs): Promise<ClientRe
     wants_workspace?: boolean;
     wants_enclosed_living?: boolean;
     wants_quiet?: boolean;
+    wants_pets?: boolean;
+    wants_kids?: boolean;
+    wants_modern?: boolean;
   };
   let ai: AiRequest | null = null;
   if (sections.length > 0) {
@@ -1620,7 +1714,10 @@ Return JSON with exactly these keys:
 - "wants_workspace": true when they need an office, a study, a desk or a room to work from home.
 - "wants_enclosed_living": true when they want an enclosed / closed / proper living room, or say they do not like open-plan or open living rooms.
 - "wants_quiet": true when they want a quiet or calm place, or no construction or noise next to it.
-The four "wants_" keys are false when nobody asked; a feature of a villa WE described is never their wish.`,
+- "wants_pets": true when they will live with a pet (dog, cat…) or need a pet-friendly place.
+- "wants_kids": true when children will live with them or they need a kid-friendly place.
+- "wants_modern": true when they want a modern, contemporary or brand-new style.
+Our first message asks which of these matter ("garden, enclosed living room and kitchen, modern style, pets or kids, quiet street, workspace"): the client's answer to it counts, our list itself does not. The "wants_" keys are false when nobody asked; a feature of a villa WE described is never their wish.`,
         messages: [{ role: "user", content: sections.join("\n\n").slice(0, 6000) }],
         max_tokens: 400,
         temperature: 0,
@@ -1800,6 +1897,9 @@ The four "wants_" keys are false when nobody asked; a feature of a villa WE desc
       workspace: said("workspace", ai.wants_workspace),
       enclosedLiving: said("enclosedLiving", ai.wants_enclosed_living),
       quiet: said("quiet", ai.wants_quiet),
+      pets: said("pets", ai.wants_pets),
+      kids: said("kids", ai.wants_kids),
+      modern: said("modern", ai.wants_modern),
     };
   }
 
@@ -2406,9 +2506,15 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
     // With the ladder every price group gets its own share of the catalog —
     // the ranking favours prices near the budget, so a flat top 12 could hold
     // no cheaper villa at all.
+    // The owner's order (28.09.2026) is enforced, not suggested: the model sees only the
+    // groups needed to fill the shortlist — the whole best group, then the next one while
+    // fewer than `limit` villas are in view — so it can never pick a lower group over a higher.
+    const orderKey = new Map(ranked.map((x) => [x.p.id, Number(x.namedArea) * 10 + x.tier]));
+    const keyOf = (p: SupabaseProperty) => orderKey.get(p.id) ?? 0;
+    const cutKey = candidates.length > limit ? keyOf(candidates[limit - 1]!) : -1;
     const shown = banded
       ? PRICE_BANDS.flatMap((b) => candidates.filter((p) => bandOf(p) === b).slice(0, 5))
-      : candidates.slice(0, SHOWN_TO_MATCHER);
+      : candidates.filter((p) => keyOf(p) >= cutKey).slice(0, SHOWN_TO_MATCHER);
     const catalogBlock = shown
       .map((p, i) => {
         const style = styleHint(p);
@@ -2429,7 +2535,7 @@ export async function matchPropertiesDetailed(opts: MatchOptions): Promise<{ pic
 
 ${opts.mustAttach ? MUST_ATTACH_RULE : DECLINE_RULES}
 
-EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first: an area they named over a neighbour; then villas our team inspected (tagged INSPECTED) before unchecked ones — an unchecked villa is only for when inspected ones do not fill the shortlist; then villas with green flags (a green flag from the inspection, or a checked garden, enclosed living room, workspace, quiet street, no construction next door); then how closely the villa matches the request (a price close to their budget, free on their dates, a minimum stay that suits them, the key features they asked for); then the rest of what we know (a video tour, a full photo set, dates confirmed recently). Villas with a red flag or construction nearby are only in the catalog when nothing else fits, and then they are at the bottom. NEVER pick an unchecked villa over an INSPECTED one of the same price group. How long a listing has been on the site plays no part: rentals come free again and again. Each line gives its reasons after "why:". Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, never because it is cheaper, older, newer or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously. A "checked:" part lists key features a person verified (garden, living room, workspace, quiet street, no construction next door); a feature missing from it is UNKNOWN, not absent.
+EVERY listing in the catalog below is already inside the client's request — ${describeRequest(request)} — the code filtered it; nothing else exists for you. The catalog is RANKED best first in the owner's order: an area they named over a neighbour; then, when the client named features of their own (garden, enclosed living room, workspace, quiet street, pets): inspected villas (INSPECTED) that have those features, unchecked villas that have them, inspected villas without them, unchecked villas without them; when the client named no features: inspected villas with green flags, inspected without, unchecked with green flags, unchecked without. Villas with a red flag or construction nearby are only in the catalog when nothing else fits, and then they are at the bottom. Inside a group: more of the client's features, more green flags, a price close to their budget, then the rest of what we know. NEVER pick a villa from lower in the list over one above it unless the lead's own words make it clearly the better fit. How long a listing has been on the site plays no part: rentals come free again and again. Each line gives its reasons after "why:". Prefer the top of the list; take a lower one only when the lead's own words (style, features, a specific wish) make it the better fit, never because it is cheaper, older, newer or better known. STYLE COUNTS: each line carries a "style:" part; when the lead describes how they want it to look or feel (modern, luxury, minimalist, jungle, quiet, family), match that seriously. A "checked:" part lists key features a person verified (garden, living room, workspace, quiet street, no construction next door); a feature missing from it is UNKNOWN, not absent.
 
 ${
         banded
@@ -2508,7 +2614,9 @@ Respond with JSON only: {"ids": ["ID1", "ID2"]}`,
       );
       return done(ladder);
     }
-    const final = budgetKnown ? picked : spreadByPrice(picked.slice(0, limit), candidates);
+    // Whatever the model chose, the shortlist goes out in the owner's order.
+    const ordered = [...picked].sort((x, y) => keyOf(y) - keyOf(x));
+    const final = budgetKnown ? ordered : spreadByPrice(ordered.slice(0, limit), candidates);
     return done(final.slice(0, limit));
   } catch (err) {
     logger.error({ err, mustAttach: !!opts.mustAttach }, "matchProperties: AI matching failed (non-fatal)");
