@@ -1963,7 +1963,11 @@ Our first message asks which of these matter ("garden, enclosed living room and 
       r.bedroomsAtLeast = true;
       r.sources.bedrooms = "clicked";
     }
-    if (r.areas.length === 0 && clicked.area) {
+    // "Other" in the form's area question, with no place named anywhere, means any area (owner, 29.09.2026:
+    // "she is looking property in other areas, which means they don't care what kind of area") — the clicked
+    // villa's district does not become her area.
+    const formAreaOpen = /^\s*(other|others|lainnya|any|anywhere)\s*[.!]?\s*$/i.test(String(answers?.areas ?? ""));
+    if (r.areas.length === 0 && clicked.area && !formAreaOpen) {
       const parent = parentAreaOf(clicked.area.split(",")[0]);
       if (parent) {
         r.areas = [parent];
