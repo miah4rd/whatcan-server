@@ -11,16 +11,21 @@ const STATUS = { "Not started": "", "In progress": "stage", Done: "ok", Archived
 const OPEN = new Set(["Not started", "In progress"]);
 
 // ── data held for the screen; the peek updates it through the bus ──
-const P = { projects: [], tasks: [], at: 0, redraw: null };
-const opts = () => store.get("proj-opts", { project: "", person: "", archived: false, subtasks: false });
+const P = { projects: [], tasks: [], types: [], at: 0, redraw: null };
+const opts = () => ({ kind: "", group: "", ...store.get("proj-opts", { project: "", person: "", archived: false, subtasks: false }) });
 const setOpts = (patch) => store.set("proj-opts", { ...opts(), ...patch });
 
 async function load(force) {
   if (!force && P.at && Date.now() - P.at < 30_000) return;
   const o = opts();
-  const [pr, tr] = await Promise.all([isStaff() ? api("/projects") : Promise.resolve({ items: [] }), api("/ptasks" + (o.archived ? "?archived=1" : ""))]);
+  const [pr, tr, ty] = await Promise.all([
+    isStaff() ? api("/projects") : Promise.resolve({ items: [] }),
+    api("/ptasks" + (o.archived ? "?archived=1" : "")),
+    api("/ptask-types").catch(() => ({ items: [] })),
+  ]);
   P.projects = pr.items || [];
   P.tasks = tr.items || [];
+  P.types = ty.items || [];
   P.at = Date.now();
 }
 
@@ -48,6 +53,8 @@ function avatars(ids, max = 3) {
   return `<span class="avs">${shown}${ids.length > max ? `<span class="avatar sm">+${ids.length - max}</span>` : ""}</span>`;
 }
 const projectName = (id) => P.projects.find((p) => p.id === id)?.name || "";
+const typeColor = (name) => P.types.find((x) => x.name === name)?.color || "gray";
+const typePill = (name) => (name ? `<span class="pill c-${esc(typeColor(name))}">${esc(name)}</span>` : "");
 
 function recount() {
   // Sub-task counters follow the loaded tasks, so a new sub-task shows at once.
@@ -111,6 +118,7 @@ function newTaskDefaults(extra = {}) {
   const o = opts();
   const out = { ...extra };
   if (/^\d+$/.test(String(o.project || ""))) out.projectId = Number(o.project);
+  if (o.kind && o.kind !== "none" && !("kind" in out)) out.kind = o.kind;
   if (o.person === "me") out.assigneeIds = [S.user.id];
   else if (/^\d+$/.test(String(o.person || ""))) out.assigneeIds = [Number(o.person)];
   else out.assigneeIds = [S.user.id];
@@ -164,8 +172,10 @@ function matches(t, o, q) {
   if (o.person === "me" && !t.assigneeIds.includes(S.user.id)) return false;
   if (o.person === "none" && t.assigneeIds.length) return false;
   if (/^\d+$/.test(String(o.person || "")) && !t.assigneeIds.includes(Number(o.person))) return false;
+  if (o.kind === "none" && t.kind) return false;
+  if (o.kind && o.kind !== "none" && t.kind !== o.kind) return false;
   if (q) {
-    const hay = `${t.key} ${t.title} ${t.tags.join(" ")} ${t.summary} ${projectName(t.projectId)}`.toLowerCase();
+    const hay = `${t.key} ${t.title} ${t.kind || ""} ${t.tags.join(" ")} ${t.summary} ${projectName(t.projectId)}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
   return true;
@@ -212,6 +222,17 @@ screens.projects = {
         .filter((p) => p.id !== S.user.id)
         .map((p) => `<option value="${p.id}" ${String(oo.person) === String(p.id) ? "selected" : ""}>${esc(p.name)}</option>`)
         .join("")}</select>
+      ${
+        pv()
+          ? ""
+          : `<select class="chip" id="pj-kind"><option value="">All types</option>${P.types
+              .map((x) => `<option value="${esc(x.name)}" ${oo.kind === x.name ? "selected" : ""}>${esc(x.name)}</option>`)
+              .join("")}<option value="none" ${oo.kind === "none" ? "selected" : ""}>No type</option></select>${
+              view === "board"
+                ? `<select class="chip" id="pj-group" title="Split the board into lanes">${GROUPS.map(([k, l]) => `<option value="${k}" ${oo.group === k ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`
+                : ""
+            }${staff ? `<button class="chip" id="pj-types" title="Add, rename, colour or remove types">Edit types</button>` : ""}`
+      }
       ${pv() ? "" : `<button class="chip ${oo.subtasks ? "on" : ""}" id="pj-sub" title="Show sub-tasks as their own cards">Sub-tasks</button><button class="chip ${oo.archived ? "on" : ""}" id="pj-arch">Archived</button>`}
       <input class="in" id="pj-q" placeholder="Search…" value="${esc(q)}">`;
       tools.querySelectorAll("[data-view]").forEach((b) =>
@@ -225,6 +246,12 @@ screens.projects = {
       const ps = document.getElementById("pj-project");
       if (ps) ps.onchange = () => (setOpts({ project: ps.value }), draw());
       document.getElementById("pj-person").onchange = (e) => (setOpts({ person: e.target.value }), draw());
+      const ks = document.getElementById("pj-kind");
+      if (ks) ks.onchange = () => (setOpts({ kind: ks.value }), draw());
+      const gs = document.getElementById("pj-group");
+      if (gs) gs.onchange = () => (setOpts({ group: gs.value }), draw());
+      const et = document.getElementById("pj-types");
+      if (et) et.onclick = () => editTypes().then(() => (drawTools(), draw()));
       const sb = document.getElementById("pj-sub");
       if (sb) sb.onclick = () => (setOpts({ subtasks: !opts().subtasks }), sb.classList.toggle("on"), draw());
       const ar = document.getElementById("pj-arch");
@@ -283,32 +310,88 @@ function taskCard(t) {
   return `<div class="card pt ${sel ? "sel" : ""} ${t.status === "Done" ? "done" : ""}" draggable="true" data-pt="${t.id}">
     <div class="ct"><span class="nm">${esc(t.title)}</span></div>
     ${parent ? `<div class="cs">in ${esc(parent.title)}</div>` : ""}
-    <div class="cm">${t.projectId ? `<span class="pill">${esc(projectName(t.projectId))}</span>` : ""}${t.priority ? `<span class="pill ${PRIO[t.priority] || ""}">${esc(t.priority)}</span>` : ""}${
+    <div class="cm">${typePill(t.kind)}${t.projectId ? `<span class="pill">${esc(projectName(t.projectId))}</span>` : ""}${t.priority ? `<span class="pill ${PRIO[t.priority] || ""}">${esc(t.priority)}</span>` : ""}${
       due ? `<span class="pill ${od ? "bad" : td ? "warn" : ""}">${esc(dueLabel(t))}</span>` : ""
     }${t.subtasks?.total ? `<span class="pill" title="sub-tasks done">${t.subtasks.done}/${t.subtasks.total}</span>` : ""}${t.comments ? `<span class="faint" style="font-size:11px">${t.comments} comment${t.comments > 1 ? "s" : ""}</span>` : ""}${t.tags
       .map((g) => `<span class="tag">${esc(g)}</span>`)
       .join("")}<span class="spacer"></span>${avatars(t.assigneeIds)}</div></div>`;
 }
 
+// Lanes: the board cut by one field, like Notion's sub-groups. Dropping a card
+// into a lane sets that field too.
+const GROUPS = [
+  ["", "No lanes"],
+  ["kind", "Lanes: Type"],
+  ["priority", "Lanes: Priority"],
+  ["project", "Lanes: Project"],
+];
+function lanesFor(group) {
+  if (group === "kind") return [...P.types.map((x) => ({ key: x.name, label: typePill(x.name), set: { kind: x.name } })), { key: "", label: "No type", set: { kind: null } }];
+  if (group === "priority") return [...[...F().priorities].reverse().map((p) => ({ key: p, label: `<span class="pill ${PRIO[p] || ""}">${esc(p)}</span>`, set: { priority: p } })), { key: "", label: "No priority", set: { priority: null } }];
+  if (group === "project")
+    return [
+      ...P.projects.filter((p) => !/Done|Canceled/.test(p.status)).map((p) => ({ key: String(p.id), label: esc(p.name), set: { projectId: p.id } })),
+      { key: "", label: "No project", set: { projectId: null } },
+    ];
+  return [{ key: "", label: "", set: {} }];
+}
+const laneOf = (t, group) => (group === "kind" ? t.kind || "" : group === "priority" ? t.priority || "" : group === "project" ? (t.projectId ? String(t.projectId) : "") : "");
+
 function drawBoard(el, list, o) {
   const cols = F()
     .taskStatuses.map((s) => s.name)
     .filter((n) => n !== "Archived" || o.archived);
-  el.innerHTML = `<div class="board pj">${cols
-    .map((st) => {
-      const cs = list.filter((t) => t.status === st).sort(bySort);
-      return `<div class="col" data-drop="${esc(st)}"><h3><span class="pill ${STATUS[st] || ""}">${esc(st)}</span><span class="n">${cs.length}</span></h3>
+  const group = GROUPS.some(([k]) => k === o.group) ? o.group : "";
+  if (group === "kind" && !P.types.length) return drawBoard(el, list, { ...o, group: "" });
+  const lanes = lanesFor(group);
+  // A lane nobody uses stays folded away unless a filter asks for it; an open lane you emptied stays.
+  const shown = group ? lanes.filter((l) => list.some((t) => laneOf(t, group) === l.key) || (group === "kind" && o.kind === l.key)) : lanes;
+  const closed = new Set(store.get("pj-lanes-closed", []));
+  const cell = (st, lane) => {
+    const cs = list.filter((t) => t.status === st && laneOf(t, group) === lane.key).sort(bySort);
+    return `<div class="col" data-drop="${esc(st)}" data-lane="${esc(lane.key)}">${group ? "" : `<h3><span class="pill ${STATUS[st] || ""}">${esc(st)}</span><span class="n">${cs.length}</span></h3>`}
         <div class="cards">${cs.map(taskCard).join("")}</div>
-        ${st !== "Archived" && isStaff() ? `<button class="add-row" data-add="${esc(st)}">${I.plus} New</button>` : ""}</div>`;
-    })
-    .join("")}</div>`;
+        ${st !== "Archived" && isStaff() ? `<button class="add-row" data-add="${esc(st)}" data-lane="${esc(lane.key)}">${I.plus} New</button>` : ""}</div>`;
+  };
+  if (!group) el.innerHTML = `<div class="board pj">${cols.map((st) => cell(st, lanes[0])).join("")}</div>`;
+  else {
+    const hidden = lanes.filter((l) => !shown.includes(l));
+    el.innerHTML = `<div class="board pj lanes"><div class="lane-cols">${cols
+      .map((st) => `<h3><span class="pill ${STATUS[st] || ""}">${esc(st)}</span><span class="n">${list.filter((t) => t.status === st).length}</span></h3>`)
+      .join("")}</div>${shown
+      .map((lane) => {
+        const n = list.filter((t) => laneOf(t, group) === lane.key).length;
+        const isClosed = closed.has(group + ":" + lane.key);
+        return `<div class="lane ${isClosed ? "closed" : ""}"><button class="lane-h" data-lane-toggle="${esc(group + ":" + lane.key)}"><span class="caret">${isClosed ? "▸" : "▾"}</span>${lane.label || "None"}<span class="n">${n}</span></button>
+          ${isClosed ? "" : `<div class="lane-row">${cols.map((st) => cell(st, lane)).join("")}</div>`}</div>`;
+      })
+      .join("")}${
+      hidden.length && isStaff() ? `<div class="lane-more faint">Empty: ${hidden.map((l) => `<button class="chip" data-lane-open="${esc(l.key)}">${esc(l.key || (group === "kind" ? "No type" : "None"))}</button>`).join(" ")}</div>` : ""
+    }</div>`;
+  }
   const board = el.querySelector(".board");
+  const laneByKey = (k) => lanes.find((l) => l.key === k) || lanes[0];
   on(board, "click", "[data-pt]", (e, c) => {
     board.querySelectorAll(".card.sel").forEach((x) => x.classList.remove("sel"));
     c.classList.add("sel");
     emit("open-peek", { type: "ptask", id: c.dataset.pt });
   });
-  on(board, "click", "[data-add]", (e, b) => quickAdd(b, { status: b.dataset.add }));
+  on(board, "click", "[data-add]", (e, b) => quickAdd(b, { status: b.dataset.add, ...laneByKey(b.dataset.lane).set }));
+  on(board, "click", "[data-lane-toggle]", (e, b) => {
+    const k = b.dataset.laneToggle;
+    closed.has(k) ? closed.delete(k) : closed.add(k);
+    store.set("pj-lanes-closed", [...closed]);
+    drawBoard(el, list, o);
+  });
+  // Opening an empty lane shows it until the next redraw, so a first card can go in.
+  on(board, "click", "[data-lane-open]", (e, b) => {
+    const lane = laneByKey(b.dataset.laneOpen);
+    b.remove();
+    const div = document.createElement("div");
+    div.className = "lane";
+    div.innerHTML = `<button class="lane-h"><span class="caret">▾</span>${lane.label || "None"}<span class="n">0</span></button><div class="lane-row">${cols.map((st) => cell(st, lane)).join("")}</div>`;
+    board.insertBefore(div, board.querySelector(".lane-more"));
+  });
   let dragId = null;
   board.addEventListener("dragstart", (e) => {
     const c = e.target.closest("[data-pt]");
@@ -326,8 +409,23 @@ function drawBoard(el, list, o) {
     const r = c.getBoundingClientRect();
     return y < r.top + r.height / 2;
   });
+  // With lanes, several cells share a column: take the one under the pointer, else the nearest in that column.
+  const target = (e) => {
+    if (!group) return dropColumn(board, e);
+    const direct = e.target.closest?.("[data-drop]");
+    if (direct && board.contains(direct)) return direct;
+    const inCol = [...board.querySelectorAll("[data-drop]")].filter((c) => {
+      const r = c.getBoundingClientRect();
+      return e.clientX >= r.left && e.clientX <= r.right;
+    });
+    const dist = (c) => {
+      const r = c.getBoundingClientRect();
+      return e.clientY < r.top ? r.top - e.clientY : e.clientY > r.bottom ? e.clientY - r.bottom : 0;
+    };
+    return inCol.sort((a, b) => dist(a) - dist(b))[0] || null;
+  };
   boardListen(board, "dragover", (e) => {
-    const col = dropColumn(board, e);
+    const col = target(e);
     if (!col) return;
     e.preventDefault();
     board.querySelectorAll(".col.over").forEach((x) => x !== col && x.classList.remove("over"));
@@ -337,27 +435,30 @@ function drawBoard(el, list, o) {
     if (b) b.classList.add("drop-before");
   });
   boardListen(board, "drop", async (e) => {
-    const col = dropColumn(board, e);
+    const col = target(e);
     if (!col || dragId == null) return;
     e.preventDefault();
     const t = P.tasks.find((x) => x.id === dragId);
     const status = col.dataset.drop;
+    const lane = laneByKey(col.dataset.lane || "");
     const b = beforeCard(col, e.clientY);
     board.querySelectorAll(".col.over,.drop-before").forEach((x) => x.classList.remove("over", "drop-before"));
     if (!t) return;
-    const colTasks = list.filter((x) => x.status === status && x.id !== t.id).sort(bySort);
+    const laneChange = group && laneOf(t, group) !== lane.key && isStaff() ? lane.set : {};
+    const colTasks = list.filter((x) => x.status === status && laneOf(x, group) === lane.key && x.id !== t.id).sort(bySort);
     const nextIdx = b ? colTasks.findIndex((x) => x.id === Number(b.dataset.pt)) : colTasks.length;
     const prev = colTasks[nextIdx - 1];
     const next = colTasks[nextIdx];
     const sort = prev && next ? (prev.sort + next.sort) / 2 : next ? next.sort - 1 : prev ? prev.sort + 1 : 0;
-    const before = { status: t.status, sort: t.sort };
-    if (before.status === status && Math.abs(before.sort - sort) < 1e-9) return;
-    // A broker may move their task to another status; the order is the managers'.
+    const before = { status: t.status, sort: t.sort, kind: t.kind, priority: t.priority, projectId: t.projectId };
+    const moved = Object.keys(laneChange).length > 0;
+    if (!moved && before.status === status && Math.abs(before.sort - sort) < 1e-9) return;
+    // A broker may move their task to another status; the order and the lanes are the managers'.
     if (!isStaff() && before.status === status) return;
-    upsert({ id: t.id, status, sort });
+    upsert({ id: t.id, status, sort, ...laneChange });
     P.redraw && P.redraw();
     try {
-      await patchTask(t.id, !isStaff() ? { status } : status === before.status ? { sort } : { status, sort });
+      await patchTask(t.id, !isStaff() ? { status } : { ...(status === before.status ? {} : { status }), sort, ...laneChange });
     } catch (err) {
       upsert({ id: t.id, ...before });
       P.redraw && P.redraw();
@@ -387,7 +488,7 @@ function quickAdd(btn, extra) {
       const col = P.tasks.filter((t) => t.status === (extra.status || "Not started"));
       const sort = col.length ? Math.max(...col.map((t) => t.sort)) + 1 : 0;
       await createTask({ ...newTaskDefaults(extra), title, sort });
-      const again = document.querySelector(`[data-add="${CSS.escape(extra.status || "Not started")}"]`);
+      const again = document.querySelector(`[data-add="${CSS.escape(extra.status || "Not started")}"][data-lane="${CSS.escape(btn.dataset.lane || "")}"]`) || document.querySelector(`[data-add="${CSS.escape(extra.status || "Not started")}"]`);
       if (again) quickAdd(again, extra);
     } catch (err) {
       fail(err);
@@ -403,6 +504,7 @@ function drawTable(el, list) {
   const cols = [
     ["title", "Task"],
     ["status", "Status"],
+    ["kind", "Type"],
     ["assignees", "Assignee"],
     ["due", "Due"],
     ["priority", "Priority"],
@@ -414,7 +516,7 @@ function drawTable(el, list) {
   ];
   const prioRank = (p) => F().priorities.indexOf(p);
   const val = (t, k) =>
-    k === "due" ? dueOf(t) || "9999" : k === "assignees" ? t.assigneeIds.map(personName).join(", ") : k === "priority" ? -prioRank(t.priority) : k === "project" ? projectName(t.projectId) : k === "sub" ? t.subtasks?.total || 0 : k === "tags" ? t.tags.join(",") : t[k] ?? "";
+    k === "due" ? dueOf(t) || "9999" : k === "assignees" ? t.assigneeIds.map(personName).join(", ") : k === "priority" ? -prioRank(t.priority) : k === "project" ? projectName(t.projectId) : k === "sub" ? t.subtasks?.total || 0 : k === "tags" ? t.tags.join(",") : k === "kind" ? t.kind || "~" : t[k] ?? "";
   const sorted = [...list].sort((a, b) => {
     const x = val(a, tsort.k);
     const y = val(b, tsort.k);
@@ -424,6 +526,9 @@ function drawTable(el, list) {
     <td class="ellip" style="max-width:360px"><span class="faint mono" style="font-size:11px">${esc(t.key)}</span> ${t.parentId ? `<span class="faint">in ${esc(P.tasks.find((x) => x.id === t.parentId)?.title || "")} ·</span> ` : ""}<b style="font-weight:500">${esc(t.title)}</b></td>
     <td><select class="inline" data-f="status">${F()
       .taskStatuses.map((s) => `<option ${s.name === t.status ? "selected" : ""}>${esc(s.name)}</option>`)
+      .join("")}</select></td>
+    <td><select class="inline" data-f="kind"><option value="">none</option>${P.types
+      .map((x) => `<option ${x.name === t.kind ? "selected" : ""}>${esc(x.name)}</option>`)
       .join("")}</select></td>
     <td>${avatars(t.assigneeIds, 4) || `<span class="faint">none</span>`}</td>
     <td class="${overdue(t) ? "bad-t" : ""}">${esc(dueLabel(t)) || `<span class="faint">none</span>`}</td>
@@ -657,6 +762,96 @@ function drawTimeline(el, o, q) {
   if (px(today()) > grid.clientWidth * 0.7) grid.scrollLeft = Math.max(0, px(today()) - grid.clientWidth * 0.3);
 }
 
+// ── Types: the owner's own list, edited in place ──
+const COLOR_NAMES = { gray: "Gray", blue: "Blue", green: "Green", yellow: "Yellow", red: "Red", purple: "Purple" };
+async function editTypes() {
+  const colors = F().typeColors || Object.keys(COLOR_NAMES);
+  const count = (name) => P.tasks.filter((t) => t.kind === name).length;
+  const rows = () =>
+    P.types
+      .map(
+        (x, i) => `<div class="type-row" data-id="${x.id}">
+          <span class="pill c-${esc(x.color)}" style="min-width:14px">&nbsp;</span>
+          <input class="in" data-tf="name" value="${esc(x.name)}" maxlength="40">
+          <select class="in" data-tf="color">${colors.map((c) => `<option value="${c}" ${c === x.color ? "selected" : ""}>${esc(COLOR_NAMES[c] || c)}</option>`).join("")}</select>
+          <button type="button" class="iconbtn" data-move="-1" ${i ? "" : "disabled"} title="Up">▲</button><button type="button" class="iconbtn" data-move="1" ${i < P.types.length - 1 ? "" : "disabled"} title="Down">▼</button>
+          <span class="faint" style="font-size:11px;min-width:48px">${count(x.name)} task${count(x.name) === 1 ? "" : "s"}</span>
+          <button type="button" class="iconbtn" data-tdel title="Remove">${I.trash}</button></div>`,
+      )
+      .join("") || `<div class="faint">No types yet.</div>`;
+  const refresh = async () => {
+    P.types = (await api("/ptask-types")).items || [];
+  };
+  await dialog({
+    title: "Task types",
+    body: `<div class="faint" style="font-size:12px;margin-bottom:8px">Types split the board into lanes (Lanes: Type) and filter it. Rename or recolour and every task follows.</div>
+      <div class="stack" id="types-list">${rows()}</div>
+      <div class="row" style="margin-top:10px"><input class="in" id="type-new" placeholder="New type, e.g. Monthly · Enter" maxlength="40" style="flex:1"></div>`,
+    actions: [{ label: "Done", value: null }],
+    onMount: (form) => {
+      const list = form.querySelector("#types-list");
+      const redraw = () => (list.innerHTML = rows());
+      const run = async (fn) => {
+        try {
+          await fn();
+        } catch (err) {
+          fail(err);
+        }
+        await refresh().catch(() => undefined);
+        redraw();
+      };
+      // Enter in any field saves it instead of closing the dialog.
+      form.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" || e.target.tagName !== "INPUT") return;
+        e.preventDefault();
+        e.target.id === "type-new" ? addNew() : e.target.blur();
+      });
+      const addNew = () => {
+        const inp = form.querySelector("#type-new");
+        const name = inp.value.trim();
+        if (!name) return;
+        inp.value = "";
+        run(() => api("/ptask-types", { body: { name, color: colors[P.types.length % colors.length] } }));
+      };
+      on(list, "change", "[data-tf]", (e, f) => {
+        const id = f.closest("[data-id]").dataset.id;
+        const old = P.types.find((x) => String(x.id) === id);
+        run(async () => {
+          await api(`/ptask-types/${id}`, { method: "PATCH", body: { [f.dataset.tf]: f.value } });
+          if (f.dataset.tf === "name" && old) {
+            for (const t of P.tasks) if (t.kind === old.name) t.kind = f.value.trim();
+            const o = opts();
+            if (o.kind === old.name) setOpts({ kind: f.value.trim() });
+          }
+        });
+      });
+      on(list, "click", "[data-move]", (e, b) => {
+        const i = P.types.findIndex((x) => String(x.id) === b.closest("[data-id]").dataset.id);
+        const j = i + Number(b.dataset.move);
+        if (j < 0 || j >= P.types.length) return;
+        const [a, c] = [P.types[i], P.types[j]];
+        run(async () => {
+          await api(`/ptask-types/${a.id}`, { method: "PATCH", body: { sort: c.sort } });
+          await api(`/ptask-types/${c.id}`, { method: "PATCH", body: { sort: a.sort === c.sort ? c.sort + (j > i ? -1 : 1) : a.sort } });
+        });
+      });
+      on(list, "click", "[data-tdel]", async (e, b) => {
+        const x = P.types.find((y) => String(y.id) === b.closest("[data-id]").dataset.id);
+        if (!x) return;
+        const n = count(x.name);
+        if (n && !(await confirmBox(`Remove "${x.name}"?`, `${n} task${n === 1 ? "" : "s"} keep everything else and lose only the type.`, "Remove", true))) return;
+        run(async () => {
+          await api(`/ptask-types/${x.id}`, { method: "DELETE" });
+          for (const t of P.tasks) if (t.kind === x.name) t.kind = null;
+          if (opts().kind === x.name) setOpts({ kind: "" });
+        });
+      });
+    },
+  });
+  await refresh().catch(() => undefined);
+  if (P.redraw) P.redraw();
+}
+
 // ── Task peek ──
 function selectHtml(field, options, value, { empty, disabled } = {}) {
   return `<select class="pin" data-f="${field}" ${disabled ? "disabled" : ""}>${empty ? `<option value="">${esc(empty)}</option>` : ""}${options
@@ -680,6 +875,7 @@ function eventHtml(ev) {
       if (d.assignees.removed?.length) parts.push(`took it from ${esc(d.assignees.removed.map(personName).join(", "))}`);
     }
     if (d.due) parts.push(d.due.to?.[0] ? `set the due date to ${esc(shortDay(d.due.to[0]))}${d.due.to[1] ? " to " + esc(shortDay(d.due.to[1])) : ""}` : "removed the due date");
+    if (d.kind) parts.push(d.kind.to ? `set the type to ${esc(d.kind.to)}` : "removed the type");
     if (d.project) parts.push(d.project.to ? `moved it to ${esc(projectName(d.project.to) || "a project")}` : "took it out of the project");
     what = parts.join(", ") || "changed it";
   } else what = esc(ev.kind);
@@ -700,7 +896,7 @@ peeks.ptask = {
     const t = d.task;
     const staff = isStaff();
     const lock = !staff;
-    if (!P.projects.length && staff) await load().catch(() => undefined);
+    if ((!P.projects.length && staff) || !P.types.length) await load().catch(() => undefined);
     el.innerHTML = `<div class="resize-x" id="pt-resize" title="Drag to resize"></div>
       <div class="ph"><span class="faint mono">${esc(t.key)}</span>${d.project ? (staff ? `<a href="#" class="chip" data-open-project="${d.project.id}" style="border-style:solid">${I.goal}${esc(d.project.name)}</a>` : `<span class="chip" style="border-style:solid">${I.goal}${esc(d.project.name)}</span>`) : ""}<span class="spacer"></span>
         ${staff ? `<button class="iconbtn" id="pt-del" title="Delete the task">${I.trash}</button>` : ""}<button class="iconbtn" data-close title="Close (Esc)">${I.x}</button></div>
@@ -709,6 +905,7 @@ peeks.ptask = {
         ${d.parent ? `<div class="faint" style="margin-top:-8px">Sub-task of <a href="#" data-open-pt="${d.parent.id}">${esc(d.parent.title)}</a></div>` : ""}
         <dl class="props pprops">
           <dt>Status</dt><dd>${selectHtml("status", F().taskStatuses.map((s) => s.name), t.status)}</dd>
+          <dt>Type</dt><dd class="row" style="gap:6px">${selectHtml("kind", P.types.map((x) => x.name), t.kind, { empty: "none", disabled: lock })}${staff ? `<a href="#" class="faint" id="pt-types" style="font-size:12px">edit list</a>` : ""}</dd>
           <dt>Assignee</dt><dd><div class="people" id="pt-people">${t.assigneeIds
             .map((id) => `<span class="person"><span class="avatar sm">${esc(initials(personName(id)))}</span>${esc(personName(id))}${staff ? `<button data-unassign="${id}" title="Remove">${I.x}</button>` : ""}</span>`)
             .join("")}${
@@ -834,6 +1031,8 @@ peeks.ptask = {
         }
       });
     on(el, "click", "[data-open-pt]", (e, a) => (e.preventDefault(), emit("open-peek", { type: "ptask", id: a.dataset.openPt })));
+    const tl = el.querySelector("#pt-types");
+    if (tl) tl.onclick = (e) => (e.preventDefault(), editTypes().then(reopen));
     on(el, "click", "[data-open-project]", (e, a) => (e.preventDefault(), emit("open-peek", { type: "project", id: a.dataset.openProject })));
     // Comments.
     const cbox = el.querySelector("#pt-comment");

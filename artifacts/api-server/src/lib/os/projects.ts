@@ -6,8 +6,12 @@
  *   project — name, status (Backlog/Planning · In progress/Paused · Done/Canceled),
  *             owner, priority, dates, summary, notes, completion from its tasks;
  *   task    — title, status (Not started · In progress · Done, Archived),
- *             assignees, due (date or range), priority, estimate, tags,
+ *             type, assignees, due (date or range), priority, estimate, tags,
  *             project, parent task (sub-tasks), summary, notes, comments.
+ *
+ * Type is the owner's own list (Daily, Weekly, … — added, renamed, coloured
+ * and removed on the board), so the board can be cut by it like a Notion
+ * select property.
  *
  * Staff (admin, manager) see and edit everything. A broker sees only tasks
  * assigned to them and may change their status, notes and comments — so the
@@ -35,6 +39,7 @@ export const PROJECT_STATUSES = [
 ] as const;
 export const PRIORITIES = ["Low", "Medium", "High", "Extra High"] as const;
 export const ESTIMATES = ["XS", "S", "M", "L", "XL"] as const;
+export const TYPE_COLORS = ["gray", "blue", "green", "yellow", "red", "purple"] as const;
 
 const TASK_STATUS_NAMES: string[] = TASK_STATUSES.map((s) => s.name);
 const PROJECT_STATUS_NAMES: string[] = PROJECT_STATUSES.map((s) => s.name);
@@ -92,7 +97,25 @@ export function ensureProjectTables(): Promise<void> {
           at timestamptz NOT NULL DEFAULT now()
         );
         CREATE INDEX IF NOT EXISTS os_ptask_events_task ON os_ptask_events (task_id, at);
+        ALTER TABLE os_ptasks ADD COLUMN IF NOT EXISTS kind text;
+        CREATE TABLE IF NOT EXISTS os_ptask_types (
+          id serial PRIMARY KEY,
+          name text NOT NULL,
+          color text NOT NULL DEFAULT 'gray',
+          sort double precision NOT NULL DEFAULT 0,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS os_ptask_types_name ON os_ptask_types (lower(name));
       `);
+      // The starting list, once: a list the owner emptied stays empty.
+      const seeded = await pool.query(`SELECT 1 FROM broker_settings WHERE key = 'os_ptask_types_seed'`).catch(() => ({ rows: [{}] }));
+      if (!seeded.rows[0]) {
+        await pool.query(
+          `INSERT INTO os_ptask_types (name, color, sort) SELECT * FROM (VALUES ('Daily', 'blue', 1), ('Weekly', 'green', 2), ('One-off', 'gray', 3)) v(name, color, sort)
+            WHERE NOT EXISTS (SELECT 1 FROM os_ptask_types)`,
+        );
+        await pool.query(`INSERT INTO broker_settings (key, value, updated_at) VALUES ('os_ptask_types_seed', 'done', now()) ON CONFLICT (key) DO NOTHING`).catch(() => undefined);
+      }
     })().catch((err) => {
       ready = null;
       throw err;
@@ -123,6 +146,7 @@ function taskOut(r: Record<string, unknown>) {
     parentId: r.parent_id == null ? null : Number(r.parent_id),
     title: String(r.title ?? ""),
     status: String(r.status ?? "Not started"),
+    kind: (r.kind as string) ?? null,
     assigneeIds: ((r.assignee_ids as number[]) ?? []).map(Number),
     dueStart: day(r.due_start),
     dueEnd: day(r.due_end),
@@ -186,6 +210,13 @@ async function userIds(v: unknown): Promise<number[]> {
   if (bad.length) throw new Error("One of the people is not in the team (Settings → Team).");
   return ids;
 }
+/** A task's type is one of the list, spelled as the list spells it. */
+async function typeName(v: unknown): Promise<string | null> {
+  if (v === null || v === "" || v === undefined) return null;
+  const { rows } = await pool.query(`SELECT name FROM os_ptask_types WHERE lower(name) = lower($1)`, [String(v).trim()]);
+  if (!rows[0]) throw new Error("That type is not in the list. Add it under Types first.");
+  return String(rows[0].name);
+}
 const tagList = (v: unknown): string[] =>
   [...new Set((Array.isArray(v) ? v : String(v ?? "").split(",")).map((t) => String(t).trim()).filter(Boolean))].slice(0, 12).map((t) => t.slice(0, 40));
 
@@ -193,6 +224,62 @@ const tagList = (v: unknown): string[] =>
 export async function people() {
   const { rows } = await pool.query(`SELECT id, name, login, role FROM os_users WHERE NOT disabled ORDER BY name`);
   return rows.map((r) => ({ id: Number(r.id), name: String(r.name), login: String(r.login), role: String(r.role) }));
+}
+
+// ── task types (the owner's own list) ───────────────────────────────────────
+function typeOut(r: Record<string, unknown>) {
+  return { id: Number(r.id), name: String(r.name), color: String(r.color || "gray"), sort: Number(r.sort ?? 0) };
+}
+export async function listTypes() {
+  await ensureProjectTables();
+  const { rows } = await pool.query(`SELECT * FROM os_ptask_types ORDER BY sort, id`);
+  return rows.map(typeOut);
+}
+const typeLabel = (v: unknown) => {
+  const n = text(v, 40).trim();
+  if (!n) throw new Error("Give the type a name.");
+  return n;
+};
+export async function createType(user: OsUser, body: Record<string, unknown>) {
+  await ensureProjectTables();
+  if (!isStaff(user)) throw new Error("Only managers can change the list of types.");
+  const name = typeLabel(body.name);
+  const { rows: dup } = await pool.query(`SELECT 1 FROM os_ptask_types WHERE lower(name) = lower($1)`, [name]);
+  if (dup[0]) throw new Error(`"${name}" is already in the list.`);
+  const { rows } = await pool.query(
+    `INSERT INTO os_ptask_types (name, color, sort) VALUES ($1, $2, coalesce((SELECT max(sort) FROM os_ptask_types), 0) + 1) RETURNING *`,
+    [name, pick(body.color, TYPE_COLORS, "Colour") ?? "gray"],
+  );
+  await audit(user, "ptype.create", String(rows[0].id), { name });
+  return typeOut(rows[0]);
+}
+/** Renaming a type renames it on every task that has it. */
+export async function updateType(user: OsUser, id: number, body: Record<string, unknown>) {
+  await ensureProjectTables();
+  if (!isStaff(user)) throw new Error("Only managers can change the list of types.");
+  const { rows: cur } = await pool.query(`SELECT * FROM os_ptask_types WHERE id = $1`, [id]);
+  if (!cur[0]) throw new Error("This type no longer exists.");
+  const name = "name" in body ? typeLabel(body.name) : String(cur[0].name);
+  if (name.toLowerCase() !== String(cur[0].name).toLowerCase()) {
+    const { rows: dup } = await pool.query(`SELECT 1 FROM os_ptask_types WHERE lower(name) = lower($1) AND id <> $2`, [name, id]);
+    if (dup[0]) throw new Error(`"${name}" is already in the list.`);
+  }
+  const color = "color" in body ? (pick(body.color, TYPE_COLORS, "Colour") ?? "gray") : String(cur[0].color);
+  const sort = "sort" in body && Number.isFinite(Number(body.sort)) ? Number(body.sort) : Number(cur[0].sort);
+  const { rows } = await pool.query(`UPDATE os_ptask_types SET name = $1, color = $2, sort = $3 WHERE id = $4 RETURNING *`, [name, color, sort, id]);
+  if (name !== cur[0].name) await pool.query(`UPDATE os_ptasks SET kind = $1 WHERE kind = $2`, [name, cur[0].name]);
+  await audit(user, "ptype.update", String(id), Object.keys(body));
+  return typeOut(rows[0]);
+}
+/** Removing a type leaves its tasks without a type; nothing else changes. */
+export async function deleteType(user: OsUser, id: number) {
+  await ensureProjectTables();
+  if (!isStaff(user)) throw new Error("Only managers can change the list of types.");
+  const { rows } = await pool.query(`DELETE FROM os_ptask_types WHERE id = $1 RETURNING name`, [id]);
+  if (!rows[0]) throw new Error("This type no longer exists.");
+  const { rowCount } = await pool.query(`UPDATE os_ptasks SET kind = NULL WHERE kind = $1`, [rows[0].name]);
+  await audit(user, "ptype.delete", String(id), { name: rows[0].name, tasks: rowCount });
+  return { ok: true, tasks: rowCount ?? 0 };
 }
 
 // ── projects ────────────────────────────────────────────────────────────────
@@ -365,9 +452,9 @@ export async function createTask(user: OsUser, body: Record<string, unknown>) {
   if (dueStart && dueEnd && dueEnd < dueStart) throw new Error("The due range ends before it starts.");
   const sort = Number.isFinite(Number(body.sort)) && body.sort !== null && body.sort !== undefined ? Number(body.sort) : null;
   const { rows } = await pool.query(
-    `INSERT INTO os_ptasks (project_id, parent_id, title, status, assignee_ids, due_start, due_end, priority, estimate, tags, summary, notes, sort, created_by, done_at)
+    `INSERT INTO os_ptasks (project_id, parent_id, title, status, assignee_ids, due_start, due_end, priority, estimate, tags, summary, notes, sort, created_by, done_at, kind)
      VALUES ($1, $2, $3, $4, $5::int[], $6, $7, $8, $9, $10::text[], $11, $12,
-             coalesce($13, (SELECT coalesce(max(sort), 0) + 1 FROM os_ptasks WHERE status = $4)), $14, CASE WHEN $4 = 'Done' THEN now() END)
+             coalesce($13, (SELECT coalesce(max(sort), 0) + 1 FROM os_ptasks WHERE status = $4)), $14, CASE WHEN $4 = 'Done' THEN now() END, $15)
      RETURNING id`,
     [
       inheritedProject,
@@ -384,6 +471,7 @@ export async function createTask(user: OsUser, body: Record<string, unknown>) {
       text(body.notes, 50_000),
       sort,
       user.id,
+      await typeName(body.kind),
     ],
   );
   const id = Number(rows[0].id);
@@ -436,6 +524,11 @@ export async function updateTask(user: OsUser, id: number, body: Record<string, 
     set("due_start", ds);
     set("due_end", de);
     if (ds !== before.dueStart || de !== before.dueEnd) changes.due = { from: [before.dueStart, before.dueEnd], to: [ds, de] };
+  }
+  if ("kind" in body) {
+    const k = await typeName(body.kind);
+    set("kind", k);
+    if (k !== before.kind) changes.kind = { from: before.kind, to: k };
   }
   if ("priority" in body) set("priority", pick(body.priority, PRIORITIES, "Priority"));
   if ("estimate" in body) set("estimate", pick(body.estimate, ESTIMATES, "Estimate"));

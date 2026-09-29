@@ -100,6 +100,11 @@ import {
   deleteTask as deleteProjectTask,
   restoreTask as restoreProjectTask,
   addComment as addProjectComment,
+  listTypes as listTaskTypes,
+  createType as createTaskType,
+  updateType as updateTaskType,
+  deleteType as deleteTaskType,
+  TYPE_COLORS,
   TASK_STATUSES,
   PROJECT_STATUSES,
   PRIORITIES,
@@ -185,7 +190,7 @@ api.get(
       closeReasons: CLOSE_REASONS,
       reachStages: REACH_STAGE_KEYWORDS,
       people: await people(),
-      projectFormat: { taskStatuses: TASK_STATUSES, projectStatuses: PROJECT_STATUSES, priorities: PRIORITIES, estimates: ESTIMATES },
+      projectFormat: { taskStatuses: TASK_STATUSES, projectStatuses: PROJECT_STATUSES, priorities: PRIORITIES, estimates: ESTIMATES, typeColors: TYPE_COLORS },
       listingFields: describeFields(),
     };
   }),
@@ -456,6 +461,10 @@ api.patch("/ptasks/:id", signedIn, h(async (req) => updateProjectTask(req.osUser
 api.delete("/ptasks/:id", staffOnly, h(async (req) => deleteProjectTask(req.osUser!, idp(req))));
 api.post("/ptasks/:id/restore", staffOnly, h(async (req) => restoreProjectTask(req.osUser!, idp(req))));
 api.post("/ptasks/:id/comments", signedIn, h(async (req) => addProjectComment(req.osUser!, idp(req), req.body ?? {})));
+api.get("/ptask-types", signedIn, h(async () => ({ items: await listTaskTypes() })));
+api.post("/ptask-types", staffOnly, h(async (req) => createTaskType(req.osUser!, req.body ?? {})));
+api.patch("/ptask-types/:id", staffOnly, h(async (req) => updateTaskType(req.osUser!, idp(req), req.body ?? {})));
+api.delete("/ptask-types/:id", staffOnly, h(async (req) => deleteTaskType(req.osUser!, idp(req))));
 
 // ── Funnels: stages set up in the OS (amoCRM untouched), and the OS's own funnels and cards ──
 const keyp = (req: Request) => String(req.params["key"] ?? "");
