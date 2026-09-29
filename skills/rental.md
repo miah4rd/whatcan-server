@@ -47,6 +47,15 @@ the broker's tap (owner's rule since the start).
    {the form, word for word}. Did I get that right?" No link, no question the form already asked.
 2. 15 minutes later, if the client is silent: Amelia's first message, a shortlist built from the
    form, approved in Copilot. A client who answers inside those 15 minutes cancels it.
+3. A silent client is never left without a second message (owner, 29.09.2026: «чини нахуй это
+   место… перепроверь, чтобы этого больше никогда не повторилось»). From 16 to 29.09 the
+   15-minute shortlist was not written for any silent client (it looked for the client's own
+   message, and a silent client has none): 16 paid leads got nothing after the welcome. Now:
+   - the 15-minute shortlist is written from the form when the client has not written anything;
+   - the welcome itself starts the follow-up clock (24 hours), so a missed step still ends in a
+     follow-up;
+   - every hour the Copilot checks for welcomed, silent clients with no draft, no send and no
+     clock, and pushes the owner the card numbers.
 
 ## 5. The shortlist (04.09, 14.09, 21.09, 26.09)
 

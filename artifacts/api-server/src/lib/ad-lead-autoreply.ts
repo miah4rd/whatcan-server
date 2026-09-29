@@ -417,9 +417,10 @@ export async function sendAdLeadWelcome(opts: {
       content: `${opts.content}\n${ourLine}`.trim(),
       lastMessageFrom: "us",
       lastOurMessageAt: now,
-      // The 15-minute pass owns this lead now. A follow-up clock here would
-      // schedule a chase for a client who has not been given a chance to speak.
-      nextFollowupAt: null,
+      // A safety net under the 15-minute pass (owner, 29.09.2026): from 16 to 29.09 that pass wrote
+      // nothing for silent clients, nothing was sent, so no clock ever started and 16 paid leads got
+      // no second message at all. The clock starts with the welcome; any later send resets it.
+      nextFollowupAt: new Date(now.getTime() + 24 * 3600e3),
       followupLevel: 0,
       updatedAt: now,
     })
@@ -452,7 +453,43 @@ export async function sendAdLeadWelcome(opts: {
  */
 let openingPassRunning = false;
 
+/**
+ * The check that this can never go silent again (owner, 29.09.2026: "перепроверь, чтобы это больше
+ * никогда не повторилось"). Every hour: a paid lead welcomed more than 30 minutes ago, still silent,
+ * with no draft waiting, nothing sent after the welcome and no follow-up clock is a lead nobody will
+ * ever write to. The owner gets a push with the cards, once per card, and the log says so.
+ */
+let lastSilentCheck = 0;
+async function checkSilentLeadsCovered(): Promise<void> {
+  if (Date.now() - lastSilentCheck < 3600e3) return;
+  lastSilentCheck = Date.now();
+  const res = await db.execute(sql`
+    SELECT w.lead_id FROM (
+      SELECT s.lead_id, min(s.created_at) AS at FROM sent_messages s
+       WHERE s.kind = ${AD_AUTO_KIND} AND s.created_at < now() - interval '30 minutes' AND s.created_at > now() - interval '7 days'
+       GROUP BY s.lead_id) w
+    JOIN leads_sync l ON l.lead_id = w.lead_id
+    WHERE lower(coalesce(l.pipeline, '')) = 'rental' AND coalesce(l.bot_excluded, false) = false
+      AND coalesce(l.lead_stage, '') !~* 'lost|won'
+      AND l.next_followup_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM pending_suggestions p WHERE p.lead_id = w.lead_id AND p.status = 'pending')
+      AND (SELECT count(*) FROM sent_messages x WHERE x.lead_id = w.lead_id) <= 1
+      AND NOT EXISTS (SELECT 1 FROM lead_messages m WHERE m.lead_id = w.lead_id AND m.sent_at > w.at + interval '5 seconds' AND m.sender_type IN ('lead', 'broker'))
+      AND NOT EXISTS (SELECT 1 FROM broker_settings b WHERE b.key = 'silent_uncovered:' || w.lead_id)`);
+  const ids = ((res as unknown as { rows?: Array<{ lead_id: string }> }).rows ?? []).map((r) => String(r.lead_id));
+  if (!ids.length) return;
+  for (const id of ids) {
+    await db.execute(sql`INSERT INTO broker_settings (key, value) VALUES (${"silent_uncovered:" + id}, ${new Date().toISOString()}) ON CONFLICT (key) DO NOTHING`);
+  }
+  logger.error({ leads: ids }, "silent ad leads with no draft, no send and no follow-up clock — nobody will write to them");
+  const owners = (process.env["AI_ALERT_BROKERS"] ?? "hos,admin,nick").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+  for (const o of owners) {
+    await notifyBrokerForLead(o, ids[0]!, "reminder", `${ids.length} silent Meta lead(s) got nothing after the welcome: ${ids.join(", ")}`).catch(() => undefined);
+  }
+}
+
 export async function processAdLeadBrokerOpening(): Promise<number> {
+  void checkSilentLeadsCovered().catch((err) => logger.error({ err }, "silent-lead check failed"));
   if (openingPassRunning) {
     logger.info("ad-lead broker-opening pass still running — skipping this tick");
     return 0;
