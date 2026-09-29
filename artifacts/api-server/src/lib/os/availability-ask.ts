@@ -164,6 +164,20 @@ export async function maybeStartAvailabilityAsk(leadId: string, sentText: string
   if (!sync || String(sync.pipeline ?? "").trim().toLowerCase() !== "rental") return;
   const open = await pool.query(`SELECT 1 FROM os_availability_asks WHERE client_lead_id = $1 AND status = 'open' LIMIT 1`, [leadId]);
   if (open.rows.length) return;
+  // Only a REPLY to the client can be a promise (29.09, Tahnee 23642471): Amelia's follow-up "I can check the
+  // owner's availability and line up a viewing" was read as one though the client had asked nothing since
+  // our previous message. The client must have written after our last message before this one.
+  const turn = (
+    await pool.query(
+      `SELECT max(sent_at) FILTER (WHERE sender_type = 'lead') AS last_in,
+              max(sent_at) FILTER (WHERE sender_type <> 'lead' AND sent_at < now() - interval '2 minutes') AS last_out
+         FROM lead_messages WHERE lead_id = $1`,
+      [leadId],
+    ).catch(() => null)
+  )?.rows?.[0];
+  const lastIn = turn?.last_in ? new Date(turn.last_in).getTime() : 0;
+  const lastOut = turn?.last_out ? new Date(turn.last_out).getTime() : 0;
+  if (!lastIn || lastIn < lastOut) return;
   const villas = await sentVillas(leadId);
   if (!villas.length) return;
   const known = new Set(villas.map((v) => v.id));
@@ -174,7 +188,7 @@ export async function maybeStartAvailabilityAsk(leadId: string, sentText: string
     label: "os:availability-promise",
     max_tokens: 200,
     temperature: 0,
-    system: `A real-estate broker in Bali just sent the LAST message below to a rental client. Did it promise to find something out from the villa owner and come back to the client (availability on the client's dates, a lower price, pets, anything about the villa)? A question to the client does not count.
+    system: `A real-estate broker in Bali just sent the LAST message below to a rental client. Did it promise to find something out from the villa owner and come back to the client (availability on the client's dates, a lower price, pets, anything about the villa)? A question to the client does not count, and neither does an OFFER (\"I can check the owner's availability and line up a viewing\", \"let me know and I'll arrange it\"): only a promise that answers something the client asked.
 If yes: which villas is it about? The villas sent on this card: ${villas.map((v) => `${v.id} (${v.label})`).join("; ")}. List the ids the thread makes clear (named, numbered, quoted); an empty list when it does not.
 And the question to put to the owner: one short English line, the way a broker would ask it ("Is it free from 1 November for 6 months?", "Could the price go down to 35 million a month?"). Use the client's dates and numbers from the thread; invent nothing.
 JSON only: {"promise": true|false, "villas": ["R-XXX-000"], "question": "…"}`,
