@@ -231,6 +231,18 @@ router.get("/suggestions", async (req, res) => {
         }
       }
 
+      // The webhook content keeps each message on one line; the timeline copy keeps its line breaks
+      // (a welcome's bullet list read as a wall of text, owner 29.09). Same message = same words
+      // within two minutes: show the timeline's text.
+      {
+        const flat = (t: string) => t.replace(/\s+/g, " ").trim();
+        const tl = timelineMsgsByLead.get(i.leadId) ?? [];
+        for (const m of recentMessages) {
+          const at = new Date(m.at).getTime();
+          const twin = tl.find((x) => x.text && x.text.includes("\n") && Math.abs(x.sentAt.getTime() - at) < 120_000 && flat(x.text) === flat(m.text));
+          if (twin?.text) m.text = twin.text;
+        }
+      }
       // Merge in timeline-synced messages newer than the webhook content —
       // dedupe by text+minute since both paths write overlapping history.
       {

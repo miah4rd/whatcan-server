@@ -33,7 +33,8 @@ const NON_ANSWER = /^\s*(other|others|lainnya|any|anywhere|no|nope|none|no need|
 
 export function isNonAnswer(text: string | null | undefined): boolean {
   const t = (text ?? "").trim();
-  return t.length === 0 || NON_ANSWER.test(t);
+  // A form's own label left unanswered ("Must-haves:"): the client wrote nothing (Vika, 29.09).
+  return t.length === 0 || NON_ANSWER.test(t) || /^[^:\n]{1,40}:\s*$/.test(t);
 }
 
 /**
