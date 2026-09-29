@@ -36,11 +36,34 @@ function isLoopback(req: Request): boolean {
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 }
 
+// Unicorn OS shares a number with this Copilot (owner, 29.09: "the same QR, don't scan again"): the one
+// linked device stays here, and every event of the listed sessions is passed on to the OS as its own
+// gateway would pass it. Off unless WA_FORWARD_URL, WA_FORWARD_SECRET and WA_FORWARD_SESSIONS are set.
+const FORWARD_URL = process.env.WA_FORWARD_URL ?? "";
+const FORWARD_SECRET = process.env.WA_FORWARD_SECRET ?? "";
+const FORWARD_SESSIONS = new Set((process.env.WA_FORWARD_SESSIONS ?? "").split(",").map((x) => x.trim()).filter(Boolean));
+function forwardToOs(body: { session?: string }): void {
+  if (!FORWARD_URL || !FORWARD_SECRET || !body?.session || !FORWARD_SESSIONS.has(body.session)) return;
+  void (async () => {
+    for (let i = 0; i < 4; i++) {
+      try {
+        const r = await fetch(FORWARD_URL, { method: "POST", headers: { "x-wa-secret": FORWARD_SECRET, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20000) });
+        if (r.ok || r.status === 422) return;
+      } catch {
+        /* retried */
+      }
+      await new Promise((ok) => setTimeout(ok, 2000 * (i + 1)));
+    }
+    logger.warn({ session: body.session, kind: (body as { kind?: string }).kind }, "wa forward to Unicorn OS failed");
+  })();
+}
+
 router.post("/wa/inbound", async (req, res) => {
   if (!WA_GATEWAY_SECRET || !isLoopback(req) || req.headers["x-wa-secret"] !== WA_GATEWAY_SECRET) {
     res.status(401).json({ error: "unauthorized" });
     return;
   }
+  forwardToOs(req.body);
   try {
     await handleGatewayEvent(req.body);
     res.json({ ok: true });
