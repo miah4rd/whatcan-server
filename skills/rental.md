@@ -59,6 +59,9 @@ the broker's tap (owner's rule since the start).
 
 ## 5. The shortlist (04.09, 14.09, 21.09, 26.09)
 
+The form's area answer "Other" with no place named anywhere means ANY area (owner, 29.09.2026:
+"she is looking property in other areas, which means they don't care what kind of area"): the
+villa the client clicked does not become their area.
 - Bedrooms, area and budget are the request. Only villas that fit: the right number of bedrooms,
   the named area (neighbours only if the client allowed), free on the move-in date (04.09, 14.09).
 - Price ladder around the budget: up to 2 below (70–90%), up to 2 in budget, up to 2 above
@@ -95,6 +98,9 @@ A series of three, one a day, each counted from the client's own last message, i
 never a template (owner's Rental cadence). A follow-up carries options when the request allows it.
 After the third follow-up with no reply the bot stops chasing; the lead is left alone (26.09).
 Leads created from 14.09 have no age limit; older ones stop after 7 days (14.09).
+One draft per client at a time (owner, 29.09.2026: «главное, чтобы задвоение не получилось»): a
+client with any draft waiting — the unsent 15-minute shortlist, a LIVE reply, an earlier follow-up —
+gets no follow-up beside it; the check runs before any text is written.
 
 ## 8. How rules change
 
