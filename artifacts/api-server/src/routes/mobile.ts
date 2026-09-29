@@ -3802,10 +3802,17 @@ const PAGE_HTML = `<!doctype html>
     // No draft on this card, so nothing to open — but a listing the broker has
     // just inspected has no draft either, and he still needs the report button
     // (Yudi, 23.09: "I don't see the button on co pilot nor the CRM").
-    orphanLead = String(leadId);
+    // No draft on a client or HR card: straight to the inbox with a note, never a screen with nothing to do
+    // (owner, 29.09: a notification opened a dead end). Listing cards keep their screen for the report button.
     openItem = null;
     listingView = false;
-    render();
+    var lid = String(leadId);
+    fetch(API + "/lead-funnel?leadId=" + encodeURIComponent(lid)).then(function (r) { return r.json(); }).then(function (d) {
+      if (/listing/i.test((d && d.pipeline) || "")) { orphanLead = lid; render(); return; }
+      orphanLead = null;
+      showToast("No draft on card #" + lid + " right now");
+      render();
+    }).catch(function () { orphanLead = null; showToast("No draft on card #" + lid + " right now"); render(); });
   }
 
   // A card amoCRM opened that the inbox does not carry: one line and the
