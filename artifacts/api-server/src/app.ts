@@ -112,6 +112,9 @@ app.use((req, res, next) => {
   res.sendFile(path.join(landingDist, "index.html"));
 });
 
+// Rental Listings moved to Unicorn OS on 29.09.2026 (LISTINGS_HOME=os): the listing passes run there,
+// not here, or both would claim the site's Listed switch and the calendar. Rentals stay here.
+const LISTINGS_IN_OS = process.env["LISTINGS_HOME"] === "os";
 startFollowupScheduler();
 startAmoSyncScheduler();
 startFunnelSnapshotScheduler();
@@ -128,25 +131,25 @@ startStageSyncCheckScheduler();
 // Renders every website catalog photo to webp 600/900/1600 for the site's /img.
 startPhotoVariantScheduler();
 // The site's Pre-listed / Listed switch moves the villa's Rental Listings card to live; see lib/listing-status-pass.ts.
-startListingStatusPass();
+if (!LISTINGS_IN_OS) startListingStatusPass();
 // Agreed villa inspections → the shared Brokers Google Calendar; see lib/inspection-calendar.ts.
-startInspectionCalendarSync();
+if (!LISTINGS_IN_OS) startInspectionCalendarSync();
 // Property-link sends that stopped halfway are finished here (lib/link-resume.ts).
 startLinkResume();
 // Agreed client viewings (Rental) → the same calendar in green; see lib/viewing-calendar.ts.
 startViewingCalendarSync();
 // QUALIFIED listing cards: a PUSH draft for Yudi asking the owner to let him inspect, in his own words; see lib/inspection-booking.ts.
-startInspectionBookingPass();
+if (!LISTINGS_IN_OS) startInspectionBookingPass();
 // The message after a viewing, unsent after a day: the broker is reminded (lib/after-viewing-reminder.ts).
 startAfterViewingReminder();
 // "Client waiting for the owner's answer" and the viewing-day confirmation (owner, 27.09.2026).
 startAvailabilityAskPass();
 startViewingDayPass();
 // Inspection report due 30 minutes after an agreed inspection (lib/inspection-report.ts).
-startInspectionReportPass();
+if (!LISTINGS_IN_OS) startInspectionReportPass();
 startListingFeatureFill();
 // Agreed villa visits read again every 30 minutes, live cards included (lib/listing-progress.ts).
-startVisitWatch();
+if (!LISTINGS_IN_OS) startVisitWatch();
 // Meta Ads spend for the /kpi page, pulled through Make every 4 hours; see lib/kpi-dashboard.ts.
 startMetaSpendPull();
 // Unicorn OS: the objection log every two hours and the Monday bottleneck brief (lib/os/analytics.ts).
