@@ -1339,11 +1339,15 @@ const PAGE_HTML = `<!doctype html>
   // property URLs back via postMessage on "Send to Copilot" — same message
   // contract the extension listens for.
   function openPropertyPicker(onSelect) {
+    // A Rental client's lead opens straight on the rent search, Features filter included (owner,
+    // 29.09.2026: "yes" — the broker no longer has to switch from For Sale first).
+    var pickerPipe = String((typeof openItem !== "undefined" && openItem && openItem.pipeline) || "");
+    var pickerPath = /rent/i.test(pickerPipe) && !/listing/i.test(pickerPipe) ? "/rent" : "/";
     var overlay = document.createElement("div");
     overlay.className = "picker-overlay";
     overlay.innerHTML = '<div class="picker-modal">' +
       '<div class="picker-hdr"><span>\\ud83c\\udf10 Choose listings \\u2014 unicorn-properties.com</span><button class="picker-close" id="picker-close">\\u00d7</button></div>' +
-      '<iframe src="' + PICKER_ORIGIN + '/"></iframe>' +
+      '<iframe src="' + PICKER_ORIGIN + pickerPath + '"></iframe>' +
       '</div>';
     document.body.appendChild(overlay);
     var iframe = overlay.querySelector("iframe");
