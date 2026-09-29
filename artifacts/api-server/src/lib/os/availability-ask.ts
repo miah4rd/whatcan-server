@@ -67,6 +67,9 @@ export type Ask = {
   push_suggestion_id: string | null;
   reminded_at: string | null;
   created_at: string;
+  /** A question Copilot Amo handed over (the listings live in Unicorn OS since 29.09): the answers go back there. */
+  remote_callback?: string | null;
+  remote_ask_id?: string | null;
 };
 
 let ready: Promise<void> | null = null;
@@ -92,6 +95,8 @@ function ensureTable(): Promise<void> {
        ALTER TABLE os_availability_asks ADD COLUMN IF NOT EXISTS owners jsonb NOT NULL DEFAULT '{}';
        ALTER TABLE os_availability_asks ADD COLUMN IF NOT EXISTS question text;
        ALTER TABLE os_availability_asks ADD COLUMN IF NOT EXISTS nudges int NOT NULL DEFAULT 0;
+       ALTER TABLE os_availability_asks ADD COLUMN IF NOT EXISTS remote_callback text;
+       ALTER TABLE os_availability_asks ADD COLUMN IF NOT EXISTS remote_ask_id text;
        CREATE INDEX IF NOT EXISTS os_availability_asks_open ON os_availability_asks (status, client_lead_id);`,
     )
     .then(() => undefined)
@@ -522,12 +527,15 @@ async function ownerQuestion(lang: "en" | "id", first: string, names: string, qu
 }
 
 /** AUTOMATIC: each picked villa's owner is asked from the villa's own card (one message per owner). */
-export async function askOwners(askId: string): Promise<{ ok: boolean; error?: string; asked?: string[]; missing?: string[]; mode?: string }> {
+export async function askOwners(askId: string, opts: { forceAuto?: boolean } = {}): Promise<{ ok: boolean; error?: string; asked?: string[]; missing?: string[]; mode?: string }> {
   const ask = await askById(askId);
   if (!ask || ask.status !== "open") return { ok: false, error: "This question is already closed." };
   const todo = (ask.villa_ids ?? []).filter((v) => !ask.answers?.[v] && !ask.owners?.[v]);
   if (!(ask.villa_ids ?? []).length) return { ok: false, error: "Pick the villa the client liked." };
   if (!todo.length) return { ok: false, error: "Every villa is already asked or answered." };
+  // The villa cards and Yudi's automation live in Unicorn OS since 29.09.2026 (owner: «коммуникация
+  // должна идти через операционную систему… по этой кнопке… везде»): Copilot Amo hands the question over.
+  if (!OS_MODE && process.env["LISTINGS_HOME"] === "os") return delegateToOs(ask, todo);
   const byPhone = new Map<string, { owner: { phone: string; name: string; title: string }; villas: string[] }>();
   const missing: string[] = [];
   for (const v of todo) {
@@ -538,7 +546,7 @@ export async function askOwners(askId: string): Promise<{ ok: boolean; error?: s
     g.villas.push(v);
     byPhone.set(key, g);
   }
-  const mode = await ownerAskMode();
+  const mode = opts.forceAuto ? "auto" : await ownerAskMode();
   const asked: string[] = [];
   const owners: Record<string, OwnerAsk> = {};
   for (const { owner, villas } of byPhone.values()) {
@@ -610,6 +618,7 @@ async function processOpen(ask: Ask): Promise<void> {
   // Every answer is in but the reply to the client was not written (the writer failed): write it now.
   // The answers live in the record, so nothing is lost between the tries.
   if ((ask.villa_ids ?? []).length && ask.villa_ids.every((v) => ask.answers?.[v])) {
+    if (ask.remote_callback) { await callbackRemote(ask); return; }
     await resolve(ask).catch((err) => logger.warn({ err, askId: ask.id }, "availability ask: the reply to the client failed — retried next minute"));
     return;
   }
@@ -618,6 +627,7 @@ async function processOpen(ask: Ask): Promise<void> {
     for (const o of Object.values(ask.owners ?? {})) {
       if (seen.has(o.suggestion)) continue;
       seen.add(o.suggestion);
+      if (o.suggestion.startsWith("os:")) continue; // asked in Unicorn OS; its answer comes back by callback
       if (o.villas.every((v) => ask.answers?.[v])) continue;
       const sent = (await pool.query(`SELECT created_at FROM sent_messages WHERE suggestion_id = $1 ORDER BY created_at LIMIT 1`, [o.suggestion])).rows[0];
       if (!sent) continue;
@@ -649,7 +659,7 @@ JSON only: {"answered": true|false, "answers": {"${o.villas[0]}": "…"}}`,
           const a: VillaAnswer = { text, by: "owner" };
           // An availability answer reaches the site once the OS owns it (mode auto): the same reader and
           // guards as the weekly check, fail-closed.
-          if ((await ownerAskMode()) === "auto" && /free|availab|kosong|tersedia/i.test(question)) {
+          if ((ask.remote_callback || (await ownerAskMode()) === "auto") && /free|availab|kosong|tersedia/i.test(question)) {
             const av = guardAnswer(await readAnswer(v, question, reply, today()), reply, today());
             if (av.answer !== "unclear") {
               a.availability = av;
@@ -668,6 +678,7 @@ JSON only: {"answered": true|false, "answers": {"${o.villas[0]}": "…"}}`,
           await pool.query(`UPDATE os_availability_asks SET answers = answers || $2::jsonb WHERE id = $1 AND status = 'open'`, [ask.id, JSON.stringify(got)]);
           const fresh = await askById(ask.id);
           if (fresh && fresh.status === "open" && (fresh.villa_ids ?? []).every((v) => fresh.answers?.[v])) {
+            if (fresh.remote_callback) { await callbackRemote(fresh); return; }
             await resolve(fresh).catch((err) => logger.warn({ err, askId: ask.id }, "availability ask: the reply to the client failed — retried next minute"));
             return;
           }
@@ -692,8 +703,9 @@ async function nudgeLadder(ask: Ask): Promise<void> {
   const fresh = await askById(ask.id);
   if (!fresh || fresh.status !== "open") return;
   const owners = Object.values(fresh.owners ?? {});
-  if ((await ownerAskMode()) === "auto") {
+  if (fresh.remote_callback || (await ownerAskMode()) === "auto") {
     for (const o of owners) {
+      if (o.suggestion.startsWith("os:")) continue;
       const s = (await pool.query(`SELECT status, created_at, suggestion_text, responsible_user FROM pending_suggestions WHERE id = $1`, [o.suggestion])).rows[0];
       if (s?.status === "pending" && Date.now() - new Date(s.created_at).getTime() > RESEND_AFTER_MS) {
         const port = process.env["PORT"] || "3000";
@@ -706,6 +718,8 @@ async function nudgeLadder(ask: Ask): Promise<void> {
       }
     }
   }
+  // A question handed over from Copilot Amo: the broker there is reminded by Copilot Amo, not here.
+  if (fresh.remote_callback) return;
   const waiting = (fresh.villa_ids ?? []).filter((v) => !fresh.answers?.[v]);
   if (!waiting.length) return;
   // The clock: from the owner question leaving, else from the question being opened.
@@ -714,6 +728,7 @@ async function nudgeLadder(ask: Ask): Promise<void> {
   for (const v of waiting) {
     const o = fresh.owners?.[v];
     if (!o) continue;
+    if (o.suggestion.startsWith("os:")) { asked = true; continue; }
     const sent = (await pool.query(`SELECT created_at FROM sent_messages WHERE suggestion_id = $1 ORDER BY created_at LIMIT 1`, [o.suggestion])).rows[0];
     if (sent) { asked = true; since = Math.max(since, new Date(sent.created_at).getTime()); }
   }
@@ -736,4 +751,72 @@ async function nudgeLadder(ask: Ask): Promise<void> {
 
 export function startAvailabilityAskPass(): void {
   setInterval(() => void passOnce().catch((err) => logger.warn({ err }, "availability ask pass failed")), 60_000);
+}
+
+// ── Copilot Amo ⇄ Unicorn OS (29.09.2026) ────────────────────────────────────
+// The listings (villa cards, Yudi's line and automation) live in Unicorn OS. A "Ask the owner" in Copilot
+// Amo is handed to Unicorn OS, which asks from the villa card and posts the owner's answer back; Copilot
+// Amo then writes the client's reply as before. Both sides talk on the loopback with the shared secret.
+const OS_BASE = process.env["OS_BASE_URL"] ?? "http://127.0.0.1:5001";
+
+async function delegateToOs(ask: Ask, todo: string[]): Promise<{ ok: boolean; error?: string; asked?: string[]; missing?: string[]; mode?: string }> {
+  const port = process.env["PORT"] || "3000";
+  const r = await fetch(`${OS_BASE}/api/public/remote-owner-ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-wa-secret": process.env["WA_FORWARD_SECRET"] ?? "" },
+    body: JSON.stringify({
+      amoAskId: ask.id, amoLeadId: ask.client_lead_id, broker: ask.broker, villaIds: todo,
+      question: ask.question || defaultQuestion(ask.move_in, ask.stay), moveIn: ask.move_in, stay: ask.stay,
+      callback: `http://127.0.0.1:${port}/api/public/remote-owner-answer`,
+    }),
+    signal: AbortSignal.timeout(90_000),
+  }).catch((err) => { logger.warn({ err: String(err), askId: ask.id }, "availability ask: Unicorn OS did not take the question"); return null; });
+  const d = r ? ((await r.json().catch(() => null)) as { ok?: boolean; error?: string; asked?: string[]; missing?: string[]; osAskId?: string } | null) : null;
+  if (!d?.ok) return { ok: false, error: d?.error || "Unicorn OS did not take the question. Call the owner and write the answer below." };
+  const owners: Record<string, OwnerAsk> = {};
+  for (const v of d.asked ?? []) owners[v] = { lead: "os", suggestion: `os:${d.osAskId}`, villas: d.asked ?? [] };
+  if (Object.keys(owners).length) await pool.query(`UPDATE os_availability_asks SET owners = owners || $2::jsonb WHERE id = $1`, [ask.id, JSON.stringify(owners)]);
+  logger.info({ askId: ask.id, osAskId: d.osAskId, asked: d.asked, missing: d.missing }, "availability ask: handed to Unicorn OS (asked from the villa card there)");
+  return { ok: true, asked: d.asked ?? [], missing: d.missing ?? [], mode: "auto" };
+}
+
+/** Unicorn OS side: a question from Copilot Amo, asked from the villa card here, automatically. */
+export async function openRemoteAsk(b: Record<string, unknown>): Promise<{ ok: boolean; error?: string; asked?: string[]; missing?: string[]; osAskId?: string }> {
+  await ensureTable();
+  const villaIds = (Array.isArray(b["villaIds"]) ? b["villaIds"] : []).map((v) => String(v).toUpperCase()).filter((v) => /^R-[A-Z]+-\d+$/.test(v));
+  if (!villaIds.length) return { ok: false, error: "No villa to ask about." };
+  const r = await pool.query(
+    `INSERT INTO os_availability_asks (client_lead_id, broker, candidates, villa_ids, move_in, stay, question, remote_callback, remote_ask_id)
+     VALUES ($1,$2,'[]'::jsonb,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [`amo:${String(b["amoLeadId"] ?? "")}`, b["broker"] ?? null, JSON.stringify(villaIds), b["moveIn"] ?? null, b["stay"] ?? null, String(b["question"] ?? "").slice(0, 300) || null, String(b["callback"] ?? ""), String(b["amoAskId"] ?? "")],
+  );
+  const id = String(r.rows[0].id);
+  const res = await askOwners(id, { forceAuto: true });
+  logger.info({ osAskId: id, amoAskId: b["amoAskId"], asked: res.asked, missing: res.missing }, "availability ask: a question from Copilot Amo, asked from the villa card");
+  return { ...res, osAskId: id };
+}
+
+/** Unicorn OS side: every villa answered — the answers go back to Copilot Amo. */
+async function callbackRemote(ask: Ask): Promise<void> {
+  const r = await fetch(String(ask.remote_callback), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-wa-secret": process.env["WA_GATEWAY_SECRET"] ?? "" },
+    body: JSON.stringify({ askId: ask.remote_ask_id, answers: ask.answers }),
+    signal: AbortSignal.timeout(60_000),
+  }).catch(() => null);
+  if (!r?.ok) { logger.warn({ askId: ask.id }, "availability ask: Copilot Amo did not take the answer — retried next minute"); return; }
+  await pool.query(`UPDATE os_availability_asks SET status = 'answered', answered_at = now() WHERE id = $1`, [ask.id]);
+  logger.info({ askId: ask.id, amoAskId: ask.remote_ask_id }, "availability ask: the owner's answer sent back to Copilot Amo");
+}
+
+/** Copilot Amo side: the owner's answers from Unicorn OS; the client's reply is written as usual. */
+export async function answersFromOs(askId: string, answers: Record<string, VillaAnswer>): Promise<{ ok: boolean }> {
+  await ensureTable();
+  const clean: Record<string, VillaAnswer> = {};
+  for (const [v, a] of Object.entries(answers ?? {})) if (a && typeof a.text === "string") clean[v] = { text: a.text.slice(0, 500), by: "owner", ...(a.availability ? { availability: a.availability } : {}) };
+  await pool.query(`UPDATE os_availability_asks SET answers = answers || $2::jsonb WHERE id = $1 AND status = 'open'`, [askId, JSON.stringify(clean)]);
+  const fresh = await askById(askId);
+  if (fresh && fresh.status === "open" && (fresh.villa_ids ?? []).every((v) => fresh.answers?.[v])) await resolve(fresh).catch((err) => logger.warn({ err, askId }, "availability ask: the reply to the client failed — retried next minute"));
+  logger.info({ askId, villas: Object.keys(clean) }, "availability ask: the owner's answer arrived from Unicorn OS");
+  return { ok: true };
 }
