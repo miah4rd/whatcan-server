@@ -360,6 +360,11 @@ const PAGE_HTML = `<!doctype html>
   .att-mi:hover { background: rgba(127,127,127,.12); }
   .att-mi-dim { font-size: 12px; opacity: .6; padding: 4px 10px; }
   .att-villa { padding: 6px 10px; font-size: 13px; border-top: 1px solid rgba(127,127,127,.2); }
+.att-thumb { width: 46px; height: 34px; object-fit: cover; border-radius: 6px; margin-right: 8px; cursor: zoom-in; flex: none; vertical-align: middle; background: #2a3146; }
+  .ph-view { position: fixed; inset: 0; z-index: 99999; background: rgba(0,0,0,.88); display: flex; flex-direction: column; justify-content: center; }
+  .ph-strip { display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x mandatory; padding: 0 12px; }
+  .ph-strip img { flex: none; width: min(88vw, 640px); max-height: 78vh; object-fit: contain; scroll-snap-align: center; border-radius: 8px; }
+  .ph-x { align-self: center; margin-top: 14px; padding: 8px 22px; border-radius: 18px; border: 1px solid #fff5; background: transparent; color: #fff; font-size: 14px; }
   .att-chip { display: inline-block; margin: 4px 6px 0 0; padding: 4px 10px; border: 1px solid #2a3146; border-radius: 14px; cursor: pointer; font-size: 12.5px; }
   .conv-resize { height: 12px; margin: -6px 0 8px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; touch-action: none; }
   .conv-resize::before { content: ""; width: 44px; height: 4px; border-radius: 3px; background: #2a3146; }
@@ -1219,6 +1224,33 @@ const PAGE_HTML = `<!doctype html>
     return '<div class="vt-chips">' + chips.filter(Boolean).map(function (c) { return '<span class="vt">' + c + "</span>"; }).join("") + "</div>";
   }
 
+  // Photo viewer for the villa thumbnails: every photo in one strip, swipe across, tap outside to close.
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!t || !t.classList || !t.classList.contains("att-thumb")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var urls = String(t.getAttribute("data-photos") || "").split("|").filter(Boolean);
+    if (!urls.length) return;
+    var ov = document.createElement("div");
+    ov.className = "ph-view";
+    var strip = document.createElement("div");
+    strip.className = "ph-strip";
+    urls.forEach(function (u) {
+      var im = document.createElement("img");
+      im.src = u;
+      im.alt = "";
+      strip.appendChild(im);
+    });
+    var x = document.createElement("button");
+    x.className = "ph-x";
+    x.textContent = "Close";
+    ov.appendChild(strip);
+    ov.appendChild(x);
+    ov.addEventListener("click", function (ev) { if (ev.target === ov || ev.target === x) ov.remove(); });
+    document.body.appendChild(ov);
+  }, true);
+
   function renderAttachments(item, removable) {
     if (!item.attachments || !item.attachments.length) return "";
     var html = '<div class="atts">';
@@ -1243,7 +1275,14 @@ const PAGE_HTML = `<!doctype html>
           }
           html += '<div class="att att-ladcap" style="white-space:normal;opacity:.9">' + lad.caption.split(String.fromCharCode(10)).map(esc).join("<br>") + '</div>';
         }
-        html += '<div class="att att-link"><span>\\ud83d\\udd17</span><a href="' + esc(a.url) + '" target="_blank" rel="noopener">' + esc(a.label || a.url) + '</a>' + rm + '</div>';
+        // The villa's photo next to its link (Amelia, 29.09.2026): brokers remember a villa by how it
+        // looks, not by its number. Tap it for all the photos.
+        var trPh = item.villa_trust && a.url ? item.villa_trust[a.url] : null;
+        var ph = trPh && trPh.photos && trPh.photos.length ? trPh.photos : null;
+        var lead = ph
+          ? '<img class="att-thumb" loading="lazy" alt="" src="' + esc(ph[0]) + '" data-photos="' + esc(ph.join("|")) + '" title="See the photos">'
+          : '<span>\\ud83d\\udd17</span>';
+        html += '<div class="att att-link">' + lead + '<a href="' + esc(a.url) + '" target="_blank" rel="noopener">' + esc(a.label || a.url) + '</a>' + rm + '</div>';
         if (lad) {
           var laterLink = false;
           for (var nj = i + 1; nj < item.attachments.length; nj++) { if (item.attachments[nj].type === "link") { laterLink = true; break; } }

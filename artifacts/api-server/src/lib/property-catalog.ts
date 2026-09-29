@@ -47,6 +47,8 @@ export type SupabaseProperty = {
   video_url?: string | null;
   /** How many photos the listing has on the site (the image URLs themselves are not kept). */
   image_count?: number;
+  /** The first few photo URLs, for the broker's preview in Copilot (Amelia, 29.09.2026). */
+  photos?: string[];
   /** When a property_availability row was last written — someone confirmed the dates then. */
   availability_checked_at?: string | null;
   area: string | null;
@@ -166,7 +168,11 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
   }
 
   const raw = (await res.json()) as Array<SupabaseProperty & { images?: unknown }>;
-  const data: SupabaseProperty[] = raw.map(({ images, ...row }) => ({ ...row, image_count: Array.isArray(images) ? images.length : 0 }));
+  const data: SupabaseProperty[] = raw.map(({ images, ...row }) => ({
+    ...row,
+    image_count: Array.isArray(images) ? images.length : 0,
+    photos: Array.isArray(images) ? images.filter((u): u is string => typeof u === "string").slice(0, 8) : [],
+  }));
   const withAvailability = await applyAvailability(data);
   _cache = withAvailability;
   _cacheAt = now;
