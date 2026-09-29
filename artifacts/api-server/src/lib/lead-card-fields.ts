@@ -26,6 +26,7 @@ const FIELD_AREA_TEXT = 959039; // "Preferred Area or District" (text)
 const FIELD_AREA_SELECT = 512215; // "Location/District" (multiselect)
 const FIELD_LOCATIONS_TEXT = 956457; // "Preferred Locations" (text)
 const FIELD_MOVE_IN = 968367; // "Move-in Timeline" (text)
+const FIELD_STAY = 968495; // "Stay" (text): how long they stay, from the ad form
 const FIELD_REQUEST_NOTES = 968369; // "Client Request Notes" (textarea)
 const FIELD_BUDGET_FREEFORM = [539057, 921063, 930669, 877631]; // older budget questions
 
@@ -47,6 +48,7 @@ export type LeadCardAnswers = {
   areas: string | null;
   budget: string | null;
   moveIn: string | null;
+  stay: string | null;
   notes: string | null;
 };
 
@@ -63,7 +65,7 @@ export type LeadCardCriteria = {
 
 type AmoField = { field_id?: number; values?: Array<{ value?: unknown }> };
 
-const NO_ANSWERS: LeadCardAnswers = { bedrooms: null, areas: null, budget: null, moveIn: null, notes: null };
+const NO_ANSWERS: LeadCardAnswers = { bedrooms: null, areas: null, budget: null, moveIn: null, stay: null, notes: null };
 const EMPTY: LeadCardCriteria = {
   budgetIdrMonthly: null,
   bedrooms: null,
@@ -134,6 +136,7 @@ export async function getLeadCardCriteria(leadId: string): Promise<LeadCardCrite
         areas: textOf(fields, FIELD_AREA_TEXT) || textOf(fields, FIELD_AREA_SELECT) || null,
         budget: textOf(fields, FIELD_BUDGET) || null,
         moveIn: textOf(fields, FIELD_MOVE_IN) || null,
+        stay: textOf(fields, FIELD_STAY) || null,
         notes: textOf(fields, FIELD_REQUEST_NOTES) || null,
       },
     };

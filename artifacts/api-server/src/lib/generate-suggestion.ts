@@ -1258,7 +1258,7 @@ export function shortlistPromptBlock(picked: PickedAttachments | null | undefine
       Object.keys(bands).length > 0
         ? ` THE VILLAS GO OUT AS THEIR OWN MESSAGES right after yours, each with its own caption and grouped by price around their budget (${above.length ? "some above it, " : ""}${below.length ? "some below it, " : ""}the rest within it). Write ONLY the lead-in: whatever you need to say back to the client, then that you've put together a few options for their request with its details. Do not list, name or describe the villas and never say one is available or free.`
         : "";
-    return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it.${ladder} If you give a number of villas, it is exactly ${picked.attachments.length}.${FEATURE_CLAIM_RULE}${featureMentionBlock(o)}${advisory}`;
+    return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it. The client already told us all of this (in the form or the chat): never ask again for anything in it — not the move-in date, how long they stay, the budget, the area or the bedrooms.${ladder} If you give a number of villas, it is exactly ${picked.attachments.length}.${FEATURE_CLAIM_RULE}${featureMentionBlock(o)}${advisory}`;
   }
   const question = relaxQuestion(o.hint);
   const exceptExample = o.hint?.example ? " except the one closest option the question below names" : "";

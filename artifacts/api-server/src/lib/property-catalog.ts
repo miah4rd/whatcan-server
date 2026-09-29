@@ -1685,6 +1685,7 @@ export async function resolveClientRequest(inp: RequestInputs): Promise<ClientRe
         ["area", answers.areas],
         ["budget", answers.budget],
         ["move-in", answers.moveIn],
+        ["stay", answers.stay ?? null],
         ["notes", answers.notes],
       ] as Array<[string, string | null]>)
         .filter(([, v]) => v && String(v).trim())
