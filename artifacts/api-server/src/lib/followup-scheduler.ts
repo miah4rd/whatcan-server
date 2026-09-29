@@ -1065,6 +1065,21 @@ export async function processFollowups(): Promise<void> {
       const currentLevel = lead.followupLevel ?? 0;
       const nextLevel = stageLevel; // always use stage-derived level
 
+      // One draft per client, checked BEFORE any text is written (owner, 29.09.2026: «главное, чтобы
+      // задвоения не получилось» and not to burn tokens): a client with a draft already waiting — the
+      // 15-minute shortlist not yet sent, a LIVE reply, an earlier follow-up — gets no second one. The
+      // old check below looked at PUSH only, after the AI had already written the text: Vika's unsent
+      // LIVE shortlist got a PUSH follow-up beside it.
+      const [waiting] = await db
+        .select({ id: pendingSuggestionsTable.id, kind: pendingSuggestionsTable.kind })
+        .from(pendingSuggestionsTable)
+        .where(and(eq(pendingSuggestionsTable.leadId, lead.leadId), eq(pendingSuggestionsTable.status, "pending")))
+        .limit(1);
+      if (waiting) {
+        logger.info({ leadId: lead.leadId, waiting: waiting.kind }, "followup: a draft is already waiting for this client — no second one");
+        continue;
+      }
+
       let text: string;
       let entry: PlaybookEntry;
       let rationale: string;
