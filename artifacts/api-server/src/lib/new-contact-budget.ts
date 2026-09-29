@@ -25,6 +25,7 @@ import { logger } from "./logger";
 import { UNDELIVERABLE_LEAD_IDS } from "./undeliverable";
 import { brokerLines } from "./amo-messenger-field";
 import { ownLineSession } from "./wa-own-line-ids";
+import { recoveryCap, refreshRecoveries } from "./wa-line-block";
 
 /** Meta tolerates far more than this; the point is to stay unremarkable. */
 /**
@@ -130,6 +131,14 @@ const UNCAPPED_LINES = new Set<number>([56811, 900001]);
 /** How many first contacts this line may open today. */
 export function dailyCapForLine(line: number | null, now: Date = new Date()): number {
   if (line !== null && NO_NEW_CONTACTS.has(line)) return 0;
+  // A number back from a WhatsApp block climbs 3 → 5 → 7 before anything else applies, even on an
+  // uncapped line or a granted day (owner, 29.09.2026; lib/wa-line-block.ts).
+  const recovering = recoveryCap(line, now);
+  if (recovering !== undefined) return Math.min(recovering, dailyCapBeforeBlock(line, now));
+  return dailyCapBeforeBlock(line, now);
+}
+
+function dailyCapBeforeBlock(line: number | null, now: Date): number {
   if (line !== null && UNCAPPED_LINES.has(line)) return Number.MAX_SAFE_INTEGER;
   // A held line stays held: the exception raises a cap, it never opens a line
   // that was deliberately closed.
@@ -240,6 +249,7 @@ export type LineBudget = {
  * line (or none we know) gets one bucket of nine, as always.
  */
 export async function lineBudgets(responsibleUser: string | null, now: Date = new Date()): Promise<LineBudget[]> {
+  await refreshRecoveries();
   const who = (responsibleUser ?? "").trim().toLowerCase();
   const lines: Array<number | null> = brokerLines(responsibleUser);
   if (lines.length === 0) lines.push(null);

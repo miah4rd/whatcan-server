@@ -20,6 +20,7 @@ import { logger } from "./logger";
 import { cardForPhone } from "./wa-card-match";
 import { resolveResponsibleId } from "./wa-routing";
 import { amoPost } from "./amo-client";
+import { recordBlock, recordOpen, blocksDueForRetry, BLOCK_RECOVERY_STEPS } from "./wa-line-block";
 
 const AMOJO_BASE = "https://amojo.amocrm.ru";
 const clean = (v: string | undefined) => (v ?? "").replace(/["\r]/g, "").trim();
@@ -227,8 +228,13 @@ export async function handleGatewayEvent(ev: GatewayEvent): Promise<void> {
     );
     if (ev.status === "logged_out" || ev.status === "forbidden") {
       logger.error({ session: ev.session, status: ev.status }, "wa-bridge: number unlinked or banned — relink required");
+      await recordBlock(ev.session, ev.status).catch((err) => logger.error({ err, session: ev.session }, "wa-bridge: could not record the block"));
       if (WATCHED_SESSIONS.includes(ev.session)) void alertSessionDown(ev.session, ev.status).catch(() => undefined);
     }
+    if (ev.status === "open" && (await recordOpen(ev.session).catch(() => false)) && WATCHED_SESSIONS.includes(ev.session))
+      void tellOwner(
+        `✅ WhatsApp "${ev.session}" is back after the block. New first contacts restart slowly: ${BLOCK_RECOVERY_STEPS[0]} today, ${BLOCK_RECOVERY_STEPS[1]} tomorrow, ${BLOCK_RECOVERY_STEPS[2]} the day after, then the usual budget. Replies to people who write go out as normal.`,
+      ).catch(() => undefined);
     return;
   }
 
@@ -518,6 +524,9 @@ async function alertSessionDown(name: string, status: string): Promise<void> {
   const url = await newLinkToken(name, 24).catch(() => null);
   const text =
     `⚠️ WhatsApp "${name}" is disconnected from the bot (${status}). Nothing is being sent from this number.` +
+    (status === "forbidden"
+      ? `\nWhatsApp refused the number (blocked). The bot tries it again in 24 hours, then every 6 hours; when it is back, new first contacts go ${BLOCK_RECOVERY_STEPS.join(" → ")} → normal, one step a day.`
+      : "") +
     (url ? `\nRelink (valid 24 h): ${url}\nScan with the phone of THAT number: WhatsApp → Linked Devices → Link a Device.` : "");
   logger.error({ session: name, status }, "wa-bridge watchdog: broker number is down — owner alerted");
   if (owner?.status === "open" && owner.me) {
@@ -527,10 +536,23 @@ async function alertSessionDown(name: string, status: string): Promise<void> {
   }
 }
 
+/** A short note to the owner's own chat, from his number. */
+async function tellOwner(text: string): Promise<void> {
+  const list = await gateway("GET", "/sessions").then((r) => (Array.isArray(r.data) ? r.data : [])).catch(() => []);
+  const owner = (list as Array<{ name: string; status: string; me: string | null }>).find((x) => x.name === OWNER_SESSION);
+  if (owner?.status === "open" && owner.me) await gateway("POST", "/send", { session: OWNER_SESSION, to: owner.me, text });
+}
+
 async function watchSessions(): Promise<void> {
   const r = await gateway("GET", "/sessions").catch(() => null);
   const list = (Array.isArray(r?.data) ? r!.data : []) as Array<{ name: string; status: string }>;
   if (!r) return; // gateway down: its own restart is pm2's job; do not spam
+  // A refused number gets one quiet try 24 hours after the block, then one every 6 hours.
+  for (const name of await blocksDueForRetry().catch(() => [] as string[])) {
+    if (list.find((x) => x.name === name)?.status === "open") continue;
+    logger.warn({ session: name }, "wa-bridge watchdog: retrying a blocked number after its wait");
+    await gateway("POST", `/sessions/${encodeURIComponent(name)}/start`, {}).catch(() => undefined);
+  }
   for (const name of WATCHED_SESSIONS) {
     const s = list.find((x) => x.name === name);
     if (s?.status === "open") {
