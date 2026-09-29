@@ -3819,8 +3819,10 @@ const PAGE_HTML = `<!doctype html>
     html += '<div class="vr-row"><button class="vr-opt" id="ir-start">&#x1F50D; Inspected this villa? File the report</button><span class="vr-status" id="ir-start-st"></span></div>';
     html += scheduleHtml();
     html += '</div></main>';
-    document.body.innerHTML = html;
-    $("#orphan-back").onclick = function () { orphanLead = null; render(); };
+    // Into the page's own container: writing the whole body removed it, and the list then drew into
+    // nothing, so Inbox froze on this screen (owner, 29.09, from a notification).
+    app.innerHTML = html;
+    $("#orphan-back").onclick = function () { orphanLead = null; openItem = null; render(); fetchInbox().then(render).catch(function () {}); };
     bindInspectionStart({ lead_id: orphanLead });
     bindSchedule(orphanLead);
   }
