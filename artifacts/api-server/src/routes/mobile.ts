@@ -1221,7 +1221,7 @@ const PAGE_HTML = `<!doctype html>
     if (tr.greenFlags) chips.push(G + " " + esc(tr.greenFlags === 1 ? "inspection +" : "inspection +" + tr.greenFlags));
     if (tr.construction) chips.push(R + " construction");
     if (tr.redFlags) chips.push(R + " " + esc(tr.redFlags === 1 ? "red flag" : tr.redFlags + " red flags"));
-    return '<div class="vt-chips">' + chips.filter(Boolean).map(function (c) { return '<span class="vt">' + c + "</span>"; }).join("") + "</div>";
+    return '<div class="vt-chips">' + chips.filter(Boolean).map(function (c) { return '<span class="vt">' + c + "</span>"; }).join(" ") + "</div>";
   }
 
   // Photo viewer for the villa thumbnails: every photo in one strip, swipe across, tap outside to close.
