@@ -487,6 +487,7 @@ async function runBrokerOpeningPass(): Promise<number> {
       and(
         eq(sentMessagesTable.kind, AD_AUTO_KIND),
         sql`${sentMessagesTable.createdAt} < ${cutoff}`,
+        sql`${sentMessagesTable.createdAt} > now() - interval '7 days'`,
         eq(leadsSyncTable.lastMessageFrom, "us"),
         sql`lower(coalesce(${leadsSyncTable.pipeline}, '')) = 'rental'`,
         sql`coalesce(${leadsSyncTable.botExcluded}, false) = false`,
@@ -559,8 +560,20 @@ async function runBrokerOpeningPass(): Promise<number> {
       // The client's own words are still the seeded enquiry — the villa they
       // clicked plus whatever the Meta form asked them. That is exactly what
       // the second message has to widen off.
-      const lastLeadMessage = parsed.lastLeadMessage?.text ?? "";
-      if (!lastLeadMessage) continue;
+      let lastLeadMessage = parsed.lastLeadMessage?.text ?? "";
+      // A client who stayed silent has no message of their own, only our welcome on the card: 14 of 18
+      // silent Meta leads got no 15-minute draft for two weeks because this line skipped them (owner,
+      // 29.09.2026: "why don't we send them options after fifteen minutes anyway?"). Their request is
+      // the form: write from it.
+      if (!lastLeadMessage) {
+        const card = await getLeadCardCriteria(lead.leadId).catch(() => null);
+        const a = card?.answers;
+        const parts = a
+          ? [a.bedrooms, a.areas && !isNonAnswer(a.areas) ? a.areas : null, a.budget, a.moveIn, a.stay, a.notes && !isNonAnswer(a.notes) ? a.notes : null].filter((x) => x && String(x).trim())
+          : [];
+        if (parts.length === 0) continue;
+        lastLeadMessage = `Ad form: ${parts.join(", ")}`;
+      }
       // An ad lead's seeded enquiry carries the clicked villa's link; a
       // catalog-form lead's does not, and its brief must not ask for one.
       const clickedVilla = /\/property\/[A-Za-z0-9-]+/.test(content);
