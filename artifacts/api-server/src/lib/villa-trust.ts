@@ -8,7 +8,7 @@
 import { publishedRentals, greenFeatures } from "./property-catalog";
 import { listingQualityById } from "./property-flags";
 
-export type VillaTrust = { listed: boolean | null; greenFlags: number; redFlags: number; construction: boolean; features: string[]; photos: string[] };
+export type VillaTrust = { listed: boolean | null; greenFlags: number; redFlags: number; construction: boolean; features: string[]; photos: string[]; originals?: string[] };
 
 // Brokers remember a villa by how it looks, not by its R-number (Amelia, 29.09.2026): the Copilot
 // shows its photos next to the link. The 600px webp copies the website itself uses (photo-variants).
@@ -40,6 +40,8 @@ export async function trustForAttachments(
       construction: !!q?.constructionNearby,
       features: greenFeatures(p),
       photos: (p.photos ?? []).map(smallPhoto),
+      // The site's own photo, for a brand-new villa whose small copy is not made yet (owner, 30.09).
+      originals: (p.photos ?? []).slice(0, 1),
     };
   }
   return out;

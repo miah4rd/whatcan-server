@@ -1224,6 +1224,15 @@ const PAGE_HTML = `<!doctype html>
     return '<div class="vt-chips">' + chips.filter(Boolean).map(function (c) { return '<span class="vt">' + c + "</span>"; }).join(" ") + "</div>";
   }
 
+  // A photo not resized yet (a brand-new villa): the site's own photo, else nothing broken on screen.
+  document.addEventListener("error", function (e) {
+    var t = e.target;
+    if (!t || !t.classList || !t.classList.contains("att-thumb")) return;
+    var orig = t.getAttribute("data-orig");
+    if (orig && t.src !== orig) { t.setAttribute("data-orig", ""); t.src = orig; return; }
+    t.style.visibility = "hidden";
+  }, true);
+
   // Photo viewer for the villa thumbnails: every photo in one strip, swipe across, tap outside to close.
   document.addEventListener("click", function (e) {
     var t = e.target;
@@ -1280,7 +1289,7 @@ const PAGE_HTML = `<!doctype html>
         var trPh = item.villa_trust && a.url ? item.villa_trust[a.url] : null;
         var ph = trPh && trPh.photos && trPh.photos.length ? trPh.photos : null;
         var lead = ph
-          ? '<img class="att-thumb" loading="lazy" alt="" src="' + esc(ph[0]) + '" data-photos="' + esc(ph.join("|")) + '" title="See the photos">'
+          ? '<img class="att-thumb" loading="lazy" alt="" src="' + esc(ph[0]) + '" data-photos="' + esc(ph.join("|")) + '" data-orig="' + esc(((trPh || {}).originals || [])[0] || "") + '" title="See the photos">'
           : '<span>\\ud83d\\udd17</span>';
         html += '<div class="att att-link">' + lead + '<a href="' + esc(a.url) + '" target="_blank" rel="noopener">' + esc(a.label || a.url) + '</a>' + rm + '</div>';
         if (lad) {
