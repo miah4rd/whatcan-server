@@ -45,7 +45,6 @@ const FORM_FIELDS: Array<[number, string]> = [
   [959041, "Bedrooms"],
   [959039, "Area"],
   [968367, "Move-in"],
-  [968495, "Stay"],
   [968369, "Notes"],
 ];
 
