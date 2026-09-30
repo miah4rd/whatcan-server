@@ -1260,6 +1260,21 @@ const PAGE_HTML = `<!doctype html>
     document.body.appendChild(ov);
   }, true);
 
+  // Photos and flags for villas that arrived after the draft was loaded (an Edit re-picked them).
+  function loadVillaTrust(item) {
+    var have = item.villa_trust || {};
+    var need = (item.attachments || []).filter(function (a) { return a.type === "link" && a.url && !have[a.url]; }).map(function (a) { return a.url; });
+    if (!need.length) return;
+    fetch(API + "/villa-trust?urls=" + encodeURIComponent(need.join("|")))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || !j.villa_trust) return;
+        item.villa_trust = Object.assign({}, item.villa_trust || {}, j.villa_trust);
+        render();
+      })
+      .catch(function () {});
+  }
+
   function renderAttachments(item, removable) {
     if (!item.attachments || !item.attachments.length) return "";
     var html = '<div class="atts">';
@@ -1974,6 +1989,7 @@ const PAGE_HTML = `<!doctype html>
           deduped.push(item.attachments[di]);
         }
         item.attachments = deduped;
+        loadVillaTrust(item);
         // The links now on screen are the outcome of the broker's own
         // instruction: approve sends exactly this list (curated), never the
         // row's older one.

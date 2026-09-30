@@ -701,4 +701,20 @@ router.get("/stuck-leads", async (req, res) => {
   }
 });
 
+// Photos and flags for villas a broker's edit just attached (Amelia, 30.09.2026: after an Edit the new
+// villas showed a bare link with no photo or flags, because the page read them only when the draft loaded).
+router.get("/villa-trust", async (req, res) => {
+  const urls = String(req.query["urls"] ?? "")
+    .split("|")
+    .map((u) => u.trim())
+    .filter((u) => /^https?:\/\/[^\s]+\/property\/[A-Za-z0-9-]+/.test(u))
+    .slice(0, 20);
+  if (!urls.length) return void res.json({ villa_trust: {} });
+  try {
+    res.json({ villa_trust: await trustForAttachments(urls.map((url) => ({ type: "link", url }))) });
+  } catch {
+    res.json({ villa_trust: {} });
+  }
+});
+
 export default router;
