@@ -7,10 +7,35 @@ import { Router } from "express";
 import { pool } from "@workspace/db";
 import { alreadySentPropertyIds } from "../../lib/generate-suggestion";
 import { getLeadCardCriteria } from "../../lib/lead-card-fields";
-import { candidatesForLead, priceOf, propertyUrl, keyFeatureBits } from "../../lib/property-catalog";
+import { candidatesForLead, priceOf, propertyUrl, keyFeatureBits, fetchAllPropertiesForPriceLookup, type SupabaseProperty } from "../../lib/property-catalog";
 import { trustForAttachments } from "../../lib/villa-trust";
 
 const router = Router();
+
+/** The caption of the shortlist layout (owner, 30.09.2026): "Pererenan · 2BR · Rp 38M/mo · from 8 Oct" + its best four features. */
+function captionOf(p: SupabaseProperty): { captionHead: string; captionFeatures: string; priceM: number | null } {
+  const price = priceOf(p);
+  const priceM = price ? Math.round(price / 100_000) / 10 : null;
+  const f = p.free_from ? new Date(`${p.free_from}T00:00:00Z`) : null;
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const from = f && !Number.isNaN(f.getTime()) && f.getTime() > Date.now() ? `from ${f.getUTCDate()} ${MON[f.getUTCMonth()]}` : "";
+  const head = [String(p.area ?? "").split(",")[0]!.trim() || "Bali", p.bedrooms ? `${p.bedrooms}BR` : "", priceM ? `Rp ${priceM}M/mo` : "", from].filter(Boolean).join(" · ");
+  const feats = keyFeatureBits(p).filter((b) => !/open kitchen/i.test(b)).slice(0, 4).join(", ");
+  return { captionHead: head, captionFeatures: feats ? feats[0]!.toUpperCase() + feats.slice(1) : "", priceM };
+}
+
+// Captions for villas the broker picked by hand (Change, + Add villa): put in place at once, no rewrite.
+router.get("/villa-captions", async (req, res) => {
+  const ids = String(req.query["ids"] ?? "").split(",").map((x) => x.trim().toUpperCase()).filter(Boolean).slice(0, 10);
+  if (!ids.length) return void res.json({ villas: [] });
+  try {
+    const all = await fetchAllPropertiesForPriceLookup();
+    const byId = new Map(all.map((p) => [p.id.toUpperCase(), p]));
+    res.json({ villas: ids.map((id) => byId.get(id)).filter((p): p is SupabaseProperty => !!p).map((p) => ({ id: p.id, url: propertyUrl(p), title: p.title, ...captionOf(p) })) });
+  } catch (err) {
+    res.status(500).json({ error: String((err as Error).message ?? err).slice(0, 200) });
+  }
+});
 
 router.get("/villa-alternatives", async (req, res) => {
   const leadId = String(req.query["leadId"] ?? "").trim();
@@ -46,16 +71,7 @@ router.get("/villa-alternatives", async (req, res) => {
     res.json({
       villas: next.map((p) => {
         const url = propertyUrl(p);
-        const price = priceOf(p);
-        const priceM = price ? Math.round(price / 100_000) / 10 : null;
-        // The caption line of the shortlist layout (owner, 30.09.2026), so "↻ Next" can put the villa in place
-        // without rewriting the message: "Pererenan · 2BR · Rp 38M/mo · from 8 Oct" + its best four features.
-        const f = p.free_from ? new Date(`${p.free_from}T00:00:00Z`) : null;
-        const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-        const from = f && !Number.isNaN(f.getTime()) && f.getTime() > Date.now() ? `from ${f.getUTCDate()} ${MON[f.getUTCMonth()]}` : "";
-        const head = [String(p.area ?? "").split(",")[0]!.trim() || "Bali", p.bedrooms ? `${p.bedrooms}BR` : "", priceM ? `Rp ${priceM}M/mo` : "", from].filter(Boolean).join(" · ");
-        const feats = keyFeatureBits(p).filter((b) => !/open kitchen/i.test(b)).slice(0, 4).join(", ");
-        return { id: p.id, url, title: p.title, area: p.area, bedrooms: p.bedrooms, priceM, trust: (trust as Record<string, unknown>)[url] ?? null, captionHead: head, captionFeatures: feats ? feats[0]!.toUpperCase() + feats.slice(1) : "" };
+        return { id: p.id, url, title: p.title, area: p.area, bedrooms: p.bedrooms, trust: (trust as Record<string, unknown>)[url] ?? null, ...captionOf(p) };
       }),
     });
   } catch (err) {

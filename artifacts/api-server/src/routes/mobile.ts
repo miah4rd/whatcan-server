@@ -1275,6 +1275,33 @@ const PAGE_HTML = `<!doctype html>
       .catch(function () {});
   }
 
+  // ⇄ Change: a villa the broker picks by hand takes this one's place with its own caption, at once
+  // (owner, 30.09.2026: "мгновенно поменялось чисто одна ссылка, с текстом под неё").
+  document.addEventListener("click", function (e) {
+    var b = e.target && e.target.closest ? e.target.closest("[data-changeattach]") : null;
+    if (!b || !openItem) return;
+    e.preventDefault();
+    var it = openItem, idx = Number(b.getAttribute("data-changeattach"));
+    var cur = (it.attachments || [])[idx];
+    if (!cur || !cur.url) return;
+    openPropertyPicker(function (urls) {
+      var url = urls && urls[0];
+      if (!url) return;
+      var nid = ((String(url).match(/[/]property[/]([A-Za-z0-9-]+)/i) || [])[1] || "").toUpperCase();
+      fetch(API + "/villa-captions?ids=" + encodeURIComponent(nid)).then(function (r) { return r.json(); }).then(function (d) {
+        var v = ((d && d.villas) || [])[0];
+        if (!v) { showToast("Could not read that villa"); return; }
+        var lad = cur.ladder || {};
+        var num = (String(lad.caption || "").match(/^[ ]*([0-9]+)[.][ ]/) || [])[1] || String(idx + 1);
+        var cap = num + ". " + (v.captionHead || v.title) + (v.captionFeatures ? String.fromCharCode(10) + v.captionFeatures : "");
+        it.attachments[idx] = { type: "link", url: v.url, label: v.title, ladder: { band: lad.band || "in", caption: cap, headers: lad.headers || {}, closing: lad.closing || "" } };
+        it._attachmentsCurated = true;
+        render();
+        loadVillaTrust(it);
+      }).catch(function () { showToast("No connection"); });
+    });
+  });
+
   // ↻ Next: swaps one villa of a captioned shortlist for the next one that fits this client's request,
   // with its own caption; the rest of the message is untouched (owner, 30.09.2026).
   document.addEventListener("click", function (e) {
@@ -1336,7 +1363,7 @@ const PAGE_HTML = `<!doctype html>
           ? '<img class="att-thumb" loading="lazy" alt="" src="' + esc(ph[0]) + '" data-photos="' + esc(ph.join("|")) + '" data-orig="' + esc(((trPh || {}).originals || [])[0] || "") + '" title="See the photos">'
           : '<span>\\ud83d\\udd17</span>';
         // ↻ the next villa in line for this client, in this villa's place (owner, 30.09.2026).
-        var nx = lad && a.url ? '<button class="attrm" data-nextattach="' + i + '" title="Next villa for this client">&#x21BB;</button>' : "";
+        var nx = lad && a.url ? '<button class="attrm" data-nextattach="' + i + '" title="Next villa for this client">&#x21BB;</button><button class="attrm" data-changeattach="' + i + '" title="Pick another villa">&#x21C4;</button>' : "";
         html += '<div class="att att-link">' + lead + '<a href="' + esc(a.url) + '" target="_blank" rel="noopener">' + esc(a.label || a.url) + '</a>' + nx + rm + '</div>';
         if (lad) {
           var laterLink = false;
@@ -3515,6 +3542,8 @@ const PAGE_HTML = `<!doctype html>
       document.querySelectorAll("[data-rmattach]").forEach(function (btn) {
         btn.onclick = function () {
           var idx = Number(btn.getAttribute("data-rmattach"));
+          var gone = ((String((it.attachments[idx] || {}).url || "").match(/[/]property[/]([A-Za-z0-9-]+)/i) || [])[1] || "").toUpperCase();
+          if (gone) it._skipped = (it._skipped || []).concat([gone]); // never back through ↻
           it.attachments.splice(idx, 1);
           // The broker curated the list by hand — from now on the server must not
           // re-pick and resurrect what they just removed.

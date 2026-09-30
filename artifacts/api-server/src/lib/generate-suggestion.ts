@@ -1740,7 +1740,7 @@ Language: ${opts.language ?? "the language the client writes in (the draft is al
     let detail = sanitizeSuggestion(out.details?.[x.id!] ?? "").replace(/\s+/g, " ").trim();
     // One line, the best four, nothing the caption already says (bedrooms, bathrooms, price, area).
     if (opts.captionList && detail) {
-      const bits = detail.replace(/\.$/, "").split(/\s*,\s*/).filter((b) => b && !/\b(bed|bath)rooms?\b|\bBR\b|\bRp\b|million|\/mo\b/i.test(b));
+      const bits = detail.replace(/\.$/, "").split(/\s*,\s*/).filter((b) => b && !/\b(bed|bath)rooms?\b|\d\s*BR\b|\bRp\b|million|\/mo\b/i.test(b));
       detail = bits.slice(0, 4).join(", ");
       if (detail) detail = detail[0]!.toUpperCase() + detail.slice(1);
     }
