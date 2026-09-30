@@ -62,6 +62,13 @@ the broker's tap (owner's rule since the start).
 The form's area answer "Other" with no place named anywhere means ANY area (owner, 29.09.2026:
 "she is looking property in other areas, which means they don't care what kind of area"): the
 villa the client clicked does not become their area.
+- The ad click is not the request (owner, 30.09.2026: «Сначала мы берём базовый её запрос… Дальше у
+  нас есть приоритизация внутри этого базового запроса… У нас ничего не сказано, что нужно сначала
+  говорить про листинг, про который она кликнула»). The ad's automatic "I saw this villa and I'm
+  interested: <link>" is not a question from the client. When the form holds the request, the message
+  does not mention the clicked villa at all — not its name, price, dates or that it does not fit; it
+  reads the request back and presents the villas that fit it. Only a click with an empty form lets the
+  clicked villa stand in for the request.
 - Bedrooms, area and budget are the request. Only villas that fit: the right number of bedrooms,
   the named area (neighbours only if the client allowed), free on the move-in date (04.09, 14.09).
 - Price ladder around the budget: up to 2 below (70–90%), up to 2 in budget, up to 2 above
