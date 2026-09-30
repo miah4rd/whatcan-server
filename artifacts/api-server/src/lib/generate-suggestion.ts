@@ -1232,7 +1232,7 @@ function featureMentionBlock(o: ShortlistOutcome): string {
   return ` THE CLIENT ASKED FOR ${fr.asked.join(", ")}. For each villa, tell them which of these it has, in their terms (e.g. "this one has the garden you wanted"):\n${lines.join("\n")}\nFor anything "not confirmed yet", say you'll check it with the owner. Never say a villa has something that is not listed after "has".`;
 }
 
-export function shortlistPromptBlock(picked: PickedAttachments | null | undefined): string {
+export function shortlistPromptBlock(picked: PickedAttachments | null | undefined, rental = false): string {
   const o = picked?.outcome;
   if (!picked || !o || !o.hasCore) return "";
   const req = describeRequest(o.request);
@@ -1257,7 +1257,9 @@ export function shortlistPromptBlock(picked: PickedAttachments | null | undefine
     const ladder =
       Object.keys(bands).length > 0
         ? ` THE VILLAS GO OUT AS THEIR OWN MESSAGES right after yours, each with its own caption and grouped by price around their budget (${above.length ? "some above it, " : ""}${below.length ? "some below it, " : ""}the rest within it). Write ONLY the lead-in: whatever you need to say back to the client, then that you've put together a few options for their request with its details. Do not list, name or describe the villas and never say one is available or free.`
-        : "";
+        : rental && SHORTLIST_CAPTIONS_ON
+          ? ` THE VILLAS GO OUT AS THEIR OWN MESSAGES right after yours, each with its own caption and link. Write ONLY the lead-in: whatever you need to say back to the client, then their request said back with its details. Do not list, name or describe the villas, never say one is available or free, and ask nothing: the closing line after the villas is the only question.`
+          : "";
     return `\n\nTHE CLIENT'S REQUEST, AS THE FILTER: ${req}. Every attached villa is inside it. The client already told us all of this (in the form or the chat): never ask again for anything in it — not the move-in date, how long they stay, the budget, the area or the bedrooms.${ladder} If you give a number of villas, it is exactly ${picked.attachments.length}.${FEATURE_CLAIM_RULE}${featureMentionBlock(o)}${advisory}`;
   }
   const question = relaxQuestion(o.hint);
@@ -1537,7 +1539,12 @@ export async function enforceRequestOnDraft(opts: {
 
   // The price ladder (owner, 21.09.2026): the villas are named by their own
   // captions, not by the text, so the text is not held to naming them.
-  const bands = opts.picked?.outcome?.priceBands ?? {};
+  let bands: Record<string, PriceBand> = opts.picked?.outcome?.priceBands ?? {};
+  // No price groups (the ladder is off): every villa of a Rental shortlist still gets its own caption.
+  const captionList = !!opts.rental && SHORTLIST_CAPTIONS_ON && attachments.length > 0 && Object.keys(bands).length === 0;
+  if (captionList) {
+    bands = Object.fromEntries(attachments.map((a) => [propertyIdOf(a.url) ?? "", "in" as PriceBand]).filter(([k]) => !!k));
+  }
   const ladder = !!opts.rental && !!request && attachments.length > 0 && Object.keys(bands).length > 0;
   const count = ladder ? null : presentedVillaCount(sourceText);
   const countWrong = count !== null && attachments.length > 0 && count !== attachments.length;
@@ -1576,6 +1583,7 @@ export async function enforceRequestOnDraft(opts: {
       byId,
       clientWords: opts.picked?.clientWords ?? [],
       language: opts.language ?? null,
+      captionList,
     });
     text = laid.text;
     attachments = laid.attachments;
@@ -1583,6 +1591,16 @@ export async function enforceRequestOnDraft(opts: {
   }
   return { text, attachments, dropped };
 }
+
+/**
+ * Every Rental shortlist goes out the way top rental agencies send one (owner, 30.09.2026: «давай применим
+ * то, что топовые агентства делают… в конце… какая нравится, или какая ближе, и дальше с радостью проверю
+ * availability… если сразу про показ говорить, они могут зашугаться… дописывал бы green флаги»): a short
+ * lead-in with their request, then each villa as its own message — "1. Area · 2BR · Rp 38M/mo", one line
+ * of its best features, its link right under — then one closing line. No price groups (the ladder is off).
+ */
+export const SHORTLIST_CAPTIONS_ON = true;
+const CAPTION_FALLBACK_CLOSING = "Which one feels closest to what you're after? Happy to check its availability for you.";
 
 const LADDER_FALLBACK_HEADERS: Record<PriceBand, string> = {
   below: "A bit below your budget",
@@ -1625,6 +1643,8 @@ async function layoutPriceLadder(opts: {
   byId: Map<string, SupabaseProperty>;
   clientWords: string[];
   language?: string | null;
+  /** One list without price groups, in the shortlist's own order (SHORTLIST_CAPTIONS_ON). */
+  captionList?: boolean;
 }): Promise<{ text: string; attachments: GeneratedSuggestion["attachments"] }> {
   const items = opts.attachments.map((a) => {
     const id = propertyIdOf(a.url);
@@ -1633,7 +1653,7 @@ async function layoutPriceLadder(opts: {
     return { a, id, p, band };
   });
   if (items.length === 0 || items.some((x) => !x.id || !x.p || !x.band)) return { text: opts.text, attachments: opts.attachments };
-  items.sort((x, y) => PRICE_BANDS.indexOf(x.band!) - PRICE_BANDS.indexOf(y.band!) || priceOf(x.p!) - priceOf(y.p!));
+  if (!opts.captionList) items.sort((x, y) => PRICE_BANDS.indexOf(x.band!) - PRICE_BANDS.indexOf(y.band!) || priceOf(x.p!) - priceOf(y.p!));
   const present = PRICE_BANDS.filter((b) => items.some((x) => x.band === b));
 
   type Layout = { intro?: string; headers?: Partial<Record<PriceBand, string>>; details?: Record<string, string>; closing?: string; million?: string };
@@ -1651,7 +1671,31 @@ async function layoutPriceLadder(opts: {
         return `${x.id} [${x.band}] ${facts}`;
       })
       .join("\n");
-    out = await chatCompletionJSON<Layout>({
+    out = opts.captionList ? await chatCompletionJSON<Layout>({
+      model: WRITER_MODEL,
+      label: "shortlist-captions",
+      system: `You lay out a villa shortlist a Bali rental broker sends a client on WhatsApp, in the broker's own voice, the way top rental agencies do it. The villas go out as separate messages right after the lead-in: each villa's caption with its link right under it, then one closing line.
+
+Return JSON only: {"intro": "...", "details": {"<ID>": "..."}, "closing": "...", "million": "..."}
+
+intro — the lead-in message. Start from the DRAFT: keep what it says to the client that is not about these villas (their name, an answer to a question they asked). Add no greeting or thanks the draft does not have. Remove every villa it lists, names or describes, every price of a villa, and any "here are" / "links below" phrasing. Then one line saying their request back WITH ITS DETAILS in their own terms (bedrooms, budget, area(s), move-in, and every preference they mentioned) and that here ${items.length === 1 ? "is one that fits (ONE villa: never say \"a few\" or \"options\")" : `are ${items.length} that fit (never a different number)`}. Never say or imply a villa is available or free. The intro asks NOTHING. Short WhatsApp lines, no dashes, no sign-off, no bullet list.
+
+details — for EACH villa ID, one short line (up to 12 words) built ONLY from its facts below: first what the client asked for that it has, then its best features clients like (a garden, an enclosed living room or kitchen, a workspace, a quiet street, no construction nearby, pets allowed, modern style, a view), comma-separated. Never invent a feature, never mention availability, the area, the bedrooms or the price: the caption line above it already says "1. Pererenan · 2BR · Rp 38M/mo".
+
+closing — one short line asking which one feels closest to what they are after (or which they like), and that you will happily check its availability. Never mention a viewing or a visit.
+
+million — how a price in millions of rupiah is written short in the client's language: "M" in English, "млн" in Russian, "jt" in Indonesian.
+
+Language: ${opts.language ?? "the language the client writes in (the draft is already in it)"}.`,
+      messages: [
+        {
+          role: "user",
+          content: `CLIENT'S REQUEST (as read by our filter): ${describeRequest(opts.request)}\n\nCLIENT'S OWN WORDS (newest first):\n${opts.clientWords.slice(0, 7).map((t) => `- ${t.slice(0, 400)}`).join("\n") || "(none)"}\n\nDRAFT:\n${opts.text}\n\nVILLAS (ID facts):\n${villaLines.replace(/ \[in\] /g, " ")}`,
+        },
+      ],
+      max_tokens: 1000,
+      temperature: 0,
+    }) : await chatCompletionJSON<Layout>({
       model: WRITER_MODEL,
       label: "ladder-layout",
       system: `You lay out a villa shortlist a Bali rental broker sends a client on WhatsApp, in the broker's own voice. The villas go out as separate messages right after the lead-in: a short title per price group, then each villa's link with a one-line caption, then one closing line.
@@ -1689,10 +1733,25 @@ Language: ${opts.language ?? "the language the client writes in (the draft is al
     in: (out.headers?.in ?? "").trim() || LADDER_FALLBACK_HEADERS.in,
     above: (out.headers?.above ?? "").trim() || LADDER_FALLBACK_HEADERS.above,
   };
-  const closing = sanitizeSuggestion(out.closing ?? "").trim() || LADDER_FALLBACK_CLOSING;
+  if (opts.captionList) for (const b of PRICE_BANDS) headers[b] = "";
+  const closing = sanitizeSuggestion(out.closing ?? "").trim() || (opts.captionList ? CAPTION_FALLBACK_CLOSING : LADDER_FALLBACK_CLOSING);
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const attachments = items.map((x, i) => {
-    const detail = sanitizeSuggestion(out.details?.[x.id!] ?? "").replace(/\s+/g, " ").trim();
-    const head = `${i + 1}. ${ladderAreaLabel(x.p!.area)} — Rp ${ladderMillions(priceOf(x.p!))}${unit === "M" ? "M" : ` ${unit}`}`;
+    let detail = sanitizeSuggestion(out.details?.[x.id!] ?? "").replace(/\s+/g, " ").trim();
+    // One line, the best four, nothing the caption already says (bedrooms, bathrooms, price, area).
+    if (opts.captionList && detail) {
+      const bits = detail.replace(/\.$/, "").split(/\s*,\s*/).filter((b) => b && !/\b(bed|bath)rooms?\b|\bBR\b|\bRp\b|million|\/mo\b/i.test(b));
+      detail = bits.slice(0, 4).join(", ");
+      if (detail) detail = detail[0]!.toUpperCase() + detail.slice(1);
+    }
+    const money = `Rp ${ladderMillions(priceOf(x.p!))}${unit === "M" ? "M" : ` ${unit}`}`;
+    let head = `${i + 1}. ${ladderAreaLabel(x.p!.area)} — ${money}`;
+    if (opts.captionList) {
+      // "1. Seminyak · 2BR · Rp 38.5M/mo · from 8 Oct" — a free-from date only when it is still ahead.
+      const f = x.p!.free_from ? new Date(`${x.p!.free_from}T00:00:00Z`) : null;
+      const from = f && !Number.isNaN(f.getTime()) && f.getTime() > Date.now() ? `from ${f.getUTCDate()} ${MON[f.getUTCMonth()]}` : "";
+      head = [`${i + 1}. ${ladderAreaLabel(x.p!.area)}`, x.p!.bedrooms ? `${x.p!.bedrooms}BR` : "", `${money}/mo`, from].filter(Boolean).join(" · ");
+    }
     return { ...x.a, ladder: { band: x.band!, caption: detail ? `${head}\n${detail}` : head, headers, closing } };
   });
   const intro = sanitizeSuggestion(out.intro ?? "").trim();
@@ -2068,7 +2127,7 @@ export async function buildPromptAdditions(opts: {
   // What we can offer for what they asked — the SAME decision the attached
   // links came from, not a second count (availabilityForCriteria used to
   // extract the criteria again and could disagree with the shortlist).
-  const stockLine = opts.shortlist ? shortlistPromptBlock(opts.shortlist) : "";
+  const stockLine = opts.shortlist ? shortlistPromptBlock(opts.shortlist, !!opts.isRental) : "";
 
   // Bali rents in rupiah — the catalog now carries the rupiah figure itself, so
   // there is nothing to convert and nothing to hedge about. The bot used to

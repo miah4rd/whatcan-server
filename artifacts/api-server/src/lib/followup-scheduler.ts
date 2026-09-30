@@ -187,7 +187,7 @@ async function followupListings(opts: {
   // The request the links passed — or, with nothing inside it, the honest
   // "nothing exactly within your request" and ONE question (same block as
   // every LIVE draft).
-  const requestBlock = shortlistPromptBlock(picked);
+  const requestBlock = shortlistPromptBlock(picked, (opts.pipeline ?? "").trim().toLowerCase() === "rental");
 
   const brief = attachments.length
     ? `

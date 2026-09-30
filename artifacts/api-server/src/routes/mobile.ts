@@ -1294,8 +1294,8 @@ const PAGE_HTML = `<!doctype html>
         if (lad) {
           var prevLad = null;
           for (var pj = i - 1; pj >= 0; pj--) { if (item.attachments[pj].type === "link") { prevLad = item.attachments[pj].ladder || null; break; } }
-          if (!prevLad || prevLad.band !== lad.band) {
-            html += '<div class="att att-ladhead" style="font-weight:600;margin-top:8px">' + esc((lad.headers && lad.headers[lad.band]) || "") + '</div>';
+          if ((!prevLad || prevLad.band !== lad.band) && lad.headers && lad.headers[lad.band]) {
+            html += '<div class="att att-ladhead" style="font-weight:600;margin-top:8px">' + esc(lad.headers[lad.band]) + '</div>';
           }
           html += '<div class="att att-ladcap" style="white-space:normal;opacity:.9">' + lad.caption.split(String.fromCharCode(10)).map(esc).join("<br>") + '</div>';
         }

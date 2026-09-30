@@ -79,8 +79,18 @@ villa the client clicked does not become their area.
   first — a Green flags line from the inspection or a feature checked on the site (garden,
   enclosed living room, workspace, quiet street, no construction). Then the price closest to the
   budget. The same order holds inside every price group of the ladder.
-- Layout: an intro that repeats the request with its details (garden, kitchen, quiet), then the
-  villas by price group with a caption and link each, then "which ones do you like?" (21.09).
+- Layout, as top rental agencies send it (owner, 30.09.2026: «давай применим то, что топовые агентства
+  делают, и не будем ничего придумывать… в конце лучше писать… какая нравится или какая ближе, и
+  дальше с радостью проверю availability… если сразу про показ говорить, они могут зашугаться…
+  green флаги… даже если их в запросе не было… лучше их упомянуть»):
+  1. a short lead-in that says their request back with its details, and nothing else — no question;
+  2. each villa as its own message: "1. Area · 2BR · Rp 38M/mo" (and "· from 8 Oct" when it frees up
+     later), then one line of its best features — first what the client asked for, then the green
+     flags clients like even if not asked (garden, enclosed living room or kitchen, workspace, quiet
+     street, no construction, pets, modern style) — and its link right under it;
+  3. one closing line: which one feels closest, and that we will happily check its availability.
+     No viewing talk in this message.
+  No price groups while the ladder is off (28.09). Replaces the 21.09 layout.
 - Never write that a villa is free now — availability is checked after the client chooses (21.09).
 - Text and links are one message: the words describe exactly the villas attached (04.09).
 - Nothing fits → no links; say so honestly and ask one question that opens options (04.09).
