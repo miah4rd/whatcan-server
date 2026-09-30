@@ -2087,10 +2087,21 @@ export async function buildPromptAdditions(opts: {
     cardForAd?.budgetIdrMonthly
       ? `\n\nTHEY TOLD THE FORM THEIR BUDGET: ${Math.round(cardForAd.budgetIdrMonthly / 1_000_000)} million rupiah a month. If the villa they clicked costs more than that, say so kindly and early — do not pretend it fits — and point them at what does. Their money is the more reliable signal of the two.`
       : "";
+  // The form is the request (owner, 30.09.2026): with form answers on the card the clicked villa is not
+  // what the reply is about. Only a bare click with nothing else known keeps this first-message rule.
+  const formKnown = !!(cardForAd && (cardForAd.budgetIdrMonthly || cardForAd.bedrooms || (cardForAd.areas && cardForAd.areas.length) || (cardForAd.answers && Object.values(cardForAd.answers).some((v) => !!v))));
   const adRule =
-    adMatch && !opts.openingAfterWelcome && opts.dialogMessages.filter((m) => m.from === "lead").length <= 1
+    adMatch && !formKnown && !opts.openingAfterWelcome && opts.dialogMessages.filter((m) => m.from === "lead").length <= 1
       ? `\n\nTHIS PERSON CAME FROM AN AD FOR ONE SPECIFIC VILLA: "${adMatch[2]!.trim()}". That is their entire enquiry — they have not told you dates, budget or anything else. Write the first message like a person who just got their enquiry:\n- greet them by name and thank them for reaching out;\n- say you can see which villa caught their eye and NAME IT exactly as written above;\n- tell them the link below has the full details — photos, the location on the map, what's included;\n- then ONE question, the one that decides everything: when they are looking to move in and for how long.\nDo NOT offer alternative villas in this first message. They came for this one; suggesting others straight away reads as not having listened.
 - Never claim the villa is popular, in demand, "getting a lot of interest" or going fast. You have no such information, and this one had a single view. An invented pressure line is the fastest way to lose a serious client.`
+      : "";
+
+  // The ad's automatic "I saw this villa and I'm interested: <link>" with the request on the form: that villa is
+  // not the subject (owner, 30.09.2026: "Сначала мы берём базовый её запрос… ничего не сказано, что нужно
+  // сначала говорить про листинг, про который она кликнула").
+  const adClickNote =
+    formKnown && recentLeadMessages.some((m) => AD_CLICK_TEMPLATE.test(String(m)))
+      ? `\n\nTHE CLIENT'S "I saw this villa and I'm interested" WITH A LINK IS THE AD'S AUTOMATIC TEXT, NOT A QUESTION. Their request is what they filled in the form (bedrooms, budget, area, move-in, stay). Do not mention the villa from the ad at all: not its name, area, price or dates, not that it is unavailable or above budget. Work only from their request and the villas attached to this message.`
       : "";
 
   // Who is writing, by their real name — never the login. "HoS" signed messages
@@ -2131,7 +2142,7 @@ export async function buildPromptAdditions(opts: {
     lastLeadText: opts.lastLeadText,
   });
 
-  return buildLeadNameRule(opts.dialogMessages) + attachedRule + anchorLine + stockLine + currencyRule + adRule + identityRule + viewingBlock + pushBlock + learned;
+  return buildLeadNameRule(opts.dialogMessages) + attachedRule + anchorLine + stockLine + currencyRule + adRule + adClickNote + identityRule + viewingBlock + pushBlock + learned;
 }
 
 /**
