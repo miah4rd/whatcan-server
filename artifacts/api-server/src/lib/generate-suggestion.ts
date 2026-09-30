@@ -2036,9 +2036,14 @@ export async function buildPromptAdditions(opts: {
   // still opens with "Here are a few options for you:" and lists three — which
   // is exactly what the client got (lead 23279935, 2026-08-19). Tell the writer
   // what the client actually came in on.
+  // The ad's own "I saw this villa and I'm interested: <link>" is a click, not a request (owner, 30.09.2026:
+  // "Сначала мы берём базовый её запрос… У нас ничего не сказано, что нужно сначала говорить про листинг,
+  // про который она кликнула"). Only a villa the client names in their OWN words anchors the reply.
+  const AD_CLICK_TEMPLATE = /\b(i\s+saw\s+this\s+villa|i'?m\s+interested:|ad\s+enquiry)/i;
   const anchorIds = Array.from(
     new Set(
       recentLeadMessages
+        .filter((m) => !AD_CLICK_TEMPLATE.test(String(m)))
         .flatMap((m) => Array.from(String(m).matchAll(/\/property\/([A-Za-z0-9-]+)|\b(R-[A-Z]+-\d+)\b/gi)))
         .map((x) => (x[1] ?? x[2] ?? "").toUpperCase())
         .filter(Boolean),
