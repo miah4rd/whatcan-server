@@ -439,7 +439,7 @@ const PROPERTY_ID_REGEX = /\b([A-Z]{1,4}-[A-Z0-9-]+)\b/g;
  * price a new address, so the client always sees the price the site shows.
  * The path stays /property/<ID>: every reader of sent links stops at the "?".
  */
-function propertyUrl(p: SupabaseProperty): string {
+export function propertyUrl(p: SupabaseProperty): string {
   const price = priceOf(p);
   return price > 0 ? `${propertyUrlById(p.id)}?v=${Math.round(price / 100_000)}` : propertyUrlById(p.id);
 }

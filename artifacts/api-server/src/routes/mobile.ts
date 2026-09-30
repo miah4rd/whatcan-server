@@ -1275,6 +1275,35 @@ const PAGE_HTML = `<!doctype html>
       .catch(function () {});
   }
 
+  // ↻ Next: swaps one villa of a captioned shortlist for the next one that fits this client's request,
+  // with its own caption; the rest of the message is untouched (owner, 30.09.2026).
+  document.addEventListener("click", function (e) {
+    var b = e.target && e.target.closest ? e.target.closest("[data-nextattach]") : null;
+    if (!b || !openItem) return;
+    e.preventDefault();
+    var it = openItem, idx = Number(b.getAttribute("data-nextattach"));
+    var cur = (it.attachments || [])[idx];
+    if (!cur || !cur.url) return;
+    var idOf = function (u) { return ((String(u || "").match(/[/]property[/]([A-Za-z0-9-]+)/i) || [])[1] || "").toUpperCase(); };
+    it._skipped = (it._skipped || []).concat([idOf(cur.url)]);
+    var ex = (it.attachments || []).map(function (a) { return idOf(a.url); }).filter(Boolean).concat(it._skipped);
+    b.disabled = true;
+    fetch(API + "/villa-alternatives?leadId=" + encodeURIComponent(it.lead_id) + "&exclude=" + encodeURIComponent(ex.join(",")))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var v = ((d && d.villas) || [])[0];
+        if (!v) { showToast("Nothing else fits this request right now"); b.disabled = false; return; }
+        var lad = cur.ladder || {};
+        var num = (String(lad.caption || "").match(/^[ ]*([0-9]+)[.][ ]/) || [])[1] || String(idx + 1);
+        var cap = num + ". " + (v.captionHead || v.title) + (v.captionFeatures ? String.fromCharCode(10) + v.captionFeatures : "");
+        it.attachments[idx] = { type: "link", url: v.url, label: v.title, ladder: { band: lad.band || "in", caption: cap, headers: lad.headers || {}, closing: lad.closing || "" } };
+        it._attachmentsCurated = true;
+        render();
+        loadVillaTrust(it);
+      })
+      .catch(function () { showToast("No connection"); b.disabled = false; });
+  });
+
   function renderAttachments(item, removable) {
     if (!item.attachments || !item.attachments.length) return "";
     var html = '<div class="atts">';
@@ -1306,7 +1335,9 @@ const PAGE_HTML = `<!doctype html>
         var lead = ph
           ? '<img class="att-thumb" loading="lazy" alt="" src="' + esc(ph[0]) + '" data-photos="' + esc(ph.join("|")) + '" data-orig="' + esc(((trPh || {}).originals || [])[0] || "") + '" title="See the photos">'
           : '<span>\\ud83d\\udd17</span>';
-        html += '<div class="att att-link">' + lead + '<a href="' + esc(a.url) + '" target="_blank" rel="noopener">' + esc(a.label || a.url) + '</a>' + rm + '</div>';
+        // ↻ the next villa in line for this client, in this villa's place (owner, 30.09.2026).
+        var nx = lad && a.url ? '<button class="attrm" data-nextattach="' + i + '" title="Next villa for this client">&#x21BB;</button>' : "";
+        html += '<div class="att att-link">' + lead + '<a href="' + esc(a.url) + '" target="_blank" rel="noopener">' + esc(a.label || a.url) + '</a>' + nx + rm + '</div>';
         if (lad) {
           var laterLink = false;
           for (var nj = i + 1; nj < item.attachments.length; nj++) { if (item.attachments[nj].type === "link") { laterLink = true; break; } }

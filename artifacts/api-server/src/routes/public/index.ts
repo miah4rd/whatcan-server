@@ -28,6 +28,7 @@ import noReplyNeededRouter from "./no-reply-needed";
 import autopilotRouter from "./autopilot";
 import budgetFilterRouter from "./budget-filter";
 import aiSpendRouter from "./ai-spend";
+import villaAltRouter from "./villa-alternatives";
 import listingSubmissionsRouter from "./listing-submissions";
 import listingIntakeRouter from "./listing-intake";
 import brokerAgentRouter from "./broker-agent";
@@ -74,5 +75,6 @@ router.use(reportRouter);
 router.use(clientsRouter);
 router.use(applyLeadRouter);
 router.use(villaLinksRouter);
+router.use(villaAltRouter);
 
 export default router;
