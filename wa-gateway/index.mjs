@@ -372,12 +372,15 @@ async function saveMedia(sock, m, body, ctype) {
 // send on a broker's number is spaced here, the one place all of them pass: 15-25 s apart, at most
 // 15 per 10 minutes and 60 per hour. A send that would wait past 40 s is refused (the caller's
 // request to us times out at 60 s, and a refused send is retried by autopilot in 30 minutes).
+// 30.09.2026, owner: one simple rule, stricter. After the move to the OS its autopilot sent 44
+// replies in 70 minutes on Yudi 2 (a backlog), the pattern that preceded the 29.09 block of Yudi's
+// main number (~75 in two hours). Now: 30-50 s apart, at most 8 per 10 minutes and 30 per hour.
 const PACE = {
-  minGapMs: 15000,
-  jitterMs: 10000,
-  maxWaitMs: 40000,
-  per10Min: 15,
-  perHour: 60,
+  minGapMs: 30000,
+  jitterMs: 20000,
+  maxWaitMs: 55000,
+  per10Min: 8,
+  perHour: 30,
   // Amelia: no limits at all (owner, 25.09.2026 — her daily cap was lifted on 19.09 too).
   exempt: new Set((process.env.WA_UNPACED_SESSIONS ?? "pilot1,amelia").split(",").map((x) => x.trim()).filter(Boolean)),
 };
