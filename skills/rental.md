@@ -91,6 +91,9 @@ villa the client clicked does not become their area.
   3. one closing line: which one feels closest, and that we will happily check its availability.
      No viewing talk in this message.
   No price groups while the ladder is off (28.09). Replaces the 21.09 layout.
+  The first villa too: its caption and link are one message, exactly like the second and third; the
+  lead-in carries no villa (owner, 30.09.2026: «лучше делать одинаково как во втором и в третьей
+  ссылке текст плюс ссылка так просто мне кажется понятнее для человека»).
 - Never write that a villa is free now — availability is checked after the client chooses (21.09).
 - Text and links are one message: the words describe exactly the villas attached (04.09).
 - Nothing fits → no links; say so honestly and ask one question that opens options (04.09).
