@@ -103,6 +103,10 @@ villa the client clicked does not become their area.
   it) gets no new links (14.09).
 - Never ask "is this for yourself or for someone else?" (14.09).
 
+- Sending (01.10.2026): limits are on contacts, not messages; inside one chat messages follow each other
+  10–15 seconds apart. The autopilot answers once the client has been quiet for 4 minutes, one reply to
+  everything they wrote; nothing a model writes about its own task ever leaves.
+
 ## 6. Toward the viewing (10.09)
 
 After the first shortlist, every message nudges toward a viewing, in Amelia's own words: is the

@@ -87,7 +87,14 @@ Only on Initial Contact and TAKEN TO WORK. Only 10:00–20:00 Bali (12.09).
 - First contacts a day: 9 per Yudi number (03.09, 13.09). A one-day exception only on the owner's
   word, for that day (16.09).
 - A new number warms up: 3 → 5 → 7 → 9 a day, 45–67 minutes between first contacts (22.09).
-- Any send from Yudi's numbers: at most 15 per 10 minutes, 60 per hour (25.09).
+- The limits are on CONTACTS, not messages (01.10: «не надо считать сообщения внутри одного чата»):
+  at most 8 different chats per 10 minutes and 30 per hour on each Yudi number; between two different
+  chats 30–50 seconds; inside one chat the messages follow each other 10–15 seconds apart (01.10:
+  «поставь 10 - 15 сек»). Was 8 / 30 messages (30.09).
+- The autopilot answers once the other side has stopped writing: it waits until they have been quiet
+  for 4 minutes and answers everything they wrote in one reply, never one reply per message (01.10:
+  six replies in eleven minutes made an owner ask "Are you using automatic reply?").
+- Nothing a model writes about its own task ("share the message you'd like edited") ever leaves (01.10).
 - Amelia: no limits (19.09, 25.09).
 
 ## 8. After live
