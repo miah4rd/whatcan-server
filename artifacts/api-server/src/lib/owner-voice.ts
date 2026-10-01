@@ -156,6 +156,17 @@ function rememberJudged(...texts: string[]): void {
  * said, the explanations and the pitch go. A rewrite that loses the question, grows, or comes back
  * empty is thrown away and the draft goes as it was: shorter is the goal, never a lost ask.
  */
+/**
+ * A model's word about the task instead of the message ("Could you please share the WhatsApp message you'd
+ * like edited?"). On 01.10.2026 the tightener returned exactly that for a 62-word draft and the autopilot sent
+ * it to an owner, who answered "Are you using automatic reply? It's definitely a poor system". Never sent.
+ */
+export function isEditorMetaText(text: string | null | undefined): boolean {
+  const t = String(text ?? "");
+  return /\b(share|send|provide|paste|give me)\b[^.?!]{0,40}\b(message|text|draft)\b[^.?!]{0,40}\b(edit|rewrite|shorten|change|improve)/i.test(t) ||
+    /\bmessage you'?d like (me )?to\b|\bthe (text|message) you (provided|sent|shared)\b|\bthere is no (message|text|draft)\b|\bI (don'?t|do not) see (a|any|the) (message|draft|text)\b|\bas an AI\b|\bhere is (the|your) (shortened|rewritten|edited) (message|version)\b/i.test(t);
+}
+
 export async function tightenInYudiVoice(text: string, o: { lang: OwnerLang; leadId?: string }): Promise<string> {
   const before = (text ?? "").trim();
   if (wordCount(before) <= TIGHT_WORDS) return before;
@@ -175,7 +186,7 @@ export async function tightenInYudiVoice(text: string, o: { lang: OwnerLang; lea
     // The examples mark line breaks with " / "; the model copies it sometimes.
     const after = String(r?.text ?? "").replace(/\s+\/\s+/g, "\n").trim();
     const askedBefore = /\?/.test(before);
-    const ok = after && wordCount(after) < wordCount(before) && wordCount(after) <= HARD_MAX_WORDS + 5 && (!askedBefore || /\?/.test(after));
+    const ok = after && !isEditorMetaText(after) && wordCount(after) < wordCount(before) && wordCount(after) <= HARD_MAX_WORDS + 5 && (!askedBefore || /\?/.test(after));
     if (!ok) {
       logger.warn({ leadId: o.leadId, before: wordCount(before), after: wordCount(after) }, "owner tighten: rewrite rejected — draft kept as written");
       rememberJudged(before);

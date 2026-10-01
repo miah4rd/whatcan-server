@@ -40,6 +40,10 @@ import {
   OUTREACH_OPEN_HOUR,
   OUTREACH_CLOSE_HOUR,
 } from "./new-contact-budget";
+import { isEditorMetaText } from "./owner-voice";
+
+/** How long the other side must be quiet before the autopilot answers (01.10.2026). */
+const AUTOPILOT_QUIET_MS = 4 * 60_000;
 
 export type AutopilotMode = "off" | "dry" | "on";
 /**
@@ -465,6 +469,18 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
           .catch(() => undefined);
         sug.text = tight;
       }
+    }
+    // The last look before anything leaves on its own: a model's note about the task is not a message.
+    if (isEditorMetaText(sug.text)) {
+      logger.error({ leadId, text: sug.text.slice(0, 160) }, "autopilot: the draft is a model's note about editing, not a message — retired, never sent");
+      return retire("the draft was the editing model's own note, not a message to the client");
+    }
+    // An owner or client who is still typing is answered once, after they stop (owner, 01.10.2026: "fix it",
+    // after six replies in eleven minutes, each fifteen seconds after their message, made an owner ask "Are
+    // you using automatic reply?"). The LIVE draft is refreshed in place on every new message, so the drain
+    // answers all of them in one reply once the thread has been quiet for a few minutes.
+    if (sug.kind === "live" && inAt > 0 && now - inAt < AUTOPILOT_QUIET_MS) {
+      return decline(`waiting: the other side wrote ${Math.round((now - inAt) / 1000)} s ago — one reply after ${AUTOPILOT_QUIET_MS / 60_000} quiet minutes`);
     }
     if (setting.mode === "dry") {
       logger.info(
