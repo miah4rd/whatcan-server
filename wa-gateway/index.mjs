@@ -393,19 +393,33 @@ const PACE_BY_SESSION = {
   amelia: { minGapMs: 3000, jitterMs: 3000, maxWaitMs: 40000, per10Min: 45, perHour: 200 },
 };
 
-async function paceSend(session) {
+// 01.10.2026, owner: the limits are on CONTACTS, not on messages — «не надо считать сообщения внутри одного
+// чата». A shortlist (text + a villa per message + closing) or a burst of replies to one owner is one chat:
+// it counts once towards 8 chats per 10 minutes / 30 per hour, and its messages follow each other a few
+// seconds apart. Between two different chats the 30-50 s gap stays (the 24.09 / 29.09 blocks were many
+// different chats in a row). First contacts have their own cap of nine a day upstream.
+const SAME_CHAT_GAP_MS = 4000;
+const SAME_CHAT_JITTER_MS = 4000;
+async function paceSend(session, to) {
   if (PACE.exempt.has(session)) return null;
   const cfg = { ...PACE, ...(PACE_BY_SESSION[session] ?? {}) };
   const now = Date.now();
-  const st = paceState.get(session) ?? { next: 0, sent: [] };
-  st.sent = st.sent.filter((t) => now - t < 3600000);
-  const last10 = st.sent.filter((t) => now - t < 600000).length;
-  if (st.sent.length >= cfg.perHour) return { ok: false, error: "rate_limited_hour", code: 905 };
-  if (last10 >= cfg.per10Min) return { ok: false, error: "rate_limited_10min", code: 905 };
-  const at = Math.max(now, st.next);
+  const chat = String(to ?? "");
+  const st = paceState.get(session) ?? { lastAt: 0, lastTo: null, gap: 0, sent: [] };
+  st.sent = st.sent.filter((x) => now - x.t < 3600000);
+  const chatsHour = new Set(st.sent.map((x) => x.to));
+  const chats10 = new Set(st.sent.filter((x) => now - x.t < 600000).map((x) => x.to));
+  if (!chatsHour.has(chat) && chatsHour.size >= cfg.perHour) return { ok: false, error: "rate_limited_hour", code: 905 };
+  if (!chats10.has(chat) && chats10.size >= cfg.per10Min) return { ok: false, error: "rate_limited_10min", code: 905 };
+  const sameChat = st.lastTo === chat;
+  const gap = sameChat
+    ? Math.min(cfg.minGapMs, SAME_CHAT_GAP_MS) + Math.floor(Math.random() * Math.min(cfg.jitterMs, SAME_CHAT_JITTER_MS))
+    : cfg.minGapMs + Math.floor(Math.random() * cfg.jitterMs);
+  const at = Math.max(now, st.lastAt + gap);
   if (at - now > cfg.maxWaitMs) return { ok: false, error: "rate_limited", code: 905 };
-  st.next = at + cfg.minGapMs + Math.floor(Math.random() * cfg.jitterMs);
-  st.sent.push(at);
+  st.lastAt = at;
+  st.lastTo = chat;
+  st.sent.push({ t: at, to: chat });
   paceState.set(session, st);
   if (at > now) await new Promise((r) => setTimeout(r, at - now));
   return null;
@@ -414,7 +428,7 @@ async function paceSend(session) {
 async function send({ session, to, text, media, quotedId, mentions }) {
   const s = sessions.get(session);
   if (!s || s.status !== "open") return { ok: false, error: "session_not_open", code: 902 };
-  const paced = await paceSend(session);
+  const paced = await paceSend(session, to);
   if (paced) {
     log.warn({ session, error: paced.error }, "send refused by pacing");
     return paced;
