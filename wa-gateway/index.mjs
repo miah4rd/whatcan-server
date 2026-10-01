@@ -395,11 +395,11 @@ const PACE_BY_SESSION = {
 
 // 01.10.2026, owner: the limits are on CONTACTS, not on messages — «не надо считать сообщения внутри одного
 // чата». A shortlist (text + a villa per message + closing) or a burst of replies to one owner is one chat:
-// it counts once towards 8 chats per 10 minutes / 30 per hour, and its messages follow each other a few
-// seconds apart. Between two different chats the 30-50 s gap stays (the 24.09 / 29.09 blocks were many
+// it counts once towards 8 chats per 10 minutes / 30 per hour, and its messages follow each other 10-15 s
+// apart. Between two different chats the 30-50 s gap stays (the 24.09 / 29.09 blocks were many
 // different chats in a row). First contacts have their own cap of nine a day upstream.
-const SAME_CHAT_GAP_MS = 4000;
-const SAME_CHAT_JITTER_MS = 4000;
+const SAME_CHAT_GAP_MS = 10000; // owner, 01.10.2026: 10-15 s inside one chat
+const SAME_CHAT_JITTER_MS = 5000;
 async function paceSend(session, to) {
   if (PACE.exempt.has(session)) return null;
   const cfg = { ...PACE, ...(PACE_BY_SESSION[session] ?? {}) };
