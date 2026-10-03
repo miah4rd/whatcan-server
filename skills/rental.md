@@ -41,6 +41,8 @@ set for that date instead.
 ## 3. Who is not worked (gates before the first message)
 
 - Budget below 30,000,000 IDR a month → Closed-lost, nobody's time (21.08).
+  A request for a 1-bedroom villa: the bar is 25,000,000 instead (owner, 03.10.2026: «1BR с порогом
+  25M; да от 25»).
 - Only Uluwatu, Ubud or Sanur named → Closed-lost, no message. Temporary, until the owner lifts
   it (18.09).
 - Every place named is one we do not cover → no automatic welcome; the draft goes to Amelia with
