@@ -75,7 +75,7 @@ const BROKER_OPENING_DELAY_MS = 15 * 60 * 1000;
  * caught them. Work from the request when we have it, and when we do not, ask
  * for the pieces a shortlist actually needs — and say why we are asking.
  */
-function brokerOpeningBrief(welcomeSent: string, hasOptions = true, clickedVilla = true): string {
+function brokerOpeningBrief(welcomeSent: string, hasOptions = true, clickedVilla = true, silentClient = false): string {
   // A catalog-form lead (2026-09-12) answered the same questions but never
   // clicked one villa: every line below about "the villa they clicked" would
   // send the model looking for a link that is not there.
@@ -95,14 +95,15 @@ Task: Write the broker's FIRST real message. It always has the same four parts, 
 2. SAY THEIR REQUEST BACK TO THEM in one short line, so they can see they were heard. The request is what the Meta form asked them — budget, area, bedrooms, timing — and it is in the enquiry and the lead card above.${clickedVilla ? `
    If the form answers are missing, THE VILLA THEY CLICKED IS THE REQUEST: take its bedrooms, its area and its monthly price and state those as what you understand they are looking for. ("Looks like you're after a 2-bedroom in Pererenan around Rp 50 million a month.")` : ""}
 3. ${hasOptions
-    ? `OFFER OPTIONS THAT FIT THAT REQUEST. The links are attached to this very message, so present them ("here are two that fit"); never ask permission to send them and never promise them for later.${clickedVilla ? ` The LAST link is the villa they clicked in the ad — it is attached whether or not it fits, because they chose it with their own eyes; present it as "and the one you were looking at, for comparison", one short clause, not as one of the fits.` : ""}
+    ? `OFFER OPTIONS THAT FIT THAT REQUEST. The links are attached to this very message, so present them ("here they are"); never ask permission to send them and never promise them for later.${clickedVilla ? ` The LAST link is the villa they clicked in the ad — it is attached whether or not it fits, because they chose it with their own eyes; present it as "and the one you were looking at, for comparison", one short clause, not as one of the fits.` : ""}
    NAME THE AREA OF EACH OPTION, and if an option is NOT in the area they asked for, say so in the same breath — "this one's in Kerobokan rather than Pererenan". Bali areas are half an hour apart and a client who opens a link expecting their neighbourhood and finds another one stops trusting the next message. Never imply an option is in their area when it is not, and never quietly drop the area to avoid the point.`
     : `NOTHING IS ATTACHED TO THIS MESSAGE. Do not say "here are", do not describe other villas, do not promise to send anything. Instead ask the ONE thing that would let you put a shortlist together — which area, what budget, or what matters most to them — and say why you are asking.`}
 4. End with ONE open question.
 
 Absolutes:${clickedVilla ? `
 - Do not re-sell the villa they clicked: no features, no price. Name it once as "the one you were looking at" beside its link, and nothing more.` : ""}
-- Do not ask when they are moving in or for how long, anywhere in this message. The message above already asked an open question and got silence.
+- Do not ask when they are moving in or for how long, anywhere in this message. The message above already asked an open question and got silence.${silentClient ? `
+- THEY HAVE NOT WRITTEN A SINGLE WORD. Never thank them for confirming, never say they mentioned, chose or told you anything, never read back a preference (quiet street, pets, kids, workspace, garden, style) — they answered none of the questions in the message above. Their request is only their form answers, in the form's own words: a range like "in 1-2 months" stays a range, never a date.` : ""}
 
 Under 80 words.`;
 }
@@ -598,6 +599,7 @@ async function runBrokerOpeningPass(): Promise<number> {
       // clicked plus whatever the Meta form asked them. That is exactly what
       // the second message has to widen off.
       let lastLeadMessage = parsed.lastLeadMessage?.text ?? "";
+      let silentClient = false;
       // A client who stayed silent has no message of their own, only our welcome on the card: 14 of 18
       // silent Meta leads got no 15-minute draft for two weeks because this line skipped them (owner,
       // 29.09.2026: "why don't we send them options after fifteen minutes anyway?"). Their request is
@@ -609,7 +611,11 @@ async function runBrokerOpeningPass(): Promise<number> {
           ? [a.bedrooms, a.areas && !isNonAnswer(a.areas) ? a.areas : null, a.budget, a.moveIn, a.stay, a.notes && !isNonAnswer(a.notes) ? a.notes : null].filter((x) => x && String(x).trim())
           : [];
         if (parts.length === 0) continue;
-        lastLeadMessage = `Ad form: ${parts.join(", ")}`;
+        // Labelled as what it is (owner, 03.10.2026: «анкету передавать с пометкой "клиент не отвечал"»):
+        // passed bare, the form read as the client's reply to our welcome, and six silent clients got
+        // "Thanks for confirming… no pets or kids, workspace not needed" (skills/rental.md §5).
+        lastLeadMessage = `Ad form: ${parts.join(", ")} (the client has NOT replied — these are their form answers, not a message)`;
+        silentClient = true;
       }
       // An ad lead's seeded enquiry carries the clicked villa's link; a
       // catalog-form lead's does not, and its brief must not ask for one.
@@ -634,7 +640,7 @@ async function runBrokerOpeningPass(): Promise<number> {
         leadStage: lead.leadStage,
         correctionsBlock: corrections,
         pipeline: lead.pipeline,
-        taskBrief: brokerOpeningBrief(lead.welcomeText ?? "", true, clickedVilla),
+        taskBrief: brokerOpeningBrief(lead.welcomeText ?? "", true, clickedVilla, silentClient),
       });
       if (!text) continue;
 
@@ -655,7 +661,7 @@ async function runBrokerOpeningPass(): Promise<number> {
           leadStage: lead.leadStage,
           correctionsBlock: corrections,
           pipeline: lead.pipeline,
-          taskBrief: brokerOpeningBrief(lead.welcomeText ?? "", false, clickedVilla),
+          taskBrief: brokerOpeningBrief(lead.welcomeText ?? "", false, clickedVilla, silentClient),
         });
         if (retry.text) {
           text = retry.text;

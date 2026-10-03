@@ -14,6 +14,7 @@ import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from ".
 import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, clientOwnWords, keyFeatureBits, priceOf, priceBandOf, PRICE_BANDS, type PriceBand, type SupabaseProperty, type ClientRequest, type PropertyPick, type BrokerIntent, type ShortlistOutcome, type RelaxHint, type RelaxExample } from "./property-catalog";
 import { parentAreaOf } from "./bali-areas";
 import { getMergedDialog } from "./merged-conversation";
+import { enforceDraftTruth } from "./draft-truth";
 import { db, pendingSuggestionsTable, sentMessagesTable } from "@workspace/db";
 import { viewingReportPromptBlock } from "./viewing-report-context";
 import { leadPhone } from "./phone-dedupe";
@@ -2434,5 +2435,28 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     lastLeadText,
   });
 
+  // The last word before the broker sees it: nothing about the client that the client did not say,
+  // and the villas in the text are the villas attached (skills/rental.md §5 "Facts in a draft").
+  if (isRental) {
+    const card = await getLeadCardCriteria(opts.leadId).catch(() => null);
+    const a = card?.answers;
+    const formText = [
+      a?.bedrooms && `Bedrooms: ${a.bedrooms}`,
+      a?.areas && `Area: ${a.areas}`,
+      a?.budget && `Budget: ${a.budget}`,
+      a?.moveIn && `Move-in: ${a.moveIn}`,
+      a?.stay && `Stay: ${a.stay}`,
+      a?.notes && `Notes: ${a.notes}`,
+      opts.leadNotes ?? "",
+    ].filter(Boolean).join("; ");
+    const truthful = await enforceDraftTruth({
+      leadId: opts.leadId,
+      text,
+      attachments: checked.attachments,
+      clientTexts: dialog.messages.filter((m) => m.from === "lead").map((m) => m.text ?? ""),
+      formText,
+    });
+    return { text: truthful, attachments: checked.attachments };
+  }
   return { text, attachments: checked.attachments };
 }

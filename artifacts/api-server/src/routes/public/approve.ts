@@ -952,6 +952,8 @@ router.post("/approve", async (req, res) => {
   // backward move needs stated evidence. The broker's own pick is never
   // refused, but the slot is still recorded. Fail-closed for the auto move.
   let viewingPatch: { viewingAt?: Date | null } = {};
+  let pickedStage = explicitNewStage;
+  let stageRefusedNote: string | null = null;
   {
     const target = explicitNewStage ?? autoStage?.name ?? null;
     if (target && /viewing/i.test(`${target} ${stageCtx?.leadStage ?? ""}`)) {
@@ -967,6 +969,12 @@ router.post("/approve", async (req, res) => {
         if (!v.ok) {
           req.log.info({ leadId: sug.leadId, refused: target, reason: v.reason }, "auto stage refused by a viewing canon");
           autoStage = null;
+          // The canon now refuses a broker's own pick only for Viewing scheduled without a date and time
+          // (owner, 03.10.2026, skills/rental.md §2): the message goes, the stage stays, and she is told why.
+          if (pickedStage) {
+            stageRefusedNote = `${skipMessage ? "" : "Sent. "}The stage stays: "${pickedStage}" needs the viewing date and time agreed in the chat.`;
+            pickedStage = null;
+          }
         } else if (v.viewingAt) {
           viewingPatch = { viewingAt: v.viewingAt };
         } else if (v.clearViewingAt) {
@@ -974,11 +982,11 @@ router.post("/approve", async (req, res) => {
         }
       } catch (err) {
         req.log.warn({ err, leadId: sug.leadId, target }, "viewing canon check failed — auto stage not applied");
-        if (!explicitNewStage) autoStage = null;
+        if (!pickedStage) autoStage = null;
       }
     }
   }
-  const effectiveNewStage = explicitNewStage ?? (autoStage ? autoStage.name : null);
+  const effectiveNewStage = pickedStage ?? (autoStage ? autoStage.name : null);
   if (effectiveNewStage) {
     const prevSync = await db
       .select({ leadStage: leadsSyncTable.leadStage, pipeline: leadsSyncTable.pipeline })
@@ -993,7 +1001,7 @@ router.post("/approve", async (req, res) => {
     // to send its stored lead_stage_id on every approve and this line preferred
     // it, so on 09.09 "Objection Handled" went out with Options sent's id —
     // amoCRM stayed put while our tables recorded the new name.
-    const requestedStageId = explicitNewStage
+    const requestedStageId = pickedStage
       ? (typeof body.stageId === "string" && body.stageId.trim() ? body.stageId.trim() : null)
       : (autoStage ? String(autoStage.id) : null);
 
@@ -1102,7 +1110,7 @@ router.post("/approve", async (req, res) => {
     }
   }
 
-  res.json({ ok: skipMessage ? true : hookStatus >= 200 && hookStatus < 300, hookStatus, stageOk });
+  res.json({ ok: skipMessage ? true : hookStatus >= 200 && hookStatus < 300, hookStatus, stageOk, ...(stageRefusedNote ? { message: stageRefusedNote } : {}) });
 });
 
 export default router;

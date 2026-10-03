@@ -90,10 +90,13 @@ export async function viewingCanons(
 
   if (isViewingScheduled) {
     const viewingAt = await extractViewingAt(text);
-    if (!viewingAt && !o.explicit) {
-      return { ok: false, reason: "canon: Viewing scheduled needs a concrete slot in the thread (ahead or ≤2 days past) — none found" };
+    // A broker's own pick included (owner, 03.10.2026: «Viewing scheduled ставить только при назначенной
+    // дате; да, дата и время», skills/rental.md §2): Negar's card sat in Viewing scheduled on 02.10 with
+    // only "I can line up a day with the owners" in the thread.
+    if (!viewingAt) {
+      return { ok: false, reason: "canon: Viewing scheduled needs an agreed date and time in the chat — none found" };
     }
-    return viewingAt ? { ok: true, viewingAt, clearViewingAt: false } : { ok: true, clearViewingAt: false };
+    return { ok: true, viewingAt, clearViewingAt: false };
   }
   return { ok: true, clearViewingAt };
 }

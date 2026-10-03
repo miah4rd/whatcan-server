@@ -26,12 +26,17 @@ Amelia's number has no sending limits (19.09, 25.09).
 | Options sent | we sent villas |
 | Objection Handled | we answered an objection |
 | viewing Suggested | we offered a viewing, no slot agreed yet |
-| Viewing scheduled | a concrete day and time is agreed |
+| Viewing scheduled | a concrete day and time is agreed — the broker's own pick too; without an agreed date and time in the chat the stage stays where it is (owner, 03.10.2026: «да, дата и время») |
 | Viewing done | the client stood in the villa — set by the viewing report, not by the chat (16.09); it stays Viewing done even when a new shortlist goes out afterwards (14.09) |
 | Negotiation done → Contract signed → CHECK IN | terms, contract, keys; set by the broker |
 
 The stage follows our own message, never the client's mood. Closed-won / Closed-lost are always
 the broker's tap (owner's rule since the start).
+
+A client who is still interested is never closed (owner, 03.10.2026): the bot never closes a card on
+its own, and before the broker's close the Copilot reads the client's last message — a question,
+"keep sending", "I'll get back to you", a move-in months away → the card is not closed; a reminder is
+set for that date instead.
 
 ## 3. Who is not worked (gates before the first message)
 
@@ -58,6 +63,18 @@ the broker's tap (owner's rule since the start).
      clock, and pushes the owner the card numbers.
 
 ## 5. The shortlist (04.09, 14.09, 21.09, 26.09)
+
+Facts in a draft (owner, 03.10.2026: «проверять факты: суммы и даты в черновике должны быть в словах
+клиента или в форме — да, обязательно»; «сверять число вилл в тексте с числом ссылок — да, контроль,
+желательно не только количество, но и качество»; «анкету передавать с пометкой "клиент не отвечал"»):
+- a client who has not written is never thanked for confirming and never has a preference read back;
+  their form is passed as the form, not as a message from them;
+- an amount or a date put in the client's mouth is in their own messages or their form — a form range
+  ("in 1-2 months") stays a range, never becomes a date;
+- the number of villas the text speaks of is the number of links attached, and each villa is given
+  only its own bedrooms and price;
+- checked in code before the broker sees the draft: one rewrite with the defects named, then whatever
+  is still wrong is removed (a sentence) or corrected (a count).
 
 The form's area answer "Other" with no place named anywhere means ANY area (owner, 29.09.2026:
 "she is looking property in other areas, which means they don't care what kind of area"): the
@@ -112,6 +129,20 @@ villa the client clicked does not become their area.
 After the first shortlist, every message nudges toward a viewing, in Amelia's own words: is the
 client in Bali, which day suits, we check the owner's availability. No video tours or virtual
 viewings; a client not on the island is asked when they arrive (10.09).
+
+Before a viewing is booked (owner, 03.10.2026), the owner side confirms, for this client:
+1. free from the client's date for the client's number of months;
+2. the price for that term, months upfront, deposit;
+3. pets / kids, when the client has them;
+4. construction or a main road nearby, living room open or enclosed — when the villa is not inspected;
+5. the viewing time.
+The viewing is booked only when all five are answered. The bot of the listing broker (Yudi's line,
+"ask the owner" in Copilot) asks them and brings the answers back to the client's card; until the owner
+has tested it (from Amelia's leave), Amelia asks the owner herself by the same list.
+
+At the viewing the broker gives the client the owner's terms and a 24–48 h deadline to decide. 24 h
+after the viewing the next step is mandatory: a follow-up; "no" → a new shortlist on the reason given;
+"yes" → the deposit (owner, 03.10.2026: «след шаг обязателен»).
 
 Three hours after an agreed viewing, Amelia fills the viewing report in Copilot (08.09); the report
 is information for the next draft, it moves no stage (09.09).

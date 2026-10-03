@@ -1118,13 +1118,6 @@ const PAGE_HTML = `<!doctype html>
     }
     return null;
   }
-  function detectStageTransition(text) {
-    if (!text) return false;
-    var t = text.toLowerCase();
-    var kws = ["viewing","zoom call","video call","meet on","call on","просмотр","зум","созвон","встрет","запишем","запланируем","забронируем","reservation","резерв","schedule a"];
-    for (var i = 0; i < kws.length; i++) { if (t.indexOf(kws[i]) !== -1) return true; }
-    return false;
-  }
   // Stage ids are unique PER FUNNEL even where the names match, so the picker
   // has to be told which funnel the open lead belongs to. Asking without one
   // returned Unicorn ids for every pipeline: on a Rental lead the broker picked
@@ -2093,7 +2086,10 @@ const PAGE_HTML = `<!doctype html>
     // thing that needs the broker's hand here is a closing stage (Closed
     // won/lost): pre-filled and pre-checked so confirming is a single tap.
     var termStage = item.suggested_stage_terminal ? (item.suggested_stage || "") : "";
-    var stageChecked = termStage ? true : detectStageTransition(item.suggestion_text);
+    // The word "viewing" used to tick "change stage" with the next stage picked, so offering a viewing
+    // moved the card to Viewing scheduled with no date (Negar, 02.10). Only a closing stage is pre-ticked
+    // now; Viewing scheduled needs an agreed date and time (owner, 03.10.2026, skills/rental.md §2).
+    var stageChecked = !!termStage;
     openItem = {
       id: item.id,
       lead_id: item.lead_id,
