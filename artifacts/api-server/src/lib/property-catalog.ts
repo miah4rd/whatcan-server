@@ -1490,7 +1490,7 @@ export type RequestInputs = {
   /** Parsed answers from the ad form on the amoCRM card. */
   cardCriteria?: { bedrooms: number | null; areas: string[]; budgetIdrMonthly: number | null } | null;
   /** The same answers as the client typed them. */
-  cardAnswers?: { bedrooms: string | null; areas: string | null; budget: string | null; moveIn: string | null; notes: string | null } | null;
+  cardAnswers?: { bedrooms: string | null; areas: string | null; budget: string | null; moveIn: string | null; stay?: string | null; notes: string | null } | null;
   cardBudgetTexts?: string[];
   /** Card notes — the scout's summary of the client's own post lives here. */
   leadNotes?: string | null;

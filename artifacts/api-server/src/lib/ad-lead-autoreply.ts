@@ -367,6 +367,7 @@ export async function sendAdLeadWelcome(opts: {
     areas: null,
     budget: null,
     moveIn: null,
+    stay: null,
     notes: null,
   };
 
