@@ -1,3 +1,4 @@
+import { stillInterested } from "../../lib/close-guard";
 import { Router } from "express";
 import { learnFromEdit } from "../../lib/broker-corrections";
 import { refreshQueuedDrafts } from "../../lib/refresh-queued-drafts";
@@ -186,7 +187,19 @@ async function autoCreateCrmTask(
         // prevLastMessageFrom is captured BEFORE the approve handler set it to "us"
         const clientNeverReplied = prevLastMessageFrom !== "lead";
 
+        // §2 (owner, 03.10.2026): the bot never closes a Rental client who is still interested — the last
+        // follow-up going unanswered is not a "no" from someone who named a move-in months away.
+        let keepOpen: Awaited<ReturnType<typeof stillInterested>> = null;
         if (clientNeverReplied) {
+          const [row] = await db.select({ pipeline: leadsSyncTable.pipeline }).from(leadsSyncTable).where(eq(leadsSyncTable.leadId, leadId)).limit(1);
+          if ((row?.pipeline ?? "").trim().toLowerCase() === "rental") keepOpen = await stillInterested(leadId).catch(() => null);
+          if (keepOpen?.interested) {
+            await db.update(leadsSyncTable).set({ nextFollowupAt: keepOpen.remindAt }).where(eq(leadsSyncTable.leadId, leadId));
+            await createAmoTask(leadId, `Client still interested — write again${keepOpen.quote ? `: "${keepOpen.quote}"` : ""}`, keepOpen.remindAt, responsibleUserId).catch(() => false);
+            log.info({ leadId, quote: keepOpen.quote, remindAt: keepOpen.remindAt }, "final follow-up: not closed — the client is still interested, reminder set");
+          }
+        }
+        if (clientNeverReplied && !keepOpen?.interested) {
           // Close lead as Lost. This account has no loss reasons configured, so
           // close on status alone (passing a phantom loss_reason_id made amoCRM
           // 500 and silently failed every final-follow-up close).
@@ -983,6 +996,24 @@ router.post("/approve", async (req, res) => {
       } catch (err) {
         req.log.warn({ err, leadId: sug.leadId, target }, "viewing canon check failed — auto stage not applied");
         if (!pickedStage) autoStage = null;
+      }
+    }
+  }
+  // A client who is still interested is not closed (owner, 03.10.2026, skills/rental.md §2): the
+  // Copilot reads their last words first; interest → the card stays, a reminder is set for their date.
+  {
+    const target = pickedStage ?? autoStage?.name ?? null;
+    if (target && /lost/i.test(target) && (stageCtx?.pipeline ?? "").trim().toLowerCase() === "rental") {
+      const keep = await stillInterested(sug.leadId).catch(() => null);
+      if (keep?.interested) {
+        pickedStage = null;
+        autoStage = null;
+        await db.update(leadsSyncTable).set({ nextFollowupAt: keep.remindAt, updatedAt: new Date() }).where(eq(leadsSyncTable.leadId, sug.leadId));
+        const owner = await getAmoLead(sug.leadId).catch(() => null);
+        await createAmoTask(sug.leadId, `Client still interested — write again${keep.quote ? `: "${keep.quote}"` : ""}`, keep.remindAt, owner?.responsible_user_id).catch(() => false);
+        const on = keep.remindAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Asia/Makassar" });
+        stageRefusedNote = `${skipMessage ? "" : "Sent. "}Not closed: the client is still interested${keep.quote ? ` ("${keep.quote}")` : ""}. Reminder set for ${on}.`;
+        req.log.info({ leadId: sug.leadId, target, quote: keep.quote, remindAt: keep.remindAt }, "close refused: the client is still interested — reminder set");
       }
     }
   }

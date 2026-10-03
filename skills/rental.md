@@ -36,7 +36,10 @@ the broker's tap (owner's rule since the start).
 A client who is still interested is never closed (owner, 03.10.2026): the bot never closes a card on
 its own, and before the broker's close the Copilot reads the client's last message — a question,
 "keep sending", "I'll get back to you", a move-in months away → the card is not closed; a reminder is
-set for that date instead.
+set for that date instead. The reminder: 3–4 weeks before a move-in they named, or the day they said
+they would be back, otherwise in 3 days; it is a follow-up clock and an amoCRM task for the broker.
+The same check runs when an approved last follow-up would close the card. A card closed by hand
+directly in amoCRM is not checked.
 
 ## 3. Who is not worked (gates before the first message)
 
