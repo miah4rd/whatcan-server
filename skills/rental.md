@@ -43,9 +43,9 @@ directly in amoCRM is not checked.
 
 ## 3. Who is not worked (gates before the first message)
 
-- Budget below 30,000,000 IDR a month → Closed-lost, nobody's time (21.08).
-  A request for a 1-bedroom villa: the bar is 25,000,000 instead (owner, 03.10.2026: «1BR с порогом
-  25M; да от 25»).
+- Budget below 25,000,000 IDR a month → Closed-lost, nobody's time (owner, 04.10.2026: «от 25 миллионов
+  и выше мы работаем, ниже не работаем»; was 30,000,000 since 21.08, 25M for 1BR on 03.10). The bar is
+  the setting budget_filter_settings.min_monthly_idr; this line is its source.
 - Only Uluwatu, Ubud or Sanur named → Closed-lost, no message. Temporary, until the owner lifts
   it (18.09).
 - Every place named is one we do not cover → no automatic welcome; the draft goes to Amelia with
@@ -170,7 +170,8 @@ gets no follow-up beside it; the check runs before any text is written.
 - A problem seen in another funnel is never fixed by adding a rule to this one.
 
 ## Answered by the owner (26.09.2026)
-1. The 30,000,000 IDR floor stands, and "b1" on the Meta form is the code for it — yes.
+1. The 30,000,000 IDR floor stands, and "b1" on the Meta form is the code for it — yes. (Lowered to
+   25,000,000 on 04.10.2026, §3.)
 2. Follow-ups: the series of three, then stop.
 3. Autopilot on this funnel: nothing changes for now — the first message is the automatic
    welcome with the client's request read back, the second (the shortlist) goes through approve.

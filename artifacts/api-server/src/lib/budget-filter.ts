@@ -27,17 +27,6 @@ import { parseDialogContent } from "./dialog-parser";
 import { closeLeadAsLost } from "./amo-client";
 import { getLeadCardCriteria } from "./lead-card-fields";
 
-/** §3: the bar for a 1-bedroom request (owner, 03.10.2026: «1BR с порогом 25M; да от 25»). */
-const ONE_BEDROOM_BAR_IDR = 25_000_000; // §3
-
-/** The client asks for one bedroom: the form says 1 (a "1-2BR" too), or their own words do and name nothing bigger. */
-function asksForOneBedroom(formBedrooms: number | null, texts: string[]): boolean {
-  if (formBedrooms === 1) return true;
-  if (formBedrooms !== null && formBedrooms > 1) return false;
-  const all = texts.join(" ");
-  return /\b(1|one)[\s-]*(br\b|bed(room)?s?\b)|\bstudio\b/i.test(all) && !/\b([2-9]|two|three|four)[\s-]*(br\b|bed(room)?s?\b)/i.test(all);
-}
-
 export type BudgetFilterSetting = {
   pipeline: string;
   enabled: boolean;
@@ -151,8 +140,8 @@ export async function enforceBudgetFilter(leadId: string, extraTexts?: string[])
     }
 
     if (!budget) return false; // no stated budget, no priced anchor → work the lead
-    // A 1-bedroom request has its own, lower bar (skills/rental.md §3, owner 03.10.2026).
-    const bar = asksForOneBedroom(card.bedrooms, texts) ? Math.min(setting.minMonthlyIdr, ONE_BEDROOM_BAR_IDR) : setting.minMonthlyIdr;
+    // One bar for every request (skills/rental.md §3, owner 04.10.2026: 25M, the 1BR exception of 03.10 folded in).
+    const bar = setting.minMonthlyIdr;
     if (budget >= bar) return false;
 
     // Below the bar — into the bin, exactly as ordered. amoCRM first: if the
