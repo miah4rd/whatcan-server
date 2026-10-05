@@ -777,6 +777,10 @@ router.post("/approve", async (req, res) => {
         pipeline: prevSyncRow?.pipeline ?? null,
         leadStage: explicitNewStage ?? prevSyncRow?.leadStage ?? null,
         kind: sug.kind,
+        // The fine moment (§8, 05.10.2026): follow-up number, villas attached, who wrote last.
+        followupLevel: (sug as { followupLevel?: number | null }).followupLevel ?? null,
+        links: effectiveAttachments.length,
+        clientWroteLast: sug.kind === "push" ? false : true,
       })
         // A new preference: the broker's other waiting drafts at this stage are written again with it.
         .then((learned) =>

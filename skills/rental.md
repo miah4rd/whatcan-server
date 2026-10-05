@@ -177,6 +177,12 @@ gets no follow-up beside it; the check runs before any text is written.
 - Structure (this file): only the owner, in chat, recorded here with the date.
 - Wording, tone, length, timing: learned from Copilot — Amelia's edit is a lesson, her approve
   without edit is an accepted example. Never from a session's own judgement.
+- A lesson belongs to its exact moment (owner, 05.10.2026: «нужно мельче шинковать на разные ситуации…
+  дьявол кроется в деталях»): the stage, a reply or follow-up #1–3, villas attached or not, the client
+  having written last or being silent. A new lesson replaces only one from the same moment. A lesson is
+  a rule — never a client's name, a villa, an area, a number or what the client said — and an accepted
+  example lends its structure only, its names, dates, figures and villa lines blanked («урок хранится как
+  правило, без имён и фраз конкретного клиента… да»).
 - A problem seen in another funnel is never fixed by adding a rule to this one.
 
 ## Answered by the owner (26.09.2026)

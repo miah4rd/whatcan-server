@@ -54,11 +54,21 @@ export async function acceptedExamplesBlock(brokerName: string | null | undefine
   const ex = await acceptedExamples(brokerName, situation);
   if (!ex.length) return "";
   const clip = (t: string) => (t.length > MAX_CHARS ? t.slice(0, MAX_CHARS).trimEnd() + "…" : t);
+  // The structure travels, the facts do not (owner, 05.10.2026): a sent message carried its client's
+  // name, dates, budget and wishes ("no pets or kids, workspace not needed") into eight other clients'
+  // drafts. Names after a greeting, figures, dates, villa list lines and links are blanked here.
+  const blank = (t: string) =>
+    t
+      .replace(/^((?:hi|hello|hey|halo|hai|dear|selamat \w+)[ ,]+)([^\s!,.]+(?: [A-Z][^\s!,.]*)?)/gim, "$1{name}")
+      .replace(/https?:\/\/\S+/g, "{link}")
+      .replace(/^\s*\d+\.\s.*$/gm, "{villa line}")
+      .replace(/\b\d{1,2}(st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/gi, "{date}")
+      .replace(/\b(rp\.?\s*)?\d[\d.,]*\s*(million|mil|jt|juta|m)?\b/gi, "{number}");
   return (
     // Owner, 27.09: what the broker last SENT in this moment is the structure of this stage's message —
     // an edit included. It outranks the lessons above where they differ.
     `\n\nTHE BROKER'S OWN MESSAGES IN THIS SAME SITUATION, newest first — what they actually sent (edited or as drafted). ` +
     `The FIRST one is the current structure of this message: write yours with the same questions, in the same order, the same greeting, self-introduction and sign-off, the same length and tone; only the facts about this villa or client change (the facts, names and villas below are NOT for reuse). Where a preference above disagrees with it, the broker's latest message wins:\n` +
-    ex.map((t) => `«${clip(t).replace(/\n{2,}/g, "\n").replace(/\n/g, " ⏎ ")}»`).join("\n")
+    ex.map((t) => `«${clip(blank(t)).replace(/\n{2,}/g, "\n").replace(/\n/g, " ⏎ ")}»`).join("\n")
   );
 }

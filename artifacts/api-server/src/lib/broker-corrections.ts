@@ -100,6 +100,25 @@ function wordSet(s: string): Set<string> {
   );
 }
 
+/**
+ * The fine moment of a lesson (owner, 05.10.2026: «нужно мельче шинковать на разные ситуации… дьявол
+ * кроется в деталях»; skills/rental.md §8): a reply or follow-up #1–3, with or without villas attached,
+ * the client having written last or being silent. Stored at the front of situation_context as
+ * "when: …"; a lesson retires another only when this matches too.
+ */
+export type LessonMoment = { kind?: string | null; followupLevel?: number | null; links?: number | null; clientWroteLast?: boolean | null };
+export function lessonWhen(m: LessonMoment | null | undefined): string | null {
+  if (!m) return null;
+  const step = m.kind === "push" ? `follow-up #${Math.max(1, Math.min(3, Number(m.followupLevel ?? 0) + 1))}` : "reply";
+  const villas = (m.links ?? 0) > 0 ? "with villas" : "no villas";
+  const client = m.clientWroteLast == null ? null : m.clientWroteLast ? "client wrote last" : "client silent";
+  return [step, villas, client].filter(Boolean).join(" · ");
+}
+function whenOf(context: string | null | undefined): string | null {
+  const m = String(context ?? "").match(/^when: ([^|]+)/);
+  return m ? m[1]!.trim() : null;
+}
+
 /** Rough duplicate check so the store doesn't fill with restatements. */
 function similar(a: string, b: string): boolean {
   const A = wordSet(a);
@@ -189,7 +208,7 @@ Respond with JSON only: {"instruction": "...", "situation": "style|${SITUATIONS.
   }
 }
 
-type Lesson = { id: string; instruction: string; situation?: string | null };
+type Lesson = { id: string; instruction: string; situation?: string | null; when?: string | null };
 
 /**
  * The lessons still in force. With a `situation`, narrows to the ones that
@@ -217,13 +236,14 @@ async function activeLessons(brokerId: string, limit: number, situation?: Situat
       id: brokerCorrectionsTable.id,
       instruction: brokerCorrectionsTable.instruction,
       situation: brokerCorrectionsTable.situation,
+      context: brokerCorrectionsTable.situationContext,
     })
     .from(brokerCorrectionsTable)
     .where(where)
     .orderBy(desc(brokerCorrectionsTable.createdAt))
     .limit(limit);
   return rows
-    .map((r) => ({ id: r.id, instruction: (r.instruction ?? "").trim(), situation: r.situation }))
+    .map((r) => ({ id: r.id, instruction: (r.instruction ?? "").trim(), situation: r.situation, when: whenOf(r.context) }))
     .filter((r) => r.instruction)
     // Applied to a client draft, a who-is-it-for lesson is never followed (see WHO_IS_IT_FOR_LESSON).
     .filter((r) => !situation || situation === "owner_intake" || lessonAppliesToClients(r.instruction));
@@ -250,7 +270,7 @@ export async function learnFromEdit(
   brokerName: string | null | undefined,
   originalText: string,
   editedText: string,
-  ctx?: { pipeline?: string | null; leadStage?: string | null; kind?: string | null; lastLeadText?: string | null },
+  ctx?: { pipeline?: string | null; leadStage?: string | null; kind?: string | null; lastLeadText?: string | null } & LessonMoment,
 ): Promise<boolean> {
   const before = (originalText ?? "").trim();
   const after = (editedText ?? "").trim();
@@ -267,7 +287,7 @@ export async function learnFromEdit(
     const parsed = await chatCompletionJSON<{ instruction?: string; situation?: string }>({
       model: HELPER_MODEL,
       label: "learn-edit",
-      system: `A real-estate broker rewrote an AI-drafted WhatsApp message. Extract the REUSABLE preference behind the change (max 120 chars) — what they changed and why, phrased so it can be applied to future messages. Drop everything specific to this lead or property. If the edit was purely one-off, return an empty instruction. Copy any name the broker uses EXACTLY as written.
+      system: `A real-estate broker rewrote an AI-drafted WhatsApp message. Extract the REUSABLE preference behind the change (max 120 chars) — what they changed and why, phrased as a RULE that can be applied to future messages. Never put in it a client's name, a villa's name, an area, a number, a price or a date, or anything the client said: those belong to this one conversation and leaked into other clients' drafts (05.10.2026). If the edit was purely one-off, return an empty instruction. Copy the BROKER's own name exactly if the rule is about signing.
 
 Also classify WHEN this preference applies. "style" = tone, greeting, signature, language or length — it applies to every message. Otherwise pick the ONE conversation moment it belongs to: ${SITUATIONS.join(", ")}. When unsure, prefer "style".
 
@@ -297,17 +317,19 @@ Respond with JSON only: {"instruction": "...", "situation": "style|${SITUATIONS.
     const existing = await activeLessons(brokerId, 60);
     if (existing.some((r) => similar(r.instruction, instruction))) return false;
 
-    const situationContext = ctx
-      ? [ctx.pipeline, ctx.leadStage].filter(Boolean).join(" / ") || null
-      : null;
+    const when = situation === "style" ? null : lessonWhen(ctx);
+    const situationContext = [when ? `when: ${when}` : null, ctx ? [ctx.pipeline, ctx.leadStage].filter(Boolean).join(" / ") : null].filter(Boolean).join(" | ") || null;
     if (situation !== "owner_intake" && !lessonAppliesToClients(instruction)) {
       logger.info({ brokerId, instruction, situation }, "lesson not stored — client drafts never ask who the villa is for");
       return false;
     }
     await db.insert(brokerCorrectionsTable).values({ brokerId, instruction, situation, situationContext });
-    logger.info({ brokerId, instruction, situation }, "learned from the broker's manual edit");
+    logger.info({ brokerId, instruction, situation, when }, "learned from the broker's manual edit");
 
-    await retireContradicted(brokerId, instruction, existing);
+    // A lesson replaces only one taught in the SAME moment (same situation and same "when"): "show the
+    // villas with details" (follow-up with new villas) and "no villa details" (follow-up, nothing new,
+    // client silent) are both right and used to cancel each other within hours.
+    await retireContradicted(brokerId, instruction, existing.filter((l) => l.situation === situation && (l.when ?? null) === when));
     return true;
   } catch (err) {
     logger.warn({ err, brokerId }, "learnFromEdit failed (non-fatal)");
@@ -392,8 +414,8 @@ export async function correctionsPromptBlock(
     if (lessons.length === 0) return examples;
     const scope = situation ? `in this situation (${situation})` : "on every message";
     return `\n\nTHE BROKER HAS TAUGHT YOU THESE PREFERENCES on earlier edits — they apply ${scope}:\n${lessons
-      .map((l) => `- ${l.instruction}`)
-      .join("\n")}${examples}`;
+      .map((l) => `- ${l.when ? `[when: ${l.when}] ` : ""}${l.instruction}`)
+      .join("\n")}${lessons.some((l) => l.when) ? "\nA lesson marked [when: …] applies only when this message is in that same moment (a reply or follow-up number, villas attached or not, the client having written last or being silent)." : ""}${examples}`;
   } catch {
     return "";
   }
