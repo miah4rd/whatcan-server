@@ -133,6 +133,11 @@ villa the client clicked does not become their area.
   shortlist, always (14.09). Only a client focused on one villa we sent (its price, a viewing of
   it) gets no new links (14.09).
 - Never ask "is this for yourself or for someone else?" (14.09).
+- The client turns villas down with a reason (a style, the wood, open living, the area, the price): the
+  next message carries villas that fix that very reason, the way Amelia does (Kara: "orange wood" → light
+  modern villas the next day). A vague reason ("not my style") gets one question first ("what style
+  would you like?"), then villas that fit the answer (Lorenzo). Owner, 05.10.2026: «есть конкретное
+  возражение и она его отрабатывает, запиши боту в скилы».
 
 - Sending (01.10.2026): limits are on contacts, not messages; inside one chat messages follow each other
   10–15 seconds apart. The autopilot answers once the client has been quiet for 4 minutes, one reply to
