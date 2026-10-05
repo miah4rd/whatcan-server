@@ -171,8 +171,11 @@ is information for the next draft, it moves no stage (09.09).
 ## 7. Follow-ups when the client goes quiet
 
 A series of three, one a day, each counted from the client's own last message, in Amelia's voice,
-never a template (owner's Rental cadence). A follow-up carries options when the request allows it.
-After the third follow-up with no reply the bot stops chasing; the lead is left alone (26.09).
+never a template (owner's Rental cadence). Each of the three carries NEW villas for the request (or
+the closest ones, §5) — never the same villas again. After the third follow-up with no reply the card
+goes to Closed-lost (owner, 05.10.2026: «3 раза новая подборка, если ничего не зашло, то в корзину. пиши
+в скилы»; replaces "the lead is left alone", 26.09). A client who showed interest is never closed this
+way (§2): a reminder is set for their date instead.
 A client who said they found a place or are no longer looking ("I already found it", "no need to search
 more") gets no follow-up; the card is left for the broker to close (owner, 05.10.2026: «да тут согласен
 нужно добавить в скилы»).
