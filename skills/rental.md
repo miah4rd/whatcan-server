@@ -15,6 +15,19 @@ off; the owner turns it on by hand, stage by stage, when he sees a stage run wit
 exceptions send by themselves: the automatic welcome to an ad lead (21.08) and the budget/area
 gates that close a lead before anyone works it (§3).
 
+Autopilot plan (owner, 05.10.2026): «два дня смотреть после правок сегодняшних если … практически
+никаких уже правок нет … с четверга можно пробовать … в автопилоте включать этот процесс». 06–07.10
+we watch Amelia's edits on the bot's drafts; if there are almost none, from Thursday 08.10 the
+autopilot sends everything from the welcome through shortlists and follow-ups up to the client's
+first reaction. From that reaction on (likes a villa / wants a viewing / asks / objects) the Copilot
+drafts and Amelia approves, as now.
+
+Not sure → to the broker (owner, 05.10.2026: «в любой непонятной ситуации не уверен если бот
+отправляет на опрув на любой стадии даже если она на автомате это убережет нас от нелепых
+ошибок»). On any stage, even one on autopilot: when the situation is not covered by these rules and
+the approved examples, or the bot is not confident what to answer or what to do, it does not send —
+it puts the draft into the Copilot for Amelia's approval with one line on what is unclear.
+
 Amelia's number has no sending limits (19.09, 25.09).
 
 ## 2. Stages — each one is a finished action of OUR broker (16.09)
