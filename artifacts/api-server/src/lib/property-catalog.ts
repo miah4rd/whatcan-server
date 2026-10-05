@@ -1029,11 +1029,12 @@ export function rankShortlistFits(fits: SupabaseProperty[], r: ClientRequest, ct
     }
     // How it looks in the photos (owner, 05.10.2026, skills/rental.md §5): only between equal fits.
     const look = p.visual_score ?? 0;
-    if (look >= 4) {
-      quality += look === 5 ? 1.5 : 1;
-      note(`photos look ${look}/5${p.visual_note ? ` (${p.visual_note})` : ""}`);
-    } else if (look > 0 && look <= 2) {
-      quality -= 1.5;
+    // Clients liked 17% of the villas sent with a 5, 10% with a 4, 4% with a 3 (75 days to 05.10.2026).
+    if (look === 5) {
+      quality += 1.5;
+      note(`photos look 5/5${p.visual_note ? ` (${p.visual_note})` : ""}`);
+    } else if (look > 0 && look <= 3) {
+      quality -= look === 3 ? 1 : 1.5;
       note(`photos look only ${look}/5${p.visual_note ? ` (${p.visual_note})` : ""}`);
     }
     const checked = Date.parse(p.availability_checked_at ?? "");
