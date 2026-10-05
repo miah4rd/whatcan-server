@@ -93,6 +93,9 @@ export type SupabaseProperty = {
   style?: "modern" | "traditional" | "mixed" | null;
   street?: "quiet" | "some_traffic" | "busy" | null;
   features_source?: "inspection" | "online" | null;
+  /** How the villa looks in its photos, 1–5 (lib/listing-visual-score.ts); null = not scored yet. */
+  visual_score?: number | null;
+  visual_note?: string | null;
   workspace?: "none" | "desk" | "office_room" | null;
   living_room?: "open" | "enclosed" | null;
   quiet_area?: boolean | null;
@@ -150,7 +153,7 @@ async function fetchAllProperties(): Promise<SupabaseProperty[]> {
 
   const url =
     `${SUPABASE_URL}/rest/v1/properties` +
-    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,created_at,min_stay_months,pre_listed,video_url,images,garden,workspace,living_room,quiet_area,no_construction_nearby,kitchen,pets_policy,kid_friendly,style,street,features_source` +
+    `?select=id,title,area,type,bedrooms,bathrooms,price_usd,leasehold_price_usd,monthly_price_usd,yearly_price_usd,monthly_price_idr,yearly_price_idr,ownership,status,zone,views,purpose,listing_type,features,description,created_at,min_stay_months,pre_listed,video_url,images,garden,workspace,living_room,quiet_area,no_construction_nearby,kitchen,pets_policy,kid_friendly,style,street,features_source,visual_score,visual_note` +
     `&is_draft=eq.false` +
     `&status=neq.sold` +
     `&order=created_at.desc`;
@@ -1023,6 +1026,15 @@ export function rankShortlistFits(fits: SupabaseProperty[], r: ClientRequest, ct
     } else if (photos >= 10) {
       quality += 0.5;
       note("full photo set");
+    }
+    // How it looks in the photos (owner, 05.10.2026, skills/rental.md §5): only between equal fits.
+    const look = p.visual_score ?? 0;
+    if (look >= 4) {
+      quality += look === 5 ? 1.5 : 1;
+      note(`photos look ${look}/5${p.visual_note ? ` (${p.visual_note})` : ""}`);
+    } else if (look > 0 && look <= 2) {
+      quality -= 1.5;
+      note(`photos look only ${look}/5${p.visual_note ? ` (${p.visual_note})` : ""}`);
     }
     const checked = Date.parse(p.availability_checked_at ?? "");
     if (!Number.isNaN(checked) && (now - checked) / RANK_DAY_MS <= 21) {

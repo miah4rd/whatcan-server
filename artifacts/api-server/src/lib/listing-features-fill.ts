@@ -18,6 +18,7 @@
 import { logger } from "./logger";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { siteGet } from "./listing-status-week";
+import { runVisualScore } from "./listing-visual-score";
 
 type Row = {
   id: string;
@@ -185,7 +186,11 @@ export async function runFeatureFill(opts: { apply?: boolean; ids?: string[]; on
 
 /** New listings get read once, a few hours after they appear. */
 export function startListingFeatureFill(): void {
-  const tick = () => runFeatureFill({ apply: true, onlyUnchecked: true, limit: 20 }).catch((err) => logger.warn({ err }, "listing-features-fill: pass failed"));
+  const tick = async () => {
+    await runFeatureFill({ apply: true, onlyUnchecked: true, limit: 20 }).catch((err) => logger.warn({ err }, "listing-features-fill: pass failed"));
+    // New listings' photos get their look scored in the same pass (skills/rental.md §5).
+    await runVisualScore({ apply: true, limit: 20 }).catch((err) => logger.warn({ err }, "listing-visual-score: pass failed"));
+  };
   setTimeout(tick, 10 * 60_000);
   setInterval(tick, 6 * 3600_000);
 }

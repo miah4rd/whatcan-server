@@ -105,6 +105,12 @@ villa the client clicked does not become their area.
   first — a Green flags line from the inspection or a feature checked on the site (garden,
   enclosed living room, workspace, quiet street, no construction). Then the price closest to the
   budget. The same order holds inside every price group of the ladder.
+- How the villa looks (owner, 05.10.2026: «4 делай», «5 да, фишки плюс визуал»): Amelia swapped
+  villas for how they look in the photos. Every live rental's first photos are scored 1–5 (5 = wow:
+  modern, bright, spotless, great pool or view; 2 = tired, dark, worn; 1 = off-putting). Between
+  villas that fit the request equally, the better-looking one goes first; a 1–2 goes after its
+  equals. The look never beats the request, the flags or Listed — it only breaks ties. New listings
+  are scored within 6 hours of going live.
 - Layout, as top rental agencies send it (owner, 30.09.2026: «давай применим то, что топовые агентства
   делают, и не будем ничего придумывать… в конце лучше писать… какая нравится или какая ближе, и
   дальше с радостью проверю availability… если сразу про показ говорить, они могут зашугаться…
