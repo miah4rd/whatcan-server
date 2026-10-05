@@ -93,7 +93,7 @@ async function passOnce(): Promise<void> {
       if (p?.area) where = `the villa in ${String(p.area).split(",")[0]!.trim()}`;
       map = (await villaLinks([s.property_code]).catch(() => []))[0]?.maps ?? null;
     }
-    const text = `Hi${first && !/^test$/i.test(first) ? ` ${first}` : ""}! See you at ${timeLabel(new Date(s.viewing_at))} today at ${where}.${map ? `\n${map}` : ""}`;
+    const text = `Hi${first && !/^test$/i.test(first) && !/^\+?\d|[_@]|\d{3,}/.test(first) ? ` ${first}` : ""}! See you at ${timeLabel(new Date(s.viewing_at))} today at ${where}.${map ? `\n${map}` : ""}`;
     await pool.query(
       `INSERT INTO pending_suggestions (lead_id, responsible_user, kind, suggestion_text, status, requested_at, autopilot_skipped_reason, autopilot_skipped_at, attachments)
        VALUES ($1,$2,'push',$3,'pending',now(),$4,now(),'[]'::jsonb)`,

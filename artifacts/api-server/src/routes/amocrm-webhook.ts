@@ -20,7 +20,7 @@ import { notifyBrokerForLead } from "../lib/push-notifications";
 import { isBroker, brokerKey } from "../lib/broker-identity";
 import { isHosTrackedPipeline } from "../lib/adaptive-followup";
 import { movesStageOnReply } from "../lib/pipelines";
-import { pickPropertyAttachmentsDetailed, buildPromptAdditions, attachedVillasBlock, applyViewingPush, enforceRequestOnDraft, nothingInsideRequest } from "../lib/generate-suggestion";
+import { pickPropertyAttachmentsDetailed, buildPromptAdditions, attachedVillasBlock, applyViewingPush, enforceRequestOnDraft, nothingInsideRequest, rentalTruthGate } from "../lib/generate-suggestion";
 import { getMergedDialog } from "../lib/merged-conversation";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "../lib/listing-acquisition-prompt";
 import { maybeAutopilot } from "../lib/autopilot";
@@ -206,7 +206,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   const draft = sanitizeSuggestion(completion.content);
   const checked = await enforceRequestOnDraft({ leadId: opts.leadId, text: draft, attachments: picked.attachments, picked, rental: isRental });
-  const text = nothingInsideRequest(picked) ? checked.text : await applyViewingPush(checked.text, checked.attachments, {
+  const text = nothingInsideRequest(picked) || picked.outcome?.nearest?.length ? checked.text : await applyViewingPush(checked.text, checked.attachments, {
     leadId: opts.leadId,
     pipeline: opts.pipeline,
     leadStage: opts.leadStage,
@@ -216,6 +216,8 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     lastLeadText,
   });
 
+  // §5 "Facts in a draft": the same gate as the lib generator (03.10.2026; this copy was missed then).
+  if (isRental) return { text: await rentalTruthGate(opts.leadId, text, checked.attachments, dialog.messages, opts.leadNotes ?? null), attachments: checked.attachments };
   return { text, attachments: checked.attachments };
 }
 

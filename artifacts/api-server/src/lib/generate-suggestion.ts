@@ -496,6 +496,21 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
     });
     const out = toAttachments(picks);
 
+    // Nothing inside the request → the closest villas go instead, with what differs (skills/rental.md §5,
+    // owner 05.10.2026: «Делай как Амелия делает в таких случаях»; she sent the nearest in 7 of 7 such cases).
+    const nearest = outcome.hint?.examples ?? [];
+    if (out.length === 0 && opts.isRental && !opts.brokerInstruction && outcome.fitCountInclSent === 0 && nearest.length > 0) {
+      const known = await describePropertiesByIds(nearest.map((e) => e.id)).catch(() => new Map());
+      for (const e of nearest) {
+        const hit = known.get(e.id) as { url?: string; label?: string; clientLabel?: string } | undefined;
+        if (hit?.url) out.push({ type: "link" as const, label: hit.clientLabel ?? hit.label ?? e.title, url: hit.url });
+      }
+      if (out.length > 0) {
+        outcome.nearest = nearest.filter((e) => out.some((a) => a.url.toUpperCase().includes(`/PROPERTY/${e.id.toUpperCase()}`)));
+        logger.info({ leadId: opts.leadId, nearest: outcome.nearest.map((e) => `${e.id}: ${e.why}`) }, "nothing inside the request — the closest villas attached (§5)");
+      }
+    }
+
     // The villa they clicked rides along on the opening ONLY when it is inside
     // their own request (owner, 14.09.2026, replacing "fit or not" of 04.09):
     // R-YUD-066, let until October 2027, went to a client moving in tomorrow;
@@ -580,7 +595,10 @@ export function buildLeadNameRule(
   // bot opened with "Hi R-MER-004" (leads 23300773 and 23302889, 2026-08-21).
   // Better to greet nobody than to greet a property.
   const isListingCode = /^[A-Z]{1,4}-[A-Z0-9]+(?:-[A-Z0-9]+)*$/.test(first);
-  const name = !first || isPlaceholder || isListingCode ? "" : first;
+  // A phone number or an account handle is not a name either ("Hi +639957218325", "Hi
+  // J_D_S_football_management", 04.10.2026): greet without one (skills/rental.md §5).
+  const isHandle = /^\+?\d[\d\s-]{5,}$/.test(cleaned) || /[_@]|\d{3,}/.test(first);
+  const name = !first || isPlaceholder || isListingCode || isHandle ? "" : first;
 
   return name
     ? `\n\nTHE CLIENT'S NAME IS ${name}. OPEN THE MESSAGE WITH IT — "Hi ${name}, ..." — every time, whatever else the message has to do. Never open with "Hi there", never open straight into the answer with no greeting at all, and never drop the name because the message is short or urgent.`
@@ -1245,6 +1263,10 @@ export function shortlistPromptBlock(picked: PickedAttachments | null | undefine
       ? `\n\nTHE VILLA THE CLIENT ASKED ABOUT OR CLICKED IS OUTSIDE THEIR OWN REQUEST: ${o.namedOutside.map((v) => `"${v.title}" (${v.why.join("; ")})`).join(", ")}. If you mention it, give that real reason in plain words (e.g. "it is only free from October 2027"); never invent another one.`
       : "");
   if (picked.skipped || o.declined) return advisory;
+  if (picked.attachments.length > 0 && o.nearest?.length) {
+    const lines = o.nearest.map((e) => `- ${e.title}: ${e.why ?? "close to the request"}`).join("\n");
+    return `\n\nNOTHING IN OUR CATALOG IS EXACTLY WITHIN THIS CLIENT'S REQUEST (${req}), so the ${picked.attachments.length} CLOSEST villas are attached instead (skills/rental.md §5). Say honestly in one short line that nothing matches exactly right now, then present these as the closest options and say in plain words what differs for each:\n${lines}\nNever call them a match or say they fit. End with ONE question that opens the search, e.g. "Would you consider ${o.hint?.suggestion ?? "one of these"}?". Never ask whether they are in Bali.${advisory}`;
+  }
   if (picked.attachments.length > 0) {
     // The price ladder (owner, 21.09.2026): some villas may be cheaper or
     // dearer than the budget on purpose. A fact for the words, never a
@@ -1959,9 +1981,8 @@ export function viewingPushBlock(broker: string, examples: string[]): string {
 VIEWING PUSH. Options are out and no viewing is on the books yet; the next step is a viewing, not another link. This message moves them toward one — the way ${broker} does it, never as a template.${examplesBlock(broker, examples)}
 Today is ${baliToday()} (Bali). What the message has to do, in ${broker}'s own words:
 - name the villa(s) worth seeing — the ones they reacted to, else the best fit already sent;
-- if the thread does not say whether they are in Bali or when they arrive, ask — the viewing is planned around it;
-- on the island: ask which day suits, or offer to check the owner's availability for a day you name; a time the owner already confirmed in the thread is proposed as it stands;
-- not on the island yet: ask when they arrive and offer to line up the viewings for those days; do not offer video tours or virtual viewings (owner, 10.09);
+- every client is already in Bali (we advertise only in Bali — owner, 05.10.2026, skills/rental.md §6): NEVER ask whether they are in Bali or when they arrive;
+- ask which day suits, or offer to check the owner's availability for a day you name; a time the owner already confirmed in the thread is proposed as it stands; no video tours or virtual viewings (owner, 10.09);
 - a time the owner has not confirmed is "I'll check with the owner", never a booking;
 - no new links unless they rejected everything sent; end on the viewing question, not on "let me know what you think".`;
 }
@@ -2001,7 +2022,7 @@ export async function enforceViewingProposal(
       max_tokens: 500,
       temperature: 0.3,
       system: `You are ${broker}, a rental broker in Bali, finishing your own WhatsApp message. The draft below is yours and stays as it is: every sentence, every villa name, the greeting and the sign-off, verbatim. It is missing one thing — a move toward a viewing. Insert ONE sentence (two at most) that makes that move, where it reads naturally (usually right before the sign-off), in your own voice.${examplesBlock(broker, examples)}
-The move: if the thread does not say whether the client is in Bali or when they arrive, ask that; on the island — ask which day suits, or offer to check the owner's availability for a day; not on the island yet — ask when they arrive and offer to line up the viewings for those days (no video tours, no virtual viewings); a time the owner has not confirmed is "I'll check with the owner", never a booking. Today is ${baliToday()} (Bali). No links.${lessons}
+The move: every client is already in Bali (owner, 05.10.2026) — never ask whether they are in Bali or when they arrive; ask which day suits, or offer to check the owner's availability for a day (no video tours, no virtual viewings); a time the owner has not confirmed is "I'll check with the owner", never a booking. Today is ${baliToday()} (Bali). No links.${lessons}
 Return the full message and nothing else.${attachments.length ? ` Villas attached under this message: ${attachments.map((a) => a.label).join("; ")}.` : ""}`,
       messages: [{ role: "user", content: `Client's last message: ${opts.lastLeadText.slice(0, 400)}\n\nYour draft:\n${text}` }],
     });
@@ -2425,7 +2446,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   const written = sanitizeSuggestion(completion.content);
   const checked = await enforceRequestOnDraft({ leadId: opts.leadId, text: written, attachments: picked.attachments, picked, rental: isRental });
-  const text = nothingInsideRequest(picked) ? checked.text : await applyViewingPush(checked.text, checked.attachments, {
+  const text = nothingInsideRequest(picked) || picked.outcome?.nearest?.length ? checked.text : await applyViewingPush(checked.text, checked.attachments, {
     leadId: opts.leadId,
     pipeline: opts.pipeline,
     leadStage: opts.leadStage,
@@ -2435,28 +2456,41 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     lastLeadText,
   });
 
-  // The last word before the broker sees it: nothing about the client that the client did not say,
-  // and the villas in the text are the villas attached (skills/rental.md §5 "Facts in a draft").
+  // The last word before the broker sees it (skills/rental.md §5 "Facts in a draft").
   if (isRental) {
-    const card = await getLeadCardCriteria(opts.leadId).catch(() => null);
-    const a = card?.answers;
-    const formText = [
-      a?.bedrooms && `Bedrooms: ${a.bedrooms}`,
-      a?.areas && `Area: ${a.areas}`,
-      a?.budget && `Budget: ${a.budget}`,
-      a?.moveIn && `Move-in: ${a.moveIn}`,
-      a?.stay && `Stay: ${a.stay}`,
-      a?.notes && `Notes: ${a.notes}`,
-      opts.leadNotes ?? "",
-    ].filter(Boolean).join("; ");
-    const truthful = await enforceDraftTruth({
-      leadId: opts.leadId,
-      text,
-      attachments: checked.attachments,
-      clientTexts: dialog.messages.filter((m) => m.from === "lead").map((m) => m.text ?? ""),
-      formText,
-    });
-    return { text: truthful, attachments: checked.attachments };
+    return { text: await rentalTruthGate(opts.leadId, text, checked.attachments, dialog.messages, opts.leadNotes ?? null), attachments: checked.attachments };
   }
   return { text, attachments: checked.attachments };
+}
+
+/**
+ * skills/rental.md §5 "Facts in a draft": nothing about the client that the client did not say, and the
+ * villas in the text are the villas attached. Exported: there are two generateSuggestion implementations
+ * (this lib and routes/amocrm-webhook.ts's own copy) and both must pass through it.
+ */
+export async function rentalTruthGate(
+  leadId: string,
+  text: string,
+  attachments: GeneratedSuggestion["attachments"],
+  messages: Array<{ from: "us" | "lead"; text: string }>,
+  leadNotes: string | null,
+): Promise<string> {
+  const card = await getLeadCardCriteria(leadId).catch(() => null);
+  const a = card?.answers;
+  const formText = [
+    a?.bedrooms && `Bedrooms: ${a.bedrooms}`,
+    a?.areas && `Area: ${a.areas}`,
+    a?.budget && `Budget: ${a.budget}`,
+    a?.moveIn && `Move-in: ${a.moveIn}`,
+    a?.stay && `Stay: ${a.stay}`,
+    a?.notes && `Notes: ${a.notes}`,
+    leadNotes ?? "",
+  ].filter(Boolean).join("; ");
+  return enforceDraftTruth({
+    leadId,
+    text,
+    attachments,
+    clientTexts: messages.filter((m) => m.from === "lead").map((m) => m.text ?? ""),
+    formText,
+  });
 }

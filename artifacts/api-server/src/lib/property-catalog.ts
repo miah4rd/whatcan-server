@@ -2117,7 +2117,7 @@ export function requestMisfits(p: SupabaseProperty, r: ClientRequest, now: Date 
 }
 
 /** The closest real villa behind a relax hint — described to a client in plain words, never by its code. */
-export type RelaxExample = { id: string; title: string; bedrooms: number | null; area: string | null; priceIdr: number; freeFrom: string | null };
+export type RelaxExample = { id: string; title: string; bedrooms: number | null; area: string | null; priceIdr: number; freeFrom: string | null; why?: string };
 
 /** The one dimension whose loosening would open the most villas — the question to ask when nothing fits. */
 export type RelaxHint = {
@@ -2127,6 +2127,8 @@ export type RelaxHint = {
   example?: RelaxExample | null;
   /** dim "area": the area names the suggestion offers (the edit path draws from them when the broker asks for options). */
   areas?: string[];
+  /** Up to 3 closest villas across every one-step loosening, each with what differs (skills/rental.md §5, 05.10.2026). */
+  examples?: RelaxExample[];
 };
 
 function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m: Misfit[] }>): RelaxHint | null {
@@ -2193,6 +2195,20 @@ function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m
     });
   }
   hints.sort((a, b) => b.count - a.count);
+  // Nothing fits → Amelia sends the closest ones and says what differs (owner, 05.10.2026: «Делай как
+  // Амелия делает в таких случаях»): the best example of each loosening, most-open loosening first.
+  const why: Record<RelaxHint["dim"], (e: RelaxExample) => string> = {
+    area: (e) => `in ${e.area ?? "a nearby area"} rather than the area they named`,
+    budget: (e) => `Rp ${Math.round(e.priceIdr / 100_000) / 10} million a month, a little above their budget`,
+    bedrooms: (e) => `${e.bedrooms ?? "a different number of"} bedrooms rather than the number they asked for`,
+    dates: (e) => (e.freeFrom ? `free only from ${dayLabel(e.freeFrom)}` : "free later than their move-in"),
+  };
+  const examples: RelaxExample[] = [];
+  for (const h of hints) {
+    if (h.example && !examples.some((x) => x.id === h.example!.id)) examples.push({ ...h.example, why: why[h.dim](h.example) });
+    if (examples.length >= 3) break;
+  }
+  if (hints[0]) hints[0].examples = examples;
   return hints[0] ?? null;
 }
 
@@ -2254,6 +2270,8 @@ export type ShortlistOutcome = {
   priceBands?: Record<string, PriceBand>;
   /** The client's own features (28.09.2026) and, per attached villa (id upper-cased), which it confirms. */
   featureReport?: { asked: string[]; villas: Record<string, { title: string; has: string[]; unknown: string[] }> };
+  /** Nothing fit, so the closest villas were attached instead, each with what differs (§5, 05.10.2026). */
+  nearest?: RelaxExample[];
 };
 
 export type OutsideVilla = { id: string; title: string; why: string[] };

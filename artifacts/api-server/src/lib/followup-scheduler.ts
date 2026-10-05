@@ -533,6 +533,7 @@ Return active=FALSE only if the lead has CLEARLY and EXPLICITLY:
 - Said they are not interested / asked to stop messaging
 - Said it's the wrong number / no WhatsApp on this number
 - Already purchased from a competitor and closed the topic
+- (rentals) Found or rented a place elsewhere / is no longer looking ("I already found it", "we found a villa", "no need to search more", "already got a place") — skills/rental.md §7, owner 05.10.2026
 - Blocked or become hostile
 
 Return active=TRUE if:
@@ -907,7 +908,11 @@ export async function processFollowups(): Promise<void> {
       // Bypassing here prevents an infinite block loop where AI rejects a template lead,
       // clears nextFollowupAt, amo-sync re-sets it, and the cycle repeats forever.
       if (lead.content && !hasStageTpl) {
-        const relevant = await isLeadActiveForFollowup(lead.content, lead.leadStage ?? "");
+        // leads_sync.content freezes for whole channels (the broker's phone replies, the client's answers
+        // to them): "I already found it" lived only in lead_messages and the bot kept drafting follow-ups.
+        const merged = await getMergedDialog(lead.leadId, lead.content).catch(() => null);
+        const convo = merged?.messages.length ? merged.messages.map((m) => `${m.from === "lead" ? "Lead" : "Us"}: ${m.text}`).join("\n") : lead.content;
+        const relevant = await isLeadActiveForFollowup(convo, lead.leadStage ?? "");
         if (!relevant) {
           await db
             .update(leadsSyncTable)

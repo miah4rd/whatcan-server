@@ -118,7 +118,12 @@ villa the client clicked does not become their area.
   ссылке текст плюс ссылка так просто мне кажется понятнее для человека»).
 - Never write that a villa is free now — availability is checked after the client chooses (21.09).
 - Text and links are one message: the words describe exactly the villas attached (04.09).
-- Nothing fits → no links; say so honestly and ask one question that opens options (04.09).
+- Nothing fits exactly → the 1–3 closest villas go (a nearby area, up to about 30% over the budget, one
+  bedroom more or less, or free a little later), each said plainly with what differs, then ONE question
+  ("Would you consider Pererenan as well?") — the way Amelia answers it herself (owner, 05.10.2026:
+  «Делай как Амелия делает в таких случаях, запиши в скилы»; replaces "nothing fits → no links", 04.09).
+- The greeting uses the client's real first name; a phone number or an account handle is not a name —
+  then no name (05.10.2026).
 - A villa already sent is never sent again (04.09).
 - The client says "show me more", "not my style", "I've seen these", names a new criterion → a new
   shortlist, always (14.09). Only a client focused on one villa we sent (its price, a viewing of
@@ -131,9 +136,11 @@ villa the client clicked does not become their area.
 
 ## 6. Toward the viewing (10.09)
 
-After the first shortlist, every message nudges toward a viewing, in Amelia's own words: is the
-client in Bali, which day suits, we check the owner's availability. No video tours or virtual
-viewings; a client not on the island is asked when they arrive (10.09).
+After the first shortlist, every message nudges toward a viewing, in Amelia's own words: which day
+suits, we check the owner's availability. Every client is already in Bali — we advertise only in Bali —
+so nobody is asked whether they are in Bali or when they arrive (owner, 05.10.2026: «все клиенты на
+Бали, потому что мы льем рекламу только на Бали… Нет смысла спрашивать этот вопрос»). No video tours or virtual
+viewings (10.09).
 
 Before a viewing is booked (owner, 03.10.2026), the owner side confirms, for this client:
 1. free from the client's date for the client's number of months;
@@ -157,6 +164,9 @@ is information for the next draft, it moves no stage (09.09).
 A series of three, one a day, each counted from the client's own last message, in Amelia's voice,
 never a template (owner's Rental cadence). A follow-up carries options when the request allows it.
 After the third follow-up with no reply the bot stops chasing; the lead is left alone (26.09).
+A client who said they found a place or are no longer looking ("I already found it", "no need to search
+more") gets no follow-up; the card is left for the broker to close (owner, 05.10.2026: «да тут согласен
+нужно добавить в скилы»).
 Leads created from 14.09 have no age limit; older ones stop after 7 days (14.09).
 One draft per client at a time (owner, 29.09.2026: «главное, чтобы задвоение не получилось»): a
 client with any draft waiting — the unsent 15-minute shortlist, a LIVE reply, an earlier follow-up —
