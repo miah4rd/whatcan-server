@@ -281,3 +281,55 @@ Rules: never thank them for confirming or say they mentioned anything they did n
   else logger.info({ leadId: o.leadId }, "draft truth: defects fixed");
   return text;
 }
+
+/**
+ * The draft heard the client (owner, 05.10.2026, skills/rental.md §5 "The draft heard the client"):
+ * it answers what they asked, does not offer back what they turned down, and does not ask what they
+ * already told us. The two-month read found ~10–12 such misses (Viktoria said "Seseh" and got Canggu;
+ * a washing-machine question left unanswered). One check by the helper model; a miss gets one rewrite
+ * with the defects named. Unreadable → the draft stays as written.
+ */
+export async function enforceListening(o: {
+  leadId: string;
+  text: string;
+  thread: Array<{ from: "us" | "lead"; text: string }>;
+  attachments: Attachment[];
+}): Promise<string> {
+  const recent = o.thread.filter((m) => (m.text ?? "").trim() && !NOT_THE_CLIENT.test(m.text.trim())).slice(-12);
+  if (!recent.some((m) => m.from === "lead")) return o.text;
+  const transcript = recent.map((m) => `${m.from === "lead" ? "CLIENT" : "US"}: ${m.text.replace(/\s+/g, " ").slice(0, 400)}`).join("\n");
+  try {
+    const { chatCompletionJSON, HELPER_MODEL } = await import("./ai-client");
+    const verdict = await chatCompletionJSON<{ problems?: string[] }>({
+      model: HELPER_MODEL,
+      label: "draft-listening",
+      system: `You check a villa-rental broker's next WhatsApp draft against the conversation. List ONLY real problems of these three kinds:
+1. the client asked something in their latest messages (after our last message) that the draft does not answer;
+2. the draft offers again something the client already turned down (an area, a villa, a budget, a size, a style);
+3. the draft asks the client for something they already told us.
+Ignore tone, length and wording. If there is nothing of these kinds, return an empty list.
+JSON only: {"problems": ["short description", …]}`,
+      messages: [{ role: "user", content: `CONVERSATION:\n${transcript}\n\nDRAFT:\n${o.text}` }],
+      max_tokens: 200,
+      temperature: 0,
+    });
+    const problems = (verdict?.problems ?? []).map((p) => String(p).trim()).filter(Boolean).slice(0, 4);
+    if (!problems.length) return o.text;
+    logger.warn({ leadId: o.leadId, problems }, "draft listening: the draft missed what the client said — rewriting");
+    const villas = o.attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url ?? ""}`).join("\n");
+    const res = await chatCompletion({
+      model: WRITER_MODEL,
+      label: "draft-listening-fix",
+      system: `You fix a WhatsApp draft a villa-rental broker is about to send so that it truly answers the client. Fix ONLY these problems, keep the same language, voice, greeting, villas and closing:
+${problems.map((p) => `- ${p}`).join("\n")}
+${villas ? `The villas attached to this message (do not add or drop any):\n${villas}\n` : "No villas are attached; do not mention any as attached.\n"}Never invent a fact about a villa or the client; if the answer to their question is not known, say you will check it. Output only the corrected message.`,
+      messages: [{ role: "user", content: `CONVERSATION:\n${transcript}\n\nDRAFT:\n${o.text}` }],
+      max_tokens: 450,
+    });
+    const out = sanitizeSuggestion(res.content);
+    return out.trim().length > 20 ? out : o.text;
+  } catch (err) {
+    logger.warn({ err, leadId: o.leadId }, "draft listening: check failed — draft kept as written");
+    return o.text;
+  }
+}

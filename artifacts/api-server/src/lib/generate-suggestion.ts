@@ -14,7 +14,7 @@ import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from ".
 import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, clientOwnWords, keyFeatureBits, priceOf, priceBandOf, PRICE_BANDS, type PriceBand, type SupabaseProperty, type ClientRequest, type PropertyPick, type BrokerIntent, type ShortlistOutcome, type RelaxHint, type RelaxExample } from "./property-catalog";
 import { parentAreaOf } from "./bali-areas";
 import { getMergedDialog } from "./merged-conversation";
-import { enforceDraftTruth } from "./draft-truth";
+import { enforceDraftTruth, enforceListening } from "./draft-truth";
 import { db, pendingSuggestionsTable, sentMessagesTable } from "@workspace/db";
 import { viewingReportPromptBlock } from "./viewing-report-context";
 import { leadPhone } from "./phone-dedupe";
@@ -2486,6 +2486,8 @@ export async function rentalTruthGate(
     a?.notes && `Notes: ${a.notes}`,
     leadNotes ?? "",
   ].filter(Boolean).join("; ");
+  // First: does it answer what the client said (§5 "The draft heard the client"); then the facts.
+  text = await enforceListening({ leadId, text, thread: messages, attachments });
   return enforceDraftTruth({
     leadId,
     text,

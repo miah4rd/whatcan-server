@@ -81,6 +81,10 @@ Facts in a draft (owner, 03.10.2026: «проверять факты: суммы
 - checked in code before the broker sees the draft: one rewrite with the defects named, then whatever
   is still wrong is removed (a sentence) or corrected (a count).
 
+The draft heard the client (owner, 05.10.2026: «да» to «вторая проверка: ответил ли черновик на вопрос
+клиента, не предлагает ли то, что клиент уже отверг, не спрашивает ли то, что он уже сказал»): checked
+before the facts; a miss gets one rewrite with the problem named.
+
 The form's area answer "Other" with no place named anywhere means ANY area (owner, 29.09.2026:
 "she is looking property in other areas, which means they don't care what kind of area"): the
 villa the client clicked does not become their area.
