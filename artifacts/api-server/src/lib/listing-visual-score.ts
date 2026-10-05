@@ -63,23 +63,26 @@ export async function scoreVillaPhotos(row: Row): Promise<{ score: number; note:
   }
   if (blocks.length < 2) return null;
   const text: ChatTextBlock = { type: "text", text: `Villa ${row.id}${row.title ? ` — ${row.title}` : ""}. ${blocks.length} listing photos above.` };
-  const out = await chatCompletionJSON<{ score?: number; note?: string }>({
+  const out = await chatCompletionJSON<{ design?: number; condition?: number; light?: number; photos?: number; wow?: number; note?: string }>({
     model: HELPER_MODEL,
     label: "listing-visual-score",
-    max_tokens: 150,
+    max_tokens: 200,
     temperature: 0,
-    system: `You judge how a Bali rental villa LOOKS to a client scrolling its listing photos, the way an experienced rental broker would before sending it.
-Score 1–5:
-5 = wow: modern or beautifully designed, bright, spotless, great pool/garden/view, professional photos.
-4 = attractive and well kept, good light, nothing off-putting.
-3 = fine but ordinary: dated or plain interiors, average photos.
-2 = tired: worn furniture, dark rooms, clutter, stains, unfinished areas, poor phone photos.
-1 = off-putting: dirty, broken, construction mess, or photos that show almost nothing.
-Judge the villa, not the price. Return {"score": 1-5, "note": "<max 12 words: what drives the score>"}.`,
+    system: `You are a strict, picky rental broker in Bali comparing villa listings. Almost every Bali listing has a pool and decent photos — that is the NORM, not a plus. Your job is to separate the few villas a client says "wow" to from the many ordinary ones.
+Rate each 1–10 against the typical Canggu/Pererenan rental listing (typical = 5):
+- design: how modern, stylish and coherent the interiors and architecture are (dated tiles, mismatched furniture, plain boxes → low).
+- condition: how new, clean and well kept (worn, stained, mouldy, unfinished, cluttered → low).
+- light: bright, airy rooms vs dark, cramped ones.
+- photos: professional, well composed, showing the rooms vs phone snaps, dark, few angles.
+- wow: would a client stop scrolling? (view, standout pool, garden, architecture). Typical villa = 4–5, only the top 1 in 10 gets 8+.
+Be honest and use the whole scale. Return {"design":n,"condition":n,"light":n,"photos":n,"wow":n,"note":"<max 12 words: what stands out, good or bad>"}.`,
     messages: [{ role: "user", content: [...blocks, text] }],
   });
-  const score = Math.round(Number(out?.score));
-  if (!(score >= 1 && score <= 5)) return null;
+  const parts = [out?.design, out?.condition, out?.light, out?.photos, out?.wow].map(Number);
+  if (parts.some((n) => !(n >= 1 && n <= 10))) return null;
+  // design and wow weigh double: they are what made Amelia swap a villa; light and photos follow.
+  const avg = (2 * parts[0]! + parts[1]! + parts[2]! + parts[3]! + 2 * parts[4]!) / 7;
+  const score = avg >= 8 ? 5 : avg >= 6.5 ? 4 : avg >= 5 ? 3 : avg >= 3.5 ? 2 : 1;
   return { score, note: String(out?.note ?? "").slice(0, 160) };
 }
 
