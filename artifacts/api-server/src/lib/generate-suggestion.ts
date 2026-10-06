@@ -2565,4 +2565,5 @@ export async function rentalTruthGate(
     clientTexts: messages.filter((m) => m.from === "lead").map((m) => m.text ?? ""),
     formText,
   });
+  return { text: checked, attachments };
 }
