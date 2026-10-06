@@ -9,7 +9,7 @@ import { resolveStageGroup, getStagePromptBlock } from "../../lib/stage-routing"
 import { getQualificationSteps } from "../../lib/settings";
 import { sanitizeSuggestion } from "../../lib/sanitize-suggestion";
 import { buildRentalSystemPrompt } from "../../lib/rental-prompt";
-import { allAttachmentsNamed, pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment, alreadySentPropertyIds, relaxQuestion, stripUnbackedListingOffer, DESCRIBED_VILLA, removeUnattachedVillas } from "../../lib/generate-suggestion";
+import { allAttachmentsNamed, pickPropertyAttachments, reconcileTextWithAttachments, enforceLanguage, composeReplyWithListings, textMentionsAnyAttachment, textMentionsEveryAttachment, alreadySentPropertyIds, relaxQuestion, stripUnbackedListingOffer, DESCRIBED_VILLA, removeUnattachedVillas, rentalTruthGate, type GeneratedSuggestion } from "../../lib/generate-suggestion";
 import { brokerDisplayName } from "../../lib/broker-identity";
 import { getLeadCardCriteria } from "../../lib/lead-card-fields";
 import { learnFromRevision, correctionsPromptBlock, deriveSituation } from "../../lib/broker-corrections";
@@ -251,6 +251,26 @@ router.post("/suggest", async (req, res) => {
       }
     } catch (err) {
       req.log.warn({ err }, "suggest: unattached-villa check failed (non-fatal)");
+    }
+    // A rewrite asked for here is a draft like any other: the same controller (skills/rental.md §5 "Facts
+    // in a draft") runs on it before the broker sees it. 05.10.2026: lead 23748129's draft came through
+    // this path, which had none of it, and went out with another client's villas.
+    if (dbPipeline.toLowerCase() === "rental" && typeof payload["text"] === "string" && (payload["text"] as string).trim()) {
+      try {
+        let atts: GeneratedSuggestion["attachments"] = [];
+        if (Array.isArray(payload["attachments"])) atts = payload["attachments"] as GeneratedSuggestion["attachments"];
+        else if (pendingId) {
+          const r = await pool.query(`SELECT attachments FROM pending_suggestions WHERE id = $1`, [pendingId]).catch(() => ({ rows: [] as Array<{ attachments: unknown }> }));
+          const a = r.rows[0]?.attachments;
+          atts = Array.isArray(a) ? (a as GeneratedSuggestion["attachments"]) : [];
+        }
+        const thread = dialogForMatching.length
+          ? dialogForMatching.map((m) => ({ from: m.from, text: m.text }))
+          : (body.messages ?? []).map((m) => ({ from: (m.from === "lead" ? "lead" : "us") as "us" | "lead", text: m.text }));
+        payload["text"] = await rentalTruthGate(String(body.leadId ?? ""), payload["text"] as string, atts, thread, dbLeadNotes || null);
+      } catch (err) {
+        req.log.warn({ err }, "suggest: draft controller failed (non-fatal)");
+      }
     }
     if (pendingId && typeof payload["text"] === "string" && (payload["text"] as string).trim()) {
       try {

@@ -200,7 +200,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     label: "draft",
     system: systemPrompt,
     ...(cachePrefix ? { cachePrefix } : {}),
-    messages: [{ role: "user", content: prompt + promptAdditions + attachedVillasBlock(picked.attachments) }],
+    messages: [{ role: "user", content: prompt + promptAdditions + attachedVillasBlock(picked.attachments, isRental) }],
     max_tokens: 400,
   });
 

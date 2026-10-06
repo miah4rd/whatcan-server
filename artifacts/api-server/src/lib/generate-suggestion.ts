@@ -970,8 +970,14 @@ export function ensureAllNamed(text: string, attachments: Array<{ label?: string
 }
 
 /** The block the writer is given: the exact villas riding with this message. */
-export function attachedVillasBlock(attachments: Array<{ label?: string; url?: string }>): string {
+export function attachedVillasBlock(attachments: Array<{ label?: string; url?: string }>, rental = false): string {
   if (attachments.length === 0) return "";
+  // Rental: the villas go out as their own messages, each with its own caption (skills/rental.md §5, owner
+  // 06.10.2026: «этот формат бот пусть и использует всегда»). Telling the writer here to "name each" while
+  // the shortlist block said "do not name them" was one of the two voices pulling the text apart.
+  if (rental) {
+    return `\n\nTHE ${attachments.length} VILLAS ATTACHED TO THIS EXACT MESSAGE go out as their own messages right after yours, each with its own caption and link. Do not list, number, name or describe them in your text, never say any of them is free or available (or from when), and never say we have nothing. If you give a number of villas, it is exactly ${attachments.length}.`;
+  }
   const list = attachments.map((a, i) => `${i + 1}. ${a.label ?? a.url}`).join("\n");
   return `\n\nTHE VILLAS ATTACHED TO THIS EXACT MESSAGE — these ${attachments.length}, and no others:\n${list}\nName each of them by its title as written here, mentioning its area naturally in the sentence — never as a bracket after the title, most titles already say where it is. Do not describe, recommend or allude to any villa that is not on this list — the client will open exactly these links under your words.`;
 }
@@ -1758,22 +1764,22 @@ Language: ${opts.language ?? "the language the client writes in (the draft is al
   };
   if (opts.captionList) for (const b of PRICE_BANDS) headers[b] = "";
   const closing = sanitizeSuggestion(out.closing ?? "").trim() || (opts.captionList ? CAPTION_FALLBACK_CLOSING : LADDER_FALLBACK_CLOSING);
-  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const attachments = items.map((x, i) => {
     let detail = sanitizeSuggestion(out.details?.[x.id!] ?? "").replace(/\s+/g, " ").trim();
-    // One line, the best four, nothing the caption already says (bedrooms, bathrooms, price, area).
+    // One line, the best four, nothing the caption already says (bedrooms, bathrooms, price, area), and
+    // nothing about when it is free (skills/rental.md §5: never before the villa's owner confirms it).
     if (opts.captionList && detail) {
-      const bits = detail.replace(/\.$/, "").split(/\s*,\s*/).filter((b) => b && !/\b(bed|bath)rooms?\b|\d\s*BR\b|\bRp\b|million|\/mo\b/i.test(b));
+      const bits = detail.replace(/\.$/, "").split(/\s*,\s*/).filter((b) => b && !/\b(bed|bath)rooms?\b|\d\s*BR\b|\bRp\b|million|\/mo\b|\b(free|available|vacant|frees|ready)\b/i.test(b));
       detail = bits.slice(0, 4).join(", ");
       if (detail) detail = detail[0]!.toUpperCase() + detail.slice(1);
     }
     const money = `Rp ${ladderMillions(priceOf(x.p!))}${unit === "M" ? "M" : ` ${unit}`}`;
     let head = `${i + 1}. ${ladderAreaLabel(x.p!.area)} — ${money}`;
     if (opts.captionList) {
-      // "1. Seminyak · 2BR · Rp 38.5M/mo · from 8 Oct" — a free-from date only when it is still ahead.
-      const f = x.p!.free_from ? new Date(`${x.p!.free_from}T00:00:00Z`) : null;
-      const from = f && !Number.isNaN(f.getTime()) && f.getTime() > Date.now() ? `from ${f.getUTCDate()} ${MON[f.getUTCMonth()]}` : "";
-      head = [`${i + 1}. ${ladderAreaLabel(x.p!.area)}`, x.p!.bedrooms ? `${x.p!.bedrooms}BR` : "", `${money}/mo`, from].filter(Boolean).join(" · ");
+      // "1. Seminyak · 2BR · Rp 38.5M/mo". No free-from date: what the site says about when a villa is free
+      // is not the truth until its owner confirms it for the villa the client chose (skills/rental.md §5,
+      // owner 06.10.2026: «нельзя использовать боту как базовая правда»).
+      head = [`${i + 1}. ${ladderAreaLabel(x.p!.area)}`, x.p!.bedrooms ? `${x.p!.bedrooms}BR` : "", `${money}/mo`].filter(Boolean).join(" · ");
     }
     return { ...x.a, ladder: { band: x.band!, caption: detail ? `${head}\n${detail}` : head, headers, closing } };
   });
@@ -2440,7 +2446,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
     label: "draft",
     system: systemPrompt,
     ...(cachePrefix ? { cachePrefix } : {}),
-    messages: [{ role: "user", content: prompt + promptAdditions + attachedVillasBlock(picked.attachments) }],
+    messages: [{ role: "user", content: prompt + promptAdditions + attachedVillasBlock(picked.attachments, isRental) }],
     max_tokens: 400,
   });
 

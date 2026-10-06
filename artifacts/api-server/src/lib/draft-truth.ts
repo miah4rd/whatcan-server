@@ -11,8 +11,13 @@
  * - an amount or a date put in the client's mouth must be in their own messages or their form;
  * - the number of villas the text names matches the links attached;
  * - a bedroom count or a price the text gives for a villa matches one of the attached villas;
- * - every villa the text lists is one of the villas attached to THIS message (06.10.2026: lead 23748129
- *   got the three villas of lead 23748097, sent a minute earlier, while its links were three others).
+ * - the text never lists the villas: each goes out as its own message with its caption and link
+ *   (06.10.2026: lead 23748129 got the three villas of lead 23748097 listed in its text, while its links
+ *   were three others; owner: «этот формат бот пусть и использует всегда»);
+ * - nothing says a villa is free or available, or from when — that is known only after the villa's owner
+ *   confirms it for the villa the client chose (owner, 06.10.2026);
+ * - a date or a length of stay given as the client's is in their own words or their form;
+ * - links never go under a text that says we have nothing.
  *
  * One rewrite is asked for with the defects named; whatever is still wrong after it is removed
  * sentence by sentence, and a wrong count is replaced with the real one. Nothing is sent from here.
@@ -22,7 +27,7 @@ import { sanitizeSuggestion } from "./sanitize-suggestion";
 import { logger } from "./logger";
 
 export type TruthIssue = {
-  kind: "silent_client_claim" | "unsourced_amount" | "unsourced_date" | "count" | "villa_mismatch" | "foreign_villa";
+  kind: "silent_client_claim" | "unsourced_amount" | "unsourced_date" | "count" | "villa_mismatch" | "villa_list" | "availability" | "no_options_with_links";
   sentence: string;
   detail: string;
 };
@@ -123,54 +128,47 @@ function attachmentFacts(attachments: Attachment[]): { bedrooms: Set<number>; pr
 }
 
 /**
- * A villa listed in the text that is not attached to this message (skills/rental.md §5 "Facts in a
- * draft", owner 06.10.2026: «контролер это хорошо это надо»). A list line is this message's villa when
- * it names one attached villa — its area, most of its caption's own words (not "villa", "pool" or
- * "garden", which every caption shares), or both its bedrooms and its price — and contradicts it in
- * neither bedrooms nor price. Otherwise it is another client's or another message's villa.
+ * The text never lists villas (skills/rental.md §5 layout, owner 06.10.2026: «этот формат бот пусть и
+ * использует всегда»): each villa goes as its own message, its caption built from that villa's own record,
+ * so the words and the link cannot name two different houses. A list line naming a villa is removed.
  */
 const LIST_LINE = /^\s*(?:[-•*·–]|\d+[.)])\s+/;
 const NAMES_A_VILLA = /\b(\d\s?BR|bedroom|villa|house|apartment|rp\b|idr|million)/i;
-const GENERIC = new Set(
-  ("villa villas house home apartment bedroom bedrooms private pool pools with and for the yearly monthly rental rent " +
-    "lease leasehold long term million rp idr per month mo year new brand modern newly built build two three " +
-    "one four five garden view views fully furnished unfurnished available now from only near close walk minutes min " +
-    "area central south north east west big small large spacious cozy cosy beautiful stunning lovely nice style styled " +
-    "tropical balinese minimalist open living kitchen bathroom bathrooms enclosed").split(" "),
-);
-function ownWords(s: string): string[] {
-  return [...new Set(s.toLowerCase().replace(LIST_LINE, "").replace(/[-_/]+/g, " ").match(/[a-z][a-z']{2,}/g) ?? [])].filter((w) => !GENERIC.has(w));
-}
-const bedroomsOf = (s: string) => s.match(/\b(\d)\s*-?\s*(?:BR\b|bed(?:room)?s?\b)/i)?.[1] ?? null;
-const priceOf = (s: string) => {
-  const m = s.match(/Rp\s*([\d.,]+)\s*(?:million|m\b|jt)/i);
-  return m ? parseFloat(m[1].replace(",", ".")) : null;
-};
-export function foreignVillaLines(text: string, attachments: Attachment[]): string[] {
-  const villas = attachments.map((a) => {
-    const label = a.label ?? "";
-    const area = (label.match(/\(([^,()]+),/)?.[1] ?? "").trim().toLowerCase();
-    return { words: ownWords(label.split(" (")[0]), area, br: bedroomsOf(label), price: priceOf(label) };
-  });
+export function villaListLines(text: string): string[] {
   return text
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => LIST_LINE.test(l) && NAMES_A_VILLA.test(l))
-    .filter((l) => {
-      const line = ` ${l.toLowerCase().replace(/[-_/]+/g, " ")} `;
-      const br = bedroomsOf(l);
-      const price = priceOf(l);
-      return !villas.some((v) => {
-        const sameBr = !!br && br === v.br;
-        const samePrice = price !== null && v.price !== null && Math.abs(price - v.price) <= 0.6;
-        const named =
-          (v.area.length > 2 && line.includes(v.area.replace(/[-_/]+/g, " "))) ||
-          (v.words.length > 0 && v.words.filter((w) => line.includes(w)).length * 2 > v.words.length) ||
-          (sameBr && samePrice);
-        const contradicts = (!!br && !!v.br && br !== v.br) || (price !== null && v.price !== null && !samePrice);
-        return named && !contradicts;
-      });
-    });
+    .filter((l) => LIST_LINE.test(l) && NAMES_A_VILLA.test(l));
+}
+
+/**
+ * Whether a villa is free is never said before the villa's owner has confirmed it for the villa the client
+ * chose (skills/rental.md §5, owner 06.10.2026: «То, что на сайте… нельзя использовать боту как базовая
+ * правда… Пока не уточним у владельца после того, как человек выбрал»). A promise to check it is fine.
+ */
+const CLAIMS_AVAILABILITY =
+  /\b(free|available|vacant)\s+(right\s+)?(now|immediately|today|straight away|from\b|on\b|in\b|by\b|after\b|until\b|till\b)|\bfrees?\s+up\b|\b(is|are|it's|they're|both|all)\s+(still\s+|currently\s+)?(free|available|vacant)\b|\bready to move in\b|\bwhat'?s available\b|\bavailable for you\b/i;
+const PROMISES_TO_CHECK = /\b(check|confirm|verify|ask(ing)?|find out|look into|double-check|clarify)\b/i;
+// "no longer available" is what an owner told us, not a promise to the client.
+const SAYS_TAKEN = /\b(no longer|not|isn't|aren't|unavailable|taken|booked|rented out)\b/i;
+export function availabilityClaims(text: string): string[] {
+  return sentencesOf(text).filter((s) => CLAIMS_AVAILABILITY.test(s) && !PROMISES_TO_CHECK.test(s) && !SAYS_TAKEN.test(s));
+}
+
+/** "We have no options" over attached links (Julie, 05.10): one of the two is false (§5). */
+const SAYS_NOTHING =
+  /\b(no|not any|don't have any|do not have any|nothing)\s+(suitable\s+|matching\s+|good\s+)?(options?|villas?|matches|listings?)\b|\bnothing\s+(that\s+)?(matches|fits|available|suitable)\b/i;
+
+/** A length of stay given as theirs ("your 3 month stay") that they never gave (Daan, 05.10). */
+const DURATION = /\b(\d{1,2}|one|two|three|four|five|six|twelve)[\s-]*(months?|years?|weeks?)\b/gi;
+const DURATION_NUM: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, twelve: 12 };
+function durationSourced(n: number, unit: string, sourceLower: string): boolean {
+  const u = unit.toLowerCase()[0];
+  const words = Object.entries(DURATION_NUM).filter(([, v]) => v === n).map(([w]) => w);
+  // "3 months", "3-6 months", "1 to 3 months", "3mo"
+  const single = new RegExp(`\\b(${[String(n), ...words].join("|")})\\s*(?:(?:-|–|to)\\s*\\d{1,2}\\s*)?-?\\s*${u}`, "i");
+  const rangeEnd = new RegExp(`\\b\\d{1,2}\\s*(?:-|–|to)\\s*${n}\\s*-?\\s*${u}`, "i");
+  return single.test(sourceLower) || rangeEnd.test(sourceLower);
 }
 
 export function checkDraftTruth(o: {
@@ -216,10 +214,22 @@ export function checkDraftTruth(o: {
         continue;
       }
     }
-    if (STRONG_ATTRIBUTION.test(s) || ABOUT_THEIR_DATES.test(s)) {
+    // Any date in a draft is either the client's — then in their own words or form — or a villa's
+    // availability, which a draft never gives (§5, owner 06.10.2026: «да, либо повторяется формулировка
+    // которую клиент сам и назвал»). A viewing or a call we propose is our own date, not theirs, and so is
+    // a date the villa's owner gave us once the client chose (a reply with no villas attached).
+    const oursToGive = /\b(view|viewing|visit|inspection|call|meet|meeting|show you|tour)\w*/i.test(s) || (o.attachments.length === 0 && CLAIMS_AVAILABILITY.test(s));
+    if (!oursToGive) {
       const bad = datesIn(s).filter((d) => !dateInSources(d, sources));
       if (bad.length) {
-        issues.push({ kind: "unsourced_date", sentence: s, detail: `date(s) ${bad.map((d) => `${d.d}.${d.m}`).join(", ")} given as the client's, but the client/form never named it — keep their own words ("in 1–2 months")` });
+        issues.push({ kind: "unsourced_date", sentence: s, detail: `date(s) ${bad.map((d) => `${d.d}.${d.m}`).join(", ")} the client/form never named — repeat their own words instead ("in 1–2 months"), or leave the date out` });
+        continue;
+      }
+    }
+    if (STRONG_ATTRIBUTION.test(s) || ABOUT_THEIR_DATES.test(s) || ABOUT_THEM.test(s) || /\bstay\b/i.test(s)) {
+      const bad = [...s.matchAll(DURATION)].filter((m) => !durationSourced(DURATION_NUM[m[1].toLowerCase()] ?? Number(m[1]), m[2], sourceLower));
+      if (bad.length) {
+        issues.push({ kind: "unsourced_date", sentence: s, detail: `length of stay "${bad.map((m) => m[0]).join(", ")}" the client/form never gave — repeat their own words or leave it out` });
         continue;
       }
     }
@@ -238,8 +248,18 @@ export function checkDraftTruth(o: {
     }
   }
 
-  for (const line of foreignVillaLines(o.text, o.attachments)) {
-    issues.push({ kind: "foreign_villa", sentence: line, detail: "this villa is not one of the villas attached to this message — it belongs to another client or another message; remove it" });
+  for (const line of villaListLines(o.text)) {
+    issues.push({ kind: "villa_list", sentence: line, detail: "a villa listed in the text — the villas go out as their own messages with their own captions; never list, number or describe them in the text" });
+  }
+  // A shortlist is before any owner was asked: villas are attached, the client has not chosen yet. A reply
+  // after the owner confirmed (no villas attached) may say what the owner said.
+  for (const sentence of o.attachments.length > 0 ? availabilityClaims(o.text) : []) {
+    issues.push({ kind: "availability", sentence, detail: "says a villa is free or available, or from when — never said before the villa's owner confirms it for the villa the client chose; at most say you will check availability" });
+  }
+  if (o.attachments.length > 0) {
+    for (const sentence of sentencesOf(o.text).filter((x) => SAYS_NOTHING.test(x))) {
+      issues.push({ kind: "no_options_with_links", sentence, detail: "says we have nothing while villas are attached — say we are short on that kind of option right now and these are the closest" });
+    }
   }
 
   const n = statedCount(o.text);
@@ -309,6 +329,17 @@ function keepVillasOutOfText(before: string, after: string): string {
     .trim();
   return kept.length > 20 ? kept : before;
 }
+export function withoutVillaList(text: string): string {
+  const lines = new Set(villaListLines(text));
+  if (!lines.size && !/^\s*also attached:/im.test(text)) return text;
+  return text
+    .split("\n")
+    .filter((l) => !lines.has(l.trim()) && !/^\s*also attached:/i.test(l))
+    .join("\n")
+    .replace(/:\s*$/gm, ".")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 const VILLAS_SEPARATE =
   "These villas go out as their OWN messages right after this text, each with its caption and link: never list, number, name or describe them in this message.";
 
@@ -338,7 +369,7 @@ ${o.attachments.length ? `THE ${o.attachments.length} VILLAS ATTACHED TO THIS ME
 WHAT THE CLIENT ACTUALLY SAID OR FILLED IN (the only source for anything about them):
 ${[...o.clientTexts.filter((t) => !NOT_THE_CLIENT.test(t.trim())).slice(-6), o.formText].filter(Boolean).join("\n") || "(nothing — they have not written)"}
 
-Rules: never thank them for confirming or say they mentioned anything they did not; never turn a range like "in 1-2 months" into a date; never state a budget they did not give; name exactly as many villas as are attached; give each villa only its own bedrooms and price. Output only the corrected message.`,
+Rules: never thank them for confirming or say they mentioned anything they did not; never turn a range like "in 1-2 months" into a date or a length of stay — repeat their own words; never state a budget they did not give; never list or describe the villas in the text, they go out as their own messages; never say a villa is free or available, or from when — at most that you will check its availability; never say we have nothing while villas are attached. Output only the corrected message.`,
       messages: [{ role: "user", content: text }],
       max_tokens: 450,
     });
@@ -352,11 +383,12 @@ Rules: never thank them for confirming or say they mentioned anything they did n
   if (issues.length === 0) return text;
   const count = issues.find((i) => i.kind === "count");
   if (count) text = fixCount(text, o.attachments.length);
-  const toRemove = issues.filter((i) => i.kind !== "count" && i.kind !== "villa_mismatch" && i.kind !== "foreign_villa").map((i) => i.sentence);
+  // A villa list never reaches the broker, rewrite or not: its lines go, and a lead-in left pointing at
+  // nothing ("Here they are:") ends with a full stop.
+  text = withoutVillaList(text);
+  issues = checkDraftTruth({ ...o, text });
+  const toRemove = issues.filter((i) => i.kind !== "count" && i.kind !== "villa_mismatch").map((i) => i.sentence);
   if (toRemove.length) text = removeSentences(text, toRemove);
-  // A villa that is not this message's never reaches the broker, rewrite or not: its line goes.
-  const foreign = new Set(foreignVillaLines(text, o.attachments));
-  if (foreign.size) text = text.split("\n").filter((l) => !foreign.has(l.trim())).join("\n").replace(/\n{3,}/g, "\n\n").trim();
   const left = checkDraftTruth({ ...o, text });
   if (left.length) logger.warn({ leadId: o.leadId, issues: left.map((i) => `${i.kind}: ${i.detail}`) }, "draft truth: defects still present after the fix");
   else logger.info({ leadId: o.leadId }, "draft truth: defects fixed");

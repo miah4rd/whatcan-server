@@ -447,6 +447,13 @@ router.post("/approve", async (req, res) => {
           );
           effectiveAttachments = [...kept, ...added];
         }
+      } else if (
+        (await db.select({ pipeline: leadsSyncTable.pipeline }).from(leadsSyncTable).where(eq(leadsSyncTable.leadId, sug.leadId)).limit(1))[0]?.pipeline?.toLowerCase() === "rental"
+      ) {
+        // Rental: the text is the lead-in and each villa goes as its own message (skills/rental.md §5, owner
+        // 06.10.2026). Rewriting it at send to name the villas and their free-from dates put back exactly
+        // what the draft controller had taken out — so it is sent as approved.
+        req.log.info({ leadId: sug.leadId, links: effectiveAttachments.length }, "approve: rental — villas go as their own messages, text sent as approved");
       } else if (linksChanged) {
         // Links changed, words did not → words follow the links. Forced: the
         // text was written for the old set.
