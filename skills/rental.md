@@ -145,9 +145,14 @@ villa the client clicked does not become their area.
   bedroom more or less, or free a little later), each said plainly with what differs, then ONE question
   ("Would you consider Pererenan as well?") — the way Amelia answers it herself (owner, 05.10.2026:
   «Делай как Амелия делает в таких случаях, запиши в скилы»; replaces "nothing fits → no links", 04.09).
+  The gap is said as "we are short on <area / size> options right now", never "nothing matches" (owner,
+  06.10.2026: «да, в скилы»; Amelia's own edit, Edwin, 05.10).
 - The greeting uses the client's real first name; a phone number or an account handle is not a name —
   then no name (05.10.2026).
 - A villa already sent is never sent again (04.09).
+- A message never retells villas the client already got in an earlier message (their names, features,
+  "both still match"): it says only what is new — the next question, a new villa (owner, 06.10.2026:
+  «конечно, запиши в скилы»; Amelia cut such a retelling from a follow-up to Jeremy, 05.10).
 - The client says "show me more", "not my style", "I've seen these", names a new criterion → a new
   shortlist, always (14.09). Only a client focused on one villa we sent (its price, a viewing of
   it) gets no new links (14.09).

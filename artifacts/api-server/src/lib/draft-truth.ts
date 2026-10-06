@@ -234,6 +234,27 @@ function removeSentences(text: string, sentences: string[]): string {
  * The gate. Returns the draft unchanged when nothing is wrong. Otherwise one rewrite with the defects
  * named; whatever remains wrong is then removed in code (a sentence), or corrected in code (a count).
  */
+/**
+ * The villas go out as their own messages after the text (skills/rental.md §5 layout). The two rewrites
+ * below are shown the attached villas so they get the facts right, and on 05.10 one of them wrote the
+ * villas back into the text as a numbered list with prices (Daan, 23746857): Amelia deleted it by hand.
+ * A rewrite never adds villa lines a draft did not have; if it does, they are cut (owner, 06.10.2026:
+ * «исправь»).
+ */
+const VILLA_LINE = /^\s*\d+[.)]\s+.*(\d\s?BR\b|\bRp\b|bedroom|villa)/i;
+function keepVillasOutOfText(before: string, after: string): string {
+  if (before.split("\n").some((l) => VILLA_LINE.test(l))) return after;
+  const kept = after
+    .split("\n")
+    .filter((l) => !VILLA_LINE.test(l))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return kept.length > 20 ? kept : before;
+}
+const VILLAS_SEPARATE =
+  "These villas go out as their OWN messages right after this text, each with its caption and link: never list, number, name or describe them in this message.";
+
 export async function enforceDraftTruth(o: {
   leadId: string;
   text: string;
@@ -256,7 +277,7 @@ export async function enforceDraftTruth(o: {
 DEFECTS:
 ${issues.map((i) => `- ${i.detail}${i.sentence ? ` — in: «${i.sentence}»` : ""}`).join("\n")}
 
-${o.attachments.length ? `THE ${o.attachments.length} VILLAS ATTACHED TO THIS MESSAGE (the truth about bedrooms and prices):\n${villaList}\n` : "NO VILLAS ARE ATTACHED.\n"}
+${o.attachments.length ? `THE ${o.attachments.length} VILLAS ATTACHED TO THIS MESSAGE (the truth about bedrooms and prices):\n${villaList}\n${VILLAS_SEPARATE}\n` : "NO VILLAS ARE ATTACHED.\n"}
 WHAT THE CLIENT ACTUALLY SAID OR FILLED IN (the only source for anything about them):
 ${[...o.clientTexts.filter((t) => !NOT_THE_CLIENT.test(t.trim())).slice(-6), o.formText].filter(Boolean).join("\n") || "(nothing — they have not written)"}
 
@@ -264,7 +285,7 @@ Rules: never thank them for confirming or say they mentioned anything they did n
       messages: [{ role: "user", content: text }],
       max_tokens: 450,
     });
-    const out = sanitizeSuggestion(res.content);
+    const out = keepVillasOutOfText(text, sanitizeSuggestion(res.content));
     if (out.trim().length > 20) text = out;
   } catch (err) {
     logger.warn({ err, leadId: o.leadId }, "draft truth: rewrite failed — falling back to removal");
@@ -322,11 +343,11 @@ JSON only: {"problems": ["short description", …]}`,
       label: "draft-listening-fix",
       system: `You fix a WhatsApp draft a villa-rental broker is about to send so that it truly answers the client. Fix ONLY these problems, keep the same language, voice, greeting, villas and closing:
 ${problems.map((p) => `- ${p}`).join("\n")}
-${villas ? `The villas attached to this message (do not add or drop any):\n${villas}\n` : "No villas are attached; do not mention any as attached.\n"}Never invent a fact about a villa or the client; if the answer to their question is not known, say you will check it. Output only the corrected message.`,
+${villas ? `The villas attached to this message (do not add or drop any):\n${villas}\n${VILLAS_SEPARATE}\n` : "No villas are attached; do not mention any as attached.\n"}Never invent a fact about a villa or the client; if the answer to their question is not known, say you will check it. Output only the corrected message.`,
       messages: [{ role: "user", content: `CONVERSATION:\n${transcript}\n\nDRAFT:\n${o.text}` }],
       max_tokens: 450,
     });
-    const out = sanitizeSuggestion(res.content);
+    const out = keepVillasOutOfText(o.text, sanitizeSuggestion(res.content));
     return out.trim().length > 20 ? out : o.text;
   } catch (err) {
     logger.warn({ err, leadId: o.leadId }, "draft listening: check failed — draft kept as written");
