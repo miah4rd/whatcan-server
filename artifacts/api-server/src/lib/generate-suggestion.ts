@@ -2509,6 +2509,25 @@ async function notAHomeToRent(leadId: string, messages: Array<{ from: "us" | "le
   }
 }
 
+const WRITES_ABOUT_THE_CARD =
+  /\b(this|the) (is a )?(closed|lost|won|cold|parked)?[ ,]*(lead|card|deal)\b[^.\n]{0,60}\b(which means|so|therefore|should|no message|do not|don't)\b|\bno message should (go out|be sent)\b|\bwe don'?t send outreach\b|\bas an AI\b/i;
+
+/**
+ * The client's name only from their WhatsApp profile or their own words (skills/rental.md §5): when the
+ * request was greeted under one name and someone else writes from WhatsApp (Daan Kroon's form, Simon
+ * Hupkes writing), the draft opens with no name. Every writer has its own name logic; this is the last word.
+ */
+function withoutWrongName(text: string, messages: Array<{ from: "us" | "lead"; text: string; senderName?: string }>): string {
+  const greeted = (messages.find((m) => m.from === "us" && /^\s*(hi|hello|hey|dear)\s+[A-Za-zÀ-ÿ]/i.test(m.text ?? ""))?.text ?? "")
+    .match(/^\s*(?:hi|hello|hey|dear)\s+([A-Za-zÀ-ÿ'-]+)/i)?.[1] ?? "";
+  const profile = (cleanLeadName(messages.find((m) => m.from === "lead" && (m.senderName ?? "").trim().length > 1)?.senderName) ?? "").split(/\s+/)[0] ?? "";
+  if (!greeted || /^there$/i.test(greeted) || !profile || greeted.toLowerCase() === profile.toLowerCase()) return text;
+  const names = [greeted, profile].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  return text
+    .replace(new RegExp(`^(\\s*(?:hi|hello|hey|dear))\\s+(?:${names})\\b`, "i"), "$1 there")
+    .replace(new RegExp(`^\\s*(?:${names})\\s*,\\s*`, "i"), "Hi there, ");
+}
+
 /** The hold autopilot reads: this lead's newest draft goes to the broker, whatever the stage. */
 export async function setDraftHold(leadId: string, reason: string | null): Promise<void> {
   await db.execute(sql`CREATE TABLE IF NOT EXISTS draft_holds (lead_id text PRIMARY KEY, reason text NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`).catch(() => undefined);
@@ -2523,9 +2542,17 @@ export async function rentalTruthGate(
   leadId: string,
   text: string,
   attachments: GeneratedSuggestion["attachments"],
-  messages: Array<{ from: "us" | "lead"; text: string }>,
+  messages: Array<{ from: "us" | "lead"; text: string; senderName?: string }>,
   leadNotes: string | null,
 ): Promise<{ text: string; attachments: GeneratedSuggestion["attachments"] }> {
+  // A note about the card instead of a message to the client ("This is a Closed, lost lead… No message
+  // should go out here", 06.10.2026, two links under it): never a client message — held, nothing attached.
+  if (WRITES_ABOUT_THE_CARD.test(text)) {
+    await setDraftHold(leadId, "to the broker: the bot wrote a note about the card, not a message");
+    logger.warn({ leadId }, "draft controller: a note about the card, not a message — held for the broker, no villas");
+    return { text, attachments: [] };
+  }
+  text = withoutWrongName(text, messages);
   const notHome = await notAHomeToRent(leadId, messages);
   await setDraftHold(leadId, notHome ? `to the broker: the client asks for ${notHome}, not a home to rent` : null);
   if (notHome) {

@@ -265,7 +265,7 @@ router.post("/suggest", async (req, res) => {
           atts = Array.isArray(a) ? (a as GeneratedSuggestion["attachments"]) : [];
         }
         const thread = dialogForMatching.length
-          ? dialogForMatching.map((m) => ({ from: m.from, text: m.text }))
+          ? dialogForMatching.map((m) => ({ from: m.from, text: m.text, senderName: m.senderName }))
           : (body.messages ?? []).map((m) => ({ from: (m.from === "lead" ? "lead" : "us") as "us" | "lead", text: m.text }));
         const gated = await rentalTruthGate(String(body.leadId ?? ""), payload["text"] as string, atts, thread, dbLeadNotes || null);
         payload["text"] = gated.text;

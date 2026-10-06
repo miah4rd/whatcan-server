@@ -1814,7 +1814,7 @@ async function throughTheController<T extends { text: string; attachments: Gener
 ): Promise<T> {
   if ((o.pipeline ?? "").toLowerCase() !== "rental" || !out.text?.trim()) return out;
   try {
-    const thread = (await getMergedConversation(o.leadId, o.lastContent)).map((m) => ({ from: m.from, text: m.text ?? "" }));
+    const thread = (await getMergedConversation(o.leadId, o.lastContent)).map((m) => ({ from: m.from, text: m.text ?? "", senderName: m.senderName }));
     const g = await rentalTruthGate(o.leadId, out.text, out.attachments ?? [], thread, o.leadNotes ?? null);
     return { ...out, text: g.text, attachments: g.attachments };
   } catch (err) {
