@@ -319,6 +319,20 @@ async function maybeAutopilotInner(leadId: string): Promise<AutopilotOutcome> {
       )
       .limit(1);
     if (!sug || !sug.text?.trim()) return { sent: false, reason: "no pending draft" };
+    // The draft controller held this card for a person (skills/rental.md §1 "Not sure → to the broker",
+    // §5: the client asks for something that is not a home to rent). It waits for the broker, any stage.
+    const held = await db
+      .execute(sql`SELECT reason FROM draft_holds WHERE lead_id = ${leadId} AND created_at > now() - interval '3 days' LIMIT 1`)
+      .then((r) => String((r.rows?.[0] as { reason?: string } | undefined)?.reason ?? ""))
+      .catch(() => "");
+    if (held) {
+      await db
+        .update(pendingSuggestionsTable)
+        .set({ autopilotSkippedReason: held, autopilotSkippedAt: new Date() })
+        .where(eq(pendingSuggestionsTable.id, sug.id))
+        .catch(() => undefined);
+      return { sent: false, reason: held };
+    }
     const standing = (sug.skippedReason ?? "").trim();
     if (standing && !standing.startsWith("waiting")) {
       // Already judged for a person ("handed over", "availability check due",

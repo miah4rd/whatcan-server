@@ -598,7 +598,13 @@ export function buildLeadNameRule(
   // A phone number or an account handle is not a name either ("Hi +639957218325", "Hi
   // J_D_S_football_management", 04.10.2026): greet without one (skills/rental.md §5).
   const isHandle = /^\+?\d[\d\s-]{5,}$/.test(cleaned) || /[_@]|\d{3,}/.test(first);
-  const name = !first || isPlaceholder || isListingCode || isHandle ? "" : first;
+  // The request is in one person's name and someone else writes from WhatsApp (Daan Kroon filled the form,
+  // his friend Simon Hupkes writes; 06.10.2026 the draft said "Hi Simon"): we do not know who we are talking
+  // to, so no name at all (skills/rental.md §5, owner 06.10.2026: «чини все»).
+  const greetedFirst = (messages.find((m) => m.from === "us" && /^\s*(hi|hello|hey|dear)\s+[A-Za-zÀ-ÿ]/i.test(m.text ?? ""))?.text ?? "")
+    .match(/^\s*(?:hi|hello|hey|dear)\s+([A-Za-zÀ-ÿ'-]+)/i)?.[1] ?? "";
+  const someoneElse = !!greetedFirst && !/^there$/i.test(greetedFirst) && !!first && greetedFirst.toLowerCase() !== first.toLowerCase();
+  const name = !first || isPlaceholder || isListingCode || isHandle || someoneElse ? "" : first;
 
   return name
     ? `\n\nTHE CLIENT'S NAME IS ${name}. OPEN THE MESSAGE WITH IT — "Hi ${name}, ..." — every time, whatever else the message has to do. Never open with "Hi there", never open straight into the answer with no greeting at all, and never drop the name because the message is short or urgent.`
@@ -2464,7 +2470,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
 
   // The last word before the broker sees it (skills/rental.md §5 "Facts in a draft").
   if (isRental) {
-    return { text: await rentalTruthGate(opts.leadId, text, checked.attachments, dialog.messages, opts.leadNotes ?? null), attachments: checked.attachments };
+    return rentalTruthGate(opts.leadId, text, checked.attachments, dialog.messages, opts.leadNotes ?? null);
   }
   return { text, attachments: checked.attachments };
 }
@@ -2474,13 +2480,71 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
  * villas in the text are the villas attached. Exported: there are two generateSuggestion implementations
  * (this lib and routes/amocrm-webhook.ts's own copy) and both must pass through it.
  */
+/**
+ * The client asks for something that is not a home to rent — commercial space, an office, land, a purchase
+ * (Fedora, 05.10: commercial space, got villas). No villa goes, and the draft waits for the broker even on a
+ * stage under autopilot (skills/rental.md §1 "Not sure → to the broker", §5; owner 06.10.2026: «да»).
+ * A cheap word check first; only then the helper model decides.
+ */
+const MAYBE_NOT_A_HOME =
+  /\b(commercial|office|shop|store|retail|warehouse|restaurant|caf[eé]|coworking|co-working|land|plot|for sale|buy|buying|purchase|invest(ment|ing)?|business space|showroom|kiosk|freehold)\b|коммерч|офис|магазин|склад|земл|купить|покупк|инвест/i;
+async function notAHomeToRent(leadId: string, messages: Array<{ from: "us" | "lead"; text: string }>): Promise<string | null> {
+  let lastUs = -1;
+  messages.forEach((m, i) => { if (m.from === "us") lastUs = i; });
+  const latest = messages.slice(lastUs + 1).filter((m) => m.from === "lead").map((m) => m.text ?? "").join("\n").trim();
+  if (!latest || !MAYBE_NOT_A_HOME.test(latest)) return null;
+  try {
+    const v = await chatCompletionJSON<{ not_a_home_to_rent?: boolean; what?: string }>({
+      model: HELPER_MODEL,
+      label: "not-a-home",
+      system: `A Bali villa-RENTAL agency's client wrote the message below. Is the client asking for something other than a place to live to rent (e.g. commercial space, an office, a shop, land, or to buy / invest in a property)? Only what they ask for now counts; a question like "is there an office desk in the villa" is still a home. JSON only: {"not_a_home_to_rent": true|false, "what": "<2-5 words, e.g. commercial space to rent>"}`,
+      messages: [{ role: "user", content: latest.slice(0, 1500) }],
+      max_tokens: 60,
+      temperature: 0,
+    });
+    return v?.not_a_home_to_rent ? String(v.what ?? "not a home to rent").slice(0, 80) : null;
+  } catch (err) {
+    logger.warn({ err, leadId }, "not-a-home check failed — treated as a home request");
+    return null;
+  }
+}
+
+/** The hold autopilot reads: this lead's newest draft goes to the broker, whatever the stage. */
+export async function setDraftHold(leadId: string, reason: string | null): Promise<void> {
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS draft_holds (lead_id text PRIMARY KEY, reason text NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`).catch(() => undefined);
+  if (reason) {
+    await db.execute(sql`INSERT INTO draft_holds (lead_id, reason) VALUES (${leadId}, ${reason}) ON CONFLICT (lead_id) DO UPDATE SET reason = EXCLUDED.reason, created_at = now()`).catch(() => undefined);
+  } else {
+    await db.execute(sql`DELETE FROM draft_holds WHERE lead_id = ${leadId}`).catch(() => undefined);
+  }
+}
+
 export async function rentalTruthGate(
   leadId: string,
   text: string,
   attachments: GeneratedSuggestion["attachments"],
   messages: Array<{ from: "us" | "lead"; text: string }>,
   leadNotes: string | null,
-): Promise<string> {
+): Promise<{ text: string; attachments: GeneratedSuggestion["attachments"] }> {
+  const notHome = await notAHomeToRent(leadId, messages);
+  await setDraftHold(leadId, notHome ? `to the broker: the client asks for ${notHome}, not a home to rent` : null);
+  if (notHome) {
+    logger.warn({ leadId, what: notHome }, "draft controller: the client asks for something that is not a home to rent — no villas, draft held for the broker");
+    attachments = [];
+    try {
+      const res = await chatCompletion({
+        model: WRITER_MODEL,
+        label: "not-a-home-fix",
+        system: `A Bali villa-rental broker is replying on WhatsApp. The client now asks for ${notHome}, which is not a villa to rent. Rewrite the draft so it acknowledges exactly what they asked for and says you will check what you can do for it and come back to them. Offer no villa, name no villa, attach nothing. Keep the greeting, the language and the voice. Output only the message.`,
+        messages: [{ role: "user", content: text }],
+        max_tokens: 250,
+      });
+      const out = sanitizeSuggestion(res.content);
+      if (out.trim().length > 15) text = out;
+    } catch (err) {
+      logger.warn({ err, leadId }, "not-a-home rewrite failed — the draft keeps its words, without villas");
+    }
+  }
   const card = await getLeadCardCriteria(leadId).catch(() => null);
   const a = card?.answers;
   const formText = [
@@ -2494,7 +2558,7 @@ export async function rentalTruthGate(
   ].filter(Boolean).join("; ");
   // First: does it answer what the client said (§5 "The draft heard the client"); then the facts.
   text = await enforceListening({ leadId, text, thread: messages, attachments });
-  return enforceDraftTruth({
+  const checked = await enforceDraftTruth({
     leadId,
     text,
     attachments,

@@ -267,7 +267,9 @@ router.post("/suggest", async (req, res) => {
         const thread = dialogForMatching.length
           ? dialogForMatching.map((m) => ({ from: m.from, text: m.text }))
           : (body.messages ?? []).map((m) => ({ from: (m.from === "lead" ? "lead" : "us") as "us" | "lead", text: m.text }));
-        payload["text"] = await rentalTruthGate(String(body.leadId ?? ""), payload["text"] as string, atts, thread, dbLeadNotes || null);
+        const gated = await rentalTruthGate(String(body.leadId ?? ""), payload["text"] as string, atts, thread, dbLeadNotes || null);
+        payload["text"] = gated.text;
+        if (gated.attachments.length !== atts.length) payload["attachments"] = gated.attachments;
       } catch (err) {
         req.log.warn({ err }, "suggest: draft controller failed (non-fatal)");
       }

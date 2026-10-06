@@ -217,7 +217,7 @@ Under 100 words.${AVOID_PHRASES_REMINDER}`;
   });
 
   // §5 "Facts in a draft": the same gate as the lib generator (03.10.2026; this copy was missed then).
-  if (isRental) return { text: await rentalTruthGate(opts.leadId, text, checked.attachments, dialog.messages, opts.leadNotes ?? null), attachments: checked.attachments };
+  if (isRental) return rentalTruthGate(opts.leadId, text, checked.attachments, dialog.messages, opts.leadNotes ?? null);
   return { text, attachments: checked.attachments };
 }
 

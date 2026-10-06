@@ -154,6 +154,12 @@ villa the client clicked does not become their area.
   into a date or a number of months they did not give (owner, 06.10.2026: «да, либо повторяется
   формулировка которую клиент сам и назвал»).
 - Links never go under a text that says we have nothing (Julie, 05.10; owner 06.10.2026: «да»).
+- The client asks for something that is not a home to rent — commercial space, an office, land, a
+  purchase (Fedora, 05.10): no villa goes, the message says we will check what we can do, and the draft
+  waits for Amelia even on a stage under autopilot (owner, 06.10.2026: «да»).
+- The client's name only from their WhatsApp profile or their own words; when the request is in one
+  person's name and someone else writes from WhatsApp, no name at all — "Hi there" (Daan Kroon's form,
+  Simon Hupkes writing, 06.10; owner: «да», «чини все»).
 - Text and links are one message: the words describe exactly the villas attached (04.09).
 - Nothing fits exactly → the 1–3 closest villas go (a nearby area, up to about 30% over the budget, one
   bedroom more or less, or free a little later), each said plainly with what differs, then ONE question
