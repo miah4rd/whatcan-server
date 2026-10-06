@@ -2558,6 +2558,10 @@ export async function rentalTruthGate(
   ].filter(Boolean).join("; ");
   // First: does it answer what the client said (§5 "The draft heard the client"); then the facts.
   text = await enforceListening({ leadId, text, thread: messages, attachments });
+  // A villa described with no link under it is a villa the client cannot open (§5: text and links are
+  // one message) — 06.10.2026, a follow-up offered "also a 2-bedroom option in Canggu" with nothing attached.
+  const offersAnother = /\b(also|another|one more)\b[^.?!\n]{0,60}\b(\d[- ]?(bed|bedroom|br)\w*|villa|option|house)\b/i;
+  if (attachments.length === 0 && (DESCRIBED_VILLA.test(text) || offersAnother.test(text))) text = await removeUnattachedVillas(text, leadId);
   const checked = await enforceDraftTruth({
     leadId,
     text,

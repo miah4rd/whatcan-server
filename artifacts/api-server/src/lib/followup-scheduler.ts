@@ -12,7 +12,7 @@ import { shouldSuppressPush, isStageWhitelisted } from "./stage-routing";
 import { getPushStageWhitelist, isPushStageAllowed, usesOwnStageVocabulary } from "./push-stage-whitelist";
 import { getMergedConversation, getMergedDialog } from "./merged-conversation";
 import { buildTemplateMessage, buildFollowupTemplateByLevel, selectVariant } from "./followup-templates";
-import { generateSuggestion, pickPropertyAttachmentsDetailed, shortlistPromptBlock, enforceRequestOnDraft, nothingInsideRequest, type PickedAttachments, type GeneratedSuggestion, applyViewingPush, viewingPushPromptBlock, type ViewingPushContext } from "./generate-suggestion";
+import { rentalTruthGate, generateSuggestion, pickPropertyAttachmentsDetailed, shortlistPromptBlock, enforceRequestOnDraft, nothingInsideRequest, type PickedAttachments, type GeneratedSuggestion, applyViewingPush, viewingPushPromptBlock, type ViewingPushContext } from "./generate-suggestion";
 import { isAdaptiveBroker, isHosTrackedPipeline } from "./adaptive-followup";
 import { notifyBrokerForLead } from "./push-notifications";
 import { refreshLeadProfile } from "./lead-profile";
@@ -202,7 +202,7 @@ YOU HAVE NO PROPERTY LINKS TO ATTACH TO THIS MESSAGE. Nothing will arrive after 
   return { attachments, brief: brief + requestBlock, picked };
 }
 
-export async function generateFollowup(opts: {
+async function generateFollowupRaw(opts: {
   leadId: string;
   responsibleUser: string | null;
   followupLevel: number;
@@ -331,7 +331,7 @@ Write the follow-up message.`,
  * hardcoded script, the model just writes shorter and gives the lead an easy
  * out, since a broker doesn't have "cold lead scripts" written yet.
  */
-export async function generatePushFollowup(opts: {
+async function generatePushFollowupRaw(opts: {
   responsibleUser: string | null;
   leadId: string;
   leadStage: string;
@@ -1801,4 +1801,32 @@ export function stopFollowupScheduler(): void {
     clearInterval(schedulerHandle);
     schedulerHandle = null;
   }
+}
+
+/**
+ * A follow-up is a draft like any other: a Rental one passes the same controller before the broker or
+ * autopilot sees it (skills/rental.md §5 "Facts in a draft"). 06.10.2026: a push to lead 23748097 still
+ * said "free from 10 October" and described a villa that was not attached — this path had no controller.
+ */
+async function throughTheController<T extends { text: string; attachments: GeneratedSuggestion["attachments"] }>(
+  out: T,
+  o: { leadId: string; pipeline?: string | null; lastContent: string; leadNotes?: string | null },
+): Promise<T> {
+  if ((o.pipeline ?? "").toLowerCase() !== "rental" || !out.text?.trim()) return out;
+  try {
+    const thread = (await getMergedConversation(o.leadId, o.lastContent)).map((m) => ({ from: m.from, text: m.text ?? "" }));
+    const g = await rentalTruthGate(o.leadId, out.text, out.attachments ?? [], thread, o.leadNotes ?? null);
+    return { ...out, text: g.text, attachments: g.attachments };
+  } catch (err) {
+    logger.warn({ err, leadId: o.leadId }, "follow-up: draft controller failed (non-fatal, draft kept)");
+    return out;
+  }
+}
+
+export async function generateFollowup(opts: Parameters<typeof generateFollowupRaw>[0]): ReturnType<typeof generateFollowupRaw> {
+  return throughTheController(await generateFollowupRaw(opts), opts);
+}
+
+export async function generatePushFollowup(opts: Parameters<typeof generatePushFollowupRaw>[0]): ReturnType<typeof generatePushFollowupRaw> {
+  return throughTheController(await generatePushFollowupRaw(opts), opts);
 }

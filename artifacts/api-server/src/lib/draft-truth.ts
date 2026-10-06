@@ -151,8 +151,10 @@ const CLAIMS_AVAILABILITY =
 const PROMISES_TO_CHECK = /\b(check|confirm|verify|ask(ing)?|find out|look into|double-check|clarify)\b/i;
 // "no longer available" is what an owner told us, not a promise to the client.
 const SAYS_TAKEN = /\b(no longer|not|isn't|aren't|unavailable|taken|booked|rented out)\b/i;
+// What the villa's owner told us, passed on as theirs, once the client chose the villa.
+const OWNER_SAYS = /\b(owner|landlord)\b.*\b(confirm(ed|s)?|said|says|told|let me know|got back|replied|checked)\b|\b(confirmed|checked|heard back|spoke) with the (owner|landlord)\b/i;
 export function availabilityClaims(text: string): string[] {
-  return sentencesOf(text).filter((s) => CLAIMS_AVAILABILITY.test(s) && !PROMISES_TO_CHECK.test(s) && !SAYS_TAKEN.test(s));
+  return sentencesOf(text).filter((s) => CLAIMS_AVAILABILITY.test(s) && !PROMISES_TO_CHECK.test(s) && !SAYS_TAKEN.test(s) && !OWNER_SAYS.test(s));
 }
 
 /** "We have no options" over attached links (Julie, 05.10): one of the two is false (§5). */
@@ -217,8 +219,8 @@ export function checkDraftTruth(o: {
     // Any date in a draft is either the client's — then in their own words or form — or a villa's
     // availability, which a draft never gives (§5, owner 06.10.2026: «да, либо повторяется формулировка
     // которую клиент сам и назвал»). A viewing or a call we propose is our own date, not theirs, and so is
-    // a date the villa's owner gave us once the client chose (a reply with no villas attached).
-    const oursToGive = /\b(view|viewing|visit|inspection|call|meet|meeting|show you|tour)\w*/i.test(s) || (o.attachments.length === 0 && CLAIMS_AVAILABILITY.test(s));
+    // a date the villa's owner gave us once the client chose, passed on as the owner's.
+    const oursToGive = /\b(view|viewing|visit|inspection|call|meet|meeting|show you|tour)\w*/i.test(s) || OWNER_SAYS.test(s);
     if (!oursToGive) {
       const bad = datesIn(s).filter((d) => !dateInSources(d, sources));
       if (bad.length) {
@@ -251,9 +253,9 @@ export function checkDraftTruth(o: {
   for (const line of villaListLines(o.text)) {
     issues.push({ kind: "villa_list", sentence: line, detail: "a villa listed in the text — the villas go out as their own messages with their own captions; never list, number or describe them in the text" });
   }
-  // A shortlist is before any owner was asked: villas are attached, the client has not chosen yet. A reply
-  // after the owner confirmed (no villas attached) may say what the owner said.
-  for (const sentence of o.attachments.length > 0 ? availabilityClaims(o.text) : []) {
+  // Only what the villa's owner confirmed may be passed on, and then as the owner's word (06.10.2026: a
+  // follow-up with no villas attached still said "free from 10 October" from the site).
+  for (const sentence of availabilityClaims(o.text)) {
     issues.push({ kind: "availability", sentence, detail: "says a villa is free or available, or from when — never said before the villa's owner confirms it for the villa the client chose; at most say you will check availability" });
   }
   if (o.attachments.length > 0) {
