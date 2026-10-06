@@ -91,8 +91,11 @@ Facts in a draft (owner, 03.10.2026: «проверять факты: суммы
   ("in 1-2 months") stays a range, never becomes a date;
 - the number of villas the text speaks of is the number of links attached, and each villa is given
   only its own bedrooms and price;
+- every villa the text names is one of the villas attached to this message — never another client's
+  or another message's (owner, 06.10.2026: «Да контролер это хорошо это надо, скилл для бота код для
+  контролера согласен»);
 - checked in code before the broker sees the draft: one rewrite with the defects named, then whatever
-  is still wrong is removed (a sentence) or corrected (a count).
+  is still wrong is removed (a sentence or a villa line) or corrected (a count).
 
 The draft heard the client (owner, 05.10.2026: «да» to «вторая проверка: ответил ли черновик на вопрос
 клиента, не предлагает ли то, что клиент уже отверг, не спрашивает ли то, что он уже сказал»): checked
@@ -211,13 +214,14 @@ gets no follow-up beside it; the check runs before any text is written.
 ## 8. How rules change
 
 - Structure (this file): only the owner, in chat, recorded here with the date.
-- Wording, tone, length, timing: learned from Copilot — Amelia's edit is a lesson, her approve
-  without edit is an accepted example. Never from a session's own judgement.
+- Wording, tone, length, timing: learned from Copilot — Amelia's edit is a lesson. Never from a
+  session's own judgement. A sent message is never shown to the bot as a model to copy (owner,
+  06.10.2026: «Исправляй… чтобы этой проблемы не было» — lead 23748129 got the villa list Amelia had
+  sent lead 23748097 a minute earlier).
 - A lesson belongs to its exact moment (owner, 05.10.2026: «нужно мельче шинковать на разные ситуации…
   дьявол кроется в деталях»): the stage, a reply or follow-up #1–3, villas attached or not, the client
   having written last or being silent. A new lesson replaces only one from the same moment. A lesson is
-  a rule — never a client's name, a villa, an area, a number or what the client said — and an accepted
-  example lends its structure only, its names, dates, figures and villa lines blanked («урок хранится как
+  a rule — never a client's name, a villa, an area, a number or what the client said («урок хранится как
   правило, без имён и фраз конкретного клиента… да»).
 - A problem seen in another funnel is never fixed by adding a rule to this one.
 

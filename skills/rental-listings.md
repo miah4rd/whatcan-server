@@ -109,6 +109,7 @@ the draft reply goes to Yudi in Copilot for approve (26.09).
 ## 9. How rules change
 
 - Structure (this file): only the owner, in chat, recorded here with the date.
-- Wording, tone, length, timing: learned from Copilot — a broker's edit is a lesson, an approve
-  without edit is an accepted example. Never from a session's own judgement.
+- Wording, tone, length, timing: learned from Copilot — a broker's edit is a lesson. Never from a
+  session's own judgement. A sent message is never shown to the bot as a model to copy (owner,
+  06.10.2026, see skills/rental.md §8).
 - A problem seen in another funnel is never fixed by adding a rule to this one.

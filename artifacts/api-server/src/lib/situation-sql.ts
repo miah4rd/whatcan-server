@@ -1,7 +1,7 @@
 /**
  * The conversation moment a draft belongs to, reconstructed in SQL from its kind and stage — the one
  * definition shared by autopilot readiness (routes/public/autopilot-readiness.ts) and the accepted
- * examples (lib/accepted-examples.ts). It must stay in step with `deriveSituation` in
+ * examples (retired 06.10.2026, skills/rental.md §8). It must stay in step with `deriveSituation` in
  * lib/broker-corrections.ts: `p` is pending_suggestions, `l` is leads_sync.
  */
 export const SITUATION_CASE = `
