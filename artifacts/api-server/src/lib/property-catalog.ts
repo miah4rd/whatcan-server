@@ -799,6 +799,7 @@ export function clientFeatureMatch(p: SupabaseProperty, w: ClientWants | undefin
   };
   check(w?.garden, p.garden === "small" || p.garden === "large", p.garden === "none");
   check(w?.enclosedLiving, p.living_room === "enclosed", p.living_room === "open");
+  check(w?.enclosedKitchen, p.kitchen === "enclosed", p.kitchen === "open");
   check(w?.workspace, p.workspace === "desk" || p.workspace === "office_room", p.workspace === "none");
   check(w?.quiet, p.street === "quiet" || p.quiet_area === true || p.no_construction_nearby === true, p.street === "busy" || p.quiet_area === false);
   const pets = petsAllowed(p);
@@ -817,6 +818,7 @@ export function clientWantLabels(w: ClientWants | undefined): string[] {
   return [
     w?.garden ? "a garden" : "",
     w?.enclosedLiving ? "an enclosed living room" : "",
+    w?.enclosedKitchen ? "an enclosed kitchen" : "",
     w?.workspace ? "a place to work" : "",
     w?.quiet ? "a quiet street" : "",
     w?.pets ? "a pet-friendly place" : "",
@@ -834,6 +836,7 @@ export function clientFeatureReport(p: SupabaseProperty, w: ClientWants | undefi
   };
   put(w?.garden, p.garden === "large" ? "a large garden" : p.garden === "small" ? "a garden" : null, p.garden === "none", "the garden");
   put(w?.enclosedLiving, p.living_room === "enclosed" ? (p.kitchen === "enclosed" ? "an enclosed living room and kitchen" : "an enclosed living room") : null, p.living_room === "open", "the enclosed living room");
+  put(w?.enclosedKitchen && !(w?.enclosedLiving && p.living_room === "enclosed"), p.kitchen === "enclosed" ? "an enclosed kitchen" : null, p.kitchen === "open", "the enclosed kitchen");
   put(w?.workspace, p.workspace === "office_room" ? "a separate office room" : p.workspace === "desk" ? "a workspace" : null, p.workspace === "none", "a workspace");
   put(w?.quiet, p.street === "quiet" || p.quiet_area === true ? "a quiet street" : null, p.street === "busy" || p.quiet_area === false, "how quiet the street is");
   const pets = petsAllowed(p);
@@ -1474,6 +1477,8 @@ export type ClientWants = {
   garden: boolean;
   workspace: boolean;
   enclosedLiving: boolean;
+  /** Owner 06.10.2026: the Meta form and the welcome ask for an enclosed kitchen too. */
+  enclosedKitchen?: boolean;
   quiet: boolean;
   /** Owner, 28.09.2026: asked in the first message with the rest — pets or kids, modern style. */
   pets?: boolean;
@@ -1486,6 +1491,7 @@ const WANT_EVIDENCE: Record<keyof ClientWants, RegExp> = {
   garden: /garden|green|lawn|yard|taman|сад|зелен/i,
   workspace: /office|work ?space|work(?:ing)? from home|\bwfh\b|\bdesk\b|\bstudy\b|кабинет|рабоч/i,
   enclosedLiving: /living|lounge|open[- ]?plan|гостин/i,
+  enclosedKitchen: /kitchen|кухн/i,
   quiet: /quiet|calm|peaceful|nois|construct|building site|тих|шум|строй/i,
   pets: /\bpets?\b|\bdogs?\b|\bcats?\b|puppy|kitten|anjing|kucing|собак|кош|питом/i,
   kids: /\bkids?\b|child|children|baby|toddler|\banak\b|дет|ребен|ребён/i,
@@ -1767,6 +1773,7 @@ export async function resolveClientRequest(inp: RequestInputs): Promise<ClientRe
     wants_garden?: boolean;
     wants_workspace?: boolean;
     wants_enclosed_living?: boolean;
+    wants_enclosed_kitchen?: boolean;
     wants_quiet?: boolean;
     wants_pets?: boolean;
     wants_kids?: boolean;
@@ -1809,6 +1816,7 @@ Return JSON with exactly these keys:
 - "wants_garden": true only when a person asks for a garden, a lawn, green outdoor space, or "something greener" in the place they want. A school, cafe or other place whose NAME has "garden" in it is not a wish.
 - "wants_workspace": true when they need an office, a study, a desk or a room to work from home.
 - "wants_enclosed_living": true when they want an enclosed / closed / proper living room, or say they do not like open-plan or open living rooms.
+- "wants_enclosed_kitchen": true when they want an enclosed / closed / indoor kitchen, or say they do not like an open or outdoor kitchen.
 - "wants_quiet": true when they want a quiet or calm place, or no construction or noise next to it.
 - "wants_pets": true when they will live with a pet (dog, cat…) or need a pet-friendly place.
 - "wants_kids": true when children will live with them or they need a kid-friendly place.
@@ -1996,6 +2004,7 @@ Our first message asks which of these matter ("garden, enclosed living room and 
       garden: said("garden", ai.wants_garden),
       workspace: said("workspace", ai.wants_workspace),
       enclosedLiving: said("enclosedLiving", ai.wants_enclosed_living),
+      enclosedKitchen: said("enclosedKitchen", ai.wants_enclosed_kitchen),
       quiet: said("quiet", ai.wants_quiet),
       pets: said("pets", ai.wants_pets),
       kids: said("kids", ai.wants_kids),
@@ -2009,7 +2018,7 @@ Our first message asks which of these matter ("garden, enclosed living room and 
   return r;
 }
 
-export type Misfit = { dim: "bedrooms" | "area" | "budget" | "dates"; why: string };
+export type Misfit = { dim: "bedrooms" | "area" | "budget" | "dates" | "features"; why: string };
 
 function requestAreaSet(r: ClientRequest): string[] {
   if (r.releaseArea || r.areas.length === 0) return [];
@@ -2078,6 +2087,11 @@ export function requestMisfitDims(p: SupabaseProperty, r: ClientRequest, now: Da
   }
   const areas = requestAreaSet(r);
   if (areas.length > 0 && !areaMatches(p.area, areas)) out.push({ dim: "area", why: `in ${p.area ?? "an unknown area"}` });
+  // A feature the client named and the listing says this villa does NOT have (owner 06.10.2026,
+  // skills/rental.md §5): no garden for a dog owner, an open living room for "enclosed only". Not
+  // checked yet is not a miss — only a recorded "no" puts the villa outside the request.
+  const lacks = featureLacks(p, r.wants);
+  if (lacks.length > 0) out.push({ dim: "features", why: lacks.join(", ") });
   if (p.listing_type === "rent") {
     const price = priceOf(p);
     if (r.budgetMaxIdr !== null) {
@@ -2125,6 +2139,21 @@ function addDaysIso(iso: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** What the client named that this villa's listing records as missing, in the client's terms. */
+export function featureLacks(p: SupabaseProperty, w: ClientWants | undefined): string[] {
+  if (!w) return [];
+  const out: string[] = [];
+  if (w.garden && p.garden === "none") out.push("no garden");
+  if (w.enclosedLiving && p.living_room === "open") out.push("an open living room");
+  if (w.enclosedKitchen && p.kitchen === "open") out.push("an open kitchen");
+  if (w.workspace && p.workspace === "none") out.push("no workspace");
+  if (w.quiet && (p.street === "busy" || p.quiet_area === false)) out.push("a busy street");
+  if (w.pets && petsAllowed(p) === false) out.push("no pets allowed");
+  if (w.kids && p.kid_friendly === false) out.push("not suited to children");
+  if (w.modern && p.style === "traditional") out.push("a traditional style");
+  return out;
+}
+
 export function requestMisfits(p: SupabaseProperty, r: ClientRequest, now: Date = new Date()): string[] {
   return requestMisfitDims(p, r, now).map((m) => m.why);
 }
@@ -2134,7 +2163,7 @@ export type RelaxExample = { id: string; title: string; bedrooms: number | null;
 
 /** The one dimension whose loosening would open the most villas — the question to ask when nothing fits. */
 export type RelaxHint = {
-  dim: "area" | "budget" | "bedrooms" | "dates";
+  dim: "area" | "budget" | "bedrooms" | "dates" | "features";
   count: number;
   suggestion: string;
   example?: RelaxExample | null;
@@ -2197,6 +2226,11 @@ function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m
       hints.push({ dim: "bedrooms", count: sized.length, suggestion: `${nearest} bedroom${nearest === 1 ? "" : "s"}`, example: exampleOf(sized) });
     }
   }
+  // Lacks one of their features only: the closest of those, said plainly ("no garden").
+  const feat = byDim.get("features") ?? [];
+  if (feat.length > 0) {
+    hints.push({ dim: "features", count: feat.length, suggestion: "a villa without everything on their list", example: exampleOf(feat) });
+  }
   const dates = byDim.get("dates") ?? [];
   if (dates.length > 0) {
     const earliest = dates.map((p) => p.free_from).filter((d): d is string => !!d).sort()[0];
@@ -2215,6 +2249,10 @@ function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m
     budget: (e) => `Rp ${Math.round(e.priceIdr / 100_000) / 10} million a month, a little above their budget`,
     bedrooms: (e) => `${e.bedrooms ?? "a different number of"} bedrooms rather than the number they asked for`,
     dates: (e) => (e.freeFrom ? `free only from ${dayLabel(e.freeFrom)}` : "free later than their move-in"),
+    features: (e) => {
+      const p = judged.find((j) => j.p.id === e.id)?.p;
+      return p ? `has everything else but ${featureLacks(p, r.wants).join(", ")}` : "lacks one of the features they asked for";
+    },
   };
   const examples: RelaxExample[] = [];
   for (const h of hints) {

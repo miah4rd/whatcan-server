@@ -1522,6 +1522,7 @@ export async function enforceRequestOnDraft(opts: {
   const byId = new Map(catalog.map((p) => [p.id.toUpperCase(), p]));
   const sourceText = replaceInternalCodes(opts.text, byId, opts.leadId);
   const dropped: string[] = [];
+  const nearestIds = new Set((opts.picked?.outcome?.nearest ?? []).map((e) => e.id.toUpperCase()));
   let attachments = opts.attachments;
   if (catalog.length > 0) {
     attachments = opts.attachments.filter((a) => {
@@ -1532,7 +1533,9 @@ export async function enforceRequestOnDraft(opts: {
         dropped.push(`${id}: not published`);
         return false;
       }
-      if (request && requestHasCore(request)) {
+      // The closest villas attached on purpose when nothing fits (§5) are outside the request by
+      // definition — the check removed them and the client got "here are the closest" with no links.
+      if (request && requestHasCore(request) && !nearestIds.has(id)) {
         const why = requestMisfits(p, request);
         if (why.length > 0) {
           dropped.push(`${id}: ${why.join("; ")}`);
