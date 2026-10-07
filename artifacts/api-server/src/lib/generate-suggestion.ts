@@ -14,7 +14,7 @@ import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from ".
 import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, clientOwnWords, keyFeatureBits, priceOf, priceBandOf, PRICE_BANDS, type PriceBand, type SupabaseProperty, type ClientRequest, type PropertyPick, type BrokerIntent, type ShortlistOutcome, type RelaxHint, type RelaxExample } from "./property-catalog";
 import { parentAreaOf } from "./bali-areas";
 import { getMergedDialog } from "./merged-conversation";
-import { enforceDraftTruth, enforceListening } from "./draft-truth";
+import { enforceDraftTruth, enforceListening, isNoteToUs } from "./draft-truth";
 import { db, pendingSuggestionsTable, sentMessagesTable } from "@workspace/db";
 import { viewingReportPromptBlock } from "./viewing-report-context";
 import { leadPhone } from "./phone-dedupe";
@@ -2587,7 +2587,7 @@ export async function rentalTruthGate(
         max_tokens: 250,
       });
       const out = sanitizeSuggestion(res.content);
-      if (out.trim().length > 15) text = out;
+      if (out.trim().length > 15 && !isNoteToUs(out)) text = out;
     } catch (err) {
       logger.warn({ err, leadId }, "not-a-home rewrite failed — the draft keeps its words, without villas");
     }
@@ -2616,5 +2616,11 @@ export async function rentalTruthGate(
     clientTexts: messages.filter((m) => m.from === "lead").map((m) => m.text ?? ""),
     formText,
   });
+  // The last word: a note to us is never a client message (07.10.2026, "I don't see the actual original
+  // message…" in Amelia's queue). Held for the broker, nothing goes out by itself.
+  if (isNoteToUs(checked) || WRITES_ABOUT_THE_CARD.test(checked)) {
+    await setDraftHold(leadId, "to the broker: the draft is a note to us, not a message");
+    logger.error({ leadId, text: checked.slice(0, 160) }, "draft controller: the final text is a note to us — held");
+  }
   return { text: checked, attachments };
 }

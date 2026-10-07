@@ -342,6 +342,16 @@ export function withoutVillaList(text: string): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+/**
+ * A rewrite that is a note to us instead of the message ("I don't see the actual original message you want me
+ * to correct… Could you please share…", Amelia's queue 07.10.2026) is thrown away and the draft stays as it
+ * was: the controller never puts a model's own words in front of a client (§5).
+ */
+const NOTE_TO_US =
+  /\b(I (don'?t|do not|cannot|can'?t) see|could you (please )?(share|provide|send)|the (original|actual|full) (whatsapp )?message|you want me to (correct|edit|fix|rewrite)|I'?m meant to edit|once I have (that|it)|I'?ll correct only|as an AI|here is the (corrected|rewritten|fixed) (message|version))\b/i;
+export function isNoteToUs(text: string): boolean {
+  return NOTE_TO_US.test(text);
+}
 const VILLAS_SEPARATE =
   "These villas go out as their OWN messages right after this text, each with its caption and link: never list, number, name or describe them in this message.";
 
@@ -354,6 +364,8 @@ export async function enforceDraftTruth(o: {
 }): Promise<string> {
   let issues = checkDraftTruth(o);
   if (issues.length === 0) return o.text;
+  // Nothing to correct a message in: a model asked to fix an empty draft answers with a note to us.
+  if (o.text.trim().length < 20) return o.text;
   logger.warn({ leadId: o.leadId, issues: issues.map((i) => `${i.kind}: ${i.detail}`) }, "draft truth: defects found — rewriting");
 
   let text = o.text;
@@ -376,7 +388,8 @@ Rules: never thank them for confirming or say they mentioned anything they did n
       max_tokens: 450,
     });
     const out = keepVillasOutOfText(text, sanitizeSuggestion(res.content));
-    if (out.trim().length > 20) text = out;
+    if (out.trim().length > 20 && !isNoteToUs(out)) text = out;
+    else if (isNoteToUs(out)) logger.warn({ leadId: o.leadId, out: out.slice(0, 120) }, "draft truth: the rewrite was a note to us, not a message — draft kept");
   } catch (err) {
     logger.warn({ err, leadId: o.leadId }, "draft truth: rewrite failed — falling back to removal");
   }
@@ -442,6 +455,10 @@ ${villas ? `The villas attached to this message (do not add or drop any):\n${vil
       max_tokens: 450,
     });
     const out = keepVillasOutOfText(o.text, sanitizeSuggestion(res.content));
+    if (isNoteToUs(out)) {
+      logger.warn({ leadId: o.leadId, out: out.slice(0, 120) }, "draft listening: the rewrite was a note to us, not a message — draft kept");
+      return o.text;
+    }
     return out.trim().length > 20 ? out : o.text;
   } catch (err) {
     logger.warn({ err, leadId: o.leadId }, "draft listening: check failed — draft kept as written");
