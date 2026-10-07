@@ -1412,7 +1412,8 @@ function dedupeByTitle(list: SupabaseProperty[]): SupabaseProperty[] {
 }
 
 /** A shortlist of one is a take-it-or-leave-it, not a choice. Never send fewer. */
-const MIN_SHORTLIST = 2;
+/** §5 (owner, 07.10.2026: «один это всегда маленькая конверсия… нужно три»): every shortlist carries three villas. */
+const MIN_SHORTLIST = 3; // §5 three villas
 
 // ── The client's request: ONE definition, ONE filter (owner, 2026-09-14) ─────
 //
@@ -2259,6 +2260,17 @@ function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m
     if (h.example && !examples.some((x) => x.id === h.example!.id)) examples.push({ ...h.example, why: why[h.dim](h.example) });
     if (examples.length >= 3) break;
   }
+  // §5 three villas (owner, 07.10.2026: «почему только одна ближайшая, также три»): one example per loosening
+  // first, then the next closest of the same loosenings until there are three.
+  for (const h of hints) {
+    const pool = (byDim.get(h.dim) ?? []).slice();
+    while (examples.length < 3) {
+      const next = exampleOf(pool.filter((p) => !examples.some((x) => x.id === p.id)));
+      if (!next) break;
+      examples.push({ ...next, why: why[h.dim](next) });
+    }
+    if (examples.length >= 3) break;
+  }
   if (hints[0]) hints[0].examples = examples;
   return hints[0] ?? null;
 }
@@ -2297,7 +2309,8 @@ export async function strictShortlistPool(
   const clean = scored.filter((x) => keep.has(x.p.id) && x.flagTier >= 0);
   const ranked = clean.length > 0 ? clean : scored.filter((x) => keep.has(x.p.id));
   fits = ranked.map((x) => x.p);
-  const hint = fits.length === 0 ? relaxationHint(r, judged.filter((j) => !exclude.has(j.p.id.toUpperCase()))) : null;
+  // §5 three villas: fewer than three inside the request → the closest ones fill the shortlist up to three.
+  const hint = fits.length < MIN_SHORTLIST ? relaxationHint(r, judged.filter((j) => !exclude.has(j.p.id.toUpperCase()))) : null;
   return { fits, ranked, fitsInclSent: fitAll.length, poolSize: typed.length, hint };
 }
 
@@ -2323,6 +2336,8 @@ export type ShortlistOutcome = {
   featureReport?: { asked: string[]; villas: Record<string, { title: string; has: string[]; unknown: string[] }> };
   /** Nothing fit, so the closest villas were attached instead, each with what differs (§5, 05.10.2026). */
   nearest?: RelaxExample[];
+  /** §5 three villas: how many of the attached are inside the request when the closest ones filled it up. */
+  exactCount?: number;
 };
 
 export type OutsideVilla = { id: string; title: string; why: string[] };

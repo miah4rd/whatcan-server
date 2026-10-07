@@ -499,12 +499,17 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
     // Nothing inside the request → the closest villas go instead, with what differs (skills/rental.md §5,
     // owner 05.10.2026: «Делай как Амелия делает в таких случаях»; she sent the nearest in 7 of 7 such cases).
     const nearest = outcome.hint?.examples ?? [];
-    if (out.length === 0 && opts.isRental && !opts.brokerInstruction && outcome.fitCountInclSent === 0 && nearest.length > 0) {
+    // §5 three villas (owner, 07.10.2026: «один это всегда маленькая конверсия… нужно три»): fewer than three
+    // inside the request → the closest ones fill the shortlist up to three, each said for what differs.
+    const exactCount = out.length;
+    if (out.length < 3 && opts.isRental && !opts.brokerInstruction && nearest.length > 0 && (out.length > 0 || outcome.fitCountInclSent === 0 || outcome.fitCount === 0)) {
       const known = await describePropertiesByIds(nearest.map((e) => e.id)).catch(() => new Map());
       for (const e of nearest) {
+        if (out.length >= 3) break;
         const hit = known.get(e.id) as { url?: string; label?: string; clientLabel?: string } | undefined;
-        if (hit?.url) out.push({ type: "link" as const, label: hit.clientLabel ?? hit.label ?? e.title, url: hit.url });
+        if (hit?.url && !out.some((a) => a.url === hit.url)) out.push({ type: "link" as const, label: hit.clientLabel ?? hit.label ?? e.title, url: hit.url });
       }
+      outcome.exactCount = exactCount;
       if (out.length > 0) {
         outcome.nearest = nearest.filter((e) => out.some((a) => a.url.toUpperCase().includes(`/PROPERTY/${e.id.toUpperCase()}`)));
         logger.info({ leadId: opts.leadId, nearest: outcome.nearest.map((e) => `${e.id}: ${e.why}`) }, "nothing inside the request — the closest villas attached (§5)");
@@ -1275,6 +1280,11 @@ export function shortlistPromptBlock(picked: PickedAttachments | null | undefine
       ? `\n\nTHE VILLA THE CLIENT ASKED ABOUT OR CLICKED IS OUTSIDE THEIR OWN REQUEST: ${o.namedOutside.map((v) => `"${v.title}" (${v.why.join("; ")})`).join(", ")}. If you mention it, give that real reason in plain words (e.g. "it is only free from October 2027"); never invent another one.`
       : "");
   if (picked.skipped || o.declined) return advisory;
+  if (picked.attachments.length > 0 && o.nearest?.length && (o.exactCount ?? 0) > 0) {
+    const lines = o.nearest.map((e) => `- ${e.title}: ${e.why ?? "close to the request"}`).join("\n");
+    // §5 three villas: some are inside the request, the rest are the closest ones that fill it up to three.
+    return `\n\nTHE CLIENT'S REQUEST: ${req}. ${o.exactCount} of the ${picked.attachments.length} attached villas fit it; the other ${picked.attachments.length - (o.exactCount ?? 0)} are the closest we have, added so they have three to compare (skills/rental.md §5):\n${lines}\nIn the lead-in say this in one short, honest line in general terms (e.g. "I've also added a couple of close alternatives, one in a nearby area"), never calling those a match. Do not list, name or describe the villas: they go out as their own messages with their own captions. Never say a villa is free or available, and never ask again for anything in their request.${advisory}`;
+  }
   if (picked.attachments.length > 0 && o.nearest?.length) {
     const lines = o.nearest.map((e) => `- ${e.title}: ${e.why ?? "close to the request"}`).join("\n");
     return `\n\nNOTHING IN OUR CATALOG IS EXACTLY WITHIN THIS CLIENT'S REQUEST (${req}), so the ${picked.attachments.length} CLOSEST villas are attached instead (skills/rental.md §5). Say honestly in one short line that nothing matches exactly right now, then present these as the closest options and say in plain words what differs for each:\n${lines}\nNever call them a match or say they fit. End with ONE question that opens the search, e.g. "Would you consider ${o.hint?.suggestion ?? "one of these"}?". Never ask whether they are in Bali.${advisory}`;

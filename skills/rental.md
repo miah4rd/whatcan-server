@@ -177,7 +177,10 @@ villa the client clicked does not become their area.
   person's name and someone else writes from WhatsApp, no name at all — "Hi there" (Daan Kroon's form,
   Simon Hupkes writing, 06.10; owner: «да», «чини все»).
 - Text and links are one message: the words describe exactly the villas attached (04.09).
-- Nothing fits exactly → the 1–3 closest villas go (a nearby area, up to about 30% over the budget, one
+- Every shortlist carries three villas (owner, 07.10.2026: «один это всегда маленькая конверсия… все
+  равно нужно как бы три»; «почему только одна ближайшая, также три»): the ones inside the request first;
+  fewer than three inside it → the closest ones fill it up to three, said honestly as close alternatives.
+- Nothing fits exactly → the three closest villas go (a nearby area, up to about 30% over the budget, one
   bedroom more or less, or free a little later), each said plainly with what differs, then ONE question
   ("Would you consider Pererenan as well?") — the way Amelia answers it herself (owner, 05.10.2026:
   «Делай как Амелия делает в таких случаях, запиши в скилы»; replaces "nothing fits → no links", 04.09).
