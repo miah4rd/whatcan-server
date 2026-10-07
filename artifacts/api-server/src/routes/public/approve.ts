@@ -625,6 +625,9 @@ router.post("/approve", async (req, res) => {
     const [prevSyncRow] = await db
       .select({
         lastMessageFrom: leadsSyncTable.lastMessageFrom,
+        lastOurMessageAt: leadsSyncTable.lastOurMessageAt,
+        followupLevel: leadsSyncTable.followupLevel,
+        nextFollowupAt: leadsSyncTable.nextFollowupAt,
         leadStage: leadsSyncTable.leadStage,
         pipeline: leadsSyncTable.pipeline,
       })
@@ -684,6 +687,20 @@ router.post("/approve", async (req, res) => {
     hookStatus = delivery.hookStatus;
     hookBody = delivery.hookBody;
     chatSent = delivery.chatSent;
+    // Nothing left: the card is put back as it was (07.10.2026: a refused first message stayed recorded as
+    // "we wrote", the sync deleted the card's draft as answered and booked a follow-up for a message never received).
+    if (!chatSent && prevSyncRow) {
+      await db
+        .update(leadsSyncTable)
+        .set({
+          lastMessageFrom: prevSyncRow.lastMessageFrom,
+          lastOurMessageAt: prevSyncRow.lastOurMessageAt,
+          followupLevel: prevSyncRow.followupLevel,
+          nextFollowupAt: prevSyncRow.nextFollowupAt,
+        })
+        .where(eq(leadsSyncTable.leadId, sug.leadId))
+        .catch((err) => req.log.warn({ err, leadId: sug.leadId }, "approve: could not put the card back after a failed send"));
+    }
 
     // ── The lead no longer exists in amoCRM ───────────────────────────────────
     // Deleted, or merged into another lead (a merge deletes the source). There
