@@ -179,7 +179,9 @@ villa the client clicked does not become their area.
 - Text and links are one message: the words describe exactly the villas attached (04.09).
 - Every shortlist carries three villas (owner, 07.10.2026: «один это всегда маленькая конверсия… все
   равно нужно как бы три»; «почему только одна ближайшая, также три»): the ones inside the request first;
-  fewer than three inside it → the closest ones fill it up to three, said honestly as close alternatives.
+  fewer than three inside it → the closest ones fill it up to three, said honestly as close alternatives;
+  when the close ones run out, the next closest (owner, 07.10.2026: «Всегда по три. Всегда. Запиши
+  скиллы»). Never one option, never two.
 - Nothing fits exactly → the three closest villas go (a nearby area, up to about 30% over the budget, one
   bedroom more or less, or free a little later), each said plainly with what differs, then ONE question
   ("Would you consider Pererenan as well?") — the way Amelia answers it herself (owner, 05.10.2026:

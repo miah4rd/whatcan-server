@@ -2271,7 +2271,27 @@ function relaxationHint(r: ClientRequest, judged: Array<{ p: SupabaseProperty; m
     }
     if (examples.length >= 3) break;
   }
+  // §5 always three (owner, 07.10.2026: «Всегда по три. Всегда»): when the villas off by one thing run out,
+  // the next closest — off by two things, then more — fill it, the fewest differences first.
+  if (examples.length < 3) {
+    const rest = judged
+      .filter((j) => j.m.length > 1 && !examples.some((x) => x.id === j.p.id))
+      // Still a fair alternative: at most one bedroom off and at most half again the budget.
+      .filter((j) => r.bedroomsMin === null || j.p.bedrooms == null || Math.abs(j.p.bedrooms - r.bedroomsMin) <= 1)
+      .filter((j) => !r.budgetMaxIdr || priceOf(j.p) <= r.budgetMaxIdr * 1.5)
+      .sort((a, b) => a.m.length - b.m.length || Math.abs(priceOf(a.p) - (target ?? 0)) - Math.abs(priceOf(b.p) - (target ?? 0)));
+    for (const j of rest) {
+      if (examples.length >= 3) break;
+      const e = exampleOf([j.p]);
+      if (!e) continue;
+      const dims = [...new Set(j.m.map((x) => x.dim))];
+      examples.push({ ...e, why: dims.map((d) => why[d](e)).join("; ") });
+    }
+  }
   if (hints[0]) hints[0].examples = examples;
+  else if (examples.length > 0) {
+    return { dim: "features", count: examples.length, suggestion: "a villa a little different from their request", example: examples[0], examples };
+  }
   return hints[0] ?? null;
 }
 
