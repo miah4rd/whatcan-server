@@ -128,6 +128,16 @@ export async function closeUndeliverable(leadId: string): Promise<boolean> {
       logger.warn({ leadId, listing: live.id }, "undeliverable: no WhatsApp, but the villa is live on the site — card kept");
       return false;
     }
+    // No WhatsApp is not "unreachable" when the client wrote to us on Messenger or Instagram: the
+    // reply goes there (23751957 and Victor 23745195 were closed this way, 05–06.10.2026).
+    const [row] = await db.select({ content: leadsSyncTable.content }).from(leadsSyncTable).where(eq(leadsSyncTable.leadId, leadId)).limit(1);
+    if (/\((?:client|клиент) - (?:facebook|instagram)/i.test(row?.content ?? "")) {
+      await amoPost(`/api/v4/leads/${leadId}/notes`, [
+        { note_type: "common", params: { text: "No WhatsApp on this number — the client wrote on Messenger/Instagram. Reply there; the card stays open." } },
+      ]).catch(() => null);
+      logger.warn({ leadId }, "undeliverable: no WhatsApp, but the client wrote on Messenger/Instagram — card kept");
+      return false;
+    }
     const ok = await updateLeadStatus(leadId, CLOSED_LOST_STATUS_ID);
     await db
       .update(leadsSyncTable)

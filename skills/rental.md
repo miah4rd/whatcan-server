@@ -63,6 +63,11 @@ directly in amoCRM is not checked.
   it (18.09).
 - Every place named is one we do not cover → no automatic welcome; the draft goes to Amelia with
   "⊘ Review", the lead is not closed (10.09).
+- These gates read only THIS request (owner, 07.10.2026: «чини»): the budget comes from the form or
+  what the client wrote since this card came in — never an old chat on the same number; "Any of these
+  areas" in the form means our areas, so a note like "Ubud" next to it does not close the lead; a
+  number with no WhatsApp is not "unreachable" when the client wrote on Messenger or Instagram — the
+  card stays open and the reply goes there.
 
 ## 4. The first two messages to an ad lead (21.08, 04.09)
 

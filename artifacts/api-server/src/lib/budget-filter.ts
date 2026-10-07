@@ -85,6 +85,7 @@ export async function enforceBudgetFilter(leadId: string, extraTexts?: string[])
         content: leadsSyncTable.content,
         leadNotes: leadsSyncTable.leadNotes,
         botExcluded: leadsSyncTable.botExcluded,
+        amoCreatedAt: leadsSyncTable.amoCreatedAt,
       })
       .from(leadsSyncTable)
       .where(eq(leadsSyncTable.leadId, leadId))
@@ -102,8 +103,11 @@ export async function enforceBudgetFilter(leadId: string, extraTexts?: string[])
 
     // The LEAD'S own words, newest first, so a revised budget wins; the card
     // note (scout/ad form) is the fallback source when they never typed one.
+    // Only what they wrote for THIS request: Roman 23752039 (25-33M on the card) was closed on
+    // 06.10.2026 over "1 million" from a 2025 chat on the same number about something else.
+    const since = lead.amoCreatedAt ? new Date(lead.amoCreatedAt).getTime() - 24 * 3600_000 : 0;
     const leadTexts = parseDialogContent(lead.content ?? "")
-      .messages.filter((m) => m.from === "lead")
+      .messages.filter((m) => m.from === "lead" && m.at.getTime() >= since)
       .map((m) => m.text)
       .reverse();
     // The ad form writes the budget onto the CARD, not into the chat — read it,

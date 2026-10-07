@@ -77,6 +77,9 @@ export async function enforceExcludedAreaFilter(leadId: string, extraNotes?: str
     // a scout lead has no form, and its request is the card note.
     const card = await getLeadCardCriteria(leadId).catch(() => null);
     const answers = card?.answers ?? null;
+    // "Any of these areas" is the client choosing OUR areas — a note like "Ubud" next to it is a
+    // wish, not "only Ubud". 23751821 (2BR 40-50M) was closed this way on 06.10.2026.
+    if (/\bany\b/i.test(answers?.areas ?? "")) return false;
     let verdict = excludedAreaVerdict(answers?.areas ?? null, answers?.notes ?? null);
     if (verdict.places.length === 0 && isNonAnswer(answers?.areas ?? null)) {
       const note = [lead.leadNotes ?? "", ...(extraNotes ?? [])]
