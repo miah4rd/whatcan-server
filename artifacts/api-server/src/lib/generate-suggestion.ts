@@ -1789,7 +1789,10 @@ Language: ${opts.language ?? "the language the client writes in (the draft is al
     above: (out.headers?.above ?? "").trim() || LADDER_FALLBACK_HEADERS.above,
   };
   if (opts.captionList) for (const b of PRICE_BANDS) headers[b] = "";
-  const closing = sanitizeSuggestion(out.closing ?? "").trim() || (opts.captionList ? CAPTION_FALLBACK_CLOSING : LADDER_FALLBACK_CLOSING);
+  let closing = sanitizeSuggestion(out.closing ?? "").trim() || (opts.captionList ? CAPTION_FALLBACK_CLOSING : LADDER_FALLBACK_CLOSING);
+  // One villa is not a choice (07.10.2026: 19 drafts in Amelia's queue asked "which one feels closest" under a
+  // single villa) — skills/rental.md §5 layout, the closing asks about this one.
+  if (items.length === 1 && /\bwhich\b|\bones\b|\bthese\b/i.test(closing)) closing = "Does this one feel close to what you're after? Happy to check its availability for you.";
   const attachments = items.map((x, i) => {
     let detail = sanitizeSuggestion(out.details?.[x.id!] ?? "").replace(/\s+/g, " ").trim();
     // One line, the best four, nothing the caption already says (bedrooms, bathrooms, price, area), and
