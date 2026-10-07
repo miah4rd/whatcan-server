@@ -18,6 +18,8 @@ const router = Router();
 const BACK_TO = "TAKEN TO WORK";
 
 router.post("/admin/reopen-leads", async (req, res) => {
+  // ?to=<stage name> for funnels without TAKEN TO WORK (Rental: "New LEAD").
+  const backTo = String(req.query["to"] ?? "").trim() || BACK_TO;
   const ids = String(req.query["leads"] ?? "")
     .split(",")
     .map((s) => s.trim())
@@ -37,16 +39,16 @@ router.post("/admin/reopen-leads", async (req, res) => {
     const { id } = await safeStageIdForLead({
       pipelineId: lead.pipeline_id,
       stageId: null,
-      stageName: BACK_TO,
+      stageName: backTo,
     });
     if (!id) {
-      done.push({ lead: leadId, ok: false, why: `no "${BACK_TO}" in this funnel` });
+      done.push({ lead: leadId, ok: false, why: `no "${backTo}" in this funnel` });
       continue;
     }
     const ok = await updateLeadStatus(leadId, Number(id));
     if (ok) {
       await db.execute(
-        sql`UPDATE leads_sync SET lead_stage = ${BACK_TO}, lead_stage_id = ${id}, updated_at = now()
+        sql`UPDATE leads_sync SET lead_stage = ${backTo}, lead_stage_id = ${id}, updated_at = now()
              WHERE lead_id = ${leadId}`,
       );
     }
