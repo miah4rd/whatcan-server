@@ -26,7 +26,7 @@
 import { db, leadsSyncTable, pendingSuggestionsTable, sentMessagesTable } from "@workspace/db";
 import { and, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { amoFetch, amoPost, closeLeadAsLost } from "./amo-client";
+import { amoFetch, amoPatch, amoPost, closeLeadAsLost } from "./amo-client";
 import { normalisePhone } from "./phone-dedupe";
 
 const RENTAL_PIPELINE_ID = 11119150;
@@ -41,8 +41,26 @@ type AmoLead = {
   status_id?: number;
   created_at?: number;
   created_by?: number;
+  custom_fields_values?: Array<{ field_id?: number; values?: Array<{ value?: unknown }> }> | null;
   _embedded?: { contacts?: Array<{ id: number }> };
 };
+
+/**
+ * The request fields of the ad form (text fields only — lead-card-fields.ts reads them). A client who
+ * fills the form again asks for something NEW: Sam 23636539 sent 3BR Seseh 40-50M as 23755809 on
+ * 06.10.2026, the duplicate was closed, and the bot kept sending 2BR from his first form.
+ */
+const REQUEST_TEXT_FIELDS = [956449, 959041, 959039, 968367, 968495, 968369];
+
+async function carryRequestOver(from: AmoLead, toId: number): Promise<string[]> {
+  const fresh = (from.custom_fields_values ?? []).filter(
+    (f) => REQUEST_TEXT_FIELDS.includes(f.field_id ?? 0) && String(f.values?.[0]?.value ?? "").trim(),
+  );
+  if (fresh.length === 0) return [];
+  const body = { custom_fields_values: fresh.map((f) => ({ field_id: f.field_id, values: [{ value: String(f.values![0]!.value).trim() }] })) };
+  const ok = await amoPatch(`/api/v4/leads/${toId}`, body).catch(() => null);
+  return ok ? fresh.map((f) => `${f.field_id}=${String(f.values![0]!.value).trim()}`) : [];
+}
 
 type AmoContact = {
   id: number;
@@ -117,6 +135,10 @@ export async function closeIfDuplicateCard(leadId: string): Promise<boolean> {
     }
     if (!keep) return false;
 
+    // The newer form answers become the request on the card we keep.
+    const carried = await carryRequestOver(lead, keep.id);
+    if (carried.length > 0) logger.info({ leadId, keptLeadId: keep.id, carried }, "duplicate card: the new form request copied onto the kept card");
+
     // amoCRM first: if the CRM refuses the close, the card stays active
     // everywhere rather than half-closed.
     const closed = await closeLeadAsLost(leadId);
@@ -136,7 +158,7 @@ export async function closeIfDuplicateCard(leadId: string): Promise<boolean> {
         entity_id: keep.id,
         note_type: "common",
         params: {
-          text: `Note: the same client came in again as #${leadId} "${(lead.name ?? "").trim()}", closed as a duplicate. Their request there may add to this one.`,
+          text: `Note: the same client came in again as #${leadId} "${(lead.name ?? "").trim()}", closed as a duplicate.${carried.length > 0 ? " Their new form answers replaced the request fields on this card." : " Their request there may add to this one."}`,
         },
       },
     ]).catch(() => null);

@@ -133,6 +133,10 @@ villa the client clicked does not become their area.
   request, like a wrong area. Not checked yet is not a miss. When nothing else fits, such a villa may
   still go as one of the closest options, saying plainly what it lacks. The enclosed kitchen counts as
   a feature too (the Meta form and the welcome ask for it).
+- The closest villas are never called a fit or a match — not even "here are 2 that fit"; the words
+  are corrected before Amelia sees the draft (owner, 07.10.2026: «чини»).
+- A client who fills the ad form again asks for something new: the new answers replace the request
+  on their open card before the duplicate is closed (07.10.2026).
 - How the villa looks (owner, 05.10.2026: «4 делай», «5 да, фишки плюс визуал»): Amelia swapped
   villas for how they look in the photos. Every live rental's first photos are scored 1–5 (5 = wow:
   modern, bright, spotless, great pool or view; 3 = ordinary; 1–2 = tired or off-putting). Between

@@ -1627,7 +1627,24 @@ export async function enforceRequestOnDraft(opts: {
     attachments = laid.attachments;
     if (opts.rental) text = stripWhoIsItForQuestion(text, opts.leadId);
   }
+  // The closest villas are never "a fit" (§5): Edwin 23749711 got "Here are 2 that fit" for a 3BR
+  // when he asked 4+ and a villa outside Seseh (07.10.2026). The words are corrected in code.
+  const nearestAttached = attachments.some((a) => nearestIds.has(propertyIdOf(a.url) ?? ""));
+  if (nearestAttached) {
+    const fixed = closestNotFit(text);
+    if (fixed !== text) logger.warn({ leadId: opts.leadId }, "draft check: the closest villas were called a fit — reworded");
+    text = fixed;
+  }
   return { text, attachments, dropped };
+}
+
+/** "2 that fit your request" → "2 that come closest to your request", and the like. */
+export function closestNotFit(text: string): string {
+  return text
+    .replace(/\b(that|which)\s+(?:perfectly\s+|really\s+|all\s+)?(?:fit|fits|match|matches)\b(\s+(?:your|the)\s+(?:request|criteria|brief|search|needs|requirements))?/gi, (_m, w: string, tail?: string) => `${w} come closest${tail ? tail.replace(/^\s+(your|the)/i, " to $1") : ""}`)
+    .replace(/\b(a\s+)?(?:perfect|great|good)\s+match\b/gi, (_m, a?: string) => `${a ? "a " : ""}close option`)
+    .replace(/\bfits?\s+(your|the)\s+(request|criteria|brief|needs|requirements)\b/gi, "comes closest to $1 $2")
+    .replace(/\b(match|matches)\s+(your|the)\s+(request|criteria|brief|needs|requirements)\b/gi, "comes closest to $2 $3");
 }
 
 /**
