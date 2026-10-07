@@ -247,6 +247,11 @@ gets no follow-up beside it; the check runs before any text is written.
 ## 8. How rules change
 
 - Structure (this file): only the owner, in chat, recorded here with the date.
+- THE LAW (owner, 07.10.2026: «Все правила должны быть в скиллах. Код только контролирует правила… Если в
+  коде есть что-то, что в скиллах нет, значит это какие-то левые несогласованные правила… как закон»):
+  every rule the bot follows is written here, in the owner's words, with the date. The code holds no rule
+  of its own; it only enforces this file. A rule found in the code and not here is removed, or brought to
+  the owner to be written here first — never kept quietly.
 - Wording, tone, length, timing: learned from Copilot — Amelia's edit is a lesson. Never from a
   session's own judgement. A sent message is never shown to the bot as a model to copy (owner,
   06.10.2026: «Исправляй… чтобы этой проблемы не было» — lead 23748129 got the villa list Amelia had
