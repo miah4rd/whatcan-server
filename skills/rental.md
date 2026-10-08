@@ -65,9 +65,9 @@ directly in amoCRM is not checked.
   "⊘ Review", the lead is not closed (10.09).
 - These gates read only THIS request (owner, 07.10.2026: «чини»): the budget comes from the form or
   what the client wrote since this card came in — never an old chat on the same number; "Any of these
-  areas" in the form means our areas, so a note like "Ubud" next to it does not close the lead; a
-  number with no WhatsApp is not "unreachable" when the client wrote on Messenger or Instagram — the
-  card stays open and the reply goes there.
+  areas" in the form means our areas, so a note like "Ubud" next to it does not close the lead.
+- No WhatsApp on the client's number → Closed-lost, Messenger clients included (owner, 08.10.2026:
+  «Если нет у номера вацап то лид в корзину»).
 
 ## 4. The first two messages to an ad lead (21.08, 04.09)
 
@@ -137,6 +137,10 @@ villa the client clicked does not become their area.
   are corrected before Amelia sees the draft (owner, 07.10.2026: «чини»).
 - A client who fills the ad form again asks for something new: the new answers replace the request
   on their open card before the duplicate is closed (07.10.2026).
+- A villa sent outside the request says so in its own caption: "Not exactly your brief: open living
+  room, in Canggu, a bit above your budget" (owner, 08.10.2026: «ЧИНИ СРОЧНО»). A caption never names a
+  feature the listing does not have; the street column decides "quiet street".
+- A villa promised in words ("I have one villa close…") always has its link under it, or the sentence goes.
 - How the villa looks (owner, 05.10.2026: «4 делай», «5 да, фишки плюс визуал»): Amelia swapped
   villas for how they look in the photos. Every live rental's first photos are scored 1–5 (5 = wow:
   modern, bright, spotless, great pool or view; 3 = ordinary; 1–2 = tired or off-putting). Between

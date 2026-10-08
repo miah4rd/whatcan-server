@@ -11,11 +11,11 @@ import { sanitizeSuggestion, AVOID_PHRASES_REMINDER } from "./sanitize-suggestio
 import { buildRentalPromptParts } from "./rental-prompt";
 import { buildSalesPromptParts } from "./sales-prompt";
 import { generateListingAcquisitionReply, isListingAcquisitionPipeline } from "./listing-acquisition-prompt";
-import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, clientOwnWords, keyFeatureBits, priceOf, priceBandOf, PRICE_BANDS, type PriceBand, type SupabaseProperty, type ClientRequest, type PropertyPick, type BrokerIntent, type ShortlistOutcome, type RelaxHint, type RelaxExample } from "./property-catalog";
-import { parentAreaOf } from "./bali-areas";
+import { matchPropertiesDetailed, describePropertiesByIds, describeRequest, requestMisfits, requestHasCore, fetchAllPropertiesForPriceLookup, resolveClientRequest, shortlistOutcomeFor, clientOwnWords, keyFeatureBits, featureLacks, priceOf, priceBandOf, PRICE_BANDS, type PriceBand, type SupabaseProperty, type ClientRequest, type PropertyPick, type BrokerIntent, type ShortlistOutcome, type RelaxHint, type RelaxExample } from "./property-catalog";
+import { parentAreaOf, areaMatches } from "./bali-areas";
 import { getMergedDialog } from "./merged-conversation";
 import { enforceDraftTruth, enforceListening, isNoteToUs } from "./draft-truth";
-import { db, pendingSuggestionsTable, sentMessagesTable } from "@workspace/db";
+import { db, leadsSyncTable, pendingSuggestionsTable, sentMessagesTable } from "@workspace/db";
 import { viewingReportPromptBlock } from "./viewing-report-context";
 import { leadPhone } from "./phone-dedupe";
 import { villaContactPhoneKeys, phoneKey } from "./property-flags";
@@ -420,9 +420,12 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
     const adId = /Ad enquiry:\s*([A-Z0-9-]+)/i.exec(opts.leadNotes ?? "")?.[1]?.toUpperCase() ?? null;
     // The lead's OWN messages, newest first (a long thread keeps its early
     // requirements: Josua's 3-4 bedrooms scrolled out of a window of 5).
+    // Only what the client wrote for THIS card (owner 08.10.2026): Roman 23752039 had a 2025 chat on the same
+    // number, and his request read "up to Rp 1 million a month" from it while his card says 25-33M.
+    const since = await cardCreatedAt(opts.leadId);
     const recentLeadMessages = [
       opts.lastLeadText,
-      ...opts.dialogMessages.filter((m) => m.from === "lead").slice(-25).reverse().map((m) => m.text),
+      ...opts.dialogMessages.filter((m) => m.from === "lead" && (!since || m.at.getTime() >= since)).slice(-25).reverse().map((m) => m.text),
     ].filter(Boolean);
     const listingType = opts.isRental ? ("rent" as const) : ("sale" as const);
     const cardCriteria = card ? { bedrooms: card.bedrooms, areas: card.areas, budgetIdrMonthly: card.budgetIdrMonthly } : null;
@@ -1437,8 +1440,10 @@ export function presentedVillaCount(text: string): number | null {
   return found ? total : null;
 }
 
+// Also a villa promised in words with no link under it (owner 08.10.2026: Roman 23752039 got "I do have one
+// villa close" and nothing attached).
 const DANGLING_LINKS =
-  /\b(links?|details|photos|options|villas|listings)\s+(are\s+|is\s+)?(below|attached)\b|\b(see|check|open)\s+(the\s+)?links?\b|\b(link|links) (under|after) (this|my) message\b/i;
+  /\b(links?|details|photos|options|villas|listings)\s+(are\s+|is\s+)?(below|attached)\b|\b(see|check|open)\s+(the\s+)?links?\b|\b(link|links) (under|after) (this|my) message\b|\b(?:i|we)\s+(?:do\s+)?(?:have|found|got)\s+(?:one|a|an|two|three|a\s+few|some|several|\d+)\s+(?:\w+\s+){0,2}(?:villas?|options?|places?|homes?)\b|\bhere\s+(?:is|are)\s+(?:one|two|three|a\s+few|some|\d+)\b/i;
 
 /** With nothing attached, a sentence pointing at links is removed outright (the model already had its chance). */
 function stripDanglingLinkPromises(text: string, leadId: string): string {
@@ -1687,6 +1692,31 @@ function ladderMillions(price: number): string {
   return Number.isInteger(m) ? String(m) : m.toFixed(1);
 }
 
+/** When this card came in (a day earlier, for a message sent just before the form), or null. */
+async function cardCreatedAt(leadId: string): Promise<number | null> {
+  try {
+    const [r] = await db.select({ at: leadsSyncTable.amoCreatedAt }).from(leadsSyncTable).where(eq(leadsSyncTable.leadId, leadId)).limit(1);
+    return r?.at ? new Date(r.at).getTime() - 24 * 3600_000 : null;
+  } catch {
+    return null;
+  }
+}
+
+/** How a villa differs from the client's request, as a client reads it (never its free-from date). */
+export function clientDifferences(p: SupabaseProperty, r: ClientRequest): string[] {
+  const out: string[] = [];
+  const named = r.releaseArea ? [] : r.areas;
+  if (named.length > 0 && !areaMatches(p.area, named)) out.push(`in ${ladderAreaLabel(p.area)}`);
+  if (r.bedroomsMin !== null && typeof p.bedrooms === "number") {
+    const ok = r.bedroomsAtLeast ? p.bedrooms >= r.bedroomsMin : r.bedroomsMax !== null ? p.bedrooms >= r.bedroomsMin && p.bedrooms <= r.bedroomsMax : p.bedrooms === r.bedroomsMin;
+    if (!ok) out.push(`${p.bedrooms} bedroom${p.bedrooms === 1 ? "" : "s"}`);
+  }
+  const price = priceOf(p);
+  if (r.budgetMaxIdr && price > r.budgetMaxIdr) out.push("a bit above your budget");
+  out.push(...featureLacks(p, r.wants));
+  return out;
+}
+
 /** A draft whose links carry the ladder layout (captions do the naming, not the text). */
 export function isLadderLayout(attachments: ReadonlyArray<{ ladder?: unknown }> | null | undefined): boolean {
   return (attachments ?? []).some((a) => !!a.ladder);
@@ -1820,7 +1850,18 @@ Language: ${opts.language ?? "the language the client writes in (the draft is al
       // owner 06.10.2026: «нельзя использовать боту как базовая правда»).
       head = [`${i + 1}. ${ladderAreaLabel(x.p!.area)}`, x.p!.bedrooms ? `${x.p!.bedrooms}BR` : "", `${money}/mo`].filter(Boolean).join(" · ");
     }
-    return { ...x.a, ladder: { band: x.band!, caption: detail ? `${head}\n${detail}` : head, headers, closing } };
+    // A villa outside the request says so under it, in the client's terms (owner 08.10.2026: Boris asked for an
+    // enclosed living room and got R-YUD-098 with an open one, the difference known to the bot, hidden in the caption).
+    const differs = clientDifferences(x.p!, opts.request);
+    if (differs.length > 0) {
+      detail = detail
+        .split(/\s*,\s*/)
+        .filter((b) => b && !differs.some((d) => d.toLowerCase().includes(b.toLowerCase()) || b.toLowerCase().includes(d.toLowerCase())))
+        .join(", ");
+    }
+    const diffLine = differs.length > 0 ? `Not exactly your brief: ${differs.join(", ")}` : "";
+    const caption = [head, detail, diffLine].filter(Boolean).join("\n");
+    return { ...x.a, ladder: { band: x.band!, caption, headers, closing } };
   });
   const intro = sanitizeSuggestion(out.intro ?? "").trim();
   logger.info(

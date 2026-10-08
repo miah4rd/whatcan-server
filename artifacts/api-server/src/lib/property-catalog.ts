@@ -336,8 +336,12 @@ export function keyFeatureBits(p: SupabaseProperty, withNegatives = false): stri
   if (p.workspace === "office_room") out.push("separate office room");
   else if (p.workspace === "desk") out.push("workspace");
   else if (p.workspace === "none" && withNegatives) out.push("no workspace");
-  if (p.quiet_area === true) out.push("quiet street");
-  else if (p.quiet_area === false && withNegatives) out.push("busy street");
+  // The street column is the newer, more exact one; the old quiet_area tick only speaks when it is empty
+  // (07.10.2026: R-YUD-071 was captioned "quiet street" while its street is some_traffic).
+  const quiet = p.street ? p.street === "quiet" : p.quiet_area === true;
+  const busy = p.street ? p.street === "busy" : p.quiet_area === false;
+  if (quiet) out.push("quiet street");
+  else if (busy && withNegatives) out.push("busy street");
   if (p.no_construction_nearby === true) out.push("no construction next door");
   if (p.kitchen === "enclosed") out.push("enclosed kitchen");
   else if (p.kitchen === "open") out.push("open kitchen");
@@ -801,7 +805,7 @@ export function clientFeatureMatch(p: SupabaseProperty, w: ClientWants | undefin
   check(w?.enclosedLiving, p.living_room === "enclosed", p.living_room === "open");
   check(w?.enclosedKitchen, p.kitchen === "enclosed", p.kitchen === "open");
   check(w?.workspace, p.workspace === "desk" || p.workspace === "office_room", p.workspace === "none");
-  check(w?.quiet, p.street === "quiet" || p.quiet_area === true || p.no_construction_nearby === true, p.street === "busy" || p.quiet_area === false);
+  check(w?.quiet, p.street ? p.street === "quiet" : p.quiet_area === true || p.no_construction_nearby === true, p.street ? p.street === "busy" : p.quiet_area === false);
   const pets = petsAllowed(p);
   check(w?.pets, pets === true, pets === false);
   check(w?.kids, p.kid_friendly === true, p.kid_friendly === false);
@@ -838,7 +842,7 @@ export function clientFeatureReport(p: SupabaseProperty, w: ClientWants | undefi
   put(w?.enclosedLiving, p.living_room === "enclosed" ? (p.kitchen === "enclosed" ? "an enclosed living room and kitchen" : "an enclosed living room") : null, p.living_room === "open", "the enclosed living room");
   put(w?.enclosedKitchen && !(w?.enclosedLiving && p.living_room === "enclosed"), p.kitchen === "enclosed" ? "an enclosed kitchen" : null, p.kitchen === "open", "the enclosed kitchen");
   put(w?.workspace, p.workspace === "office_room" ? "a separate office room" : p.workspace === "desk" ? "a workspace" : null, p.workspace === "none", "a workspace");
-  put(w?.quiet, p.street === "quiet" || p.quiet_area === true ? "a quiet street" : null, p.street === "busy" || p.quiet_area === false, "how quiet the street is");
+  put(w?.quiet, (p.street ? p.street === "quiet" : p.quiet_area === true) ? "a quiet street" : null, p.street ? p.street === "busy" : p.quiet_area === false, "how quiet the street is");
   const pets = petsAllowed(p);
   put(w?.pets, pets === true ? (p.pets_policy === "small_only" ? "small pets allowed" : "pets allowed") : null, pets === false, "the pet policy");
   put(w?.kids, p.kid_friendly === true ? "kid-friendly" : null, p.kid_friendly === false, "whether it suits children");
