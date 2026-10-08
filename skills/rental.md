@@ -261,7 +261,9 @@ gets no follow-up beside it; the check runs before any text is written.
 - Notifications (owner, 08.10.2026: «уведомление мне нужно и брокерам… только там, где есть черновик на
   approve… Там, где опрувить не нужно, уведомление не нужно. Чтобы не засирать внимание»): a person is told
   only about a draft that waits for them — a stage the autopilot does not work, or a draft the autopilot
-  handed to them. What the autopilot sends by itself is nobody's notification.
+  handed to them. What the autopilot sends by itself is nobody's notification. The same in every funnel
+  (skills/README.md); a step that gets automated stops notifying (owner, 08.10.2026: «если процесс
+  автоматизирован, то уведомлений не нужно… если этап требует approve, тогда да»).
 - THE LAW (owner, 07.10.2026: «Все правила должны быть в скиллах. Код только контролирует правила… Если в
   коде есть что-то, что в скиллах нет, значит это какие-то левые несогласованные правила… как закон»):
   every rule the bot follows is written here, in the owner's words, with the date. The code holds no rule
