@@ -533,8 +533,30 @@ function sendTokenOk(req: Request): boolean {
 }
 const ownerSession = () => OWNER_SESSION;
 
+// The owner's number moved to the Unicorn OS server (Oct 2026). Co-workers'
+// sandboxes only reach this domain, so with WA_COWORKER_FORWARD set these three
+// routes pass the call on to OS, which sends from the owner's number there.
+async function forwardCoworkerToOs(req: Request, res: Response): Promise<boolean> {
+  const base = process.env.WA_COWORKER_FORWARD;
+  const token = process.env.WA_COWORKER_FORWARD_TOKEN;
+  if (!base || !token) return false;
+  const qs = req.originalUrl.includes("?") ? req.originalUrl.slice(req.originalUrl.indexOf("?")).replace(/([?&])token=[^&]*&?/, "$1") : "";
+  try {
+    const r = await fetch(base + req.path + qs, {
+      method: req.method,
+      headers: { "x-wa-token": token, "content-type": "application/json" },
+      body: req.method === "POST" ? JSON.stringify(req.body ?? {}) : undefined,
+    });
+    res.status(r.status).type("application/json").send(await r.text());
+  } catch (err) {
+    res.status(503).json({ ok: false, error: "forward failed: " + String(err) });
+  }
+  return true;
+}
+
 router.post("/wa/send", async (req, res) => {
   if (!sendTokenOk(req)) { res.status(401).json({ ok: false, error: "bad token" }); return; }
+  if (await forwardCoworkerToOs(req, res)) return;
   const to = String(req.body?.to ?? req.body?.chatId ?? "").trim();
   const text = String(req.body?.text ?? req.body?.message ?? "");
   const media = req.body?.media ?? (req.body?.urlFile ? { url: req.body.urlFile, kind: "file", fileName: req.body.fileName } : undefined);
@@ -557,6 +579,7 @@ router.post("/wa/send", async (req, res) => {
 //   GET /api/wa/messages?since=2026-09-22T00:00:00Z       (every chat, newest first)
 router.get("/wa/messages", async (req, res) => {
   if (!sendTokenOk(req)) { res.status(401).json({ ok: false, error: "bad token" }); return; }
+  if (await forwardCoworkerToOs(req, res)) return;
   const digits = String(req.query.chatId ?? req.query.phone ?? "").replace(/@.*$/, "").replace(/\D/g, "");
   const count = Math.min(Math.max(Number(req.query.count) || 20, 1), 200);
   const since = req.query.since ? new Date(String(req.query.since)) : null;
@@ -589,6 +612,7 @@ router.get("/wa/messages", async (req, res) => {
 
 router.get("/wa/groups", async (req, res) => {
   if (!sendTokenOk(req)) { res.status(401).json({ ok: false, error: "bad token" }); return; }
+  if (await forwardCoworkerToOs(req, res)) return;
   const r = await gateway("GET", `/groups/${ownerSession()}`).catch((err) => ({ status: 503, data: { error: String(err) } }));
   res.status(r.status).json(r.data);
 });
