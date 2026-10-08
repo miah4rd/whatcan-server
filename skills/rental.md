@@ -181,6 +181,8 @@ villa the client clicked does not become their area.
   person's name and someone else writes from WhatsApp, no name at all — "Hi there" (Daan Kroon's form,
   Simon Hupkes writing, 06.10; owner: «да», «чини все»).
 - Text and links are one message: the words describe exactly the villas attached (04.09).
+- An internal villa code (R-UM-024) never appears in a message to a client; it is for us (owner,
+  08.10.2026: «Внутренний код – это внутренний код. Для внутренних»).
 - Every shortlist carries three villas (owner, 07.10.2026: «один это всегда маленькая конверсия… все
   равно нужно как бы три»; «почему только одна ближайшая, также три»): the ones inside the request first;
   fewer than three inside it → the closest ones fill it up to three, said honestly as close alternatives;

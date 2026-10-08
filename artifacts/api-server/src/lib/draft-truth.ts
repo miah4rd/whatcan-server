@@ -355,6 +355,22 @@ export function isNoteToUs(text: string): boolean {
 const VILLAS_SEPARATE =
   "These villas go out as their OWN messages right after this text, each with its caption and link: never list, number, name or describe them in this message.";
 
+/**
+ * An internal villa code ("R-UM-024") is ours, never the client's (owner, 08.10.2026: «Внутренний код – это
+ * внутренний код. Для внутренних»; skills/rental.md §5). It reaches a draft from the link the client clicked.
+ * Outside a link it becomes "that villa"; the links themselves stay as they are.
+ */
+const INTERNAL_CODE = /(?<![\/\w-])R-[A-Z]{2,4}-\d{2,4}\b/g;
+export function withoutInternalCodes(text: string): string {
+  if (!INTERNAL_CODE.test(text)) return text;
+  INTERNAL_CODE.lastIndex = 0;
+  return text
+    .replace(/\(\s*R-[A-Z]{2,4}-\d{2,4}\s*\)/g, "")
+    .replace(INTERNAL_CODE, "that villa")
+    .replace(/\bthe that villa\b/gi, "that villa")
+    .replace(/ {2,}/g, " ");
+}
+
 export async function enforceDraftTruth(o: {
   leadId: string;
   text: string;
@@ -362,6 +378,7 @@ export async function enforceDraftTruth(o: {
   clientTexts: string[];
   formText: string;
 }): Promise<string> {
+  o = { ...o, text: withoutInternalCodes(o.text) };
   let issues = checkDraftTruth(o);
   if (issues.length === 0) return o.text;
   // Nothing to correct a message in: a model asked to fix an empty draft answers with a note to us.
