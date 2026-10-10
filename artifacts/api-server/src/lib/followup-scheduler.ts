@@ -201,7 +201,14 @@ THIS FOLLOW-UP IS THE NEW OPTIONS THEMSELVES (skills/rental.md §7, owner 09.10.
 
 YOU HAVE NO PROPERTY LINKS TO ATTACH TO THIS MESSAGE. Nothing will arrive after it. So do not write "here are", "below", "attached", "these options", "any of these", and do not promise to send or prepare anything — whatever you offer here would reach the client empty. Referring back to villas you already sent EARLIER in the conversation above is fine, and naming them is better than "the options I sent".`;
 
-  return { attachments, brief: brief + requestBlock, picked };
+  // A Rental follow-up with villas attached overrides the "nothing matches exactly… ONE question" wording of
+  // the reply block above: it is the options themselves, one short line, no question (skills/rental.md §7,
+  // owner 09.10.2026: «Фолоап должен быть просто ещё три новые опции а не вопрос»).
+  const followUpOverride =
+    attachments.length > 0 && (opts.pipeline ?? "").trim().toLowerCase() === "rental"
+      ? `\n\nFOLLOW-UP OVERRIDE — it replaces any instruction above about saying nothing matches or asking a question: write ONE short line, e.g. "I've found a few more options for you" (if some are a little outside their request, "a few more options, a couple a little different from your brief"). Never write that nothing matches or that we have nothing, and ask NO question at all: the closing line after the villas is the only ask.`
+      : "";
+  return { attachments, brief: brief + requestBlock + followUpOverride, picked };
 }
 
 async function generateFollowupRaw(opts: {
