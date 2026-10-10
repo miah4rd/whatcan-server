@@ -318,7 +318,8 @@ export async function processSourcedLeadOutreach(): Promise<number> {
       // answers, welcomed at once, broker opening after 15 minutes of silence.
       // Before this it matched neither branch and was skipped on every pass
       // (Lance, 23547869).
-      const catalogForm = !adListing && /^\s*catalog\s+lead\b/i.test(rawName);
+      // "FB Lead v8 - <name>" is the Meta form made by the co-worker (08–10.10.2026): same card fields, no note.
+      const catalogForm = !adListing && /^\s*(catalog\s+lead|fb\s+lead\b)/i.test(rawName);
       const catalogAnswers = catalogForm
         ? formAnswersFromCard((await getLeadCardCriteria(lead.leadId).catch(() => null))?.answers)
         : "";
