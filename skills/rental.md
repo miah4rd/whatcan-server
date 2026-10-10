@@ -243,7 +243,12 @@ is information for the next draft, it moves no stage (09.09).
 
 A series of three, one a day, each counted from the client's own last message, in Amelia's voice,
 never a template (owner's Rental cadence). Each of the three carries NEW villas for the request (or
-the closest ones, §5) — never the same villas again. After the third follow-up with no reply the card
+the closest ones, §5) — never the same villas again. A follow-up IS the new options, not a question about the earlier ones (owner,
+08–09.10.2026: «Фолоап должен быть просто ещё три новые опции а не вопрос как тебе»; «Если нету прям в его
+запрос, но чуть раздвинуть можно, но всегда опции… Опции дают лучшую конверсию, люди ищут опции… если не
+ответили на предыдущую, нужно дать другие опции, пока не ответят»; «два раза сказал… нужно добавлять больше
+опций»): three new villas every time, the request widened a little when nothing exact is left, never "we
+have nothing", never "did you get a chance to look". After the third follow-up with no reply the card
 goes to Closed-lost (owner, 05.10.2026: «3 раза новая подборка, если ничего не зашло, то в корзину. пиши
 в скилы»; replaces "the lead is left alone", 26.09). A client who showed interest is never closed this
 way (§2): a reminder is set for their date instead.

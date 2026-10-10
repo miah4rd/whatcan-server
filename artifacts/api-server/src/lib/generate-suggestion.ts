@@ -324,6 +324,8 @@ export type PickOptions = {
   leadStage?: string | null;
   /** Card notes — the "Ad enquiry" marker and the scout's summary of the client's post. */
   leadNotes?: string | null;
+  /** A follow-up after silence (skills/rental.md §7, owner 08–09.10.2026): the gate does not hold new links back. */
+  followUp?: boolean;
   /** Set when the broker is revising an existing draft — see matchProperties. */
   brokerInstruction?: string | null;
   currentAttachmentIds?: string[];
@@ -434,7 +436,7 @@ export async function pickPropertyAttachmentsDetailed(opts: PickOptions): Promis
     // A broker asking for different links, and the broker's opening on an ad
     // lead, have already decided; every other draft asks the gate.
     const gate: ShortlistGate | null =
-      opts.brokerInstruction || opts.openingAfterWelcome
+      opts.brokerInstruction || opts.openingAfterWelcome || opts.followUp
         ? null
         : await decideShortlistGate({
             leadId: opts.leadId,

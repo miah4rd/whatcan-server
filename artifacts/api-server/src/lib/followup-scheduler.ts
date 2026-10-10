@@ -179,6 +179,7 @@ async function followupListings(opts: {
     lastLeadText,
     leadStage: opts.leadStage,
     leadNotes: opts.leadNotes,
+    followUp: (opts.pipeline ?? "").trim().toLowerCase() === "rental",
   }).catch((err) => {
     logger.warn({ err, leadId: opts.leadId }, "followup property matcher threw — writing without listings");
     return { attachments: [], outcome: null, skipped: false, excludeIds: [] } as PickedAttachments;
@@ -194,7 +195,8 @@ async function followupListings(opts: {
 
 PROPERTY LINKS ATTACHED TO THIS MESSAGE (${attachments.length}) — they are delivered right after it, automatically:
 ${attachments.map((a, i) => `${i + 1}. ${a.label}`).join("\n")}
-Name each of them and say which area it is in. Quote only the prices above, never invent one. Never write a URL or an internal listing code — the links are attached. Never ask permission to send them or promise them "later": they are already on their way.`
+Name each of them and say which area it is in. Quote only the prices above, never invent one. Never write a URL or an internal listing code — the links are attached. Never ask permission to send them or promise them "later": they are already on their way.${(opts.pipeline ?? "").trim().toLowerCase() === "rental" ? `
+THIS FOLLOW-UP IS THE NEW OPTIONS THEMSELVES (skills/rental.md §7, owner 09.10.2026): one short line saying you have more options for their request, and nothing else. Do not ask whether they saw or liked the earlier ones, do not ask what they are after, and never write that we have nothing.` : ""}`
     : `
 
 YOU HAVE NO PROPERTY LINKS TO ATTACH TO THIS MESSAGE. Nothing will arrive after it. So do not write "here are", "below", "attached", "these options", "any of these", and do not promise to send or prepare anything — whatever you offer here would reach the client empty. Referring back to villas you already sent EARLIER in the conversation above is fine, and naming them is better than "the options I sent".`;
