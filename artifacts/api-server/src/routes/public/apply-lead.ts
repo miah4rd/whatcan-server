@@ -193,6 +193,40 @@ router.post("/apply-lead", async (req, res) => {
   // contact in one call, and returns a flat array, not an _embedded wrapper.
   type ComplexLeadResult = Array<{ id: number; contact_id?: number }>;
   let result: ComplexLeadResult | null = null;
+  // Rental website leads go to Unicorn OS, not to Amelia in amoCRM (owner, 08.10.2026: «Амелия не работает с
+  // новыми лидами»; 11.10.2026: Merei, already on Nick in the OS, applied on the site and Amelia wrote to her too).
+  // The OS intake answers with the existing card when the phone is already in the funnel — no second card.
+  const osUrl = process.env["OS_INTAKE_URL"] ?? "";
+  const osKey = process.env["OS_INTAKE_TOKEN"] ?? "";
+  if (!sale && osUrl && osKey) {
+    try {
+      const osPayload = [{ ...leadPayload[0]!, name: `${listingCode} - ${contactName}`, responsible_user_id: undefined }];
+      const r = await fetch(osUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${osKey}` },
+        body: JSON.stringify(osPayload),
+        signal: AbortSignal.timeout(20000),
+      });
+      const j = (await r.json().catch(() => null)) as Array<{ id: number; duplicate?: boolean }> | null;
+      const id = Array.isArray(j) ? j[0]?.id : null;
+      if (r.ok && id) {
+        logger.info({ osLeadId: id, duplicate: !!j?.[0]?.duplicate, listingCode, source, traffic }, "apply-lead: rental website lead sent to Unicorn OS");
+        if (notes) {
+          await fetch(osUrl.replace(/\/leads\/complex$/, `/leads/${id}/notes`), {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${osKey}` },
+            body: JSON.stringify([{ note_type: "common", params: { text: `Client notes: ${notes}` } }]),
+            signal: AbortSignal.timeout(20000),
+          }).catch(() => undefined);
+        }
+        res.json({ ok: true, leadId: id });
+        return;
+      }
+      logger.error({ status: r.status, listingCode }, "apply-lead: Unicorn OS did not take the lead — falling back to amoCRM");
+    } catch (err) {
+      logger.error({ err, listingCode }, "apply-lead: Unicorn OS request threw — falling back to amoCRM");
+    }
+  }
   try {
     result = await amoPost<ComplexLeadResult>("/api/v4/leads/complex", leadPayload);
   } catch (err) {
