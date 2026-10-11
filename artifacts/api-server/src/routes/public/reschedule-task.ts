@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, leadCrmTasksTable, leadsSyncTable, pendingSuggestionsTable } from "@workspace/db";
 import { and, eq, inArray } from "drizzle-orm";
-import { closeAmoTasksForLead, createAmoTask, getAmoLead } from "../../lib/amo-client.js";
+import { amoPatch, closeAmoTasksForLead, createAmoTask, getAmoLead, getOpenAmoTasks, isProtectedTask } from "../../lib/amo-client.js";
 
 const router = Router();
 
@@ -42,6 +42,12 @@ router.post("/reschedule-task", async (req, res) => {
   try {
     // 1. Close any open task(s) currently on the lead.
     closedCount = await closeAmoTasksForLead(leadId);
+    // 1b. A protected task ("Next step after the viewing", a report…) is never closed here, but the broker's
+    //     chosen date moves it too — left behind, it kept the lead "Overdue 18d" right after "follow up in 7 days"
+    //     (Amelia, Melinda Langford, 11.10.2026: «why does it say overdue 18days when I clicked … in 7 days?»).
+    const till = Math.floor(parsedDate.getTime() / 1000);
+    const behind = (await getOpenAmoTasks(leadId)).filter((t) => isProtectedTask(t.text) && (t.complete_till ?? 0) < till);
+    if (behind.length) await amoPatch<unknown>(`/api/v4/tasks`, behind.map((t) => ({ id: t.id, complete_till: till })));
     // 2. Create the next task on the chosen date, assigned to the lead's owner.
     const lead = await getAmoLead(leadId);
     const responsibleUserId = lead?.responsible_user_id ?? undefined;
