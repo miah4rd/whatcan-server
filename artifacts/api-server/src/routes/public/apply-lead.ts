@@ -193,14 +193,15 @@ router.post("/apply-lead", async (req, res) => {
   // contact in one call, and returns a flat array, not an _embedded wrapper.
   type ComplexLeadResult = Array<{ id: number; contact_id?: number }>;
   let result: ComplexLeadResult | null = null;
-  // Rental website leads go to Unicorn OS, not to Amelia in amoCRM (owner, 08.10.2026: «Амелия не работает с
-  // новыми лидами»; 11.10.2026: Merei, already on Nick in the OS, applied on the site and Amelia wrote to her too).
-  // The OS intake answers with the existing card when the phone is already in the funnel — no second card.
+  // Every website lead — rental and sale — goes to Unicorn OS; amoCRM gets nothing, not even as a fallback
+  // (owner, 11.10.2026: «Вам от CRM больше ничего не должно попадать. Вообще все. Мы с ней не работаем больше»;
+  // 08.10.2026: «Амелия не работает с новыми лидами»; Merei, already on Nick in the OS, applied on the site and
+  // Amelia wrote to her too). The OS intake answers with the existing card when the phone is already there.
   const osUrl = process.env["OS_INTAKE_URL"] ?? "";
   const osKey = process.env["OS_INTAKE_TOKEN"] ?? "";
-  if (!sale && osUrl && osKey) {
+  const osPayload = [{ ...leadPayload[0]!, name: `${listingCode} - ${contactName}`, responsible_user_id: undefined }];
+  for (let attempt = 1; attempt <= 3 && osUrl && osKey; attempt++) {
     try {
-      const osPayload = [{ ...leadPayload[0]!, name: `${listingCode} - ${contactName}`, responsible_user_id: undefined }];
       const r = await fetch(osUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${osKey}` },
@@ -210,7 +211,7 @@ router.post("/apply-lead", async (req, res) => {
       const j = (await r.json().catch(() => null)) as Array<{ id: number; duplicate?: boolean }> | null;
       const id = Array.isArray(j) ? j[0]?.id : null;
       if (r.ok && id) {
-        logger.info({ osLeadId: id, duplicate: !!j?.[0]?.duplicate, listingCode, source, traffic }, "apply-lead: rental website lead sent to Unicorn OS");
+        logger.info({ osLeadId: id, duplicate: !!j?.[0]?.duplicate, listingCode, pipeline: sale ? "sale" : "rental", source, traffic }, "apply-lead: website lead sent to Unicorn OS");
         if (notes) {
           await fetch(osUrl.replace(/\/leads\/complex$/, `/leads/${id}/notes`), {
             method: "POST",
@@ -220,52 +221,17 @@ router.post("/apply-lead", async (req, res) => {
           }).catch(() => undefined);
         }
         res.json({ ok: true, leadId: id });
+        fireMetaCapi(req, { phone }).catch((err) => logger.warn({ err }, "apply-lead: CAPI send failed (non-fatal)"));
         return;
       }
-      logger.error({ status: r.status, listingCode }, "apply-lead: Unicorn OS did not take the lead — falling back to amoCRM");
+      logger.error({ status: r.status, listingCode, attempt }, "apply-lead: Unicorn OS did not take the lead");
     } catch (err) {
-      logger.error({ err, listingCode }, "apply-lead: Unicorn OS request threw — falling back to amoCRM");
+      logger.error({ err, listingCode, attempt }, "apply-lead: Unicorn OS request threw");
     }
+    await new Promise((ok) => setTimeout(ok, 1500 * attempt));
   }
-  try {
-    result = await amoPost<ComplexLeadResult>("/api/v4/leads/complex", leadPayload);
-  } catch (err) {
-    logger.error({ err, listingCode }, "apply-lead: amoCRM request threw");
-  }
-  const leadId = result?.[0]?.id ?? null;
-
-  if (!leadId) {
-    logger.error({ listingCode, budget, bedrooms }, "apply-lead: amoCRM did not accept the lead");
-    res.status(502).json({ error: "Could not submit the request right now. Please try again in a moment." });
-    return;
-  }
-
-  logger.info({ leadId, listingCode, pipeline: sale ? "sale" : "rental", source, traffic, budget, bedrooms: bedroomsLabel, moveIn, area: areaLabel }, "apply-lead: lead created from website form");
-
-  // The form's free-text field has no custom-field home on the card, so it
-  // goes on the lead as a note — the same place the old ad-form integration
-  // already put qualitative answers (see lib/lead-card-fields.ts's header
-  // comment on "Form answers:" in the note). English only, no markers: this
-  // account's card is read by the bot, and non-English text in a note has
-  // broken its logic before.
-  if (notes) {
-    try {
-      await amoPost(`/api/v4/leads/${leadId}/notes`, [
-        { note_type: "common", params: { text: `Client notes: ${notes}` } },
-      ]);
-    } catch (err) {
-      logger.warn({ err, leadId }, "apply-lead: could not attach the notes field (non-fatal)");
-    }
-  }
-
-  res.json({ ok: true, leadId });
-
-  // Meta Conversions API — fired only after this point, i.e. only for a lead
-  // that actually got created. A budget-blocked attempt returns above and
-  // never reaches here, so it is never counted as a conversion. Best-effort
-  // and after the response is already sent: a CAPI failure must never affect
-  // what the visitor sees.
-  fireMetaCapi(req, { phone }).catch((err) => logger.warn({ err }, "apply-lead: CAPI send failed (non-fatal)"));
+  logger.error({ listingCode, phone, contactName }, "apply-lead: lead NOT taken — Unicorn OS unreachable (amoCRM is retired)");
+  res.status(502).json({ error: "Could not submit the request right now. Please try again in a moment." });
 });
 
 // ── Meta Conversions API (optional) ─────────────────────────────────────────

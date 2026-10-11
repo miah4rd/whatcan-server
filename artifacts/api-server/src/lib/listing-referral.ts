@@ -34,7 +34,7 @@
 import { db, leadsSyncTable, leadMessagesTable, brokerSettingsTable } from "@workspace/db";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { amoFetch, amoPost } from "./amo-client";
+import { OS_MODE, amoFetch, amoPost } from "./amo-client";
 import { chatCompletionJSON, HELPER_MODEL } from "./ai-client";
 import { leadContact } from "./phone-dedupe";
 import { stripQuotedText } from "./listing-card-fields";
@@ -328,6 +328,8 @@ export async function handleReferral(sourceLeadId: string, opts: { apply: boolea
         },
       },
     ];
+    // amoCRM is retired (owner, 11.10.2026: «Вам от CRM больше ничего не должно попадать») — Copilot Amo makes no card there.
+    if (!OS_MODE) return { ...base, ...found, action: "skipped", reason: "amoCRM is retired — no card is made there" };
     const created = await amoPost<Array<{ id: number }>>("/api/v4/leads/complex", payload);
     const newLeadId = created?.[0]?.id ? String(created[0].id) : null;
     if (!newLeadId) return { ...base, ...found, action: "skipped", reason: "amoCRM did not create the card" };
