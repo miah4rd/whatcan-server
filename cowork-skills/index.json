@@ -46,7 +46,7 @@
   {
    "name": "fb-rental-demand-scout-gate",
    "description": "ГЕЙТ ЗАКОНА №1 для слотовых прогонов FB Lead Scout (Unicorn Property). Обязателен при ЛЮБОМ прогоне по поиску арендаторов в Facebook — читается первым, выполняется последним. Единственное основание остановить прогон — lead_id с номером WhatsApp, подтверждённый в Unicorn OS (воронка Rental, ответственный Nick 12919178, без тега Amelia; amoCRM выведена из работы). Объяснение отсутствия результата, честное признание провала, выполненный чек-лист, смежная работа в CRM, вывод о насыщении рынка и отчёт любой формы результатом НЕ являются. Использовать вместе с навыком fb-rental-demand-scout.",
-   "updatedAt": "2026-10-11T04:54:28.137533Z",
+   "updatedAt": "2026-10-12T03:28:39.336592Z",
    "enabled": true
   },
   {
@@ -153,8 +153,8 @@
   },
   {
    "name": "unicorn-os-crm",
-   "description": "CRM Unicorn Property — ТОЛЬКО Unicorn OS. amoCRM выведена из работы 30.09.2026: не читать, не проверять, не писать туда, не мониторить. Все листинги (воронка Rental Listings 11180334) живут в Unicorn OS. Работать через коннектор Unicorn OS (MCP) — find_leads, lead_overview, stage_changes, move_stage, add_note, update_lead, create_lead, crm_request. Журнал прогонов — карточка 900002826. ПЕРЕОПРЕДЕЛЯЕТ все упоминания amoCRM в других скилах (listing-qualification-standard, listing-upload-regulation, api-first-rule, listing-announcement-audit и др.). Использовать при ЛЮБОЙ задаче про CRM, карточки листингов, воронку, квалификацию, журнал прогона, переписку с владельцами вилл.",
-   "updatedAt": "2026-09-30T05:30:43.999756Z",
+   "description": "CRM Unicorn Property — ТОЛЬКО Unicorn OS. amoCRM выведена из работы 30.09.2026: не читать, не проверять, не писать туда, не мониторить. Все листинги (воронка Rental Listings 11180334) живут в Unicorn OS. Работать через коннектор Unicorn OS (MCP) — find_leads, lead_overview, stage_changes, move_stage, add_note, update_lead, create_lead, crm_request, send_team_announcement. Журнал прогонов — карточка 900002826. ПЕРЕОПРЕДЕЛЯЕТ все упоминания amoCRM в других скилах (listing-qualification-standard, listing-upload-regulation, api-first-rule, listing-announcement-audit и др.). Использовать при ЛЮБОЙ задаче про CRM, карточки листингов, воронку, квалификацию, журнал прогона, переписку с владельцами вилл.",
+   "updatedAt": "2026-10-12T03:30:14.951811Z",
    "enabled": true
   },
   {

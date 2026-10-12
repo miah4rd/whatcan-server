@@ -1,6 +1,6 @@
 ---
-name: unicorn-os-crm
-description: "CRM Unicorn Property — ТОЛЬКО Unicorn OS. amoCRM выведена из работы 30.09.2026: не читать, не проверять, не писать туда, не мониторить. Все листинги (воронка Rental Listings 11180334) живут в Unicorn OS. Работать через коннектор Unicorn OS (MCP) — find_leads, lead_overview, stage_changes, move_stage, add_note, update_lead, create_lead, crm_request. Журнал прогонов — карточка 900002826. ПЕРЕОПРЕДЕЛЯЕТ все упоминания amoCRM в других скилах (listing-qualification-standard, listing-upload-regulation, api-first-rule, listing-announcement-audit и др.). Использовать при ЛЮБОЙ задаче про CRM, карточки листингов, воронку, квалификацию, журнал прогона, переписку с владельцами вилл."
+name: "unicorn-os-crm"
+description: "CRM Unicorn Property — ТОЛЬКО Unicorn OS. amoCRM выведена из работы 30.09.2026: не читать, не проверять, не писать туда, не мониторить. Все листинги (воронка Rental Listings 11180334) живут в Unicorn OS. Работать через коннектор Unicorn OS (MCP) — find_leads, lead_overview, stage_changes, move_stage, add_note, update_lead, create_lead, crm_request, send_team_announcement. Журнал прогонов — карточка 900002826. ПЕРЕОПРЕДЕЛЯЕТ все упоминания amoCRM в других скилах (listing-qualification-standard, listing-upload-regulation, api-first-rule, listing-announcement-audit и др.). Использовать при ЛЮБОЙ задаче про CRM, карточки листингов, воронку, квалификацию, журнал прогона, переписку с владельцами вилл."
 ---
 
 # CRM = Unicorn OS. amoCRM больше нет
@@ -31,7 +31,21 @@ description: "CRM Unicorn Property — ТОЛЬКО Unicorn OS. amoCRM выве�
 
 Доступ ключа — только воронка Rental Listings. Карточки клиентов закрыты.
 
-Запасной путь, если коннектора нет в сессии: API формата amoCRM v4 по адресу `https://os.unicorn-properties.com/os-crm` с вкладки на `https://os.unicorn-properties.com`. Ключ в скил и документы не пишется. Коннектора нет и запасной путь заблокирован — стоп и сказать владельцу, не откатываться на amoCRM.
+## Доступ к OS (обновлено 12.10.2026)
+
+**Коннектор подключён к аккаунту владельца** как custom connector (Настройки → Connectors → Add custom connector, ссылка из файла `OS-коннектор-для-коворкера.txt` на рабочем столе владельца). Ссылка содержит ключ — никуда не копировать (ни в скилы, ни в документы, ни в заметки).
+
+- В сессии он называется **Unicorn_OS**, инструменты `mcp__Unicorn_OS__*`: `regulation`, `pipeline_stages`, `find_leads`, `lead_overview`, `stage_changes`, `move_stage`, `add_note`, `update_lead`, `create_lead`, `crm_request`, `send_team_announcement`, `send_whatsapp`.
+- **Коннектор подключается с задержкой.** В начале сессии — ToolSearch `+Unicorn_OS`; если сервер в статусе «still connecting», ToolSearch дождётся. Не делать вывод «коннектора нет» по первому пустому поиску; перед стопом повторить поиск.
+- Скоуп задаёт ключ: Rental Listings `11180334`, HR `91000001`, HR New `91000011`. Клиентские воронки Rental и UNICORN закрыты.
+- Анонсы в Unicorn Rental — только `send_team_announcement` (или `crm_request` POST `/team-announcement` с `{"text"}`). Успех = ответ `ok:true` с `id`.
+- Журнал `900002826` пишется через `add_note` коннектора (проверено 12.10.2026). Разовый отказ классификатора на `add_note` — повторить один раз.
+
+**Запасной путь — встроенный браузер, вкладка `https://os.unicorn-properties.com/os/` (вход уже есть):** same-origin `fetch('/os/api/...')` — `/os/api/leads?pipeline=rental-listings&active=all`, `/os/api/leads/<id>` (поля, `facts`, `messages`, `stageEvents` с `changed_at`/`to_stage`), POST `/os/api/leads/<id>/notes` `{"text"}`. Ограничения: журнальная карточка `900002826` там не видна (404 «No such card»), анонсов нет, эндпоинтов regulation/stage_changes нет.
+
+**`/os-crm` из браузера не работает:** принимает только Bearer-ключ, вход в OS (cookie) его не авторизует → 401. Пускать `/os-crm` по входу в OS — изменение защиты CRM, не внедрено; делать только по прямому «да» владельца, самостоятельно не обходить.
+
+Ни коннектора (после повторного поиска), ни браузера — стоп и пуш владельцу, не откатываться на amoCRM.
 
 **Журнал прогонов — заметкой в карточку `900002826`.**
 
