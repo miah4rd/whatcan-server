@@ -1,7 +1,43 @@
 ---
 name: "listing-sourcing-priorities"
-description: "ПРИОРИТЕТЫ ПОИСКА ЛИСТИНГОВ и ИСТОЧНИК СПРОСА ДЛЯ ТАРГЕТА ДНЯ Unicorn Property (владелец, 03.10 и 11.10.2026). ТАРГЕТ 20 КАРТОЧЕК ОБЯЗАТЕЛЕН: не набрал — продолжать по лестнице (следующая ячейка → вторая линия сеткой → шире радиус → Instagram → FB владельцы), «район исчерпан» не повод остановиться. ДО 17.10.2026 таргет по ФИКСИРОВАННОЙ аналитике спроса за 2 месяца, С 18.10 — лиды новой формы Meta с 03.10. Каталог дороже спроса; ищем ВТОРУЮ ЛИНИЮ за By Pass Tanah Lot; потолок цены — приоритет (2BR 35-40M, 3BR 45-50M); фичи: сад, модерн, закрытые гостиная и кухня, питомцы, дети, рабочее место; каналы пины → Instagram → FB владельцы; 5 вопросов первого касания; инспекции. ПЕРЕОПРЕДЕЛЯЕТ bali-demand-matrix, bali-catalog-sourcing-rule, listing-card-standard, listing-qualification-standard. Использовать при ЛЮБОМ прогоне поиска листингов."
+description: "ТЗ ВЛАДЕЛЬЦА 13.10.2026 ВЫШЕ ВСЕГО: закрыть дыру 2BR 25-35M (пояс Сесеха, Pererenan, Tumbak Bayuh) второй линией; карточка засчитывается только со спальнями, ценой с периодом и районом; из 20 в день минимум 10 в целевых ячейках. ПРИОРИТЕТЫ ПОИСКА ЛИСТИНГОВ и ИСТОЧНИК СПРОСА ДЛЯ ТАРГЕТА ДНЯ Unicorn Property (владелец, 03.10 и 11.10.2026). ТАРГЕТ 20 КАРТОЧЕК ОБЯЗАТЕЛЕН: не набрал — продолжать по лестнице (следующая ячейка → вторая линия сеткой → шире радиус → Instagram → FB владельцы), «район исчерпан» не повод остановиться. ДО 17.10.2026 таргет по ФИКСИРОВАННОЙ аналитике спроса за 2 месяца, С 18.10 — лиды новой формы Meta с 03.10. Каталог дороже спроса; ищем ВТОРУЮ ЛИНИЮ за By Pass Tanah Lot; потолок цены — приоритет (2BR 35-40M, 3BR 45-50M); каналы пины → Instagram → FB владельцы; 5 вопросов первого касания;  ПЕРЕОПРЕДЕЛЯЕТ bali-demand-matrix, bali-catalog-sourcing-rule, listing-card-standard, listing-qualification-standard. Использовать при ЛЮБОМ прогоне поиска листингов."
 ---
+
+# ⛔⛔⛔⛔⛔ ТЗ ДЛЯ СКАУТА — ВЛАДЕЛЕЦ 13.10.2026, ДОСЛОВНО (ВЫШЕ ВСЕГО В ЭТОМ ФАЙЛЕ И В СВЯЗАННЫХ СКИЛАХ)
+
+Scout brief: fill the 25–35M gap (owner, 13.10.2026)
+Goal. Clients most often ask for a 2BR in the Seseh belt (Seseh, Cemagi, Munggu) and Pererenan at 25–35M IDR a month. Coastal tourist villas there cost 40M and up, so we have almost nothing in this range. Find villas that close this gap.
+Where to look
+
+* Inland, the "second line": inland Cemagi and Munggu (Munggu Kaja), Tumbak Bayuh, Buduk, north Pererenan (above Jl. Raya Pererenan).
+* Don't pull coastal Google Maps pins or Airbnb tourist villas on the beach side for this target. They price above our ceiling.
+
+What to look for
+
+* 2BR villas rented by the year: owners asking 230–300M a year, which is about 23–28M a month with our 10%.
+* 2BR units in small complexes and townhouses (like Greenlot Residence, Seseh Townhouse, Prive Pererenan).
+* 2BR with a plunge pool or no pool.
+* 1BR + study at 25–30M.
+
+Sources: Rumah123, Lamudi, agency yearly-rent pages (e.g. Bali Home Immo yearly) to find the owners, and owner-direct posts in FB groups. Owner-direct only, no agencies.
+A card counts only when it has, within 48 hours:
+
+* bedrooms;
+* a price, with the period stated (per month or per year);
+* the area or a pin.
+
+A card without a price doesn't count toward the daily target.
+Daily target: 20 cards, at least 10 of them in the cells above (2BR Seseh belt / Pererenan / Tumbak Bayuh at a price up to 35M/month or up to 300M/year, or 1BR up to 30M).
+First message to the owner asks for: bedrooms, monthly and yearly price including our 10% commission, availability, and our 5 checklist points (pets, enclosed living room and kitchen, pool fence for kids, construction nearby).
+Report each day: cards created, how many in the target cells, how many with a price, and which ones are under the price ceiling.
+
+## Что это меняет в прежних правилах (сводка, не замена текста выше)
+- Rumah123 / Lamudi (отклонены 06.10) и посты владельцев в FB-группах (убиты 07.10) **снова источники** — по ТЗ 13.10, только owner-direct.
+- Прибрежные пины Google Maps и пляжные Airbnb под этот таргет не тянуть.
+- «Спальни и цена не гейт» (20.09) для ЗАЧЁТА больше не действует: в норму идёт карточка со спальнями + ценой с периодом + районом/пином (в течение 48 ч). Без цены — не в зачёт.
+- Отчёт: карточек создано / в целевых ячейках / с ценой / какие ниже потолка.
+
+
 
 # ⛔⛔⛔⛔ ТАРГЕТ ДНЯ НАДО ДОСТИГАТЬ (владелец, 11.10.2026)
 
