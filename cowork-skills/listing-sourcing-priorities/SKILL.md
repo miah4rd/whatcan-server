@@ -1,42 +1,49 @@
 ---
 name: "listing-sourcing-priorities"
-description: "ТЗ ВЛАДЕЛЬЦА 13.10.2026 ВЫШЕ ВСЕГО: закрыть дыру 2BR 25-35M (пояс Сесеха, Pererenan, Tumbak Bayuh) второй линией; карточка засчитывается только со спальнями, ценой с периодом и районом; из 20 в день минимум 10 в целевых ячейках. ПРИОРИТЕТЫ ПОИСКА ЛИСТИНГОВ и ИСТОЧНИК СПРОСА ДЛЯ ТАРГЕТА ДНЯ Unicorn Property (владелец, 03.10 и 11.10.2026). ТАРГЕТ 20 КАРТОЧЕК ОБЯЗАТЕЛЕН: не набрал — продолжать по лестнице (следующая ячейка → вторая линия сеткой → шире радиус → Instagram → FB владельцы), «район исчерпан» не повод остановиться. ДО 17.10.2026 таргет по ФИКСИРОВАННОЙ аналитике спроса за 2 месяца, С 18.10 — лиды новой формы Meta с 03.10. Каталог дороже спроса; ищем ВТОРУЮ ЛИНИЮ за By Pass Tanah Lot; потолок цены — приоритет (2BR 35-40M, 3BR 45-50M); каналы пины → Instagram → FB владельцы; 5 вопросов первого касания;  ПЕРЕОПРЕДЕЛЯЕТ bali-demand-matrix, bali-catalog-sourcing-rule, listing-card-standard, listing-qualification-standard. Использовать при ЛЮБОМ прогоне поиска листингов."
+description: "ТАРГЕТ ДНЯ 20 КАРТОЧЕК по кубу спроса (все районы и спальни) + ВНУТРИ НИХ квота ≥10 на дыру 2BR 25-35M (пояс Сесеха, Pererenan, Tumbak Bayuh, 1BR до 30M) — ТЗ владельца 13.10.2026 это ДОПОЛНЕНИЕ к прежнему брифу, не замена. Карточка засчитывается со спальнями, ценой с периодом и районом. ПРИОРИТЕТЫ ПОИСКА ЛИСТИНГОВ и ИСТОЧНИК СПРОСА Unicorn Property (владелец, 03.10, 11.10, 13.10.2026). ТАРГЕТ 20 ОБЯЗАТЕЛЕН: не набрал — лестница (следующая ячейка → вторая линия сеткой → шире радиус → Instagram → FB владельцы). ДО 17.10.2026 спрос по ФИКСИРОВАННОЙ аналитике за 2 месяца, С 18.10 — лиды новой формы Meta с 03.10. Вторая линия за By Pass Tanah Lot — приоритет; потолок цены — приоритет (2BR 35-40M, 3BR 45-50M); каналы пины → Instagram → FB владельцы (+ Rumah123/Lamudi для дыры); 5 вопросов первого касания. ПЕРЕОПРЕДЕЛЯЕТ bali-demand-matrix, bali-catalog-sourcing-rule, listing-card-standard, listing-qualification-standard. Использовать при ЛЮБОМ прогоне поиска листингов."
 ---
 
-# ⛔⛔⛔⛔⛔ ТЗ ДЛЯ СКАУТА — ВЛАДЕЛЕЦ 13.10.2026, ДОСЛОВНО (ВЫШЕ ВСЕГО В ЭТОМ ФАЙЛЕ И В СВЯЗАННЫХ СКИЛАХ)
+# ⛔⛔⛔⛔⛔ КАК СОЕДИНЕНЫ ТАРГЕТЫ (владелец, 13.10.2026)
+
+**ТЗ скаута 13.10 (дыра 25–35M) — ДОПОЛНЕНИЕ к прежнему брифу, не замена.** Владелец 13.10: «чтобы перегибов не было… это дополнение к брифу, по которому ты уже работаешь; старое не отменяется, работаем не только здесь».
+
+Повод для ТЗ: в 2BR 25–35M в поясе Seseh и Pererenan у нас почти ничего нет, а клиенты просят это чаще всего. Поэтому эта дыра получает гарантированную долю плана. Всё остальное идёт как раньше.
+
+## Единый план дня — 20 карточек
+
+1. **Как раньше:** план дня строится по кубу спроса (фиксированная аналитика до 17.10, с 18.10 — лиды новой формы, раздел ниже), по всем районам и спальням: Seseh belt, Pererenan, Canggu, Umalas, Berawa, Seminyak; 1BR / 2BR / 3BR. Ценовой потолок — приоритет, не фильтр (раздел 3). Обе зоны (вторая линия приоритетнее, у океана не бросать — раздел 2).
+2. **Квота дыры внутри этих 20, не сверх:** не меньше **10** карточек в ячейках ТЗ 13.10 — 2BR Seseh belt / Pererenan / Tumbak Bayuh до 35M в месяц или до 300M в год, либо 1BR до 30M. Эти ячейки и так верхние в кубе, квота их закрепляет.
+3. **Остальные до 10** — по кубу: 3BR до 45–50M, 2BR Canggu, Umalas/Berawa/Seminyak, дорогие (в конец очереди) и т.д.
+4. Таргет 20 обязателен, лестница при исчерпании — раздел «ТАРГЕТ ДНЯ НАДО ДОСТИГАТЬ».
+
+## Что ТЗ 13.10 меняет и где
+
+| Правило | Действует для |
+|---|---|
+| Не тянуть прибрежные пины и пляжные Airbnb | **только для квоты дыры.** Для остальной части плана пины у океана можно, как раньше |
+| Искать вглубь: Cemagi/Munggu Kaja, Tumbak Bayuh, Buduk, север Pererenan | квота дыры (и совпадает с приоритетом второй линии для всего плана) |
+| Что искать: 2BR с годовой арендой 230–300M, юниты в маленьких комплексах и таунхаусах, 2BR с плюнж-пулом или без бассейна, 1BR+кабинет 25–30M | квота дыры |
+| Источники Rumah123, Lamudi, страницы годовой аренды агентств (найти владельца), посты владельцев в FB-группах — только owner-direct | **дополнительно** к основным каналам (пины → Instagram → FB владельцы), не вместо них |
+| Зачёт карточки: спальни + цена с периодом + район/пин в течение 48 ч | весь план дня (карточка без цены в норму не идёт) |
+| Первое сообщение: спальни, цена в месяц и в год с нашими 10%, доступность, чек-лист (питомцы, закрытая гостиная и кухня, ограждение бассейна, стройка рядом) | весь план (совпадает с разделом 5) |
+
+## Отчёт прогона
+
+`DEMAND SOURCE: …` → `TARGET: 20 / FACT: N` → `GAP QUOTA (25–35M): 10 / FACT: N` → карточек с ценой → какие ниже потолка → остальные по ячейкам куба.
+
+## ТЗ скаута 13.10.2026 — текст владельца (для справки)
 
 Scout brief: fill the 25–35M gap (owner, 13.10.2026)
 Goal. Clients most often ask for a 2BR in the Seseh belt (Seseh, Cemagi, Munggu) and Pererenan at 25–35M IDR a month. Coastal tourist villas there cost 40M and up, so we have almost nothing in this range. Find villas that close this gap.
-Where to look
-
-* Inland, the "second line": inland Cemagi and Munggu (Munggu Kaja), Tumbak Bayuh, Buduk, north Pererenan (above Jl. Raya Pererenan).
-* Don't pull coastal Google Maps pins or Airbnb tourist villas on the beach side for this target. They price above our ceiling.
-
-What to look for
-
-* 2BR villas rented by the year: owners asking 230–300M a year, which is about 23–28M a month with our 10%.
-* 2BR units in small complexes and townhouses (like Greenlot Residence, Seseh Townhouse, Prive Pererenan).
-* 2BR with a plunge pool or no pool.
-* 1BR + study at 25–30M.
-
+Where to look: inland, the "second line": inland Cemagi and Munggu (Munggu Kaja), Tumbak Bayuh, Buduk, north Pererenan (above Jl. Raya Pererenan). Don't pull coastal Google Maps pins or Airbnb tourist villas on the beach side for this target. They price above our ceiling.
+What to look for: 2BR villas rented by the year (230–300M a year, about 23–28M a month with our 10%); 2BR units in small complexes and townhouses (like Greenlot Residence, Seseh Townhouse, Prive Pererenan); 2BR with a plunge pool or no pool; 1BR + study at 25–30M.
 Sources: Rumah123, Lamudi, agency yearly-rent pages (e.g. Bali Home Immo yearly) to find the owners, and owner-direct posts in FB groups. Owner-direct only, no agencies.
-A card counts only when it has, within 48 hours:
-
-* bedrooms;
-* a price, with the period stated (per month or per year);
-* the area or a pin.
-
-A card without a price doesn't count toward the daily target.
-Daily target: 20 cards, at least 10 of them in the cells above (2BR Seseh belt / Pererenan / Tumbak Bayuh at a price up to 35M/month or up to 300M/year, or 1BR up to 30M).
-First message to the owner asks for: bedrooms, monthly and yearly price including our 10% commission, availability, and our 5 checklist points (pets, enclosed living room and kitchen, pool fence for kids, construction nearby).
+A card counts only when it has, within 48 hours: bedrooms; a price, with the period stated; the area or a pin. A card without a price doesn't count toward the daily target.
+Daily target: 20 cards, at least 10 of them in the cells above (2BR Seseh belt / Pererenan / Tumbak Bayuh up to 35M/month or 300M/year, or 1BR up to 30M).
+First message to the owner asks for: bedrooms, monthly and yearly price including our 10% commission, availability, and our 5 checklist points.
 Report each day: cards created, how many in the target cells, how many with a price, and which ones are under the price ceiling.
 
-## Что это меняет в прежних правилах (сводка, не замена текста выше)
-- Rumah123 / Lamudi (отклонены 06.10) и посты владельцев в FB-группах (убиты 07.10) **снова источники** — по ТЗ 13.10, только owner-direct.
-- Прибрежные пины Google Maps и пляжные Airbnb под этот таргет не тянуть.
-- «Спальни и цена не гейт» (20.09) для ЗАЧЁТА больше не действует: в норму идёт карточка со спальнями + ценой с периодом + районом/пином (в течение 48 ч). Без цены — не в зачёт.
-- Отчёт: карточек создано / в целевых ячейках / с ценой / какие ниже потолка.
-
+Прежние решения, которые ТЗ 13.10 пересматривает: Rumah123/Lamudi (отклонены 06.10) и FB-посты владельцев (убиты 07.10) снова источники, только owner-direct; «спальни и цена не гейт» (20.09) для ЗАЧЁТА карточки больше не действует.
 
 
 # ⛔⛔⛔⛔ ТАРГЕТ ДНЯ НАДО ДОСТИГАТЬ (владелец, 11.10.2026)
