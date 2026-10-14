@@ -3,6 +3,26 @@ name: "instagram-villa-outreach"
 description: "Добыча контактов вилл через Instagram для Unicorn Property. Директы только по поясу Сесеха (Seseh, Cemagi, Munggu), до 10 в день, после инбокса и до Places; меньше 10 допустимо, если новых вилл в поясе нет (владелец, 08.10.2026). Новый Instagram с 10.10.2026: кнопки Message нет — профиль → «⋯» → Send message → тред → прочитать историю → печатать инструментом ввода → клик Send; REST-инбокс отдаёт 404 — читать /direct/inbox/ со страницы (Primary, General, Requests), вьюпорт 1280. Ответы проверять на автоответ. В отчёте «новых директов отправлено сегодня N из 10». Использовать, когда у виллы нет телефона на пине или не подтверждены спальни."
 ---
 
+# ⛔⛔⛔⛔⛔ TOPSEARCH API УМЕР (замер 14.10.2026) — ПОИСК АККАУНТОВ ТОЛЬКО ЧЕРЕЗ ПОЛЕ SEARCH
+
+- `/web/search/topsearch/`, `/api/v1/web/search/topsearch/`, `/api/v1/fbsearch/web/top_serp/` отдают **404 (HTML)** при живом логине. Поиск в интерфейсе теперь идёт через `/api/graphql`.
+- Рабочий путь: открыть `/explore/`, клик по иконке «Search» (find "Search" → img), затем в поле `input[aria-label="Search input"]` подставлять запрос нативным сеттером + событие `input` и через ~4 с читать ссылки профилей:
+```js
+window.uis=async function(q){const inp=document.querySelector('input[aria-label="Search input"]');
+ const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+ set.call(inp,'');inp.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,500));
+ set.call(inp,q);inp.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,4000));
+ const skip=new Set(['/reels/','/explore/','/nick_unicorn_property_bali/','/popular/']);
+ return [...new Set([...document.querySelectorAll('a[href]')].map(a=>a.getAttribute('href'))
+  .filter(h=>/^\/[A-Za-z0-9._]+\/$/.test(h)&&!skip.has(h)))].map(h=>h.slice(1,-1));};
+```
+- Цикл по запросам — фоном (`window.R={}` + опрос), не в одном вызове: таймаут 45 с.
+- Шапка через `fetch('/<user>/')` + `meta[name="description"]` работает как раньше.
+- Замер 14.10: 35 бытовых запросов по поясу → 0 новых вилл; 8 запросов по именам свежих пинов без телефона → 2 виллы (@dekado_ombak — директ ушёл; @ombakluxury_b2 — «Not everyone can message this profile», не доставлено). **Имена свежих пинов без телефона — лучший источник адресатов.**
+- Тред с плашкой «Not everyone can message this profile» в левой колонке = не доставлено, в реестр `no_dm_route`.
+
+---
+
 # ⛔⛔⛔⛔⛔ НОВЫЙ INSTAGRAM (замер 10.10.2026) — ПЕРЕОПРЕДЕЛЯЕТ ВСЁ НИЖЕ ПРО ОТПРАВКУ И ИНБОКС
 
 Владелец 10.10.2026: обновить скил под новый Instagram. Что изменилось и как работать теперь:
