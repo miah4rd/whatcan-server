@@ -93,8 +93,8 @@
   },
   {
    "name": "listing-photo-standard",
-   "description": "Стандарт фото листингов unicorn-properties.com. ГЛАВНОЕ (вечер 14.10.2026): публикуем ТОЛЬКО с минимальным набором - обложка с самой виллой, экстерьер, гостиная, кухня, каждая спальня, санузел, не меньше 8 пригодных кадров; фото искать везде (Airbnb, Booking, сайт, пин, Instagram, владелец); набор не собран - драфт. Плюс отбор, обложка, вотермарки, порядок галереи, импорт.",
-   "updatedAt": "2026-10-14T12:06:09.928317Z",
+   "description": "Стандарт фото листингов unicorn-properties.com. ГЛАВНОЕ (вечер 14.10.2026): публикуем ТОЛЬКО с минимальным набором - обложка с самой виллой, экстерьер, гостиная, кухня, каждая спальня, санузел, не меньше 8 пригодных кадров; фото искать везде (Airbnb все листинги, Booking, Agoda, Traveloka, сайт, пин, Instagram, Facebook, владелец) и записывать каждый проверенный источник в notes (глубокий поиск, 17.10.2026); набор не собран - драфт. Плюс отбор, обложка, вотермарки, порядок галереи, импорт.",
+   "updatedAt": "2026-10-17T06:41:30.677097Z",
    "enabled": true
   },
   {
@@ -159,8 +159,8 @@
   },
   {
    "name": "unicorn-os-crm",
-   "description": "CRM Unicorn Property — ТОЛЬКО Unicorn OS. amoCRM выведена из работы 30.09.2026: не читать, не проверять, не писать туда, не мониторить. Все листинги (воронка Rental Listings 11180334) живут в Unicorn OS. Работать через коннектор Unicorn OS (MCP) — find_leads, lead_overview, stage_changes, move_stage, add_note, update_lead, create_lead, crm_request, send_team_announcement. Журнал прогонов — карточка 900002826. ПЕРЕОПРЕДЕЛЯЕТ все упоминания amoCRM в других скилах (listing-qualification-standard, listing-upload-regulation, api-first-rule, listing-announcement-audit и др.). Использовать при ЛЮБОЙ задаче про CRM, карточки листингов, воронку, квалификацию, журнал прогона, переписку с владельцами вилл.",
-   "updatedAt": "2026-10-13T09:49:56.208346Z",
+   "description": "CRM Unicorn Property — ТОЛЬКО Unicorn OS. amoCRM выведена из работы 30.09.2026: не читать, не проверять, не писать туда, не мониторить. Все листинги (воронка Rental Listings 11180334) живут в Unicorn OS. Работать через коннектор Unicorn OS (MCP) — find_leads, lead_overview, stage_changes, move_stage, add_note, update_lead, create_lead, crm_request, send_team_announcement. Журнал прогонов — карточка 900002826, только через коннектор (add_note или crm_request POST /api/v4/leads/900002826/notes), в браузере не открывать. Нет инструментов — анонс через crm_request POST /team-announcement, а владельцу переслать дословно инструкцию по переподключению (17.10.2026). ПЕРЕОПРЕДЕЛЯЕТ все упоминания amoCRM в других скилах (listing-qualification-standard, listing-upload-regulation, api-first-rule, listing-announcement-audit и др.). Использовать при ЛЮБОЙ задаче про CRM, карточки листингов, воронку, квалификацию, журнал прогона, переписку с владельцами вилл.",
+   "updatedAt": "2026-10-17T06:45:06.679759Z",
    "enabled": true
   },
   {
