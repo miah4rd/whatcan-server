@@ -1,6 +1,6 @@
 ---
 name: "listing-upload-regulation"
-description: "Регламент публикации аренды на unicorn-properties.com (Supabase). ЦЕНОВОЙ ПОЛ 17.10.2026: ниже 22M/мес (витринная, с 10%) не листим, живые ниже пола - в драфт, проверка в каждом прогоне. ГЛАВНОЕ 14.10.2026: всё публикуем, драфт только при нуле кадров или без цены, бэклог драфтов в каждом прогоне. Плюс поля, импорт, проверка, правка листинга."
+description: "Регламент публикации аренды на unicorn-properties.com (Supabase). ЦЕНОВОЙ ПОЛ 17.10.2026: ниже 22M/мес (витринная, с 10%) не листим, живые ниже пола - в драфт, проверка в каждом прогоне. ГЛАВНОЕ 14.10.2026: всё публикуем, драфт только при нуле кадров или без цены (занята до даты - не причина, 18.10.2026), бэклог драфтов в каждом прогоне. Плюс поля, импорт, проверка, правка листинга."
 ---
 
 # Listing Upload Regulation — unicorn-properties.com
@@ -341,6 +341,10 @@ Insert into `properties`. Then:
   published order, the listing doc, video), then write the folder link here.
 - `property_availability` — only if not available now. For "available from
   1 Oct 2026": `start_date 2026-10-01`, `end_date 2099-12-31`, `status 'available'`.
+  **Occupied until a date = publish now with that date** (owner 18.10.2026: «если сдана до конца года,
+  публикуем и ставим availability в конце года»). "Let until end of year" (even "probably") →
+  `start_date <next year>-01-01`, `end_date 2099-12-31`, `status 'available'`, note "date not confirmed".
+  Do not keep such a villa in draft and do not postpone to a later re-check. Precedent: Umah Helene → R-YUD-179.
 
 Create as `is_draft = true`. **Let the insert commit before importing photos** —
 the import function calls in from outside and cannot see an uncommitted row.
