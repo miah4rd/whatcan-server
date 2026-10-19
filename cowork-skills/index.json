@@ -63,8 +63,8 @@
   },
   {
    "name": "instagram-villa-outreach",
-   "description": "Добыча контактов вилл через Instagram для Unicorn Property. Директы только по поясу Сесеха (Seseh, Cemagi, Munggu), до 10 в день, после инбокса и до Places; меньше 10 допустимо, если новых вилл в поясе нет (владелец, 08.10.2026). Новый Instagram с 10.10.2026: кнопки Message нет — профиль → «⋯» → Send message → тред → прочитать историю → печатать инструментом ввода → клик Send; REST-инбокс отдаёт 404 — читать /direct/inbox/ со страницы (Primary, General, Requests), вьюпорт 1280. Ответы проверять на автоответ. В отчёте «новых директов отправлено сегодня N из 10». Использовать, когда у виллы нет телефона на пине или не подтверждены спальни.",
-   "updatedAt": "2026-10-14T04:46:03.431329Z",
+   "description": "Добыча контактов вилл через Instagram для Unicorn Property. Директы только по поясу Сесеха (Seseh, Cemagi, Munggu), до 10 в день, после инбокса и до Places; меньше 10 допустимо, если новых вилл в поясе нет (владелец, 08.10.2026). Новый Instagram с 10.10.2026: кнопки Message нет — профиль → «⋯» → Send message → тред → прочитать историю → печатать инструментом ввода → клик Send; REST-инбокс отдаёт 404 — читать /direct/inbox/ со страницы (Primary, General, Requests), вьюпорт 1280. Ответы проверять на автоответ. В отчёте «новых директов отправлено сегодня N из 10». С 19.10.2026: поле Search вверху /explore/, uis() пуст, пока панель не открыта реальным кликом и вводом; на части профилей снова есть кнопка Message (пузырь). Использовать, когда у виллы нет телефона на пине или не подтверждены спальни.",
+   "updatedAt": "2026-10-19T06:43:09.541447Z",
    "enabled": true
   },
   {
@@ -159,8 +159,8 @@
   },
   {
    "name": "unicorn-os-crm",
-   "description": "CRM Unicorn Property — ТОЛЬКО Unicorn OS. amoCRM выведена из работы 30.09.2026: не читать, не проверять, не писать туда, не мониторить. Все листинги (воронка Rental Listings 11180334) живут в Unicorn OS. Работать через коннектор Unicorn OS (MCP) — find_leads, lead_overview, stage_changes, move_stage, add_note, update_lead, create_lead, crm_request, send_team_announcement. Журнал прогонов — карточка 900002826, только через коннектор (add_note или crm_request POST /api/v4/leads/900002826/notes), в браузере не открывать. Нет инструментов — анонс через crm_request POST /team-announcement, а владельцу переслать дословно инструкцию по переподключению (17.10.2026). ПЕРЕОПРЕДЕЛЯЕТ все упоминания amoCRM в других скилах (listing-qualification-standard, listing-upload-regulation, api-first-rule, listing-announcement-audit и др.). Использовать при ЛЮБОЙ задаче про CRM, карточки листингов, воронку, квалификацию, журнал прогона, переписку с владельцами вилл.",
-   "updatedAt": "2026-10-19T04:50:07.604295Z",
+   "description": "CRM Unicorn Property — ТОЛЬКО Unicorn OS. amoCRM выведена из работы 30.09.2026: не читать, не проверять, не писать туда, не мониторить. Все листинги (воронка Rental Listings 11180334) живут в Unicorn OS. Работать через коннектор Unicorn OS (MCP) — find_leads, lead_overview, stage_changes, move_stage, add_note, update_lead, create_lead, crm_request, send_team_announcement. Журнал прогонов — карточка 900002826, только через коннектор (add_note или crm_request POST /api/v4/leads/900002826/notes), в браузере не открывать. Нет инструментов — анонс через crm_request POST /team-announcement, а владельцу переслать дословно инструкцию по переподключению (17.10.2026). С 19.10: коннектор появляется позже — догружать SRC:AI и журнал в той же сессии, пуш не слать. ПЕРЕОПРЕДЕЛЯЕТ все упоминания amoCRM в других скилах (listing-qualification-standard, listing-upload-regulation, api-first-rule, listing-announcement-audit и др.). Использовать при ЛЮБОЙ задаче про CRM, карточки, воронку, журнал прогона, переписку с владельцами.",
+   "updatedAt": "2026-10-19T06:42:59.326179Z",
    "enabled": true
   },
   {
