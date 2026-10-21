@@ -160,7 +160,7 @@
   {
    "name": "unicorn-os-crm",
    "description": "Unicorn OS is the only CRM (amoCRM is gone). How to read/write Rental Listings cards, send team announcements and write the run journal 900002826 — via the Unicorn_OS connector, or, if its tools are missing, by direct HTTP to the same server with the Bearer key. Use in every listing/sourcing run.",
-   "updatedAt": "2026-10-20T04:33:44.421286Z",
+   "updatedAt": "2026-10-21T06:01:30.675850Z",
    "enabled": true
   },
   {
