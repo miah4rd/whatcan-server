@@ -78,6 +78,16 @@ const MOVE_IN_LABELS: Record<string, string> = {
   "3_6m": "3–6 months",
   "6m_plus": "6+ months / just exploring",
 };
+// How long they stay (bali-villa-rentals STAY_OPTIONS); lands in the card's "Stay" field, which the request reader
+// takes like the ad form's answer (Jen 900007085, 22.10.2026: a website lead came with no length of stay).
+const STAY_LABELS: Record<string, string> = {
+  under_3m: "Less than 3 months",
+  month_to_month: "Month to month (3 months+)",
+  "3_6m": "3–6 months",
+  "6_12m": "6–12 months",
+  "1y_plus": "1 year or more",
+};
+const FIELD_STAY = 968495; // "Stay" (text), the same field the ad form fills
 
 // The one hard rule this endpoint exists to enforce: the old Meta Instant
 // Form could only show a text warning on this answer, never actually block
@@ -102,6 +112,7 @@ router.post("/apply-lead", async (req, res) => {
   const listingTitle = isNonEmptyString(body.listingTitle) ? body.listingTitle.trim().slice(0, 200) : listingCode;
   const budget = isNonEmptyString(body.budget) ? body.budget.trim() : "";
   const moveIn = isNonEmptyString(body.moveIn) ? body.moveIn.trim() : "";
+  const stay = isNonEmptyString(body.stay) ? body.stay.trim().slice(0, 40) : "";
   const bedrooms = isNonEmptyString(body.bedrooms) ? body.bedrooms.trim().slice(0, 20) : "";
   const areas = Array.isArray(body.areas)
     ? body.areas.filter(isNonEmptyString).map((a) => a.trim().slice(0, 40)).slice(0, 20)
@@ -126,6 +137,7 @@ router.post("/apply-lead", async (req, res) => {
 
   const budgetLabel = budget ? (BUDGET_LABELS[budget] ?? budget) : "";
   const moveInLabel = moveIn ? (MOVE_IN_LABELS[moveIn] ?? moveIn) : "";
+  const stayLabel = stay ? (STAY_LABELS[stay] ?? stay) : "";
   const contactName = name || "Website visitor";
   const traffic = trafficLabel(body);
 
@@ -152,6 +164,7 @@ router.post("/apply-lead", async (req, res) => {
   if (bedroomsLabel) cardFields.push({ field_id: FIELD_BEDROOMS_TEXT, values: [{ value: bedroomsLabel }] });
   if (areaLabel) cardFields.push({ field_id: FIELD_AREA_TEXT, values: [{ value: areaLabel }] });
   if (moveInLabel) cardFields.push({ field_id: FIELD_MOVE_IN, values: [{ value: moveInLabel }] });
+  if (stayLabel) cardFields.push({ field_id: FIELD_STAY, values: [{ value: stayLabel }] });
   cardFields.push({ field_id: FIELD_SOURCE, values: [{ value: traffic === "Google" ? "Google Search" : `${traffic} · ${source}` }] });
   for (const [key, fieldId] of Object.entries(TRACKING_FIELDS)) {
     const v = body[key];
