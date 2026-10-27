@@ -405,6 +405,19 @@ SELECT import_property_images(
 
 Typical: 20 photos land in 3 passes (7 → 14 → 20).
 
+### D6b. Fill the Drive folder (same run, every draft)
+
+Right after the photos land in `properties.images`, copy them into our Drive
+folder with the Make scenario **6640772** (`mcp__Make__s6640772_listing_photos_drive_folder_unicorn_listings`):
+create the folder with Google Drive `create_file` (folder mime type, parent by
+`listing_source`), call the scenario with `folderId` and
+`files: [{name: "01. <room>.jpg", url: <properties.images[i]>}]` in gallery order,
+wait 1-3 min, check the file count with `search_files parentId = '<folderId>'`,
+then write `drive_folder_url`. Do not use `copy_file` or download to the cloud
+(Airbnb/Booking are blocked there) - that is what stalled the drafts of 24-26 Oct
+2026. Full procedure: `listing-internal-data-gate`, section 2 "Как создать".
+A draft sent for owner approval must already have a full folder.
+
 ### D7. Publish
 
 **Gate first.** Run this and expect zero rows:
