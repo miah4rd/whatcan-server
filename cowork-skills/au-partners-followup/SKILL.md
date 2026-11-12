@@ -18,6 +18,12 @@ Applies to every direct-outreach lead in the Unicorn OS funnel AU Partners (pipe
 ## Message rules
 - Transparent, not salesy: we run rental and property management in Bali, the routine was painful, we built our own AI setup, thinking about Australia, want to know if agencies there feel the same. One question.
 - Mention AI once. No features, no dashes.
+- Layout (Nick, 12.11.2026), for every outgoing message on every channel (DM, email, LinkedIn, WhatsApp; first touch, reply, follow-up):
+  - Split the text into short paragraphs of 1 to 3 sentences, one idea each.
+  - Put an empty line between paragraphs. Never send one solid block.
+  - Typical order: greeting/hook, who we are, the point, question or next step, signature on its own line.
+  - When typing: Instagram and LinkedIn use shift+Enter twice between paragraphs; Gmail uses Enter twice.
+  - Before clicking Send, check that the typed text has the empty lines (innerText contains a blank line between paragraphs). If it doesn't, fix it first.
 - English by default; Russian only if their profile is in Russian.
 - Emails go from info@unicorn-properties.com, signed "Nick from Unicorn Property".
 - Never send without Nick's explicit OK. Show the text first.
